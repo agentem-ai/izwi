@@ -1,7 +1,7 @@
 //! Audio encoding to various output formats
 
 use hound::{WavSpec, WavWriter};
-use std::io::{Cursor, Write};
+use std::io::Cursor;
 use tracing::debug;
 
 use crate::error::{Error, Result};
@@ -107,6 +107,7 @@ impl AudioEncoder {
 
 /// Streaming audio chunk for real-time output
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct EncodedChunk {
     pub data: Vec<u8>,
     pub format: AudioFormat,
@@ -115,6 +116,7 @@ pub struct EncodedChunk {
 }
 
 impl EncodedChunk {
+    #[allow(dead_code)]
     pub fn new(data: Vec<u8>, format: AudioFormat, sample_count: usize, sample_rate: u32) -> Self {
         let duration_ms = (sample_count as f32 / sample_rate as f32) * 1000.0;
         Self {

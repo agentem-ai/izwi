@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::audio::{AudioChunkBuffer, AudioCodec, AudioEncoder, StreamingConfig};
 use crate::config::EngineConfig;
@@ -21,7 +21,7 @@ pub struct InferenceEngine {
     model_manager: Arc<ModelManager>,
     tokenizer: Option<Tokenizer>,
     codec: AudioCodec,
-    kv_cache: KVCache,
+    _kv_cache: KVCache,
     streaming_config: StreamingConfig,
     python_bridge: PythonBridge,
     loaded_model_path: Option<std::path::PathBuf>,
@@ -39,7 +39,7 @@ impl InferenceEngine {
             model_manager,
             tokenizer: None,
             codec,
-            kv_cache,
+            _kv_cache: kv_cache,
             streaming_config: StreamingConfig::default(),
             python_bridge: PythonBridge::new(),
             loaded_model_path: None,
@@ -245,6 +245,7 @@ impl InferenceEngine {
     }
 
     /// Generate audio tokens from input tokens
+    #[allow(dead_code)]
     async fn generate_audio_tokens(
         &self,
         _input_tokens: &[u32],
@@ -277,7 +278,7 @@ impl InferenceEngine {
         // In real implementation, this runs incremental inference
         let num_codebooks = self.codec.config().num_codebooks;
         let tokens: Vec<u32> = (0..num_codebooks)
-            .map(|i| (rand_u32() % 4096) as u32)
+            .map(|_i| (rand_u32() % 4096) as u32)
             .collect();
 
         // Simulate generation time

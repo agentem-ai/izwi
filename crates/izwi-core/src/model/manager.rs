@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{error, info, warn};
+use tracing::info;
 
 use crate::config::EngineConfig;
 use crate::error::{Error, Result};
@@ -14,7 +14,7 @@ use crate::model::weights::ModelWeights;
 
 /// Manages model downloading, loading, and lifecycle
 pub struct ModelManager {
-    config: EngineConfig,
+    _config: EngineConfig,
     downloader: ModelDownloader,
     models: RwLock<HashMap<ModelVariant, ModelState>>,
 }
@@ -51,7 +51,7 @@ impl ModelManager {
         }
 
         Ok(Self {
-            config,
+            _config: config,
             downloader,
             models: RwLock::new(models),
         })

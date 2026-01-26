@@ -77,6 +77,7 @@ impl KVBlock {
         }
     }
 
+    #[allow(dead_code)]
     fn is_full(&self, block_size: usize) -> bool {
         self.num_tokens >= block_size
     }

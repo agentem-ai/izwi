@@ -6,7 +6,7 @@
 use std::path::Path;
 use tracing::{debug, info};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::model::weights::ModelWeights;
 
 /// Configuration for the audio codec
@@ -49,17 +49,17 @@ pub struct AudioCodec {
 /// Decoder network weights
 struct DecoderWeights {
     // Causal ConvNet layers for the decoder
-    conv_layers: Vec<ConvLayer>,
+    _conv_layers: Vec<ConvLayer>,
     // Final projection to audio samples
-    output_proj: Vec<f32>,
+    _output_proj: Vec<f32>,
 }
 
 struct ConvLayer {
-    weight: Vec<f32>,
-    bias: Vec<f32>,
-    kernel_size: usize,
-    in_channels: usize,
-    out_channels: usize,
+    _weight: Vec<f32>,
+    _bias: Vec<f32>,
+    _kernel_size: usize,
+    _in_channels: usize,
+    _out_channels: usize,
 }
 
 impl AudioCodec {

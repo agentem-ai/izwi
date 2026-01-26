@@ -6,7 +6,7 @@ use std::path::Path;
 use tracing::{debug, info};
 
 use crate::config::ModelConfig;
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// Tensor data loaded from safetensors
 #[derive(Debug)]

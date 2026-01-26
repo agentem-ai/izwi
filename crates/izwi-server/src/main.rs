@@ -1,7 +1,5 @@
 //! Izwi TTS Server - HTTP API for Qwen3-TTS inference
 
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
