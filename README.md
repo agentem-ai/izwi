@@ -23,9 +23,15 @@ A high-performance, Rust-based text-to-speech inference engine optimized for Qwe
 
 ## Requirements
 
-- macOS 12+ with Apple Silicon (M1/M2/M3)
+### Native Development
+- macOS 12+ with Apple Silicon (M1/M2/M3) or Linux with CUDA
 - **Rust 1.83+** (required for tokenizers dependency)
+- **Python 3.11+** with uv package manager
 - Node.js 18+ (for UI development)
+
+### Docker (Recommended)
+- Docker 24+ with Compose V2
+- NVIDIA Container Toolkit (for GPU support on Linux)
 
 ### Upgrading Rust
 
@@ -35,19 +41,58 @@ rustup update stable
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-## Quick Start
+## Quick Start (Docker)
 
-### 1. Build the Rust Server
+### Production Deployment
 
 ```bash
-# Clone the repository
-cd izwi-audio
+# CPU version
+docker compose up -d
 
+# CUDA/GPU version (Linux only)
+docker compose --profile cuda up -d
+
+# View logs
+docker compose logs -f
+```
+
+The server will be available at `http://localhost:8080`
+
+### Development with Docker
+
+```bash
+# Start development environment
+./scripts/dev.sh up
+
+# Open shell in container
+./scripts/dev.sh shell
+
+# Inside the container, run:
+cargo watch -x run          # Backend with hot reload
+cd ui && npm run dev --host # Frontend dev server
+```
+
+## Quick Start (Native)
+
+### 1. Install Python Dependencies (uv)
+
+```bash
+# Install uv if not already installed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create virtual environment and install dependencies
+uv venv
+uv pip install -e .
+```
+
+### 2. Build the Rust Server
+
+```bash
 # Build in release mode
 cargo build --release
 ```
 
-### 2. Build the Web UI
+### 3. Build the Web UI
 
 ```bash
 cd ui
@@ -56,24 +101,29 @@ npm run build
 cd ..
 ```
 
-### 3. Run the Server
+### 4. Run the Server
 
 ```bash
+# Activate Python environment first
+source .venv/bin/activate
+
+# Run the server
 ./target/release/izwi
 ```
 
 The server will start at `http://localhost:8080`
 
-### 4. Open the UI
+### 5. Open the UI
 
 Navigate to `http://localhost:8080` in your browser.
 
-## Development
+## Development (Native)
 
 ### Run in Development Mode
 
 **Terminal 1 - Rust Server:**
 ```bash
+source .venv/bin/activate
 cargo run
 ```
 
@@ -83,7 +133,7 @@ cd ui
 npm run dev
 ```
 
-The UI will be available at `http://localhost:3000` with hot reload.
+The UI will be available at `http://localhost:5173` with hot reload.
 
 ## API Reference
 
@@ -185,6 +235,49 @@ cors_enabled = true
 - **First chunk latency**: < 100ms
 - **Streaming RTF**: < 0.5 (faster than real-time)
 - **Memory usage**: 2-6GB depending on model size
+
+## Docker Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Docker Container                          │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │                  Izwi Server (Rust)                     ││
+│  │  - REST API endpoints                                   ││
+│  │  - Model management                                     ││
+│  │  - Static file serving (UI)                             ││
+│  └──────────────────────────┬──────────────────────────────┘│
+│                             │ Unix Socket                    │
+│  ┌──────────────────────────▼──────────────────────────────┐│
+│  │               Python TTS Daemon                          ││
+│  │  - Qwen3-TTS inference                                  ││
+│  │  - Model caching                                        ││
+│  │  - GPU acceleration (CUDA/MPS)                          ││
+│  └─────────────────────────────────────────────────────────┘│
+│                                                              │
+│  Volume: /app/models (HuggingFace cache)                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Project Structure
+
+```
+izwi-audio/
+├── crates/
+│   ├── izwi-core/        # Core inference engine
+│   └── izwi-server/      # Axum web server
+├── scripts/
+│   ├── tts_daemon.py     # Python TTS daemon
+│   ├── tts_inference.py  # Direct inference script
+│   └── dev.sh            # Development helper
+├── ui/                   # React frontend
+├── pyproject.toml        # Python dependencies (uv)
+├── Cargo.toml            # Rust dependencies
+├── Dockerfile            # Production multi-stage build
+├── Dockerfile.dev        # Development container
+├── docker-compose.yml    # Production orchestration
+└── docker-compose.dev.yml # Development orchestration
+```
 
 ## License
 

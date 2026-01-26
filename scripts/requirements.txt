@@ -1,5 +1,0 @@
-qwen_tts
-torch
-soundfile
-numpy<2.0
-pydub

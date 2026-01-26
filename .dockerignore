@@ -1,0 +1,90 @@
+# =============================================================================
+# Izwi Audio - Docker Ignore
+# =============================================================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Build artifacts
+target/
+*.pdb
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.eggs/
+*.egg-info/
+*.egg
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Node.js
+ui/node_modules/
+ui/.pnp/
+ui/.pnp.js
+ui/coverage/
+ui/.next/
+ui/out/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment files (but not example)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Documentation
+docs/
+CHANGELOG.md
+CONTRIBUTING.md
+LICENSE.md
+
+# Test files
+tests/
+*_test.py
+*_test.rs
+
+# Development files
+Dockerfile.dev
+docker-compose.dev.yml
+.editorconfig
+.pre-commit-config.yaml
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Model cache (use volumes instead)
+models/
+*.safetensors
+*.bin
+*.onnx
+
+# Logs
+logs/
+*.log
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+.coverage.*

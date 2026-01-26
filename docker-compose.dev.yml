@@ -1,0 +1,159 @@
+# =============================================================================
+# Izwi Audio - Development Docker Compose
+# =============================================================================
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Then in separate terminals or using docker exec:
+#   - Backend: docker compose -f docker-compose.dev.yml exec dev cargo watch -x run
+#   - Frontend: docker compose -f docker-compose.dev.yml exec dev bash -c "cd ui && npm run dev"
+#   - Python: Runs automatically via Unix socket when backend makes requests
+#
+# Or use the convenience script:
+#   ./scripts/dev.sh
+#
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Development container with all tools
+  # ---------------------------------------------------------------------------
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: izwi-audio:dev
+    container_name: izwi-dev
+    stdin_open: true
+    tty: true
+    ports:
+      - "8080:8080"   # Rust backend
+      - "5173:5173"   # Vite dev server
+    volumes:
+      # Mount source code for hot reload
+      - .:/app:cached
+      # Persist dependencies
+      - cargo-cache:/root/.cargo/registry
+      - cargo-git:/root/.cargo/git
+      - target-cache:/app/target
+      - node-modules:/app/ui/node_modules
+      # Persist models
+      - izwi-models:/app/models
+      # Shared socket for Python daemon
+      - /tmp:/tmp
+    environment:
+      - CARGO_HOME=/root/.cargo
+      - CARGO_TARGET_DIR=/app/target
+      - PYTHONUNBUFFERED=1
+      - HF_HOME=/app/models/huggingface
+      - TRANSFORMERS_CACHE=/app/models/huggingface
+      # Vite needs to know the host for HMR
+      - VITE_HOST=0.0.0.0
+    working_dir: /app
+    command: >
+      bash -c "
+        echo '=== Izwi Development Container ===' &&
+        echo 'Installing Python dependencies...' &&
+        uv venv /app/.venv &&
+        uv pip install --python /app/.venv/bin/python -e '.[dev]' &&
+        export PATH=/app/.venv/bin:\$PATH &&
+        echo 'Installing Node dependencies...' &&
+        cd /app/ui && npm install && cd /app &&
+        echo '' &&
+        echo 'Development environment ready!' &&
+        echo '' &&
+        echo 'Available commands:' &&
+        echo '  Backend:  cargo watch -x run' &&
+        echo '  Frontend: cd ui && npm run dev -- --host' &&
+        echo '  Tests:    cargo test' &&
+        echo '' &&
+        echo 'Starting shell...' &&
+        exec bash
+      "
+
+  # ---------------------------------------------------------------------------
+  # Rust backend service (alternative to running in dev container)
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: izwi-audio:dev
+    container_name: izwi-backend
+    profiles:
+      - services
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app:cached
+      - cargo-cache:/root/.cargo/registry
+      - cargo-git:/root/.cargo/git
+      - target-cache:/app/target
+      - izwi-models:/app/models
+      - /tmp:/tmp
+    environment:
+      - CARGO_HOME=/root/.cargo
+      - CARGO_TARGET_DIR=/app/target
+      - HF_HOME=/app/models/huggingface
+    working_dir: /app
+    command: cargo watch -x run
+    depends_on:
+      - python-deps
+
+  # ---------------------------------------------------------------------------
+  # Frontend dev server (alternative to running in dev container)
+  # ---------------------------------------------------------------------------
+  frontend:
+    image: node:20-slim
+    container_name: izwi-frontend
+    profiles:
+      - services
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./ui:/app:cached
+      - node-modules:/app/node_modules
+    working_dir: /app
+    environment:
+      - VITE_HOST=0.0.0.0
+    command: >
+      bash -c "npm install && npm run dev -- --host"
+
+  # ---------------------------------------------------------------------------
+  # Python dependencies installer (one-time setup)
+  # ---------------------------------------------------------------------------
+  python-deps:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: izwi-audio:dev
+    container_name: izwi-python-deps
+    profiles:
+      - services
+    volumes:
+      - .:/app:cached
+      - izwi-models:/app/models
+    working_dir: /app
+    command: >
+      bash -c "
+        uv venv /app/.venv &&
+        uv pip install --python /app/.venv/bin/python -e '.[dev]' &&
+        echo 'Python dependencies installed'
+      "
+
+volumes:
+  cargo-cache:
+    name: izwi-cargo-cache
+  cargo-git:
+    name: izwi-cargo-git
+  target-cache:
+    name: izwi-target-cache
+  node-modules:
+    name: izwi-node-modules
+  izwi-models:
+    name: izwi-models
+
+networks:
+  default:
+    name: izwi-dev-network

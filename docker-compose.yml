@@ -1,0 +1,96 @@
+# =============================================================================
+# Izwi Audio - Production Docker Compose
+# =============================================================================
+#
+# Usage:
+#   CPU:  docker compose up -d
+#   CUDA: docker compose --profile cuda up -d
+#
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Main application (CPU)
+  # ---------------------------------------------------------------------------
+  izwi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: izwi-audio:latest
+    container_name: izwi-audio
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - izwi-models:/app/models
+      - izwi-data:/app/data
+      - ./config.toml:/app/config.toml:ro
+    environment:
+      - IZWI_CONFIG_PATH=/app/config.toml
+      - HF_HOME=/app/models/huggingface
+      - TRANSFORMERS_CACHE=/app/models/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # Main application (CUDA) - activated with --profile cuda
+  # ---------------------------------------------------------------------------
+  izwi-cuda:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production-cuda
+    image: izwi-audio:cuda
+    container_name: izwi-audio-cuda
+    profiles:
+      - cuda
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - izwi-models:/app/models
+      - izwi-data:/app/data
+      - ./config.toml:/app/config.toml:ro
+    environment:
+      - IZWI_CONFIG_PATH=/app/config.toml
+      - HF_HOME=/app/models/huggingface
+      - TRANSFORMERS_CACHE=/app/models/huggingface
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  izwi-models:
+    name: izwi-models
+  izwi-data:
+    name: izwi-data
+
+networks:
+  default:
+    name: izwi-network
