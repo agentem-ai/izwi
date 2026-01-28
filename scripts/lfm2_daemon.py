@@ -232,9 +232,27 @@ class LFM2Daemon:
 
         # Load model following the official documentation
         print(f"[LFM2 Daemon] Loading processor...", file=sys.stderr)
-        processor = LFM2AudioProcessor.from_pretrained(model_id).eval()
-        print(f"[LFM2 Daemon] Loading model...", file=sys.stderr)
-        model = LFM2AudioModel.from_pretrained(model_id).eval()
+        try:
+            processor = LFM2AudioProcessor.from_pretrained(model_id).eval()
+            print(f"[LFM2 Daemon] Loading model...", file=sys.stderr)
+            model = LFM2AudioModel.from_pretrained(model_id).eval()
+        except Exception as e:
+            if "Torch not compiled with CUDA enabled" not in str(e):
+                raise
+            print(
+                "[LFM2 Daemon] CUDA not available; retrying model load on CPU",
+                file=sys.stderr,
+            )
+            self.device = "cpu"
+            self.dtype = torch.float32
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            try:
+                torch.set_default_device("cpu")
+            except Exception:
+                pass
+            processor = LFM2AudioProcessor.from_pretrained(model_id).eval()
+            print(f"[LFM2 Daemon] Loading model...", file=sys.stderr)
+            model = LFM2AudioModel.from_pretrained(model_id).eval()
 
         # Move to device if not CPU
         if self.device != "cpu":
