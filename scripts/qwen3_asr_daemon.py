@@ -23,6 +23,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Any, List
 from collections import OrderedDict
+import urllib.request
 
 import warnings
 
@@ -152,8 +153,33 @@ class Qwen3ASRDaemon:
                     (path / "model.safetensors").exists()
                     or (path / "model-00001-of-00002.safetensors").exists()
                 ):
+                    # Ensure chat_template.json exists (required for transcription)
+                    self._ensure_chat_template(path, model_id)
                     return path
         return None
+
+    def _ensure_chat_template(self, local_path: Path, model_id: str):
+        """Ensure chat_template.json exists in local model path."""
+        chat_template_path = local_path / "chat_template.json"
+        if chat_template_path.exists():
+            return
+
+        # Download chat_template.json from HuggingFace
+        url = f"https://huggingface.co/{model_id}/raw/main/chat_template.json"
+        print(
+            f"[ASR Daemon] Downloading chat_template.json from {url}", file=sys.stderr
+        )
+        try:
+            urllib.request.urlretrieve(url, chat_template_path)
+            print(
+                f"[ASR Daemon] Downloaded chat_template.json to {chat_template_path}",
+                file=sys.stderr,
+            )
+        except Exception as e:
+            print(
+                f"[ASR Daemon] Warning: Failed to download chat_template.json: {e}",
+                file=sys.stderr,
+            )
 
     def _load_model(self, model_id: str = DEFAULT_MODEL_06B) -> dict:
         """Load Qwen3-ASR model."""
@@ -175,6 +201,7 @@ class Qwen3ASRDaemon:
             load_path,
             dtype=self.dtype,
             device_map=self.device,
+            trust_remote_code=True,
             max_inference_batch_size=32,
             max_new_tokens=512,
         )
@@ -262,7 +289,9 @@ class Qwen3ASRDaemon:
                 result = results[0]
                 response = {
                     "transcription": result.text,
-                    "language": result.language if hasattr(result, "language") else None,
+                    "language": (
+                        result.language if hasattr(result, "language") else None
+                    ),
                 }
             else:
                 response = {"transcription": "", "language": None}
