@@ -2,6 +2,8 @@
 
 A high-performance, Rust-based text-to-speech inference engine optimized for Qwen3-TTS models on Apple Silicon (M1+) using MLX.
 
+![Izwi Screenshot](images/screenshot.png)
+
 ## Features
 
 - **Apple Silicon Optimized**: Built on MLX for unified memory and Metal GPU acceleration
@@ -13,13 +15,22 @@ A high-performance, Rust-based text-to-speech inference engine optimized for Qwe
 
 ## Supported Models
 
-| Model | Size | Description |
-|-------|------|-------------|
-| Qwen3-TTS-12Hz-0.6B-Base | ~1.2GB | Fast, lightweight base model |
-| Qwen3-TTS-12Hz-0.6B-CustomVoice | ~1.2GB | Voice cloning with 0.6B model |
-| Qwen3-TTS-12Hz-1.7B-Base | ~3.4GB | Higher quality base model |
-| Qwen3-TTS-12Hz-1.7B-CustomVoice | ~3.4GB | Voice cloning with 1.7B model |
-| Qwen3-TTS-12Hz-1.7B-VoiceDesign | ~3.4GB | Voice design with descriptions |
+### Text-to-Speech (TTS)
+
+| Model | Size | What You Can Do |
+|-------|------|----------------|
+| **Qwen3-TTS-12Hz-0.6B-Base** | ~1.2GB | Generate speech with 9 built-in voices (fast, lightweight) |
+| **Qwen3-TTS-12Hz-0.6B-CustomVoice** | ~1.2GB | Clone any voice using a reference audio sample |
+| **Qwen3-TTS-12Hz-1.7B-Base** | ~3.4GB | Generate higher quality speech with 9 built-in voices |
+| **Qwen3-TTS-12Hz-1.7B-CustomVoice** | ~3.4GB | Clone any voice with better quality (requires reference audio) |
+| **Qwen3-TTS-12Hz-1.7B-VoiceDesign** | ~3.4GB | Design custom voices using text descriptions (e.g., "deep male voice with British accent") |
+
+### Speech-to-Text (ASR)
+
+| Model | Size | What You Can Do |
+|-------|------|----------------|
+| **Qwen3-ASR-0.6B** | ~1.2GB | Transcribe audio to text (fast, lightweight) |
+| **Qwen3-ASR-1.7B** | ~3.4GB | Transcribe audio to text with higher accuracy |
 
 ## Requirements
 
@@ -170,113 +181,17 @@ Content-Type: application/json
 }
 ```
 
-### Stream Speech
+### Transcribe Audio
 
 ```bash
-POST /api/v1/tts/stream
+POST /api/v1/asr/transcribe
 Content-Type: application/json
 
 {
-  "text": "Hello, world!",
-  "format": "wav"
+  "audio_base64": "<base64-encoded-audio>",
+  "model_id": "Qwen/Qwen3-ASR-0.6B",
+  "language": "auto"
 }
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Web UI (React)                          │
-└─────────────────────────────────────────────────────────────┘
-                            │
-┌─────────────────────────────────────────────────────────────┐
-│                   API Server (Axum)                          │
-│  - REST endpoints                                            │
-│  - Streaming audio responses                                 │
-│  - Model management                                          │
-└─────────────────────────────────────────────────────────────┘
-                            │
-┌─────────────────────────────────────────────────────────────┐
-│                 Inference Engine (Rust)                      │
-│  - Qwen3-TTS model loading                                   │
-│  - Text tokenization                                         │
-│  - Audio token generation                                    │
-│  - Audio codec decoding                                      │
-└─────────────────────────────────────────────────────────────┘
-                            │
-┌─────────────────────────────────────────────────────────────┐
-│                    MLX Backend                               │
-│  - Metal GPU acceleration                                    │
-│  - Unified memory                                            │
-│  - Optimized matrix operations                               │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Configuration
-
-Create a `config.toml` file in the project root:
-
-```toml
-[engine]
-models_dir = "~/.izwi/models"
-max_batch_size = 8
-max_sequence_length = 4096
-chunk_size = 128
-use_metal = true
-
-[server]
-host = "0.0.0.0"
-port = 8080
-cors_enabled = true
-```
-
-## Performance Targets
-
-- **First chunk latency**: < 100ms
-- **Streaming RTF**: < 0.5 (faster than real-time)
-- **Memory usage**: 2-6GB depending on model size
-
-## Docker Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Docker Container                          │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │                  Izwi Server (Rust)                     ││
-│  │  - REST API endpoints                                   ││
-│  │  - Model management                                     ││
-│  │  - Static file serving (UI)                             ││
-│  └──────────────────────────┬──────────────────────────────┘│
-│                             │ Unix Socket                    │
-│  ┌──────────────────────────▼──────────────────────────────┐│
-│  │               Python TTS Daemon                          ││
-│  │  - Qwen3-TTS inference                                  ││
-│  │  - Model caching                                        ││
-│  │  - GPU acceleration (CUDA/MPS)                          ││
-│  └─────────────────────────────────────────────────────────┘│
-│                                                              │
-│  Volume: /app/models (HuggingFace cache)                    │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Project Structure
-
-```
-izwi-audio/
-├── crates/
-│   ├── izwi-core/        # Core inference engine
-│   └── izwi-server/      # Axum web server
-├── scripts/
-│   ├── tts_daemon.py     # Python TTS daemon
-│   ├── tts_inference.py  # Direct inference script
-│   └── dev.sh            # Development helper
-├── ui/                   # React frontend
-├── pyproject.toml        # Python dependencies (uv)
-├── Cargo.toml            # Rust dependencies
-├── Dockerfile            # Production multi-stage build
-├── Dockerfile.dev        # Development container
-├── docker-compose.yml    # Production orchestration
-└── docker-compose.dev.yml # Development orchestration
 ```
 
 ## License
