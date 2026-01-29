@@ -111,12 +111,13 @@ impl ModelDownloader {
         }
 
         if variant.is_asr() {
-            // Qwen3-ASR requires config.json, vocab.json, and model weights
+            // Qwen3-ASR requires config.json, vocab.json, chat_template.json, and model weights
             let has_config = path.join("config.json").exists();
             let has_vocab = path.join("vocab.json").exists();
+            let has_chat_template = path.join("chat_template.json").exists();
             let has_model = path.join("model.safetensors").exists()
                 || path.join("model-00001-of-00002.safetensors").exists();
-            return has_config && has_vocab && has_model;
+            return has_config && has_vocab && has_chat_template && has_model;
         }
 
         if variant.is_tokenizer() {
@@ -283,6 +284,7 @@ impl ModelDownloader {
         if variant.is_asr() {
             let mut files = vec![
                 "config.json".to_string(),
+                "chat_template.json".to_string(),
                 "generation_config.json".to_string(),
                 "merges.txt".to_string(),
                 "preprocessor_config.json".to_string(),

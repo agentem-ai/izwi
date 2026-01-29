@@ -23,7 +23,6 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Any, List
 from collections import OrderedDict
-import urllib.request
 
 import warnings
 
@@ -149,37 +148,24 @@ class Qwen3ASRDaemon:
 
         for path in possible_paths:
             if path.exists():
-                if (path / "config.json").exists() and (
-                    (path / "model.safetensors").exists()
-                    or (path / "model-00001-of-00002.safetensors").exists()
-                ):
-                    # Ensure chat_template.json exists (required for transcription)
-                    self._ensure_chat_template(path, model_id)
+                # Check for essential files
+                has_config = (path / "config.json").exists()
+                has_chat_template = (path / "chat_template.json").exists()
+                has_model = (path / "model.safetensors").exists() or (
+                    path / "model-00001-of-00002.safetensors"
+                ).exists()
+
+                if has_config and has_chat_template and has_model:
                     return path
+                elif has_config and has_model:
+                    # Model downloaded but missing chat_template.json
+                    # This should be handled by the Rust model downloader
+                    print(
+                        f"[ASR Daemon] Warning: Model at {path} is missing chat_template.json. "
+                        "Please re-download the model using the UI.",
+                        file=sys.stderr,
+                    )
         return None
-
-    def _ensure_chat_template(self, local_path: Path, model_id: str):
-        """Ensure chat_template.json exists in local model path."""
-        chat_template_path = local_path / "chat_template.json"
-        if chat_template_path.exists():
-            return
-
-        # Download chat_template.json from HuggingFace
-        url = f"https://huggingface.co/{model_id}/raw/main/chat_template.json"
-        print(
-            f"[ASR Daemon] Downloading chat_template.json from {url}", file=sys.stderr
-        )
-        try:
-            urllib.request.urlretrieve(url, chat_template_path)
-            print(
-                f"[ASR Daemon] Downloaded chat_template.json to {chat_template_path}",
-                file=sys.stderr,
-            )
-        except Exception as e:
-            print(
-                f"[ASR Daemon] Warning: Failed to download chat_template.json: {e}",
-                file=sys.stderr,
-            )
 
     def _load_model(self, model_id: str = DEFAULT_MODEL_06B) -> dict:
         """Load Qwen3-ASR model."""
