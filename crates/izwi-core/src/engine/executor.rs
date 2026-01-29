@@ -375,7 +375,7 @@ impl UnifiedExecutor {
 }
 
 /// Decode base64-encoded audio to samples.
-fn decode_audio_base64(audio_b64: &str, sample_rate: u32) -> Result<Vec<f32>> {
+fn decode_audio_base64(audio_b64: &str, _sample_rate: u32) -> Result<Vec<f32>> {
     use base64::Engine;
     use std::io::Cursor;
 
