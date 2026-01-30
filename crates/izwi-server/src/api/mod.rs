@@ -8,7 +8,7 @@ mod models;
 mod tts;
 
 use axum::{
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
@@ -31,7 +31,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/models/:variant/download", post(models::download_model))
         .route("/models/:variant/load", post(models::load_model))
         .route("/models/:variant/unload", post(models::unload_model))
-        .route("/models/:variant", get(models::get_model_info))
+        .route(
+            "/models/:variant",
+            get(models::get_model_info).delete(models::delete_model),
+        )
         // TTS generation (Qwen3-TTS)
         .route("/tts/generate", post(tts::generate))
         .route("/tts/stream", post(tts::generate_stream))

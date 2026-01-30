@@ -99,6 +99,28 @@ pub async fn unload_model(
     }))
 }
 
+/// Delete a downloaded model from disk
+pub async fn delete_model(
+    State(state): State<AppState>,
+    Path(variant): Path<String>,
+) -> Result<Json<DownloadResponse>, ApiError> {
+    let variant = parse_variant(&variant)?;
+    info!("Deleting model: {}", variant);
+
+    let engine = state.engine.read().await;
+
+    // First unload if loaded
+    let _ = engine.model_manager().unload_model(variant).await;
+
+    // Delete the model files
+    engine.model_manager().delete_model(variant).await?;
+
+    Ok(Json(DownloadResponse {
+        status: "deleted",
+        message: format!("Model {} deleted successfully", variant),
+    }))
+}
+
 /// Parse model variant from string
 fn parse_variant(s: &str) -> Result<ModelVariant, ApiError> {
     // Exact matches for HuggingFace model names (used in URLs)

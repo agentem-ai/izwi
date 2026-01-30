@@ -1,5 +1,9 @@
 const API_BASE = "/api/v1";
 
+// ============================================================================
+// Types
+// ============================================================================
+
 export interface ModelInfo {
   variant: string;
   status:
@@ -19,6 +23,10 @@ export interface ModelsResponse {
   models: ModelInfo[];
 }
 
+// ============================================================================
+// Unified TTS Types
+// ============================================================================
+
 export interface TTSRequest {
   text: string;
   speaker?: string;
@@ -32,7 +40,7 @@ export interface TTSRequest {
 
 export interface TTSResponse {
   request_id: string;
-  audio: string; // base64
+  audio: string;
   format: string;
   sample_rate: number;
   duration_secs: number;
@@ -42,6 +50,25 @@ export interface TTSResponse {
     rtf: number;
   };
 }
+
+// ============================================================================
+// Unified STT (ASR) Types
+// ============================================================================
+
+export interface STTRequest {
+  audio_base64: string;
+  model_id?: string;
+  language?: string;
+}
+
+export interface STTResponse {
+  transcription: string;
+  language: string | null;
+}
+
+// ============================================================================
+// Legacy Types (for backward compatibility)
+// ============================================================================
 
 export interface LFM2TTSRequest {
   text: string;
@@ -267,6 +294,44 @@ class ApiClient {
       method: "POST",
       body: JSON.stringify(request),
     });
+  }
+
+  // ==========================================================================
+  // Unified TTS API
+  // ==========================================================================
+
+  /**
+   * Unified TTS endpoint that works with any TTS model.
+   * Automatically routes to the correct backend based on input.
+   */
+  async synthesize(request: TTSRequest): Promise<Blob> {
+    return this.generateTTS(request);
+  }
+
+  // ==========================================================================
+  // Unified STT API
+  // ==========================================================================
+
+  /**
+   * Unified STT endpoint that works with any ASR model.
+   * Automatically routes to the correct backend based on model.
+   */
+  async transcribe(request: STTRequest): Promise<STTResponse> {
+    return this.asrTranscribe({
+      audio_base64: request.audio_base64,
+      model_id: request.model_id,
+      language: request.language,
+    });
+  }
+
+  // ==========================================================================
+  // Delete Model
+  // ==========================================================================
+
+  async deleteModel(
+    variant: string,
+  ): Promise<{ status: string; message: string }> {
+    return this.request(`/models/${variant}`, { method: "DELETE" });
   }
 }
 
