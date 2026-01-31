@@ -122,6 +122,7 @@ impl BlockAllocator {
     }
 
     /// Allocate n blocks, returning their IDs.
+    /// Uses LIFO allocation - recently freed blocks are reused first for better cache locality.
     pub fn allocate(&mut self, n: usize) -> Option<Vec<BlockId>> {
         if !self.can_allocate(n) {
             return None;
@@ -129,7 +130,9 @@ impl BlockAllocator {
 
         let mut block_ids = Vec::with_capacity(n);
         for _ in 0..n {
-            if let Some(id) = self.free_list.pop_front() {
+            // Use pop_back for LIFO - recently freed blocks are at the back
+            // This improves CPU cache locality as recently used memory is more likely to be hot
+            if let Some(id) = self.free_list.pop_back() {
                 self.blocks[id].reset();
                 block_ids.push(id);
                 self.num_allocated += 1;
@@ -144,7 +147,7 @@ impl BlockAllocator {
         if block_id < self.blocks.len() {
             let block = &mut self.blocks[block_id];
             block.ref_count = block.ref_count.saturating_sub(1);
-            
+
             if block.ref_count == 0 {
                 self.free_list.push_back(block_id);
                 self.num_allocated = self.num_allocated.saturating_sub(1);
@@ -206,7 +209,7 @@ impl KVCacheManager {
     /// Create a new KV cache manager.
     pub fn new(config: KVCacheConfig) -> Self {
         let allocator = BlockAllocator::new(config.clone());
-        
+
         Self {
             config,
             allocator,
@@ -227,7 +230,7 @@ impl KVCacheManager {
                 .entry(request_id.clone())
                 .or_insert_with(Vec::new)
                 .extend(block_ids.iter().copied());
-            
+
             self.block_table
                 .entry(request_id.clone())
                 .or_insert_with(Vec::new)
@@ -254,7 +257,9 @@ impl KVCacheManager {
         if let Some(block_ids) = self.request_blocks.remove(request_id) {
             debug!(
                 "Freeing {} blocks for request {}: {:?}",
-                block_ids.len(), request_id, block_ids
+                block_ids.len(),
+                request_id,
+                block_ids
             );
             self.allocator.free_blocks(&block_ids);
         }

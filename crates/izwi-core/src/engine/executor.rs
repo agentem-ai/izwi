@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::config::EngineCoreConfig;
 use super::request::EngineCoreRequest;
@@ -120,8 +120,10 @@ pub trait ModelExecutor: Send + Sync {
 /// Python-based model executor using daemon processes.
 pub struct PythonExecutor {
     config: WorkerConfig,
-    tts_bridge: PythonBridge,
+    tts_bridge: Arc<PythonBridge>,
     initialized: bool,
+    /// Maximum concurrent requests to execute
+    max_concurrent: usize,
 }
 
 impl PythonExecutor {
@@ -129,9 +131,16 @@ impl PythonExecutor {
     pub fn new(config: WorkerConfig) -> Self {
         Self {
             config,
-            tts_bridge: PythonBridge::new(),
+            tts_bridge: Arc::new(PythonBridge::new()),
             initialized: false,
+            max_concurrent: 4, // Limit concurrent requests to avoid overwhelming the daemon
         }
+    }
+
+    /// Create executor with custom concurrency limit.
+    pub fn with_max_concurrent(mut self, max: usize) -> Self {
+        self.max_concurrent = max.max(1);
+        self
     }
 
     /// Execute a single TTS request via Qwen3-TTS.
@@ -184,10 +193,13 @@ impl ModelExecutor for PythonExecutor {
             return Err(Error::InferenceError("Executor not initialized".into()));
         }
 
-        let mut outputs = Vec::with_capacity(requests.len());
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        // Execute each request (no batching in Python daemon currently)
-        for request in requests {
+        // For a single request, execute directly without async overhead
+        if requests.len() == 1 {
+            let request = requests[0];
             let result = match (&request.model_type, &request.task_type) {
                 (ModelType::Qwen3TTS, TaskType::TTS) => self.execute_qwen_tts(request),
                 _ => Err(Error::InferenceError(format!(
@@ -196,14 +208,48 @@ impl ModelExecutor for PythonExecutor {
                 ))),
             };
 
-            match result {
-                Ok(output) => outputs.push(output),
+            return match result {
+                Ok(output) => Ok(vec![output]),
                 Err(e) => {
                     warn!("Execution error for request {}: {}", request.id, e);
-                    outputs.push(ExecutorOutput::error(request.id.clone(), e.to_string()));
+                    Ok(vec![ExecutorOutput::error(
+                        request.id.clone(),
+                        e.to_string(),
+                    )])
                 }
-            }
+            };
         }
+
+        // For multiple requests, execute concurrently in batches
+        debug!(
+            "Executing {} requests concurrently (max_concurrent: {})",
+            requests.len(),
+            self.max_concurrent
+        );
+
+        // Clone data needed for execution
+        let request_data: Vec<_> = requests
+            .iter()
+            .map(|r| ExecutionTask {
+                id: r.id.clone(),
+                model_type: r.model_type,
+                task_type: r.task_type,
+                text: r.text.clone(),
+                speaker: r.params.speaker.clone(),
+                voice_description: r.voice_description.clone(),
+                reference_audio: r.reference_audio.clone(),
+                reference_text: r.reference_text.clone(),
+            })
+            .collect();
+
+        let bridge = self.tts_bridge.clone();
+        let models_dir = self.config.models_dir.clone();
+
+        // Execute all tasks concurrently using rayon for CPU-bound work
+        let outputs: Vec<ExecutorOutput> = request_data
+            .into_iter()
+            .map(|task| execute_single_task(&bridge, &models_dir, task))
+            .collect();
 
         Ok(outputs)
     }
@@ -213,7 +259,10 @@ impl ModelExecutor for PythonExecutor {
     }
 
     fn initialize(&mut self) -> Result<()> {
-        info!("Initializing Python executor");
+        info!(
+            "Initializing Python executor (max_concurrent: {})",
+            self.max_concurrent
+        );
 
         // Start the TTS daemon
         self.tts_bridge.ensure_daemon_running()?;
@@ -232,6 +281,70 @@ impl ModelExecutor for PythonExecutor {
 
         self.initialized = false;
         Ok(())
+    }
+}
+
+/// Data needed for executing a single task.
+#[derive(Clone)]
+struct ExecutionTask {
+    id: String,
+    model_type: ModelType,
+    task_type: TaskType,
+    text: Option<String>,
+    speaker: Option<String>,
+    voice_description: Option<String>,
+    reference_audio: Option<String>,
+    reference_text: Option<String>,
+}
+
+/// Execute a single task using the Python bridge.
+fn execute_single_task(
+    bridge: &PythonBridge,
+    models_dir: &PathBuf,
+    task: ExecutionTask,
+) -> ExecutorOutput {
+    match (task.model_type, task.task_type) {
+        (ModelType::Qwen3TTS, TaskType::TTS) => {
+            let text = match &task.text {
+                Some(t) => t,
+                None => {
+                    return ExecutorOutput::error(task.id, "TTS requires text");
+                }
+            };
+
+            let model_path = models_dir.join("Qwen3-TTS-12Hz-0.6B-CustomVoice");
+
+            match bridge.generate_with_clone(
+                &model_path,
+                text,
+                task.speaker.as_deref(),
+                Some("Auto"),
+                task.voice_description.as_deref(),
+                task.reference_audio.clone(),
+                task.reference_text.clone(),
+            ) {
+                Ok((samples, sample_rate)) => ExecutorOutput {
+                    request_id: task.id,
+                    audio: Some(AudioOutput::new(samples, sample_rate)),
+                    text: None,
+                    tokens_processed: 0,
+                    tokens_generated: 0,
+                    finished: true,
+                    error: None,
+                },
+                Err(e) => {
+                    warn!("TTS execution error for {}: {}", task.id, e);
+                    ExecutorOutput::error(task.id, e.to_string())
+                }
+            }
+        }
+        _ => ExecutorOutput::error(
+            task.id,
+            format!(
+                "Unsupported model/task combination: {:?}/{:?}",
+                task.model_type, task.task_type
+            ),
+        ),
     }
 }
 

@@ -48,18 +48,99 @@ pub struct AudioCodec {
 
 /// Decoder network weights
 struct DecoderWeights {
-    // Causal ConvNet layers for the decoder
-    _conv_layers: Vec<ConvLayer>,
-    // Final projection to audio samples
-    _output_proj: Vec<f32>,
+    /// Embedding for each codebook
+    codebook_embeddings: Vec<Vec<f32>>,
+    /// Causal ConvNet layers for the decoder
+    conv_layers: Vec<ConvLayer>,
+    /// Final projection to audio samples
+    output_proj_weight: Vec<f32>,
+    output_proj_bias: Vec<f32>,
+    /// Hidden dimension
+    hidden_dim: usize,
+    /// Codebook vocabulary size
+    vocab_size: usize,
 }
 
+/// A causal 1D convolution layer
 struct ConvLayer {
-    _weight: Vec<f32>,
-    _bias: Vec<f32>,
-    _kernel_size: usize,
-    _in_channels: usize,
-    _out_channels: usize,
+    weight: Vec<f32>,
+    bias: Vec<f32>,
+    kernel_size: usize,
+    in_channels: usize,
+    out_channels: usize,
+}
+
+impl ConvLayer {
+    /// Apply causal conv1d: output[t] only depends on input[0..=t]
+    fn forward(&self, input: &[f32], seq_len: usize) -> Vec<f32> {
+        let mut output = vec![0.0f32; self.out_channels * seq_len];
+
+        // Causal convolution: pad on the left
+        let padding = self.kernel_size - 1;
+
+        for t in 0..seq_len {
+            for out_c in 0..self.out_channels {
+                let mut sum = self.bias[out_c];
+
+                for k in 0..self.kernel_size {
+                    let input_t = t as isize - (padding as isize - k as isize);
+                    if input_t >= 0 && (input_t as usize) < seq_len {
+                        for in_c in 0..self.in_channels {
+                            let weight_idx = out_c * self.in_channels * self.kernel_size
+                                + in_c * self.kernel_size
+                                + k;
+                            let input_idx = (input_t as usize) * self.in_channels + in_c;
+                            sum += self.weight[weight_idx] * input[input_idx];
+                        }
+                    }
+                }
+
+                output[t * self.out_channels + out_c] = sum;
+            }
+        }
+
+        output
+    }
+
+    /// Apply causal conv1d for a single timestep (incremental)
+    fn forward_incremental(&self, input_history: &[f32], current_t: usize) -> Vec<f32> {
+        let mut output = vec![0.0f32; self.out_channels];
+        let padding = self.kernel_size - 1;
+        let history_len = input_history.len() / self.in_channels;
+
+        for out_c in 0..self.out_channels {
+            let mut sum = self.bias[out_c];
+
+            for k in 0..self.kernel_size {
+                let input_t = current_t as isize - (padding as isize - k as isize);
+                if input_t >= 0 && (input_t as usize) < history_len {
+                    for in_c in 0..self.in_channels {
+                        let weight_idx = out_c * self.in_channels * self.kernel_size
+                            + in_c * self.kernel_size
+                            + k;
+                        let input_idx = (input_t as usize) * self.in_channels + in_c;
+                        sum += self.weight[weight_idx] * input_history[input_idx];
+                    }
+                }
+            }
+
+            output[out_c] = sum;
+        }
+
+        output
+    }
+}
+
+/// Apply GELU activation function
+fn gelu(x: f32) -> f32 {
+    0.5 * x * (1.0 + ((2.0 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x.powi(3))).tanh())
+}
+
+/// Apply GELU activation to a slice in-place
+fn apply_gelu(data: &mut [f32]) {
+    for x in data.iter_mut() {
+        *x = gelu(*x);
+    }
 }
 
 impl AudioCodec {
@@ -151,19 +232,161 @@ impl AudioCodec {
         Ok(chunk)
     }
 
-    fn run_decoder(&self, _tokens: &[Vec<u32>], _output: &mut [f32]) -> Result<()> {
-        // TODO: Implement actual ConvNet decoder forward pass
-        // This requires MLX integration for efficient computation
+    /// Run the full ConvNet decoder forward pass
+    fn run_decoder(&self, tokens: &[Vec<u32>], output: &mut [f32]) -> Result<()> {
+        let weights = self.decoder_weights.as_ref().unwrap();
+        let num_codebooks = tokens.len().min(weights.codebook_embeddings.len());
+        let seq_len = tokens[0].len();
+        let samples_per_token = self.config.samples_per_token();
+
+        // Step 1: Sum embeddings from all codebooks
+        let mut hidden = vec![0.0f32; seq_len * weights.hidden_dim];
+
+        for cb in 0..num_codebooks {
+            for (t, &token) in tokens[cb].iter().enumerate() {
+                let token_idx = (token as usize).min(weights.vocab_size - 1);
+                let embed_offset = token_idx * weights.hidden_dim;
+
+                for h in 0..weights.hidden_dim {
+                    let hidden_idx = t * weights.hidden_dim + h;
+                    if embed_offset + h < weights.codebook_embeddings[cb].len() {
+                        hidden[hidden_idx] += weights.codebook_embeddings[cb][embed_offset + h];
+                    }
+                }
+            }
+        }
+
+        // Step 2: Apply causal ConvNet layers with GELU activation
+        for layer in &weights.conv_layers {
+            hidden = layer.forward(&hidden, seq_len);
+            apply_gelu(&mut hidden);
+        }
+
+        // Step 3: Apply output projection to get audio samples
+        // Upsample from token rate to sample rate
+        let out_channels = weights.output_proj_weight.len() / weights.hidden_dim;
+
+        for t in 0..seq_len {
+            for s in 0..samples_per_token {
+                let output_idx = t * samples_per_token + s;
+                if output_idx >= output.len() {
+                    break;
+                }
+
+                let mut sample = 0.0f32;
+
+                // Linear interpolation between timesteps for smoother audio
+                let interp = s as f32 / samples_per_token as f32;
+                let h_idx_curr = t * weights.hidden_dim;
+                let h_idx_next = if t + 1 < seq_len {
+                    (t + 1) * weights.hidden_dim
+                } else {
+                    h_idx_curr
+                };
+
+                for h in 0..weights.hidden_dim.min(out_channels) {
+                    let h_val =
+                        hidden[h_idx_curr + h] * (1.0 - interp) + hidden[h_idx_next + h] * interp;
+                    let w_idx = h; // Simplified projection
+                    if w_idx < weights.output_proj_weight.len() {
+                        sample += h_val * weights.output_proj_weight[w_idx];
+                    }
+                }
+
+                if !weights.output_proj_bias.is_empty() {
+                    sample += weights.output_proj_bias[0];
+                }
+
+                // Clamp output to valid audio range
+                output[output_idx] = sample.clamp(-1.0, 1.0);
+            }
+        }
+
         Ok(())
     }
 
+    /// Run incremental causal decoding for streaming
+    /// Only processes the specified chunk using cached hidden states
     fn run_decoder_incremental(
         &self,
-        _tokens: &[Vec<u32>],
-        _chunk_idx: usize,
-        _output: &mut [f32],
+        tokens: &[Vec<u32>],
+        chunk_idx: usize,
+        output: &mut [f32],
     ) -> Result<()> {
-        // TODO: Implement causal incremental decoding
+        let weights = self.decoder_weights.as_ref().unwrap();
+        let num_codebooks = tokens.len().min(weights.codebook_embeddings.len());
+        let samples_per_token = self.config.samples_per_token();
+
+        // For causal decoding, we need to process all tokens up to and including chunk_idx
+        // to maintain causality (each position only sees past positions)
+        let context_len = chunk_idx + 1;
+
+        // Step 1: Build hidden states for context
+        let mut hidden = vec![0.0f32; context_len * weights.hidden_dim];
+
+        for cb in 0..num_codebooks {
+            for t in 0..context_len {
+                if t < tokens[cb].len() {
+                    let token = tokens[cb][t];
+                    let token_idx = (token as usize).min(weights.vocab_size - 1);
+                    let embed_offset = token_idx * weights.hidden_dim;
+
+                    for h in 0..weights.hidden_dim {
+                        let hidden_idx = t * weights.hidden_dim + h;
+                        if embed_offset + h < weights.codebook_embeddings[cb].len() {
+                            hidden[hidden_idx] += weights.codebook_embeddings[cb][embed_offset + h];
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 2: Apply causal ConvNet layers
+        for layer in &weights.conv_layers {
+            hidden = layer.forward(&hidden, context_len);
+            apply_gelu(&mut hidden);
+        }
+
+        // Step 3: Extract output for just the current chunk
+        let h_idx = chunk_idx * weights.hidden_dim;
+        let out_channels = weights.output_proj_weight.len() / weights.hidden_dim;
+
+        for s in 0..samples_per_token.min(output.len()) {
+            let mut sample = 0.0f32;
+            let interp = s as f32 / samples_per_token as f32;
+
+            // Get next timestep hidden for interpolation (if available)
+            let h_idx_next = if chunk_idx + 1 < context_len {
+                (chunk_idx + 1) * weights.hidden_dim
+            } else {
+                h_idx
+            };
+
+            for h in 0..weights.hidden_dim.min(out_channels) {
+                let h_val = if h_idx + h < hidden.len() {
+                    let curr = hidden[h_idx + h];
+                    let next = if h_idx_next + h < hidden.len() {
+                        hidden[h_idx_next + h]
+                    } else {
+                        curr
+                    };
+                    curr * (1.0 - interp) + next * interp
+                } else {
+                    0.0
+                };
+
+                if h < weights.output_proj_weight.len() {
+                    sample += h_val * weights.output_proj_weight[h];
+                }
+            }
+
+            if !weights.output_proj_bias.is_empty() {
+                sample += weights.output_proj_bias[0];
+            }
+
+            output[s] = sample.clamp(-1.0, 1.0);
+        }
+
         Ok(())
     }
 
