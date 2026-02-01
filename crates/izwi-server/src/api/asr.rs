@@ -12,6 +12,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{info, warn};
 
 use crate::error::ApiError;
@@ -246,20 +247,16 @@ pub async fn transcribe_stream(
     State(_state): State<AppState>,
     Json(request): Json<TranscribeRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, ApiError> {
-    use std::time::Instant;
-
     if !is_daemon_running() {
         return Err(ApiError::internal(
             "ASR daemon not running. Please start it first.",
         ));
     }
 
-    let _start_time = Instant::now();
-
-    // Create an async stream that reads from the daemon
+    // Create an async stream that reads from the daemon using tokio async I/O
     let stream = async_stream::stream! {
-        // Connect to daemon
-        let stream_result = UnixStream::connect(ASR_SOCKET_PATH);
+        // Connect to daemon using tokio's async UnixStream
+        let stream_result = tokio::net::UnixStream::connect(ASR_SOCKET_PATH).await;
         let mut daemon_stream = match stream_result {
             Ok(s) => s,
             Err(e) => {
@@ -271,9 +268,6 @@ pub async fn transcribe_stream(
                 return;
             }
         };
-
-        daemon_stream.set_read_timeout(Some(Duration::from_secs(120))).ok();
-        daemon_stream.set_write_timeout(Some(Duration::from_secs(30))).ok();
 
         // Send streaming transcription request
         let message = serde_json::json!({
@@ -296,7 +290,10 @@ pub async fn transcribe_stream(
         };
 
         let length = (msg_bytes.len() as u32).to_be_bytes();
-        if daemon_stream.write_all(&length).is_err() || daemon_stream.write_all(&msg_bytes).is_err() {
+        if daemon_stream.write_all(&length).await.is_err()
+            || daemon_stream.write_all(&msg_bytes).await.is_err()
+            || daemon_stream.flush().await.is_err()
+        {
             let event = TranscribeStreamEvent::Error {
                 error: "Failed to send request to daemon".to_string(),
             };
@@ -305,16 +302,17 @@ pub async fn transcribe_stream(
             return;
         }
 
-        // Read streaming responses
+        // Read streaming responses using async I/O
+        // This properly yields to the async runtime between reads
         loop {
             let mut length_buf = [0u8; 4];
-            if daemon_stream.read_exact(&mut length_buf).is_err() {
+            if daemon_stream.read_exact(&mut length_buf).await.is_err() {
                 break;
             }
             let response_length = u32::from_be_bytes(length_buf) as usize;
 
             let mut response_buf = vec![0u8; response_length];
-            if daemon_stream.read_exact(&mut response_buf).is_err() {
+            if daemon_stream.read_exact(&mut response_buf).await.is_err() {
                 break;
             }
 

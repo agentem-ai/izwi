@@ -369,16 +369,17 @@ class Qwen3ASRDaemon:
                         result.language if hasattr(result, "language") else None
                     )
 
-                    # Simulate streaming by sending text in chunks (word by word)
-                    # This provides a streaming UX even though the model processes all at once
-                    words = text.split()
+                    # Stream text progressively - character by character for smooth effect
+                    # Similar to how ChatGPT/Gemini display text
+                    chars = list(text)
                     accumulated_text = ""
 
-                    for i, word in enumerate(words):
-                        if accumulated_text:
-                            accumulated_text += " " + word
-                        else:
-                            accumulated_text = word
+                    # Calculate delay per character to spread over ~2-3 seconds for typical text
+                    # Minimum 15ms, maximum 50ms per character
+                    char_delay = max(0.015, min(0.05, 2.0 / max(len(chars), 1)))
+
+                    for i, char in enumerate(chars):
+                        accumulated_text += char
 
                         # Send partial result
                         self._send_stream_event(
@@ -390,8 +391,8 @@ class Qwen3ASRDaemon:
                             },
                         )
 
-                        # Small delay to simulate streaming effect
-                        time.sleep(0.02)
+                        # Delay between characters for smooth streaming effect
+                        time.sleep(char_delay)
 
                     # Send final result
                     self._send_stream_event(
@@ -433,12 +434,18 @@ class Qwen3ASRDaemon:
             self._send_stream_event(conn, "done", {})
 
     def _send_stream_event(self, conn: socket.socket, event_type: str, data: dict):
-        """Send a streaming event to the client."""
+        """Send a streaming event to the client with immediate flush."""
         try:
             event = {"event": event_type, **data}
             event_data = json.dumps(event).encode("utf-8")
             length = struct.pack(">I", len(event_data))
             conn.sendall(length + event_data)
+            # Force flush by disabling/re-enabling Nagle's algorithm
+            # This ensures each event is sent immediately
+            try:
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except (OSError, AttributeError):
+                pass  # Unix sockets don't support TCP_NODELAY, but sendall should work
         except Exception as e:
             print(f"[ASR Daemon] Error sending stream event: {e}", file=sys.stderr)
 
