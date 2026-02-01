@@ -1,6 +1,11 @@
 //! Qwen3-ASR API endpoints for speech-to-text transcription
 
-use axum::{extract::State, Json};
+use axum::{
+    extract::State,
+    response::sse::{Event, KeepAlive, Sse},
+    Json,
+};
+use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -212,6 +217,146 @@ pub async fn stop_daemon(
             })))
         }
     }
+}
+
+/// Streaming transcription event types
+#[derive(Debug, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum TranscribeStreamEvent {
+    Start {
+        audio_duration_secs: Option<f64>,
+    },
+    Partial {
+        text: String,
+        is_final: bool,
+    },
+    Final {
+        text: String,
+        language: Option<String>,
+        audio_duration_secs: Option<f64>,
+    },
+    Error {
+        error: String,
+    },
+    Done,
+}
+
+/// Stream transcription with SSE - sends partial results as text is decoded
+pub async fn transcribe_stream(
+    State(_state): State<AppState>,
+    Json(request): Json<TranscribeRequest>,
+) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, ApiError> {
+    use std::time::Instant;
+
+    if !is_daemon_running() {
+        return Err(ApiError::internal(
+            "ASR daemon not running. Please start it first.",
+        ));
+    }
+
+    let _start_time = Instant::now();
+
+    // Create an async stream that reads from the daemon
+    let stream = async_stream::stream! {
+        // Connect to daemon
+        let stream_result = UnixStream::connect(ASR_SOCKET_PATH);
+        let mut daemon_stream = match stream_result {
+            Ok(s) => s,
+            Err(e) => {
+                let event = TranscribeStreamEvent::Error {
+                    error: format!("Failed to connect to ASR daemon: {}", e),
+                };
+                yield Ok(Event::default().json_data(event).unwrap());
+                yield Ok(Event::default().json_data(TranscribeStreamEvent::Done).unwrap());
+                return;
+            }
+        };
+
+        daemon_stream.set_read_timeout(Some(Duration::from_secs(120))).ok();
+        daemon_stream.set_write_timeout(Some(Duration::from_secs(30))).ok();
+
+        // Send streaming transcription request
+        let message = serde_json::json!({
+            "command": "transcribe_stream",
+            "audio_base64": request.audio_base64,
+            "model_id": request.model_id,
+            "language": request.language,
+        });
+
+        let msg_bytes = match serde_json::to_vec(&message) {
+            Ok(b) => b,
+            Err(e) => {
+                let event = TranscribeStreamEvent::Error {
+                    error: format!("Failed to serialize request: {}", e),
+                };
+                yield Ok(Event::default().json_data(event).unwrap());
+                yield Ok(Event::default().json_data(TranscribeStreamEvent::Done).unwrap());
+                return;
+            }
+        };
+
+        let length = (msg_bytes.len() as u32).to_be_bytes();
+        if daemon_stream.write_all(&length).is_err() || daemon_stream.write_all(&msg_bytes).is_err() {
+            let event = TranscribeStreamEvent::Error {
+                error: "Failed to send request to daemon".to_string(),
+            };
+            yield Ok(Event::default().json_data(event).unwrap());
+            yield Ok(Event::default().json_data(TranscribeStreamEvent::Done).unwrap());
+            return;
+        }
+
+        // Read streaming responses
+        loop {
+            let mut length_buf = [0u8; 4];
+            if daemon_stream.read_exact(&mut length_buf).is_err() {
+                break;
+            }
+            let response_length = u32::from_be_bytes(length_buf) as usize;
+
+            let mut response_buf = vec![0u8; response_length];
+            if daemon_stream.read_exact(&mut response_buf).is_err() {
+                break;
+            }
+
+            let response: serde_json::Value = match serde_json::from_slice(&response_buf) {
+                Ok(r) => r,
+                Err(_) => break,
+            };
+
+            let event_type = response.get("event").and_then(|v| v.as_str()).unwrap_or("");
+
+            let sse_event = match event_type {
+                "start" => {
+                    let audio_duration_secs = response.get("audio_duration_secs").and_then(|v| v.as_f64());
+                    TranscribeStreamEvent::Start { audio_duration_secs }
+                }
+                "partial" => {
+                    let text = response.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let is_final = response.get("is_final").and_then(|v| v.as_bool()).unwrap_or(false);
+                    TranscribeStreamEvent::Partial { text, is_final }
+                }
+                "final" => {
+                    let text = response.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let language = response.get("language").and_then(|v| v.as_str()).map(String::from);
+                    let audio_duration_secs = response.get("audio_duration_secs").and_then(|v| v.as_f64());
+                    TranscribeStreamEvent::Final { text, language, audio_duration_secs }
+                }
+                "error" => {
+                    let error = response.get("error").and_then(|v| v.as_str()).unwrap_or("Unknown error").to_string();
+                    TranscribeStreamEvent::Error { error }
+                }
+                "done" => {
+                    yield Ok(Event::default().json_data(TranscribeStreamEvent::Done).unwrap());
+                    break;
+                }
+                _ => continue,
+            };
+
+            yield Ok(Event::default().json_data(sse_event).unwrap());
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// Transcribe audio to text

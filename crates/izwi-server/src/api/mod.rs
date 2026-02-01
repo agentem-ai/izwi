@@ -41,7 +41,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/asr/status", get(asr::status))
         .route("/asr/start", post(asr::start_daemon))
         .route("/asr/stop", post(asr::stop_daemon))
-        .route("/asr/transcribe", post(asr::transcribe));
+        .route("/asr/transcribe", post(asr::transcribe))
+        .route("/asr/transcribe/stream", post(asr::transcribe_stream));
 
     Router::new()
         .nest("/api/v1", api_routes)

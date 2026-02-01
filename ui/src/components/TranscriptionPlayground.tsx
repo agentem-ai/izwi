@@ -10,6 +10,7 @@ import {
   Loader2,
   Copy,
   Check,
+  Radio,
 } from "lucide-react";
 import { api } from "../api";
 import { GenerationStats, ASRStats } from "./GenerationStats";
@@ -32,10 +33,13 @@ export function TranscriptionPlayground({
   const [copied, setCopied] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [processingStats, setProcessingStats] = useState<ASRStats | null>(null);
+  const [streamingEnabled, setStreamingEnabled] = useState(true);
+  const [isStreaming, setIsStreaming] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
 
   const startRecording = useCallback(async () => {
     if (!selectedModel) {
@@ -81,6 +85,7 @@ export function TranscriptionPlayground({
     setIsProcessing(true);
     setError(null);
     setProcessingStats(null);
+    setTranscription("");
 
     const url = URL.createObjectURL(audioBlob);
     setAudioUrl(url);
@@ -96,26 +101,76 @@ export function TranscriptionPlayground({
         reader.readAsDataURL(audioBlob);
       });
 
-      const response = await api.asrTranscribe({
-        audio_base64: audioBase64,
-        model_id: selectedModel || undefined,
-      });
+      if (streamingEnabled) {
+        // Use streaming transcription
+        setIsStreaming(true);
+        const startTime = Date.now();
+        let audioDuration: number | null = null;
 
-      setTranscription(response.transcription);
-      setDetectedLanguage(response.language || null);
+        streamAbortRef.current = api.asrTranscribeStream(
+          {
+            audio_base64: audioBase64,
+            model_id: selectedModel || undefined,
+          },
+          {
+            onStart: (duration) => {
+              audioDuration = duration;
+            },
+            onPartial: (text) => {
+              setTranscription(text);
+            },
+            onFinal: (text, language, duration) => {
+              setTranscription(text);
+              setDetectedLanguage(language);
+              audioDuration = duration;
 
-      // Set processing stats if available
-      if (response.stats) {
-        setProcessingStats({
-          processing_time_ms: response.stats.processing_time_ms,
-          audio_duration_secs: response.stats.audio_duration_secs,
-          rtf: response.stats.rtf,
+              // Calculate processing stats
+              const processingTimeMs = Date.now() - startTime;
+              const rtf =
+                audioDuration && audioDuration > 0
+                  ? processingTimeMs / 1000 / audioDuration
+                  : null;
+
+              setProcessingStats({
+                processing_time_ms: processingTimeMs,
+                audio_duration_secs: audioDuration,
+                rtf,
+              });
+            },
+            onError: (errorMsg) => {
+              setError(errorMsg);
+            },
+            onDone: () => {
+              setIsStreaming(false);
+              setIsProcessing(false);
+              streamAbortRef.current = null;
+            },
+          },
+        );
+      } else {
+        // Use non-streaming transcription
+        const response = await api.asrTranscribe({
+          audio_base64: audioBase64,
+          model_id: selectedModel || undefined,
         });
+
+        setTranscription(response.transcription);
+        setDetectedLanguage(response.language || null);
+
+        // Set processing stats if available
+        if (response.stats) {
+          setProcessingStats({
+            processing_time_ms: response.stats.processing_time_ms,
+            audio_duration_secs: response.stats.audio_duration_secs,
+            rtf: response.stats.rtf,
+          });
+        }
+        setIsProcessing(false);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Transcription failed");
-    } finally {
       setIsProcessing(false);
+      setIsStreaming(false);
     }
   };
 
@@ -134,6 +189,11 @@ export function TranscriptionPlayground({
   };
 
   const handleReset = () => {
+    // Cancel any ongoing streaming
+    if (streamAbortRef.current) {
+      streamAbortRef.current.abort();
+      streamAbortRef.current = null;
+    }
     if (audioUrl) {
       URL.revokeObjectURL(audioUrl);
     }
@@ -142,6 +202,8 @@ export function TranscriptionPlayground({
     setAudioUrl(null);
     setError(null);
     setProcessingStats(null);
+    setIsStreaming(false);
+    setIsProcessing(false);
   };
 
   const handleCopy = async () => {
@@ -176,12 +238,29 @@ export function TranscriptionPlayground({
           </div>
         </div>
 
-        {(transcription || audioUrl) && (
-          <button onClick={handleReset} className="btn btn-ghost text-xs">
-            <RotateCcw className="w-3.5 h-3.5" />
-            Reset
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {/* Streaming Toggle */}
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={streamingEnabled}
+              onChange={(e) => setStreamingEnabled(e.target.checked)}
+              className="w-4 h-4 rounded border-gray-600 bg-[#1a1a1a] text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0"
+              disabled={isProcessing}
+            />
+            <span className="text-xs text-gray-400 flex items-center gap-1">
+              <Radio className="w-3 h-3" />
+              Stream
+            </span>
+          </label>
+
+          {(transcription || audioUrl) && (
+            <button onClick={handleReset} className="btn btn-ghost text-xs">
+              <RotateCcw className="w-3.5 h-3.5" />
+              Reset
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Audio Preview */}
@@ -193,12 +272,18 @@ export function TranscriptionPlayground({
       )}
 
       {/* Transcription Result */}
-      {transcription && (
+      {(transcription || isStreaming) && (
         <div className="mb-4">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <span className="text-xs text-gray-500">Transcription</span>
-              {detectedLanguage && (
+              {isStreaming && (
+                <span className="text-[10px] px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 rounded flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Live
+                </span>
+              )}
+              {detectedLanguage && !isStreaming && (
                 <span className="text-[10px] px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 rounded">
                   {detectedLanguage}
                 </span>
@@ -208,6 +293,7 @@ export function TranscriptionPlayground({
               <button
                 onClick={handleCopy}
                 className="p-1.5 rounded hover:bg-white/5 text-gray-500 hover:text-gray-300"
+                disabled={!transcription || isStreaming}
               >
                 {copied ? (
                   <Check className="w-3.5 h-3.5 text-green-500" />
@@ -218,17 +304,23 @@ export function TranscriptionPlayground({
               <button
                 onClick={handleDownload}
                 className="p-1.5 rounded hover:bg-white/5 text-gray-500 hover:text-gray-300"
+                disabled={!transcription || isStreaming}
               >
                 <Download className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
-          <div className="p-3 rounded-lg bg-[#1a1a1a] border border-[#2a2a2a]">
-            <p className="text-sm text-gray-300 whitespace-pre-wrap">
-              {transcription}
+          <div
+            className={clsx(
+              "p-3 rounded-lg bg-[#1a1a1a] border",
+              isStreaming ? "border-emerald-500/30" : "border-[#2a2a2a]",
+            )}
+          >
+            <p className="text-sm text-gray-300 whitespace-pre-wrap min-h-[2em]">
+              {transcription || (isStreaming ? "..." : "")}
             </p>
           </div>
-          {processingStats && (
+          {processingStats && !isStreaming && (
             <GenerationStats
               stats={processingStats}
               type="asr"
@@ -253,14 +345,14 @@ export function TranscriptionPlayground({
       </AnimatePresence>
 
       {/* Processing indicator */}
-      {isProcessing && (
+      {isProcessing && !transcription && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           className="flex items-center justify-center gap-2 text-gray-400 text-sm py-8"
         >
           <Loader2 className="w-5 h-5 animate-spin" />
-          Transcribing...
+          {isStreaming ? "Streaming transcription..." : "Transcribing..."}
         </motion.div>
       )}
 

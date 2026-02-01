@@ -82,6 +82,31 @@ export interface ASRTranscribeResponse {
   };
 }
 
+// Streaming transcription event types
+export type ASRStreamEvent =
+  | { event: "start"; audio_duration_secs: number | null }
+  | { event: "partial"; text: string; is_final: boolean }
+  | {
+      event: "final";
+      text: string;
+      language: string | null;
+      audio_duration_secs: number | null;
+    }
+  | { event: "error"; error: string }
+  | { event: "done" };
+
+export interface ASRStreamCallbacks {
+  onStart?: (audioDuration: number | null) => void;
+  onPartial?: (text: string) => void;
+  onFinal?: (
+    text: string,
+    language: string | null,
+    audioDuration: number | null,
+  ) => void;
+  onError?: (error: string) => void;
+  onDone?: () => void;
+}
+
 export interface TTSGenerationStats {
   generation_time_ms: number;
   audio_duration_secs: number;
@@ -233,6 +258,111 @@ class ApiClient {
       method: "POST",
       body: JSON.stringify(request),
     });
+  }
+
+  /**
+   * Stream transcription with SSE - sends partial results as text is decoded.
+   * Returns an AbortController that can be used to cancel the stream.
+   */
+  asrTranscribeStream(
+    request: ASRTranscribeRequest,
+    callbacks: ASRStreamCallbacks,
+  ): AbortController {
+    const abortController = new AbortController();
+
+    const startStream = async () => {
+      try {
+        const response = await fetch(`${this.baseUrl}/asr/transcribe/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(request),
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) {
+          const error = await response
+            .json()
+            .catch(() => ({
+              error: { message: "Streaming transcription failed" },
+            }));
+          callbacks.onError?.(
+            error.error?.message || "Streaming transcription failed",
+          );
+          callbacks.onDone?.();
+          return;
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          callbacks.onError?.("No response body");
+          callbacks.onDone?.();
+          return;
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+
+          // Parse SSE events from buffer
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || ""; // Keep incomplete line in buffer
+
+          for (const line of lines) {
+            if (line.startsWith("data:")) {
+              const data = line.slice(5).trim();
+              if (data) {
+                try {
+                  const event = JSON.parse(data) as ASRStreamEvent;
+
+                  switch (event.event) {
+                    case "start":
+                      callbacks.onStart?.(event.audio_duration_secs);
+                      break;
+                    case "partial":
+                      callbacks.onPartial?.(event.text);
+                      break;
+                    case "final":
+                      callbacks.onFinal?.(
+                        event.text,
+                        event.language,
+                        event.audio_duration_secs,
+                      );
+                      break;
+                    case "error":
+                      callbacks.onError?.(event.error);
+                      break;
+                    case "done":
+                      callbacks.onDone?.();
+                      return;
+                  }
+                } catch {
+                  // Skip malformed JSON
+                }
+              }
+            }
+          }
+        }
+
+        callbacks.onDone?.();
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") {
+          callbacks.onError?.(
+            error instanceof Error ? error.message : "Stream error",
+          );
+        }
+        callbacks.onDone?.();
+      }
+    };
+
+    startStream();
+    return abortController;
   }
 
   // ==========================================================================

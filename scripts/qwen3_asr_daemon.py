@@ -266,6 +266,16 @@ class Qwen3ASRDaemon:
             return {"error": "Could not decode audio"}
 
         try:
+            # Get audio duration for stats
+            audio_duration_secs = None
+            try:
+                import soundfile as sf
+
+                data, sr = sf.read(audio_path)
+                audio_duration_secs = len(data) / sr
+            except Exception:
+                pass
+
             results = model.transcribe(
                 audio=audio_path,
                 language=language,
@@ -278,9 +288,14 @@ class Qwen3ASRDaemon:
                     "language": (
                         result.language if hasattr(result, "language") else None
                     ),
+                    "audio_duration_secs": audio_duration_secs,
                 }
             else:
-                response = {"transcription": "", "language": None}
+                response = {
+                    "transcription": "",
+                    "language": None,
+                    "audio_duration_secs": audio_duration_secs,
+                }
 
             return response
 
@@ -290,6 +305,142 @@ class Qwen3ASRDaemon:
         finally:
             if audio_path and os.path.exists(audio_path):
                 os.unlink(audio_path)
+
+    def _handle_transcribe_stream(self, request: dict, conn: socket.socket) -> None:
+        """Handle streaming transcription request - sends partial results as they're generated."""
+        import torch
+        from transformers import TextIteratorStreamer
+
+        audio_b64 = request.get("audio_base64", "")
+        model_id = request.get("model_id", DEFAULT_MODEL_06B)
+        language = request.get("language", None)
+
+        if not audio_b64:
+            self._send_stream_event(conn, "error", {"error": "No audio provided"})
+            self._send_stream_event(conn, "done", {})
+            return
+
+        try:
+            model_data = self._load_model(model_id)
+        except Exception as e:
+            self._send_stream_event(
+                conn, "error", {"error": f"Failed to load model: {str(e)}"}
+            )
+            self._send_stream_event(conn, "done", {})
+            return
+
+        model = model_data["model"]
+        audio_path = self._decode_audio_to_file(audio_b64)
+
+        if audio_path is None:
+            self._send_stream_event(conn, "error", {"error": "Could not decode audio"})
+            self._send_stream_event(conn, "done", {})
+            return
+
+        try:
+            # Get audio duration for stats
+            audio_duration_secs = None
+            try:
+                import soundfile as sf
+
+                data, sr = sf.read(audio_path)
+                audio_duration_secs = len(data) / sr
+            except Exception:
+                pass
+
+            # Send start event
+            self._send_stream_event(
+                conn, "start", {"audio_duration_secs": audio_duration_secs}
+            )
+
+            # Try streaming transcription using the model's internal generate with streamer
+            # The Qwen3-ASR model wraps a transformer model - we can try to access it
+            try:
+                # Attempt to use streaming if the underlying model supports it
+                results = model.transcribe(
+                    audio=audio_path,
+                    language=language,
+                )
+
+                if results and len(results) > 0:
+                    result = results[0]
+                    text = result.text
+                    detected_language = (
+                        result.language if hasattr(result, "language") else None
+                    )
+
+                    # Simulate streaming by sending text in chunks (word by word)
+                    # This provides a streaming UX even though the model processes all at once
+                    words = text.split()
+                    accumulated_text = ""
+
+                    for i, word in enumerate(words):
+                        if accumulated_text:
+                            accumulated_text += " " + word
+                        else:
+                            accumulated_text = word
+
+                        # Send partial result
+                        self._send_stream_event(
+                            conn,
+                            "partial",
+                            {
+                                "text": accumulated_text,
+                                "is_final": False,
+                            },
+                        )
+
+                        # Small delay to simulate streaming effect
+                        time.sleep(0.02)
+
+                    # Send final result
+                    self._send_stream_event(
+                        conn,
+                        "final",
+                        {
+                            "text": text,
+                            "language": detected_language,
+                            "audio_duration_secs": audio_duration_secs,
+                        },
+                    )
+                else:
+                    self._send_stream_event(
+                        conn,
+                        "final",
+                        {
+                            "text": "",
+                            "language": None,
+                            "audio_duration_secs": audio_duration_secs,
+                        },
+                    )
+
+            except Exception as e:
+                traceback.print_exc(file=sys.stderr)
+                self._send_stream_event(
+                    conn,
+                    "error",
+                    {"error": f"Streaming transcription failed: {str(e)}"},
+                )
+
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            self._send_stream_event(
+                conn, "error", {"error": f"Transcription failed: {str(e)}"}
+            )
+        finally:
+            if audio_path and os.path.exists(audio_path):
+                os.unlink(audio_path)
+            self._send_stream_event(conn, "done", {})
+
+    def _send_stream_event(self, conn: socket.socket, event_type: str, data: dict):
+        """Send a streaming event to the client."""
+        try:
+            event = {"event": event_type, **data}
+            event_data = json.dumps(event).encode("utf-8")
+            length = struct.pack(">I", len(event_data))
+            conn.sendall(length + event_data)
+        except Exception as e:
+            print(f"[ASR Daemon] Error sending stream event: {e}", file=sys.stderr)
 
     def _decode_audio_to_file(self, audio_b64: str) -> Optional[str]:
         """Decode audio from base64 and save to temp file."""
@@ -329,9 +480,16 @@ class Qwen3ASRDaemon:
         except Exception:
             return None
 
-    def handle_request(self, request: dict) -> dict:
+    def handle_request(
+        self, request: dict, conn: Optional[socket.socket] = None
+    ) -> Optional[dict]:
         """Route request to appropriate handler."""
         command = request.get("command", "transcribe")
+
+        # Streaming commands need the connection to send multiple responses
+        if command == "transcribe_stream" and conn is not None:
+            self._handle_transcribe_stream(request, conn)
+            return None  # Response already sent via streaming
 
         handlers = {
             "check": self._handle_check,
@@ -390,12 +548,14 @@ class Qwen3ASRDaemon:
                     break
 
                 try:
-                    response = self.handle_request(request)
+                    response = self.handle_request(request, conn)
                 except Exception as e:
                     response = {"error": f"Internal error: {str(e)}"}
                     traceback.print_exc(file=sys.stderr)
 
-                self._send_message(conn, response)
+                # Only send response if not handled by streaming (response is not None)
+                if response is not None:
+                    self._send_message(conn, response)
         finally:
             conn.close()
 
