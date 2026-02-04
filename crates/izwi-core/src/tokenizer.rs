@@ -5,11 +5,11 @@ use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
-use tokenizers::models::bpe::BPE;
-use tokenizers::pre_tokenizers::byte_level::ByteLevel;
 use tokenizers::decoders::byte_fallback::ByteFallback;
 use tokenizers::decoders::sequence::Sequence;
 use tokenizers::decoders::DecoderWrapper;
+use tokenizers::models::bpe::BPE;
+use tokenizers::pre_tokenizers::byte_level::ByteLevel;
 use tokenizers::AddedToken;
 use tokenizers::Tokenizer as HfTokenizer;
 use tracing::{debug, info};
@@ -48,7 +48,12 @@ impl Tokenizer {
         let merges_path = model_dir.join("merges.txt");
 
         if vocab_path.exists() && merges_path.exists() {
-            return Self::from_vocab_merges(model_dir, &vocab_path, &merges_path, expected_vocab_size);
+            return Self::from_vocab_merges(
+                model_dir,
+                &vocab_path,
+                &merges_path,
+                expected_vocab_size,
+            );
         }
 
         Err(Error::TokenizationError(format!(
@@ -99,19 +104,33 @@ impl Tokenizer {
         inner.with_decoder(decoder);
 
         if let Some(cfg) = config {
-            let mut added: Vec<(u32, AddedToken)> = cfg
+            let mut added: Vec<(u32, AddedToken, bool)> = cfg
                 .added_tokens_decoder
                 .into_iter()
                 .filter_map(|(id, entry)| {
-                    id.parse::<u32>()
-                        .ok()
-                        .map(|id| (id, entry.into_added_token()))
+                    id.parse::<u32>().ok().map(|id| {
+                        let is_special = entry.special;
+                        (id, entry.into_added_token(), is_special)
+                    })
                 })
                 .collect();
-            added.sort_by_key(|(id, _)| *id);
-            let tokens: Vec<AddedToken> = added.into_iter().map(|(_, token)| token).collect();
-            if !tokens.is_empty() {
-                inner.add_special_tokens(&tokens);
+            added.sort_by_key(|(id, _, _)| *id);
+
+            let mut special_tokens = Vec::new();
+            let mut normal_tokens = Vec::new();
+            for (_, token, is_special) in added {
+                if is_special {
+                    special_tokens.push(token);
+                } else {
+                    normal_tokens.push(token);
+                }
+            }
+
+            if !normal_tokens.is_empty() {
+                inner.add_tokens(&normal_tokens);
+            }
+            if !special_tokens.is_empty() {
+                inner.add_special_tokens(&special_tokens);
             }
         }
 

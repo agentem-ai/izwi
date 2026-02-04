@@ -6,7 +6,7 @@ mod tokenizer;
 
 use std::path::Path;
 
-use candle_core::{DType, IndexOp, Tensor};
+use candle_core::{DType, IndexOp, Module, Tensor};
 use candle_nn::VarBuilder;
 use serde::Deserialize;
 use tracing::info;
@@ -15,6 +15,7 @@ use crate::audio::{MelConfig, MelSpectrogram};
 use crate::error::{Error, Result};
 use crate::models::device::DeviceProfile;
 use crate::models::qwen3::{Qwen3Cache, Qwen3Model};
+use crate::models::qwen3_asr::config::AudioConfig;
 
 use audio::AudioTower;
 use config::Qwen3AsrConfig;
@@ -51,7 +52,8 @@ impl Qwen3AsrModel {
         let config_str = std::fs::read_to_string(config_path)?;
         let config: Qwen3AsrConfig = serde_json::from_str(&config_str)?;
 
-        let tokenizer = AsrTokenizer::load(model_dir, config.thinker_config.text_config.vocab_size)?;
+        let tokenizer =
+            AsrTokenizer::load(model_dir, config.thinker_config.text_config.vocab_size)?;
         let specials = tokenizer.specials().clone();
 
         let preprocessor: PreprocessorConfig = {
@@ -73,9 +75,8 @@ impl Qwen3AsrModel {
 
         let dtype = device.select_dtype(config.thinker_config.dtype.as_deref());
         let weights_path = model_dir.join("model.safetensors");
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[weights_path], dtype, &device.device)
-        }?;
+        let vb =
+            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], dtype, &device.device) }?;
         let vb = vb.pp("thinker");
 
         let audio_cfg = config.thinker_config.audio_config.clone();
@@ -97,7 +98,12 @@ impl Qwen3AsrModel {
         })
     }
 
-    pub fn transcribe(&self, audio: &[f32], sample_rate: u32, language: Option<&str>) -> Result<String> {
+    pub fn transcribe(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+    ) -> Result<String> {
         let audio = if sample_rate != 16_000 {
             resample(audio, sample_rate, 16_000)?
         } else {
@@ -126,14 +132,19 @@ impl Qwen3AsrModel {
             .unsqueeze(0)? // [1, 1, n_mels, frames]
             .to_dtype(self.dtype)?;
 
-        let audio_embeds = self.audio_tower.forward(&mel)?; // [1, t, hidden]
+        let audio_embeds = self.audio_tower.forward(&mel, None)?; // [1, t, hidden]
         let audio_len = audio_embeds.dim(1)?;
 
         let prompt = self.build_prompt(audio_len, language)?;
-        let input_ids = Tensor::from_vec(prompt.ids.clone(), (1, prompt.ids.len()), &self.device.device)?;
+        let input_ids = Tensor::from_vec(
+            prompt.ids.clone(),
+            (1, prompt.ids.len()),
+            &self.device.device,
+        )?;
 
         let mut cache = Qwen3Cache::new(self.text_model.num_layers());
-        let mut embeds = self.forward_with_audio(&input_ids, &audio_embeds, prompt.audio_start, &mut cache)?;
+        let mut embeds =
+            self.forward_with_audio(&input_ids, &audio_embeds, prompt.audio_start, &mut cache)?;
 
         let mut generated: Vec<u32> = Vec::new();
         let mut pos = embeds.dim(1)?;
@@ -148,7 +159,9 @@ impl Qwen3AsrModel {
             generated.push(next);
 
             let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
-            embeds = self.text_model.forward(&next_tensor, pos, Some(&mut cache))?;
+            embeds = self
+                .text_model
+                .forward(&next_tensor, pos, Some(&mut cache))?;
             pos += 1;
         }
 
@@ -181,7 +194,7 @@ impl Qwen3AsrModel {
             .forward_with_embeds(&embeds, 0, Some(cache), position_ids.as_ref())
     }
 
-    fn build_prompt(&self, _audio_len: usize, _language: Option<&str>) -> Result<PromptTokens> {
+    fn build_prompt(&self, audio_len: usize, _language: Option<&str>) -> Result<PromptTokens> {
         let mut ids = Vec::new();
 
         ids.push(self.specials.im_start);
@@ -193,7 +206,10 @@ impl Qwen3AsrModel {
         ids.extend(self.tokenizer.encode_text("user\n")?);
 
         ids.push(self.specials.audio_start);
-        ids.push(self.specials.audio_token);
+        // Expand audio tokens based on actual audio length
+        for _ in 0..audio_len {
+            ids.push(self.specials.audio_token);
+        }
         ids.push(self.specials.audio_end);
 
         ids.push(self.specials.im_end);
@@ -209,26 +225,36 @@ impl Qwen3AsrModel {
         Ok(PromptTokens { ids, audio_start })
     }
 
-    fn build_position_ids(&self, seq_len: usize, audio_start: usize, audio_len: usize) -> Result<Tensor> {
-        let mut axis0 = Vec::with_capacity(seq_len);
-        let mut axis1 = Vec::with_capacity(seq_len);
-        let mut axis2 = Vec::with_capacity(seq_len);
+    fn build_position_ids(
+        &self,
+        seq_len: usize,
+        audio_start: usize,
+        audio_len: usize,
+    ) -> Result<Tensor> {
+        // MRoPE: 3D position IDs for temporal, height, width dimensions
+        // For ASR, we use [temporal, 0, 0] pattern where audio gets its own temporal positions
+        let mut data = Vec::with_capacity(3 * seq_len);
 
-        for idx in 0..seq_len {
-            axis0.push(idx as i64);
-            if idx >= audio_start && idx < audio_start + audio_len {
-                axis1.push(0);
-                axis2.push(0);
+        // Temporal dimension (dim 0)
+        for pos in 0..seq_len {
+            data.push(pos as i64);
+        }
+        // Height dimension (dim 1) - 0 for text, audio positions for audio
+        for pos in 0..seq_len {
+            if pos >= audio_start && pos < audio_start + audio_len {
+                data.push((pos - audio_start) as i64);
             } else {
-                axis1.push(idx as i64);
-                axis2.push(idx as i64);
+                data.push(0i64);
             }
         }
-
-        let mut data = Vec::with_capacity(3 * seq_len);
-        data.extend(axis0);
-        data.extend(axis1);
-        data.extend(axis2);
+        // Width dimension (dim 2) - 0 for text, audio positions for audio
+        for pos in 0..seq_len {
+            if pos >= audio_start && pos < audio_start + audio_len {
+                data.push((pos - audio_start) as i64);
+            } else {
+                data.push(0i64);
+            }
+        }
 
         Tensor::from_vec(data, (3, seq_len), &self.device.device).map_err(Error::from)
     }
