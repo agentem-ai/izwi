@@ -43,13 +43,6 @@ async fn main() -> anyhow::Result<()> {
         info!("TTS daemon started");
     }
 
-    // Start ASR daemon
-    if let Err(e) = engine_ref.ensure_asr_daemon_running() {
-        warn!("Failed to start ASR daemon: {}. Will start on-demand.", e);
-    } else {
-        info!("ASR daemon started");
-    }
-
     drop(engine_ref);
 
     // Build router

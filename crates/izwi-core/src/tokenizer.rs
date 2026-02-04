@@ -1,7 +1,16 @@
 //! Text tokenization for Qwen3-TTS
 
+use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
+
+use serde::Deserialize;
 use tokenizers::models::bpe::BPE;
+use tokenizers::pre_tokenizers::byte_level::ByteLevel;
+use tokenizers::decoders::byte_fallback::ByteFallback;
+use tokenizers::decoders::sequence::Sequence;
+use tokenizers::decoders::DecoderWrapper;
+use tokenizers::AddedToken;
 use tokenizers::Tokenizer as HfTokenizer;
 use tracing::{debug, info};
 
@@ -23,6 +32,13 @@ pub struct Tokenizer {
 
 impl Tokenizer {
     pub fn from_path(model_dir: &Path) -> Result<Self> {
+        Self::from_path_with_expected_vocab(model_dir, None)
+    }
+
+    pub fn from_path_with_expected_vocab(
+        model_dir: &Path,
+        expected_vocab_size: Option<usize>,
+    ) -> Result<Self> {
         let tokenizer_path = model_dir.join("tokenizer.json");
         if tokenizer_path.exists() {
             return Self::from_tokenizer_json(&tokenizer_path);
@@ -32,7 +48,7 @@ impl Tokenizer {
         let merges_path = model_dir.join("merges.txt");
 
         if vocab_path.exists() && merges_path.exists() {
-            return Self::from_vocab_merges(&vocab_path, &merges_path);
+            return Self::from_vocab_merges(model_dir, &vocab_path, &merges_path, expected_vocab_size);
         }
 
         Err(Error::TokenizationError(format!(
@@ -48,7 +64,12 @@ impl Tokenizer {
         Self::new_with_tokenizer(inner)
     }
 
-    fn from_vocab_merges(vocab_path: &Path, merges_path: &Path) -> Result<Self> {
+    fn from_vocab_merges(
+        model_dir: &Path,
+        vocab_path: &Path,
+        merges_path: &Path,
+        expected_vocab_size: Option<usize>,
+    ) -> Result<Self> {
         info!("Loading BPE tokenizer from vocab.json + merges.txt");
         let vocab_str = vocab_path
             .to_str()
@@ -58,11 +79,55 @@ impl Tokenizer {
             .ok_or_else(|| Error::TokenizationError("Invalid merges path".to_string()))?;
 
         let bpe = BPE::from_file(vocab_str, merges_str)
+            .byte_fallback(true)
             .build()
             .map_err(|e| Error::TokenizationError(format!("BPE build failed: {}", e)))?;
 
-        let inner = HfTokenizer::new(bpe);
-        debug!("Loaded BPE tokenizer");
+        let mut inner = HfTokenizer::new(bpe);
+
+        let config = load_tokenizer_config(model_dir)?;
+        let add_prefix_space = config
+            .as_ref()
+            .and_then(|cfg| cfg.add_prefix_space)
+            .unwrap_or(true);
+        let byte_level = ByteLevel::new(add_prefix_space, true, true);
+        inner.with_pre_tokenizer(byte_level.clone());
+        let decoder = DecoderWrapper::Sequence(Sequence::new(vec![
+            DecoderWrapper::ByteFallback(ByteFallback::new()),
+            DecoderWrapper::ByteLevel(byte_level),
+        ]));
+        inner.with_decoder(decoder);
+
+        if let Some(cfg) = config {
+            let mut added: Vec<(u32, AddedToken)> = cfg
+                .added_tokens_decoder
+                .into_iter()
+                .filter_map(|(id, entry)| {
+                    id.parse::<u32>()
+                        .ok()
+                        .map(|id| (id, entry.into_added_token()))
+                })
+                .collect();
+            added.sort_by_key(|(id, _)| *id);
+            let tokens: Vec<AddedToken> = added.into_iter().map(|(_, token)| token).collect();
+            if !tokens.is_empty() {
+                inner.add_special_tokens(&tokens);
+            }
+        }
+
+        if let Some(expected_vocab_size) = expected_vocab_size {
+            let current_size = inner.get_vocab_size(true);
+            if current_size < expected_vocab_size {
+                let missing = expected_vocab_size - current_size;
+                let mut byte_tokens = Vec::with_capacity(missing);
+                for byte in 0..missing {
+                    byte_tokens.push(AddedToken::from(format!("<0x{:02X}>", byte), false));
+                }
+                inner.add_tokens(&byte_tokens);
+            }
+        }
+
+        debug!("Loaded BPE tokenizer with byte-level fallback");
         Self::new_with_tokenizer(inner)
     }
 
@@ -101,4 +166,47 @@ impl Tokenizer {
         let speaker_tag = speaker.unwrap_or("default");
         format!("[speaker:{}] {}", speaker_tag, text)
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenizerConfigFile {
+    #[serde(default)]
+    add_prefix_space: Option<bool>,
+    #[serde(default)]
+    added_tokens_decoder: HashMap<String, AddedTokenConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AddedTokenConfig {
+    content: String,
+    #[serde(default)]
+    single_word: bool,
+    #[serde(default)]
+    lstrip: bool,
+    #[serde(default)]
+    rstrip: bool,
+    #[serde(default)]
+    normalized: bool,
+    #[serde(default)]
+    special: bool,
+}
+
+impl AddedTokenConfig {
+    fn into_added_token(self) -> AddedToken {
+        AddedToken::from(self.content, self.special)
+            .single_word(self.single_word)
+            .lstrip(self.lstrip)
+            .rstrip(self.rstrip)
+            .normalized(self.normalized)
+    }
+}
+
+fn load_tokenizer_config(model_dir: &Path) -> Result<Option<TokenizerConfigFile>> {
+    let config_path = model_dir.join("tokenizer_config.json");
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    let config_str = fs::read_to_string(config_path)?;
+    let config: TokenizerConfigFile = serde_json::from_str(&config_str)?;
+    Ok(Some(config))
 }

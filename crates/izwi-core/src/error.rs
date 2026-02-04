@@ -63,3 +63,9 @@ impl From<safetensors::SafeTensorError> for Error {
         Error::SafetensorsError(e.to_string())
     }
 }
+
+impl From<candle_core::Error> for Error {
+    fn from(e: candle_core::Error) -> Self {
+        Error::InferenceError(e.to_string())
+    }
+}

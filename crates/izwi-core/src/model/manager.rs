@@ -199,6 +199,15 @@ impl ModelManager {
         Ok(())
     }
 
+    /// Mark a model as loaded without storing weights (native implementations).
+    pub async fn mark_loaded(&self, variant: ModelVariant) {
+        let mut models = self.models.write().await;
+        if let Some(state) = models.get_mut(&variant) {
+            state.info.status = ModelStatus::Ready;
+            state.weights = None;
+        }
+    }
+
     /// Get loaded model weights
     pub async fn get_weights(&self, variant: ModelVariant) -> Option<Arc<ModelWeights>> {
         let models = self.models.read().await;
