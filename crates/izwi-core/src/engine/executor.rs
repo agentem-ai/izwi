@@ -1,17 +1,19 @@
 //! Model executor - handles forward pass execution.
 //!
-//! The executor abstracts the actual model inference, allowing for different
-//! backends (Python bridge, native Rust, etc.) while providing a unified interface.
+//! This module provides executor abstractions for model inference.
+//! Since native Rust models are now used, actual inference is handled
+//! directly by the InferenceEngine. This module provides compatibility
+//! types and helpers.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use super::config::EngineCoreConfig;
 use super::request::EngineCoreRequest;
 use super::scheduler::ScheduledRequest;
-use super::types::{AudioOutput, ModelType, TaskType};
+use super::types::{AudioOutput, ModelType};
 use crate::error::{Error, Result};
 
 /// Configuration for the model executor.
@@ -98,6 +100,8 @@ impl ExecutorOutput {
 }
 
 /// Model executor trait - abstracts the model inference backend.
+/// Note: Actual TTS/ASR inference is now handled directly by InferenceEngine.
+/// This trait is kept for compatibility and potential future use.
 pub trait ModelExecutor: Send + Sync {
     /// Execute forward pass for scheduled requests.
     fn execute(
@@ -116,113 +120,39 @@ pub trait ModelExecutor: Send + Sync {
     fn shutdown(&mut self) -> Result<()>;
 }
 
-/// Python-based model executor using daemon processes.
-pub struct PythonExecutor {
+/// Stub executor that delegates to InferenceEngine.
+/// Since native Rust models are used, the actual inference happens
+/// in InferenceEngine. This executor serves as a compatibility layer.
+pub struct NativeExecutor {
     config: WorkerConfig,
     initialized: bool,
-    /// Maximum concurrent requests to execute
-    max_concurrent: usize,
 }
 
-impl PythonExecutor {
-    /// Create a new Python executor.
+impl NativeExecutor {
+    /// Create a new native executor.
     pub fn new(config: WorkerConfig) -> Self {
         Self {
             config,
             initialized: false,
-            max_concurrent: 4, // Limit concurrent requests to avoid overwhelming the daemon
         }
-    }
-
-    /// Create executor with custom concurrency limit.
-    pub fn with_max_concurrent(mut self, max: usize) -> Self {
-        self.max_concurrent = max.max(1);
-        self
-    }
-
-    /// Execute a single TTS request via Qwen3-TTS.
-    fn execute_qwen_tts(&self, _request: &EngineCoreRequest) -> Result<ExecutorOutput> {
-        // Native implementation stub - actual TTS is now handled by InferenceEngine
-        Err(Error::InferenceError(
-            "Use InferenceEngine for native TTS execution".into(),
-        ))
     }
 }
 
-impl ModelExecutor for PythonExecutor {
+impl ModelExecutor for NativeExecutor {
     fn execute(
         &self,
-        requests: &[&EngineCoreRequest],
+        _requests: &[&EngineCoreRequest],
         _scheduled: &[ScheduledRequest],
     ) -> Result<Vec<ExecutorOutput>> {
         if !self.initialized {
             return Err(Error::InferenceError("Executor not initialized".into()));
         }
 
-        if requests.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // For a single request, execute directly without async overhead
-        if requests.len() == 1 {
-            let request = requests[0];
-            let result = match (&request.model_type, &request.task_type) {
-                (ModelType::Qwen3TTS, TaskType::TTS) => self.execute_qwen_tts(request),
-                _ => Err(Error::InferenceError(format!(
-                    "Unsupported model/task combination: {:?}/{:?}",
-                    request.model_type, request.task_type
-                ))),
-            };
-
-            return match result {
-                Ok(output) => Ok(vec![output]),
-                Err(e) => {
-                    warn!("Execution error for request {}: {}", request.id, e);
-                    Ok(vec![ExecutorOutput::error(
-                        request.id.clone(),
-                        e.to_string(),
-                    )])
-                }
-            };
-        }
-
-        // For multiple requests, execute concurrently in batches
-        debug!(
-            "Executing {} requests concurrently (max_concurrent: {})",
-            requests.len(),
-            self.max_concurrent
-        );
-
-        // Clone data needed for execution
-        let request_data: Vec<_> = requests
-            .iter()
-            .map(|r| ExecutionTask {
-                id: r.id.clone(),
-                model_type: r.model_type,
-                task_type: r.task_type,
-                text: r.text.clone(),
-                speaker: r.params.speaker.clone(),
-                voice_description: r.voice_description.clone(),
-                reference_audio: r.reference_audio.clone(),
-                reference_text: r.reference_text.clone(),
-            })
-            .collect();
-
-        let models_dir = self.config.models_dir.clone();
-
-        // Execute all tasks - for now return errors since native implementation
-        // is handled by InferenceEngine
-        let outputs: Vec<ExecutorOutput> = request_data
-            .into_iter()
-            .map(|task| {
-                ExecutorOutput::error(
-                    task.id,
-                    "Use InferenceEngine for native TTS execution".to_string(),
-                )
-            })
-            .collect();
-
-        Ok(outputs)
+        // Native TTS execution is handled directly by InferenceEngine
+        // This stub returns an error directing users to use InferenceEngine
+        Err(Error::InferenceError(
+            "Use InferenceEngine for native TTS/ASR execution".into(),
+        ))
     }
 
     fn is_ready(&self) -> bool {
@@ -230,39 +160,16 @@ impl ModelExecutor for PythonExecutor {
     }
 
     fn initialize(&mut self) -> Result<()> {
-        info!(
-            "Initializing native executor (max_concurrent: {})",
-            self.max_concurrent
-        );
-
-        // Native implementation - no daemon to start
-        info!("Native executor ready");
-
+        info!("Initializing native executor");
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down native executor");
-
-        // Native implementation - no daemon to stop
-
         self.initialized = false;
         Ok(())
     }
-}
-
-/// Data needed for executing a single task.
-#[derive(Clone)]
-struct ExecutionTask {
-    id: String,
-    model_type: ModelType,
-    task_type: TaskType,
-    text: Option<String>,
-    speaker: Option<String>,
-    voice_description: Option<String>,
-    reference_audio: Option<String>,
-    reference_text: Option<String>,
 }
 
 /// Unified executor that wraps a model executor implementation.
@@ -271,10 +178,10 @@ pub struct UnifiedExecutor {
 }
 
 impl UnifiedExecutor {
-    /// Create a new unified executor with Python backend.
-    pub fn new_python(config: WorkerConfig) -> Self {
+    /// Create a new unified executor with native backend.
+    pub fn new_native(config: WorkerConfig) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(Box::new(PythonExecutor::new(config)))),
+            inner: Arc::new(RwLock::new(Box::new(NativeExecutor::new(config)))),
         }
     }
 
@@ -308,7 +215,7 @@ impl UnifiedExecutor {
 }
 
 /// Decode base64-encoded audio to samples.
-fn decode_audio_base64(audio_b64: &str, _sample_rate: u32) -> Result<Vec<f32>> {
+pub fn decode_audio_base64(audio_b64: &str, _sample_rate: u32) -> Result<Vec<f32>> {
     use base64::Engine;
     use std::io::Cursor;
 
