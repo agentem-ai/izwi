@@ -7,25 +7,32 @@ use tracing::{info, warn};
 use crate::audio::{AudioChunkBuffer, AudioCodec, AudioEncoder, StreamingConfig};
 use crate::config::EngineConfig;
 use crate::error::{Error, Result};
-use crate::inference::asr_bridge::{AsrBridge, AsrResponse};
 use crate::inference::generation::{
     AudioChunk, GenerationConfig, GenerationRequest, GenerationResult,
 };
 use crate::inference::kv_cache::{KVCache, KVCacheConfig};
 use crate::inference::python_bridge::PythonBridge;
 use crate::model::{ModelInfo, ModelManager, ModelVariant};
+use crate::models::{DeviceSelector, ModelRegistry};
 use crate::tokenizer::Tokenizer;
+
+#[derive(Debug, Clone)]
+pub struct AsrTranscription {
+    pub text: String,
+    pub language: Option<String>,
+    pub duration_secs: f32,
+}
 
 /// Main TTS inference engine
 pub struct InferenceEngine {
     config: EngineConfig,
     model_manager: Arc<ModelManager>,
+    model_registry: Arc<ModelRegistry>,
     tokenizer: Option<Tokenizer>,
     codec: AudioCodec,
     _kv_cache: KVCache,
     streaming_config: StreamingConfig,
     python_bridge: PythonBridge,
-    asr_bridge: AsrBridge,
     loaded_model_path: Option<std::path::PathBuf>,
 }
 
@@ -33,18 +40,20 @@ impl InferenceEngine {
     /// Create a new inference engine
     pub fn new(config: EngineConfig) -> Result<Self> {
         let model_manager = Arc::new(ModelManager::new(config.clone())?);
+        let device = DeviceSelector::detect()?;
+        let model_registry = Arc::new(ModelRegistry::new(config.models_dir.clone(), device));
         let codec = AudioCodec::new();
         let kv_cache = KVCache::new(KVCacheConfig::default());
 
         Ok(Self {
             config,
             model_manager,
+            model_registry,
             tokenizer: None,
             codec,
             _kv_cache: kv_cache,
             streaming_config: StreamingConfig::default(),
             python_bridge: PythonBridge::new(),
-            asr_bridge: AsrBridge::new(),
             loaded_model_path: None,
         })
     }
@@ -65,6 +74,14 @@ impl InferenceEngine {
         Ok(())
     }
 
+    /// Unload a model from memory
+    pub async fn unload_model(&self, variant: ModelVariant) -> Result<()> {
+        if variant.is_asr() {
+            self.model_registry.unload_asr(variant).await;
+        }
+        self.model_manager.unload_model(variant).await
+    }
+
     /// Load a model for inference
     pub async fn load_model(&mut self, variant: ModelVariant) -> Result<()> {
         // Ensure model is downloaded
@@ -78,7 +95,20 @@ impl InferenceEngine {
             }
         }
 
-        // Load the model weights
+        let model_path = self
+            .model_manager
+            .get_model_info(variant)
+            .await
+            .and_then(|i| i.local_path)
+            .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
+
+        if variant.is_asr() {
+            self.model_registry.load_asr(variant, &model_path).await?;
+            self.model_manager.mark_loaded(variant).await;
+            return Ok(());
+        }
+
+        // Load the model weights (TTS path)
         let weights = self.model_manager.load_model(variant).await?;
         info!(
             "Loaded model: {} ({} bytes)",
@@ -87,44 +117,26 @@ impl InferenceEngine {
         );
 
         // Load tokenizer from model directory (optional - may not exist for all models)
-        if let Some(path) = self
-            .model_manager
-            .get_model_info(variant)
-            .await
-            .and_then(|i| i.local_path)
-        {
-            match Tokenizer::from_path(&path) {
-                Ok(tokenizer) => {
-                    info!("Loaded tokenizer from {:?}", path);
-                    self.tokenizer = Some(tokenizer);
-                }
-                Err(e) => {
-                    warn!("Failed to load tokenizer: {}. TTS generation may not work until tokenizer files are available.", e);
-                }
+        match Tokenizer::from_path(&model_path) {
+            Ok(tokenizer) => {
+                info!("Loaded tokenizer from {:?}", model_path);
+                self.tokenizer = Some(tokenizer);
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to load tokenizer: {}. TTS generation may not work until tokenizer files are available.",
+                    e
+                );
             }
         }
 
         // Load codec if this is a tokenizer model, or load from separate tokenizer
         if variant.is_tokenizer() {
-            if let Some(path) = self
-                .model_manager
-                .get_model_info(variant)
-                .await
-                .and_then(|i| i.local_path)
-            {
-                self.codec.load_weights(&path)?;
-            }
+            self.codec.load_weights(&model_path)?;
         }
 
         // Store model path for Python bridge
-        if let Some(path) = self
-            .model_manager
-            .get_model_info(variant)
-            .await
-            .and_then(|i| i.local_path)
-        {
-            self.loaded_model_path = Some(path);
-        }
+        self.loaded_model_path = Some(model_path);
 
         Ok(())
     }
@@ -340,35 +352,44 @@ impl InferenceEngine {
 
     // ============ Qwen3-ASR Methods ============
 
-    /// Ensure the ASR daemon is running
-    pub fn ensure_asr_daemon_running(&self) -> Result<()> {
-        self.asr_bridge.ensure_daemon_running()
-    }
-
-    /// Stop the ASR daemon
-    pub fn stop_asr_daemon(&self) -> Result<()> {
-        self.asr_bridge.stop_daemon()
-    }
-
-    /// Get ASR daemon status
-    pub fn get_asr_daemon_status(&self) -> Result<AsrResponse> {
-        self.asr_bridge.get_status()
-    }
-
-    /// Transcribe audio with Qwen3-ASR
-    pub fn asr_transcribe(
+    /// Transcribe audio with Qwen3-ASR (native).
+    pub async fn asr_transcribe(
         &self,
         audio_base64: &str,
         model_id: Option<&str>,
         language: Option<&str>,
-    ) -> Result<AsrResponse> {
-        self.asr_bridge.transcribe(audio_base64, model_id, language)
+    ) -> Result<AsrTranscription> {
+        let variant = match model_id {
+            Some(id) if id.contains("1.7") => ModelVariant::Qwen3Asr17B,
+            Some(_) => ModelVariant::Qwen3Asr06B,
+            None => ModelVariant::Qwen3Asr06B,
+        };
+
+        let model = if let Some(model) = self.model_registry.get_asr(variant).await {
+            model
+        } else {
+            let path = self
+                .model_manager
+                .get_model_info(variant)
+                .await
+                .and_then(|i| i.local_path)
+                .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
+            self.model_registry.load_asr(variant, &path).await?
+        };
+
+        let (samples, sample_rate) = decode_base64_wav(audio_base64)?;
+        let text = model.transcribe(&samples, sample_rate, language)?;
+
+        Ok(AsrTranscription {
+            text,
+            language: language.map(|s| s.to_string()),
+            duration_secs: samples.len() as f32 / sample_rate as f32,
+        })
     }
 
-    /// Stop all daemons (TTS, ASR)
+    /// Stop all daemons (TTS only)
     pub fn stop_all_daemons(&self) -> Result<()> {
         let _ = self.stop_daemon();
-        let _ = self.stop_asr_daemon();
         Ok(())
     }
 }
@@ -381,4 +402,34 @@ fn rand_u32() -> u32 {
         .unwrap()
         .subsec_nanos();
     nanos.wrapping_mul(1103515245).wrapping_add(12345)
+}
+
+fn decode_base64_wav(audio_b64: &str) -> Result<(Vec<f32>, u32)> {
+    use base64::Engine;
+    use std::io::Cursor;
+
+    let wav_bytes = base64::engine::general_purpose::STANDARD
+        .decode(audio_b64)
+        .map_err(|e| Error::InferenceError(format!("Failed to decode base64 audio: {}", e)))?;
+
+    let cursor = Cursor::new(wav_bytes);
+    let mut reader = hound::WavReader::new(cursor)
+        .map_err(|e| Error::InferenceError(format!("Failed to parse WAV: {}", e)))?;
+
+    let spec = reader.spec();
+    let sample_rate = spec.sample_rate;
+
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Int => {
+            let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .filter_map(|s| s.ok())
+                .map(|s| s as f32 / max_val)
+                .collect()
+        }
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
+    };
+
+    Ok((samples, sample_rate))
 }

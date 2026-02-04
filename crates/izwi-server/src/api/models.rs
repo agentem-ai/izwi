@@ -91,7 +91,7 @@ pub async fn unload_model(
     info!("Unloading model: {}", variant);
 
     let engine = state.engine.read().await;
-    engine.model_manager().unload_model(variant).await?;
+    engine.unload_model(variant).await?;
 
     Ok(Json(DownloadResponse {
         status: "unloaded",

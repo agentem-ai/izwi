@@ -1,0 +1,45 @@
+//! Configuration parsing for Qwen3-ASR.
+
+use serde::Deserialize;
+
+use crate::models::qwen3::Qwen3Config;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Qwen3AsrConfig {
+    #[serde(default)]
+    pub model_type: Option<String>,
+    pub thinker_config: ThinkerConfig,
+    #[serde(default)]
+    pub support_languages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThinkerConfig {
+    pub audio_config: AudioConfig,
+    pub text_config: Qwen3Config,
+    #[serde(default)]
+    pub audio_start_token_id: Option<u32>,
+    #[serde(default)]
+    pub audio_end_token_id: Option<u32>,
+    #[serde(default)]
+    pub audio_token_id: Option<u32>,
+    #[serde(default)]
+    pub dtype: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AudioConfig {
+    pub d_model: usize,
+    pub encoder_attention_heads: usize,
+    pub encoder_ffn_dim: usize,
+    pub encoder_layers: usize,
+    pub num_mel_bins: usize,
+    pub downsample_hidden_size: usize,
+    pub output_dim: usize,
+    #[serde(default)]
+    pub conv_chunksize: Option<usize>,
+    #[serde(default)]
+    pub n_window: Option<usize>,
+    #[serde(default)]
+    pub n_window_infer: Option<usize>,
+}

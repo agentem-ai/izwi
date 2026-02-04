@@ -29,6 +29,7 @@ pub mod engine;
 pub mod error;
 pub mod inference;
 pub mod model;
+pub mod models;
 pub mod tokenizer;
 
 // Re-export main types from the new engine module
@@ -43,3 +44,4 @@ pub use config::EngineConfig;
 pub use error::{Error, Result};
 pub use inference::{AudioChunk, GenerationConfig, InferenceEngine};
 pub use model::{ModelInfo, ModelManager, ModelVariant};
+pub use models::{DeviceProfile, DeviceSelector, ModelRegistry};

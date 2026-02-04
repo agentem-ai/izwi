@@ -32,10 +32,16 @@ hf-hub = "0.3"
 safetensors = "0.4"
 tokenizers = "0.19"
 
+# Candle (native inference)
+candle-core = "0.9.1"
+candle-nn = "0.9.1"
+candle-transformers = "0.9.1"
+
 # Audio processing
 hound = "3.5"
 symphonia = "0.5"
 rubato = "0.15"
+rustfft = "6.2"
 
 # MLX bindings (Apple Silicon ML framework)
 # Note: mlx-rs is still experimental, we'll use FFI bindings
