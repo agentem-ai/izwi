@@ -120,6 +120,14 @@ impl ModelDownloader {
             return has_config && has_vocab && has_chat_template && has_model;
         }
 
+        if variant.is_forced_aligner() {
+            // ForcedAligner has similar structure to ASR
+            let has_config = path.join("config.json").exists();
+            let has_vocab = path.join("vocab.json").exists();
+            let has_model = path.join("model.safetensors").exists();
+            return has_config && has_vocab && has_model;
+        }
+
         if variant.is_tokenizer() {
             path.join("tokenizer.json").exists() || path.join("vocab.json").exists()
         } else {
@@ -304,23 +312,29 @@ impl ModelDownloader {
             return files;
         }
 
+        // Qwen3-ForcedAligner model
+        if variant.is_forced_aligner() {
+            return vec![
+                "config.json".to_string(),
+                "generation_config.json".to_string(),
+                "merges.txt".to_string(),
+                "model.safetensors".to_string(),
+                "preprocessor_config.json".to_string(),
+                "tokenizer_config.json".to_string(),
+                "vocab.json".to_string(),
+            ];
+        }
+
         let mut files = vec![
             "config.json".to_string(),
             "generation_config.json".to_string(),
         ];
 
         if variant.is_tokenizer() {
-            // Tokenizer model files
+            // Tokenizer model files (Qwen3-TTS-Tokenizer-12Hz)
             files.extend([
-                "tokenizer_config.json".to_string(),
-                "vocab.json".to_string(),
-                "merges.txt".to_string(),
                 "preprocessor_config.json".to_string(),
-            ]);
-            // Speech tokenizer files (in subdirectory)
-            files.extend([
-                "speech_tokenizer/config.json".to_string(),
-                "speech_tokenizer/model.safetensors".to_string(),
+                "model.safetensors".to_string(),
             ]);
         } else {
             // TTS model files - Qwen3-TTS uses vocab.json + merges.txt, not tokenizer.json
@@ -330,14 +344,9 @@ impl ModelDownloader {
                 "merges.txt".to_string(),
                 "preprocessor_config.json".to_string(),
             ]);
-            // Speech tokenizer (embedded in model repo)
-            files.extend([
-                "speech_tokenizer/config.json".to_string(),
-                "speech_tokenizer/model.safetensors".to_string(),
-            ]);
-            // Model weights - single file for smaller models
+            // Model weights - single file for 0.6B models
             files.push("model.safetensors".to_string());
-            // Sharded weights for larger models (1.7B)
+            // Sharded weights for 1.7B models
             if matches!(
                 variant,
                 ModelVariant::Qwen3Tts12Hz17BBase
