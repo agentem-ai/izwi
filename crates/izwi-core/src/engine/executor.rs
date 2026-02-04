@@ -13,7 +13,6 @@ use super::request::EngineCoreRequest;
 use super::scheduler::ScheduledRequest;
 use super::types::{AudioOutput, ModelType, TaskType};
 use crate::error::{Error, Result};
-use crate::inference::python_bridge::PythonBridge;
 
 /// Configuration for the model executor.
 #[derive(Debug, Clone)]
@@ -120,7 +119,6 @@ pub trait ModelExecutor: Send + Sync {
 /// Python-based model executor using daemon processes.
 pub struct PythonExecutor {
     config: WorkerConfig,
-    tts_bridge: Arc<PythonBridge>,
     initialized: bool,
     /// Maximum concurrent requests to execute
     max_concurrent: usize,
@@ -131,7 +129,6 @@ impl PythonExecutor {
     pub fn new(config: WorkerConfig) -> Self {
         Self {
             config,
-            tts_bridge: Arc::new(PythonBridge::new()),
             initialized: false,
             max_concurrent: 4, // Limit concurrent requests to avoid overwhelming the daemon
         }
@@ -144,42 +141,11 @@ impl PythonExecutor {
     }
 
     /// Execute a single TTS request via Qwen3-TTS.
-    fn execute_qwen_tts(&self, request: &EngineCoreRequest) -> Result<ExecutorOutput> {
-        let text = request
-            .text
-            .as_ref()
-            .ok_or_else(|| Error::InvalidInput("TTS requires text".into()))?;
-
-        // Get model path - for now use a default
-        let model_path = self
-            .config
-            .models_dir
-            .join("Qwen3-TTS-12Hz-0.6B-CustomVoice");
-
-        let speaker = request.params.speaker.as_deref();
-        let voice_desc = request.voice_description.as_deref();
-        let ref_audio = request.reference_audio.clone();
-        let ref_text = request.reference_text.clone();
-
-        let (samples, sample_rate) = self.tts_bridge.generate_with_clone(
-            &model_path,
-            text,
-            speaker,
-            Some("Auto"),
-            voice_desc,
-            ref_audio,
-            ref_text,
-        )?;
-
-        Ok(ExecutorOutput {
-            request_id: request.id.clone(),
-            audio: Some(AudioOutput::new(samples, sample_rate)),
-            text: None,
-            tokens_processed: 0,
-            tokens_generated: 0,
-            finished: true,
-            error: None,
-        })
+    fn execute_qwen_tts(&self, _request: &EngineCoreRequest) -> Result<ExecutorOutput> {
+        // Native implementation stub - actual TTS is now handled by InferenceEngine
+        Err(Error::InferenceError(
+            "Use InferenceEngine for native TTS execution".into(),
+        ))
     }
 }
 
@@ -242,13 +208,18 @@ impl ModelExecutor for PythonExecutor {
             })
             .collect();
 
-        let bridge = self.tts_bridge.clone();
         let models_dir = self.config.models_dir.clone();
 
-        // Execute all tasks concurrently using rayon for CPU-bound work
+        // Execute all tasks - for now return errors since native implementation
+        // is handled by InferenceEngine
         let outputs: Vec<ExecutorOutput> = request_data
             .into_iter()
-            .map(|task| execute_single_task(&bridge, &models_dir, task))
+            .map(|task| {
+                ExecutorOutput::error(
+                    task.id,
+                    "Use InferenceEngine for native TTS execution".to_string(),
+                )
+            })
             .collect();
 
         Ok(outputs)
@@ -260,24 +231,21 @@ impl ModelExecutor for PythonExecutor {
 
     fn initialize(&mut self) -> Result<()> {
         info!(
-            "Initializing Python executor (max_concurrent: {})",
+            "Initializing native executor (max_concurrent: {})",
             self.max_concurrent
         );
 
-        // Start the TTS daemon
-        self.tts_bridge.ensure_daemon_running()?;
-        info!("TTS daemon ready");
+        // Native implementation - no daemon to start
+        info!("Native executor ready");
 
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> Result<()> {
-        info!("Shutting down Python executor");
+        info!("Shutting down native executor");
 
-        if let Err(e) = self.tts_bridge.stop_daemon() {
-            warn!("Error stopping TTS daemon: {}", e);
-        }
+        // Native implementation - no daemon to stop
 
         self.initialized = false;
         Ok(())
@@ -295,57 +263,6 @@ struct ExecutionTask {
     voice_description: Option<String>,
     reference_audio: Option<String>,
     reference_text: Option<String>,
-}
-
-/// Execute a single task using the Python bridge.
-fn execute_single_task(
-    bridge: &PythonBridge,
-    models_dir: &PathBuf,
-    task: ExecutionTask,
-) -> ExecutorOutput {
-    match (task.model_type, task.task_type) {
-        (ModelType::Qwen3TTS, TaskType::TTS) => {
-            let text = match &task.text {
-                Some(t) => t,
-                None => {
-                    return ExecutorOutput::error(task.id, "TTS requires text");
-                }
-            };
-
-            let model_path = models_dir.join("Qwen3-TTS-12Hz-0.6B-CustomVoice");
-
-            match bridge.generate_with_clone(
-                &model_path,
-                text,
-                task.speaker.as_deref(),
-                Some("Auto"),
-                task.voice_description.as_deref(),
-                task.reference_audio.clone(),
-                task.reference_text.clone(),
-            ) {
-                Ok((samples, sample_rate)) => ExecutorOutput {
-                    request_id: task.id,
-                    audio: Some(AudioOutput::new(samples, sample_rate)),
-                    text: None,
-                    tokens_processed: 0,
-                    tokens_generated: 0,
-                    finished: true,
-                    error: None,
-                },
-                Err(e) => {
-                    warn!("TTS execution error for {}: {}", task.id, e);
-                    ExecutorOutput::error(task.id, e.to_string())
-                }
-            }
-        }
-        _ => ExecutorOutput::error(
-            task.id,
-            format!(
-                "Unsupported model/task combination: {:?}/{:?}",
-                task.model_type, task.task_type
-            ),
-        ),
-    }
 }
 
 /// Unified executor that wraps a model executor implementation.
