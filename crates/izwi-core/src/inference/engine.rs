@@ -1,7 +1,8 @@
-//! Main inference engine for Qwen3-TTS
+//! Main inference engine for Qwen3-TTS and Qwen3-ASR using native Rust models.
 
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
 
 use crate::audio::{AudioChunkBuffer, AudioCodec, AudioEncoder, StreamingConfig};
@@ -11,9 +12,9 @@ use crate::inference::generation::{
     AudioChunk, GenerationConfig, GenerationRequest, GenerationResult,
 };
 use crate::inference::kv_cache::{KVCache, KVCacheConfig};
-use crate::inference::python_bridge::PythonBridge;
 use crate::model::{ModelInfo, ModelManager, ModelVariant};
-use crate::models::{DeviceSelector, ModelRegistry};
+use crate::models::qwen3_tts::{Qwen3TtsModel, SpeakerReference, TtsTokenizer};
+use crate::models::{DeviceProfile, DeviceSelector, ModelRegistry};
 use crate::tokenizer::Tokenizer;
 
 #[derive(Debug, Clone)]
@@ -32,8 +33,12 @@ pub struct InferenceEngine {
     codec: AudioCodec,
     _kv_cache: KVCache,
     streaming_config: StreamingConfig,
-    python_bridge: PythonBridge,
-    loaded_model_path: Option<std::path::PathBuf>,
+    /// Currently loaded native TTS model
+    tts_model: Arc<RwLock<Option<Qwen3TtsModel>>>,
+    /// Currently loaded model path
+    loaded_model_path: Option<PathBuf>,
+    /// Device profile for inference
+    device: DeviceProfile,
 }
 
 impl InferenceEngine {
@@ -41,7 +46,10 @@ impl InferenceEngine {
     pub fn new(config: EngineConfig) -> Result<Self> {
         let model_manager = Arc::new(ModelManager::new(config.clone())?);
         let device = DeviceSelector::detect()?;
-        let model_registry = Arc::new(ModelRegistry::new(config.models_dir.clone(), device));
+        let model_registry = Arc::new(ModelRegistry::new(
+            config.models_dir.clone(),
+            device.clone(),
+        ));
         let codec = AudioCodec::new();
         let kv_cache = KVCache::new(KVCacheConfig::default());
 
@@ -53,8 +61,9 @@ impl InferenceEngine {
             codec,
             _kv_cache: kv_cache,
             streaming_config: StreamingConfig::default(),
-            python_bridge: PythonBridge::new(),
+            tts_model: Arc::new(RwLock::new(None)),
             loaded_model_path: None,
+            device,
         })
     }
 
@@ -108,62 +117,77 @@ impl InferenceEngine {
             return Ok(());
         }
 
-        // Load the model weights (TTS path)
-        let weights = self.model_manager.load_model(variant).await?;
-        info!(
-            "Loaded model: {} ({} bytes)",
-            variant,
-            weights.memory_bytes()
-        );
+        if variant.is_tts() {
+            // Load native TTS model
+            info!("Loading native TTS model from {:?}", model_path);
+            let tts_model = Qwen3TtsModel::load(&model_path, self.device.clone())?;
 
-        // Load tokenizer from model directory (optional - may not exist for all models)
+            let mut model_guard = self.tts_model.write().await;
+            *model_guard = Some(tts_model);
+            self.loaded_model_path = Some(model_path.clone());
+
+            info!("Native TTS model loaded successfully");
+            self.model_manager.mark_loaded(variant).await;
+            return Ok(());
+        }
+
+        // Load tokenizer from model directory
         match Tokenizer::from_path(&model_path) {
             Ok(tokenizer) => {
                 info!("Loaded tokenizer from {:?}", model_path);
                 self.tokenizer = Some(tokenizer);
             }
             Err(e) => {
-                warn!(
-                    "Failed to load tokenizer: {}. TTS generation may not work until tokenizer files are available.",
-                    e
-                );
+                warn!("Failed to load tokenizer: {}", e);
             }
         }
 
-        // Load codec if this is a tokenizer model, or load from separate tokenizer
+        // Load codec if this is a tokenizer model
         if variant.is_tokenizer() {
             self.codec.load_weights(&model_path)?;
         }
 
-        // Store model path for Python bridge
-        self.loaded_model_path = Some(model_path);
-
         Ok(())
     }
 
-    /// Generate audio from text (non-streaming)
+    /// Generate audio from text (non-streaming) using native model
     pub async fn generate(&self, request: GenerationRequest) -> Result<GenerationResult> {
         let start_time = std::time::Instant::now();
 
-        // Get model path
-        let model_path = self
-            .loaded_model_path
+        let tts_model = self.tts_model.read().await;
+        let model = tts_model
             .as_ref()
-            .ok_or_else(|| Error::InferenceError("No model loaded".to_string()))?;
+            .ok_or_else(|| Error::InferenceError("No TTS model loaded".to_string()))?;
 
         info!("Generating TTS for: {}", request.text);
 
-        // Use Python bridge for actual inference
-        // voice_description is passed as instruct for VoiceDesign models
-        let (samples, sample_rate) = self.python_bridge.generate_with_clone(
-            model_path,
-            &request.text,
-            request.config.speaker.as_deref(),
-            Some("Auto"),                         // language
-            request.voice_description.as_deref(), // instruct (used for voice design)
-            request.reference_audio,
-            request.reference_text,
-        )?;
+        // Generate using native model
+        let samples = if request.reference_audio.is_some() && request.reference_text.is_some() {
+            // Voice cloning mode
+            let ref_audio = request.reference_audio.unwrap_or_default();
+            let ref_bytes = base64_decode(&ref_audio).map_err(|e| {
+                Error::InferenceError(format!("Failed to decode reference audio: {}", e))
+            })?;
+
+            let (ref_samples, sample_rate) = decode_wav_bytes(&ref_bytes)?;
+
+            let speaker_ref = SpeakerReference {
+                audio_samples: ref_samples,
+                text: request.reference_text.unwrap_or_default(),
+                sample_rate,
+            };
+
+            model.generate_with_voice_clone(&request.text, &speaker_ref, Some("Auto"))?
+        } else {
+            // Preset speaker mode
+            let speaker = request.config.speaker.as_deref().unwrap_or("Vivian");
+            model.generate_with_speaker(
+                &request.text,
+                speaker,
+                Some("Auto"),
+                request.voice_description.as_deref(),
+            )?
+        };
 
         let total_time_ms = start_time.elapsed().as_secs_f32() * 1000.0;
         let num_samples = samples.len();
@@ -176,8 +200,8 @@ impl InferenceEngine {
         Ok(GenerationResult {
             request_id: request.id,
             samples,
-            sample_rate,
-            total_tokens: num_samples / 256, // approximate
+            sample_rate: 24000,
+            total_tokens: num_samples / 256,
             total_time_ms,
         })
     }
@@ -188,72 +212,25 @@ impl InferenceEngine {
         request: GenerationRequest,
         chunk_tx: mpsc::Sender<AudioChunk>,
     ) -> Result<()> {
-        let tokenizer = self
-            .tokenizer
-            .as_ref()
-            .ok_or_else(|| Error::InferenceError("No tokenizer loaded".to_string()))?;
+        // Streaming uses the same non-streaming implementation but sends chunks
+        let result = self.generate(request.clone()).await?;
 
-        // Tokenize input text
-        let prompt = tokenizer.format_tts_prompt(&request.text, request.config.speaker.as_deref());
-        let input_tokens = tokenizer.encode(&prompt)?;
-
-        info!(
-            "Starting streaming generation for {} input tokens",
-            input_tokens.len()
-        );
-
-        // Create streaming buffer
-        let mut buffer =
-            AudioChunkBuffer::new(self.streaming_config.clone(), self.codec.sample_rate());
-
+        let chunk_size = 1024;
         let mut sequence = 0;
-        let mut audio_tokens: Vec<Vec<u32>> = vec![Vec::new(); self.codec.config().num_codebooks];
 
-        // Generate tokens incrementally
-        for _step in 0..request.config.max_tokens {
-            // Generate next audio token(s)
-            let next_tokens = self
-                .generate_next_token(&input_tokens, &audio_tokens, &request.config)
-                .await?;
+        for chunk_samples in result.samples.chunks(chunk_size) {
+            let chunk = if chunk_samples.len() < chunk_size && sequence > 0 {
+                AudioChunk::final_chunk(request.id.clone(), sequence, chunk_samples.to_vec())
+            } else {
+                AudioChunk::new(request.id.clone(), sequence, chunk_samples.to_vec())
+            };
 
-            // Add to token buffer
-            for (codebook, token) in next_tokens.iter().enumerate() {
-                if codebook < audio_tokens.len() {
-                    audio_tokens[codebook].push(*token);
-                }
+            sequence += 1;
+
+            if chunk_tx.send(chunk).await.is_err() {
+                warn!("Streaming channel closed");
+                return Ok(());
             }
-            buffer.push_tokens(next_tokens);
-
-            // Check for end of generation
-            if self.is_end_of_audio(&audio_tokens) {
-                break;
-            }
-
-            // Decode and stream when buffer is ready
-            if buffer.ready_to_stream() {
-                let chunk_tokens: Vec<Vec<u32>> =
-                    audio_tokens.iter().map(|cb| cb.clone()).collect();
-
-                let samples = self.codec.decode(&chunk_tokens)?;
-                buffer.push_samples(&samples);
-
-                while let Some(chunk_samples) = buffer.take_chunk() {
-                    let chunk = AudioChunk::new(request.id.clone(), sequence, chunk_samples);
-                    sequence += 1;
-
-                    if chunk_tx.send(chunk).await.is_err() {
-                        warn!("Streaming channel closed");
-                        return Ok(());
-                    }
-                }
-            }
-        }
-
-        // Send remaining samples
-        let remaining = buffer.take_remaining();
-        if !remaining.is_empty() {
-            let chunk = AudioChunk::final_chunk(request.id.clone(), sequence, remaining);
-            let _ = chunk_tx.send(chunk).await;
         }
 
         info!("Streaming generation complete");
@@ -329,25 +306,24 @@ impl InferenceEngine {
         AudioEncoder::new(self.codec.sample_rate(), 1)
     }
 
-    /// Ensure the TTS daemon is running
-    pub fn ensure_daemon_running(&self) -> Result<()> {
-        self.python_bridge.ensure_daemon_running()
+    /// Get available speakers for the loaded model
+    pub async fn available_speakers(&self) -> Result<Vec<String>> {
+        let tts_model = self.tts_model.read().await;
+        let model = tts_model
+            .as_ref()
+            .ok_or_else(|| Error::InferenceError("No TTS model loaded".to_string()))?;
+
+        Ok(model.available_speakers().into_iter().cloned().collect())
     }
 
-    /// Stop the TTS daemon
-    pub fn stop_daemon(&self) -> Result<()> {
-        self.python_bridge.stop_daemon()
+    /// Stop all daemons (no-op for native implementation)
+    pub fn stop_all_daemons(&self) -> Result<()> {
+        Ok(())
     }
 
-    /// Get daemon status
-    pub fn get_daemon_status(&self) -> Result<super::python_bridge::PythonTTSResponse> {
-        self.python_bridge.get_status()
-    }
-
-    /// Preload a model into the daemon cache
-    pub fn preload_model(&self, model_path: &str) -> Result<()> {
-        self.python_bridge
-            .preload_model(std::path::Path::new(model_path))
+    /// Preload a model (no-op for native implementation)
+    pub fn preload_model(&self, _model_path: &str) -> Result<()> {
+        Ok(())
     }
 
     // ============ Qwen3-ASR Methods ============
@@ -377,7 +353,7 @@ impl InferenceEngine {
             self.model_registry.load_asr(variant, &path).await?
         };
 
-        let (samples, sample_rate) = decode_base64_wav(audio_base64)?;
+        let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
         let text = model.transcribe(&samples, sample_rate, language)?;
 
         Ok(AsrTranscription {
@@ -386,15 +362,8 @@ impl InferenceEngine {
             duration_secs: samples.len() as f32 / sample_rate as f32,
         })
     }
-
-    /// Stop all daemons (TTS only)
-    pub fn stop_all_daemons(&self) -> Result<()> {
-        let _ = self.stop_daemon();
-        Ok(())
-    }
 }
 
-// Simple pseudo-random number generator for placeholder
 fn rand_u32() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
@@ -404,13 +373,15 @@ fn rand_u32() -> u32 {
     nanos.wrapping_mul(1103515245).wrapping_add(12345)
 }
 
-fn decode_base64_wav(audio_b64: &str) -> Result<(Vec<f32>, u32)> {
+fn base64_decode(data: &str) -> Result<Vec<u8>> {
     use base64::Engine;
-    use std::io::Cursor;
+    base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| Error::InferenceError(format!("Base64 decode error: {}", e)))
+}
 
-    let wav_bytes = base64::engine::general_purpose::STANDARD
-        .decode(audio_b64)
-        .map_err(|e| Error::InferenceError(format!("Failed to decode base64 audio: {}", e)))?;
+fn decode_wav_bytes(wav_bytes: &[u8]) -> Result<(Vec<f32>, u32)> {
+    use std::io::Cursor;
 
     let cursor = Cursor::new(wav_bytes);
     let mut reader = hound::WavReader::new(cursor)

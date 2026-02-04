@@ -125,6 +125,18 @@ impl ModelVariant {
         matches!(self, Self::Qwen3Asr06B | Self::Qwen3Asr17B)
     }
 
+    /// Whether this is a TTS model
+    pub fn is_tts(&self) -> bool {
+        matches!(
+            self,
+            Self::Qwen3Tts12Hz06BBase
+                | Self::Qwen3Tts12Hz06BCustomVoice
+                | Self::Qwen3Tts12Hz17BBase
+                | Self::Qwen3Tts12Hz17BCustomVoice
+                | Self::Qwen3Tts12Hz17BVoiceDesign
+        )
+    }
+
     /// Get all available variants
     pub fn all() -> &'static [ModelVariant] {
         &[

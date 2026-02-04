@@ -10,6 +10,9 @@ pub enum Error {
     #[error("Model not found: {0}")]
     ModelNotFound(String),
 
+    #[error("Model error: {0}")]
+    ModelError(String),
+
     #[error("Model loading failed: {0}")]
     ModelLoadError(String),
 

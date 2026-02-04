@@ -12,6 +12,12 @@ pub enum DeviceKind {
     Cpu,
 }
 
+impl DeviceKind {
+    pub fn is_cpu(&self) -> bool {
+        matches!(self, DeviceKind::Cpu)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DeviceProfile {
     pub device: Device,
