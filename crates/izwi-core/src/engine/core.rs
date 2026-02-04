@@ -63,7 +63,7 @@ impl EngineCore {
 
         // Create executor
         let worker_config = WorkerConfig::from(&config);
-        let executor = UnifiedExecutor::new_python(worker_config);
+        let executor = UnifiedExecutor::new_native(worker_config);
 
         // Create output processor
         let output_processor =
