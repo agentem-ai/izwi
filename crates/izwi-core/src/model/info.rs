@@ -33,6 +33,9 @@ pub enum ModelVariant {
     /// Qwen3-ASR 1.7B model
     #[serde(rename = "Qwen3-ASR-1.7B")]
     Qwen3Asr17B,
+    /// Qwen3-ForcedAligner 0.6B model
+    #[serde(rename = "Qwen3-ForcedAligner-0.6B")]
+    Qwen3ForcedAligner06B,
 }
 
 impl ModelVariant {
@@ -48,6 +51,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B => "LiquidAI/LFM2-Audio-1.5B",
             Self::Qwen3Asr06B => "Qwen/Qwen3-ASR-0.6B",
             Self::Qwen3Asr17B => "Qwen/Qwen3-ASR-1.7B",
+            Self::Qwen3ForcedAligner06B => "Qwen/Qwen3-ForcedAligner-0.6B",
         }
     }
 
@@ -63,6 +67,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B => "LFM2-Audio 1.5B",
             Self::Qwen3Asr06B => "Qwen3-ASR 0.6B",
             Self::Qwen3Asr17B => "Qwen3-ASR 1.7B",
+            Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner 0.6B",
         }
     }
 
@@ -78,6 +83,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B => "LFM2-Audio-1.5B",
             Self::Qwen3Asr06B => "Qwen3-ASR-0.6B",
             Self::Qwen3Asr17B => "Qwen3-ASR-1.7B",
+            Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner-0.6B",
         }
     }
 
@@ -93,6 +99,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B => 3_000_000_000,        // ~3GB
             Self::Qwen3Asr06B => 1_900_000_000,         // ~1.9GB
             Self::Qwen3Asr17B => 4_700_000_000,         // ~4.7GB
+            Self::Qwen3ForcedAligner06B => 1_850_000_000, // ~1.85GB
         }
     }
 
@@ -107,6 +114,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B => 6.0,
             Self::Qwen3Asr06B => 2.5,
             Self::Qwen3Asr17B => 6.0,
+            Self::Qwen3ForcedAligner06B => 2.5,
         }
     }
 
@@ -125,7 +133,10 @@ impl ModelVariant {
         matches!(self, Self::Qwen3Asr06B | Self::Qwen3Asr17B)
     }
 
-    /// Whether this is a TTS model
+    /// Whether this is a forced aligner model
+    pub fn is_forced_aligner(&self) -> bool {
+        matches!(self, Self::Qwen3ForcedAligner06B)
+    }
     pub fn is_tts(&self) -> bool {
         matches!(
             self,
@@ -149,6 +160,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B,
             Self::Qwen3Asr06B,
             Self::Qwen3Asr17B,
+            Self::Qwen3ForcedAligner06B,
         ]
     }
 }

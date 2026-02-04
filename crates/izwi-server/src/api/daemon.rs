@@ -1,4 +1,8 @@
 //! Daemon management API endpoints
+//!
+//! Note: These endpoints are deprecated since the migration to native Rust models.
+//! Native models don't use Python daemons, so these endpoints return
+//! "not applicable" responses for backward compatibility.
 
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
@@ -12,6 +16,7 @@ pub struct DaemonStatus {
     pub running: bool,
     pub device: Option<String>,
     pub cached_models: Vec<String>,
+    pub message: String,
 }
 
 /// Preload model request
@@ -28,89 +33,59 @@ pub struct DaemonResponse {
 }
 
 /// Get daemon status
-pub async fn get_status(State(state): State<AppState>) -> Json<DaemonStatus> {
-    let engine = state.engine.read().await;
+/// 
+/// Since native Rust models don't use daemons, this always returns
+/// a status indicating the native engine is ready.
+pub async fn get_status(State(_state): State<AppState>) -> Json<DaemonStatus> {
+    info!("Daemon status check (native models - no daemon needed)");
 
-    match engine.get_daemon_status() {
-        Ok(response) => Json(DaemonStatus {
-            running: response.status.as_deref() == Some("ok"),
-            device: response.device,
-            cached_models: response.cached_models.unwrap_or_default(),
-        }),
-        Err(_) => Json(DaemonStatus {
-            running: false,
-            device: None,
-            cached_models: vec![],
-        }),
-    }
+    Json(DaemonStatus {
+        running: true,
+        device: Some("native".to_string()),
+        cached_models: vec![],
+        message: "Native Rust inference engine (no daemon)".to_string(),
+    })
 }
 
 /// Start the daemon
+/// 
+/// Deprecated: Native Rust models don't use daemons.
 pub async fn start_daemon(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
 ) -> Result<Json<DaemonResponse>, (StatusCode, Json<DaemonResponse>)> {
-    info!("Starting TTS daemon via API");
+    info!("Daemon start requested (native models - no daemon needed)");
 
-    let engine = state.engine.read().await;
-
-    match engine.ensure_daemon_running() {
-        Ok(_) => Ok(Json(DaemonResponse {
-            success: true,
-            message: "Daemon started successfully".to_string(),
-        })),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(DaemonResponse {
-                success: false,
-                message: format!("Failed to start daemon: {}", e),
-            }),
-        )),
-    }
+    Ok(Json(DaemonResponse {
+        success: true,
+        message: "Native Rust inference engine active (no daemon required)".to_string(),
+    }))
 }
 
 /// Stop the daemon
+/// 
+/// Deprecated: Native Rust models don't use daemons.
 pub async fn stop_daemon(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
 ) -> Result<Json<DaemonResponse>, (StatusCode, Json<DaemonResponse>)> {
-    info!("Stopping TTS daemon via API");
+    info!("Daemon stop requested (native models - no daemon needed)");
 
-    let engine = state.engine.read().await;
-
-    match engine.stop_daemon() {
-        Ok(_) => Ok(Json(DaemonResponse {
-            success: true,
-            message: "Daemon stopped successfully".to_string(),
-        })),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(DaemonResponse {
-                success: false,
-                message: format!("Failed to stop daemon: {}", e),
-            }),
-        )),
-    }
+    Ok(Json(DaemonResponse {
+        success: true,
+        message: "Native Rust inference engine (no daemon to stop)".to_string(),
+    }))
 }
 
 /// Preload a model into the daemon cache
+/// 
+/// Deprecated: Model loading is handled on-demand by the native engine.
 pub async fn preload_model(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(request): Json<PreloadRequest>,
 ) -> Result<Json<DaemonResponse>, (StatusCode, Json<DaemonResponse>)> {
-    info!("Preloading model via API: {}", request.model_path);
+    info!("Model preload requested: {} (native models handle loading on-demand)", request.model_path);
 
-    let engine = state.engine.read().await;
-
-    match engine.preload_model(&request.model_path) {
-        Ok(_) => Ok(Json(DaemonResponse {
-            success: true,
-            message: format!("Model preloaded: {}", request.model_path),
-        })),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(DaemonResponse {
-                success: false,
-                message: format!("Failed to preload model: {}", e),
-            }),
-        )),
-    }
+    Ok(Json(DaemonResponse {
+        success: true,
+        message: format!("Native engine will load '{}' on first use", request.model_path),
+    }))
 }

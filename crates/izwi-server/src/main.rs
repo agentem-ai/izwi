@@ -32,18 +32,7 @@ async fn main() -> anyhow::Result<()> {
     let engine = InferenceEngine::new(config)?;
     let state = AppState::new(engine);
 
-    // Start all daemons on server startup
-    info!("Starting daemons...");
-    let engine_ref = state.engine.read().await;
-
-    // Start TTS daemon
-    if let Err(e) = engine_ref.ensure_daemon_running() {
-        warn!("Failed to start TTS daemon: {}. Will start on-demand.", e);
-    } else {
-        info!("TTS daemon started");
-    }
-
-    drop(engine_ref);
+    info!("Inference engine initialized");
 
     // Build router
     let app = api::create_router(state.clone());
