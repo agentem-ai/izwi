@@ -7,15 +7,20 @@ use candle_nn::{layer_norm, Conv2d, Conv2dConfig, LayerNorm, Linear, VarBuilder}
 use crate::error::Result;
 use crate::models::qwen3_asr::config::AudioConfig;
 
-/// Compute output length after CNN downsampling.
-/// Matches Python: _get_feat_extract_output_lengths
+/// Compute output length after CNN downsampling (3 conv2d layers with stride=2).
+/// Each layer roughly halves the length, giving ~8x total downsampling.
 pub fn get_cnn_output_lengths(input_lengths: &[usize]) -> Vec<usize> {
     input_lengths
         .iter()
         .map(|&len| {
-            let len_leave = len % 100;
-            let feat_len = (len_leave.saturating_sub(1)) / 2 + 1;
-            ((feat_len.saturating_sub(1)) / 2 + 1).saturating_sub(1) / 2 + 1 + (len / 100) * 13
+            // Apply 3 conv2d layers with stride=2, kernel=3, padding=1
+            // Formula: output = (input + 2*padding - kernel) / stride + 1
+            // = (input - 1) / 2 + 1 = ceil(input / 2)
+            let mut out = len;
+            for _ in 0..3 {
+                out = (out + 1) / 2; // Equivalent to ceil(out / 2)
+            }
+            out
         })
         .collect()
 }
@@ -268,7 +273,7 @@ impl AudioTower {
     }
 
     pub fn forward(&self, mel: &Tensor, feature_lens: Option<&[usize]>) -> Result<Tensor> {
-        let mel_len = mel.dim(3)?;
+        let _mel_len = mel.dim(3)?;
 
         // mel: [b, 1, n_mels, frames]
         let mut x = self.conv2d1.forward(mel)?;

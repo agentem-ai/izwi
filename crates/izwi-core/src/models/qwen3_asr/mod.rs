@@ -6,7 +6,7 @@ mod tokenizer;
 
 use std::path::Path;
 
-use candle_core::{DType, IndexOp, Module, Tensor};
+use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use serde::Deserialize;
 use tracing::info;
@@ -166,7 +166,37 @@ impl Qwen3AsrModel {
         }
 
         let text = self.tokenizer.decode_text(&generated)?;
-        Ok(text.trim().to_string())
+        let parsed = self.parse_output(&text)?;
+        Ok(parsed)
+    }
+
+    /// Parse model output to extract transcription.
+    /// Expected formats per document:
+    /// - "Language: English\nTranscription: This is the recognized text."
+    /// - "No speech detected in the audio."
+    fn parse_output(&self, raw_output: &str) -> Result<String> {
+        let trimmed = raw_output.trim();
+
+        // Check for "No speech detected"
+        if trimmed.contains("No speech detected") {
+            return Ok(String::new());
+        }
+
+        // Look for "Transcription:" prefix
+        if let Some(idx) = trimmed.find("Transcription:") {
+            let after = &trimmed[idx + "Transcription:".len()..];
+            return Ok(after.trim().to_string());
+        }
+
+        // If no Transcription: prefix, return the full text (minus any Language: prefix)
+        if let Some(idx) = trimmed.find('\n') {
+            let after_newline = &trimmed[idx + 1..];
+            if !after_newline.is_empty() {
+                return Ok(after_newline.trim().to_string());
+            }
+        }
+
+        Ok(trimmed.to_string())
     }
 
     fn forward_with_audio(
@@ -178,13 +208,34 @@ impl Qwen3AsrModel {
     ) -> Result<Tensor> {
         let embeds = self.text_model.embeddings(input_ids)?;
 
-        // Replace the single audio placeholder token with the full audio embedding sequence.
-        let before = embeds.narrow(1, 0, audio_start)?;
-        let after_start = audio_start + 1;
-        let after_len = embeds.dim(1)? - after_start;
-        let after = embeds.narrow(1, after_start, after_len)?;
+        // audio_start is the position of audio_start token
+        // We need to inject audio_embeds between audio_start (position audio_start)
+        // and audio_end (position audio_start + 1)
+        // So: [tokens before audio_start, audio_start embedding, audio_embeds, tokens after audio_end]
 
-        let embeds = Tensor::cat(&[before, audio_embeds.clone(), after], 1)?;
+        // Get embeddings before audio_start (if any)
+        let before = if audio_start > 0 {
+            embeds.narrow(1, 0, audio_start)?
+        } else {
+            // Empty tensor with correct shape [1, 0, hidden_size]
+            Tensor::zeros((1, 0, embeds.dim(2)?), embeds.dtype(), embeds.device())?
+        };
+
+        // Get audio_start token embedding (single token)
+        let audio_start_embed = embeds.narrow(1, audio_start, 1)?;
+
+        // Get embeddings after audio_end (skip audio_start and audio_end)
+        let after_start = audio_start + 2; // Skip audio_start and audio_end tokens
+        let after = if after_start < embeds.dim(1)? {
+            embeds.narrow(1, after_start, embeds.dim(1)? - after_start)?
+        } else {
+            // Empty tensor
+            Tensor::zeros((1, 0, embeds.dim(2)?), embeds.dtype(), embeds.device())?
+        };
+
+        // Concatenate: before + audio_start_embed + audio_embeds + after
+        let embeds = Tensor::cat(&[before, audio_start_embed, audio_embeds.clone(), after], 1)?;
+
         let position_ids = if self.text_model.uses_mrope() {
             Some(self.build_position_ids(embeds.dim(1)?, audio_start, audio_embeds.dim(1)?)?)
         } else {
@@ -194,33 +245,19 @@ impl Qwen3AsrModel {
             .forward_with_embeds(&embeds, 0, Some(cache), position_ids.as_ref())
     }
 
-    fn build_prompt(&self, audio_len: usize, _language: Option<&str>) -> Result<PromptTokens> {
+    fn build_prompt(&self, _audio_len: usize, language: Option<&str>) -> Result<PromptTokens> {
         let mut ids = Vec::new();
 
-        ids.push(self.specials.im_start);
-        ids.extend(self.tokenizer.encode_text("system\n")?);
-        ids.push(self.specials.im_end);
-        ids.extend(self.tokenizer.encode_text("\n")?);
-
-        ids.push(self.specials.im_start);
-        ids.extend(self.tokenizer.encode_text("user\n")?);
-
+        // Format: <|audio_start|><|audio_end|> or with language: <|audio_start|><|audio_end|>Language: {}
         ids.push(self.specials.audio_start);
-        // Expand audio tokens based on actual audio length
-        for _ in 0..audio_len {
-            ids.push(self.specials.audio_token);
-        }
         ids.push(self.specials.audio_end);
 
-        ids.push(self.specials.im_end);
-        ids.extend(self.tokenizer.encode_text("\n")?);
-        ids.push(self.specials.im_start);
-        ids.extend(self.tokenizer.encode_text("assistant\n")?);
+        if let Some(lang) = language {
+            ids.extend(self.tokenizer.encode_text(&format!("Language: {}", lang))?);
+        }
 
-        let audio_start = ids
-            .iter()
-            .position(|id| *id == self.specials.audio_token)
-            .unwrap_or(0);
+        // Find position where audio embeddings will be injected (right after audio_start)
+        let audio_start = 0; // Audio embeddings start right after audio_start token
 
         Ok(PromptTokens { ids, audio_start })
     }
@@ -228,29 +265,37 @@ impl Qwen3AsrModel {
     fn build_position_ids(
         &self,
         seq_len: usize,
-        audio_start: usize,
+        _audio_start: usize,
         audio_len: usize,
     ) -> Result<Tensor> {
         // MRoPE: 3D position IDs for temporal, height, width dimensions
-        // For ASR, we use [temporal, 0, 0] pattern where audio gets its own temporal positions
+        // Audio embeddings are injected at positions 1 to audio_len (after audio_start token at pos 0)
+        // Audio region: positions 1 to audio_len (inclusive of audio embeddings)
+        let audio_embed_start = 1; // audio_start token is at position 0, embeddings start at 1
+        let audio_embed_end = audio_embed_start + audio_len;
+
         let mut data = Vec::with_capacity(3 * seq_len);
 
-        // Temporal dimension (dim 0)
+        // Temporal dimension (dim 0) - continuous positions for all tokens
         for pos in 0..seq_len {
             data.push(pos as i64);
         }
-        // Height dimension (dim 1) - 0 for text, audio positions for audio
+
+        // Height dimension (dim 1) - 0 for text, audio positions for audio embeddings
         for pos in 0..seq_len {
-            if pos >= audio_start && pos < audio_start + audio_len {
-                data.push((pos - audio_start) as i64);
+            if pos >= audio_embed_start && pos < audio_embed_end {
+                // Audio embedding positions use their own temporal positions
+                data.push((pos - audio_embed_start) as i64);
             } else {
                 data.push(0i64);
             }
         }
-        // Width dimension (dim 2) - 0 for text, audio positions for audio
+
+        // Width dimension (dim 2) - 0 for text, audio positions for audio embeddings
         for pos in 0..seq_len {
-            if pos >= audio_start && pos < audio_start + audio_len {
-                data.push((pos - audio_start) as i64);
+            if pos >= audio_embed_start && pos < audio_embed_end {
+                // Audio embedding positions use their own temporal positions
+                data.push((pos - audio_embed_start) as i64);
             } else {
                 data.push(0i64);
             }

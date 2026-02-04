@@ -20,8 +20,8 @@ impl Default for MelConfig {
     fn default() -> Self {
         Self {
             sample_rate: 16_000,
-            n_fft: 400,
-            hop_length: 160,
+            n_fft: 512,      // Nearest power of 2 >= window size (400)
+            hop_length: 160, // 10ms at 16kHz
             n_mels: 128,
             f_min: 0.0,
             f_max: 8_000.0,
@@ -123,13 +123,7 @@ impl MelSpectrogram {
             .map(|frame| {
                 self.mel_filterbank
                     .iter()
-                    .map(|mel_filter| {
-                        frame
-                            .iter()
-                            .zip(mel_filter)
-                            .map(|(&p, &m)| p * m)
-                            .sum()
-                    })
+                    .map(|mel_filter| frame.iter().zip(mel_filter).map(|(&p, &m)| p * m).sum())
                     .collect()
             })
             .collect()
