@@ -80,9 +80,14 @@ impl Qwen3TtsModel {
         // Load code predictor
         info!("Loading code predictor...");
         let num_code_groups = config.talker_config.num_code_groups;
-        // The code predictor's codec embeddings need to use the talker's text_hidden_size
+        // For 1.7B model, codec embeddings use talker.text_hidden_size (2048)
+        // For 0.6B model, codec embeddings use code_predictor.hidden_size (1024)
+        // Detect 1.7B by checking if talker.hidden_size differs from code_predictor.hidden_size
         let mut code_predictor_config = config.talker_config.code_predictor_config.clone();
-        code_predictor_config.text_hidden_size = Some(config.talker_config.text_hidden_size);
+        if config.talker_config.hidden_size != code_predictor_config.hidden_size {
+            // 1.7B case: codec embeddings use text_hidden_size dimension
+            code_predictor_config.text_hidden_size = Some(config.talker_config.text_hidden_size);
+        }
         let code_predictor = CodePredictor::load(
             code_predictor_config,
             vb.pp("talker.code_predictor"),
