@@ -470,7 +470,8 @@ impl ModelDownloader {
         let files = self.get_model_files(variant);
         let total_files = files.len();
 
-        let file_sizes = self.get_file_sizes(variant);
+        // Fetch actual file sizes from server for accurate progress tracking
+        let file_sizes = self.get_actual_file_sizes(variant).await;
         let total_bytes: u64 = file_sizes.iter().sum();
         let mut downloaded_bytes: u64 = 0;
 
@@ -672,53 +673,109 @@ impl ModelDownloader {
         files
     }
 
+    /// Get actual file size from HTTP HEAD request
+    async fn get_actual_file_size(&self, repo_id: &str, filename: &str) -> Result<u64> {
+        let url = format!("{}/{}/resolve/main/{}", HF_BASE_URL, repo_id, filename);
+
+        let response = self
+            .http_client
+            .head(&url)
+            .header("User-Agent", "izwi-audio/0.1.0")
+            .send()
+            .await
+            .map_err(|e| Error::HfHubError(format!("HEAD request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(Error::HfHubError(format!(
+                "HTTP {} for HEAD {}",
+                response.status(),
+                url
+            )));
+        }
+
+        let size = response
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        Ok(size)
+    }
+
+    /// Get actual file sizes for all model files
+    async fn get_actual_file_sizes(&self, variant: ModelVariant) -> Vec<u64> {
+        let files = self.get_model_files(variant);
+        let repo_id = variant.repo_id();
+        let local_dir = self.model_path(variant);
+
+        let mut sizes = Vec::with_capacity(files.len());
+
+        for file in &files {
+            let dest = local_dir.join(file);
+
+            // If file exists locally, use actual size
+            if dest.exists() {
+                if let Ok(metadata) = tokio::fs::metadata(&dest).await {
+                    sizes.push(metadata.len());
+                    continue;
+                }
+            }
+
+            // Otherwise fetch actual size from server
+            match self.get_actual_file_size(&repo_id, file).await {
+                Ok(size) => sizes.push(size),
+                Err(_) => {
+                    // Fall back to estimate if HEAD request fails
+                    let estimate = self.get_single_file_size_estimate(variant, file);
+                    sizes.push(estimate);
+                }
+            }
+        }
+
+        sizes
+    }
+
+    /// Get estimated size for a single file (fallback when HEAD fails)
+    fn get_single_file_size_estimate(&self, variant: ModelVariant, file: &str) -> u64 {
+        if file.contains("model.safetensors") && !file.contains("index") {
+            if file.contains("00001") || file.contains("00002") {
+                2_000_000_000
+            } else {
+                match variant {
+                    ModelVariant::Qwen3Tts12Hz06BBase
+                    | ModelVariant::Qwen3Tts12Hz06BCustomVoice => 1_800_000_000,
+                    ModelVariant::Qwen3Tts12Hz17BBase
+                    | ModelVariant::Qwen3Tts12Hz17BCustomVoice
+                    | ModelVariant::Qwen3Tts12Hz17BVoiceDesign => 3_850_000_000,
+                    ModelVariant::Qwen3Asr06B => 1_800_000_000,
+                    ModelVariant::Lfm2Audio15B => 2_900_000_000,
+                    ModelVariant::VoxtralMini4BRealtime2602 => 8_900_000_000,
+                    _ => 1_500_000_000,
+                }
+            }
+        } else if file.contains("tokenizer") && file.contains("safetensors") {
+            300_000_000
+        } else if file.contains("speech_tokenizer") && file.contains("safetensors") {
+            100_000_000
+        } else if file.ends_with(".json") || file.ends_with(".txt") || file.ends_with(".jinja") {
+            if file == "tekken.json" {
+                15_000_000
+            } else {
+                100_000
+            }
+        } else {
+            10_000_000
+        }
+    }
+
     /// Get estimated file sizes for a model variant (in bytes)
     /// These are approximate sizes based on model architecture
     fn get_file_sizes(&self, variant: ModelVariant) -> Vec<u64> {
         let files = self.get_model_files(variant);
         files
             .iter()
-            .map(|file| {
-                // Estimate file sizes based on filename patterns
-                if file.contains("model.safetensors") && !file.contains("index") {
-                    if file.contains("00001") || file.contains("00002") {
-                        // Sharded model files ~2GB each
-                        2_000_000_000
-                    } else {
-                        // Single model file - varies by model
-                        match variant {
-                            ModelVariant::Qwen3Tts12Hz06BBase
-                            | ModelVariant::Qwen3Tts12Hz06BCustomVoice => 1_800_000_000,
-                            ModelVariant::Qwen3Tts12Hz17BBase
-                            | ModelVariant::Qwen3Tts12Hz17BCustomVoice
-                            | ModelVariant::Qwen3Tts12Hz17BVoiceDesign => 3_850_000_000,
-                            ModelVariant::Qwen3Asr06B => 1_800_000_000,
-                            ModelVariant::Lfm2Audio15B => 2_900_000_000,
-                            ModelVariant::VoxtralMini4BRealtime2602 => 8_900_000_000, // ~8.9GB single file
-                            _ => 1_500_000_000,
-                        }
-                    }
-                } else if file.contains("tokenizer") && file.contains("safetensors") {
-                    // Tokenizer model ~300MB
-                    300_000_000
-                } else if file.contains("speech_tokenizer") && file.contains("safetensors") {
-                    // Speech tokenizer ~100MB
-                    100_000_000
-                } else if file.ends_with(".json")
-                    || file.ends_with(".txt")
-                    || file.ends_with(".jinja")
-                {
-                    // Config/text files are small, except tekken.json which is a large tokenizer vocab
-                    if file == "tekken.json" {
-                        15_000_000 // ~15MB for tekken.json tokenizer vocab
-                    } else {
-                        100_000 // Small config files
-                    }
-                } else {
-                    // Default for unknown files
-                    10_000_000
-                }
-            })
+            .map(|file| self.get_single_file_size_estimate(variant, file))
             .collect()
     }
 

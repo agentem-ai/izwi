@@ -16,7 +16,16 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<
-    Record<string, { percent: number; currentFile: string; status: string }>
+    Record<
+      string,
+      {
+        percent: number;
+        currentFile: string;
+        status: string;
+        downloadedBytes: number;
+        totalBytes: number;
+      }
+    >
   >({});
 
   // Use ref to track polling state and active downloads
@@ -98,6 +107,8 @@ function App() {
               percent: data.percent,
               currentFile: data.current_file,
               status: data.status,
+              downloadedBytes: data.downloaded_bytes,
+              totalBytes: data.total_bytes,
             },
           }));
 

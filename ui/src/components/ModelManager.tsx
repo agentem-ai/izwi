@@ -45,7 +45,13 @@ interface ModelManagerProps {
   onCancelDownload?: (variant: string) => void;
   downloadProgress: Record<
     string,
-    { percent: number; currentFile: string; status: string }
+    {
+      percent: number;
+      currentFile: string;
+      status: string;
+      downloadedBytes: number;
+      totalBytes: number;
+    }
   >;
   modelFilter?: (variant: string) => boolean;
   emptyStateTitle?: string;
@@ -289,8 +295,14 @@ export function ModelManager({
                   </div>
                   <div className="text-xs text-gray-500 mt-0.5">
                     {details.size}
-                    {isDownloading &&
-                      ` • ${progress.toFixed(0)}% (${formatBytes((parseSize(details.size) * progress) / 100)} / ${details.size})`}
+                    {isDownloading && progressValue && (
+                      <>
+                        {" "}
+                        • {progress.toFixed(0)}% (
+                        {formatBytes(progressValue.downloadedBytes)} /{" "}
+                        {formatBytes(progressValue.totalBytes)})
+                      </>
+                    )}
                     {isLoading && " • Loading..."}
                   </div>
                 </div>
