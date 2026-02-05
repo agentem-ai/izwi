@@ -48,20 +48,30 @@ pub struct DownloadResponse {
     pub message: String,
 }
 
-/// Download a model from HuggingFace
+/// Download a model from HuggingFace (non-blocking)
 pub async fn download_model(
     State(state): State<AppState>,
     Path(variant): Path<String>,
 ) -> Result<Json<DownloadResponse>, ApiError> {
     let variant = parse_variant(&variant)?;
-    info!("Downloading model: {}", variant);
+    info!("Starting non-blocking download for model: {}", variant);
 
     let engine = state.engine.read().await;
-    engine.download_model(variant).await?;
+
+    // Check if already downloading
+    if engine.is_download_active(variant).await {
+        return Ok(Json(DownloadResponse {
+            status: "downloading",
+            message: format!("Model {} is already being downloaded", variant),
+        }));
+    }
+
+    // Spawn non-blocking download
+    engine.spawn_download(variant).await?;
 
     Ok(Json(DownloadResponse {
-        status: "completed",
-        message: format!("Model {} downloaded successfully", variant),
+        status: "started",
+        message: format!("Download of {} started in background", variant),
     }))
 }
 

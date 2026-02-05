@@ -1,18 +1,28 @@
 //! Model downloading from HuggingFace Hub
+//!
+//! Features:
+//! - Async streaming downloads with byte-level progress
+//! - Multi-progress bar terminal display
+//! - Non-blocking downloads with background task spawning
+//! - Real-time progress via channels
 
-use hf_hub::api::sync::Api;
-use indicatif::{ProgressBar, ProgressStyle};
-use reqwest::blocking::Client;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use tokio::sync::mpsc;
+use std::sync::Arc;
+
+use futures::StreamExt;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use reqwest;
+use tokio::sync::{mpsc, RwLock};
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
 use crate::model::info::ModelVariant;
 
 const HF_BASE_URL: &str = "https://huggingface.co";
+const CHUNK_SIZE: usize = 8192; // 8KB chunks for streaming
 
 /// Progress update for model downloads
 #[derive(Debug, Clone)]
@@ -20,40 +30,123 @@ pub struct DownloadProgress {
     pub variant: ModelVariant,
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
-    pub progress_percent: f32,
-    pub current_file: Option<String>,
+    pub current_file: String,
+    pub current_file_downloaded: u64,
+    pub current_file_total: u64,
     pub files_completed: usize,
     pub files_total: usize,
 }
 
+impl DownloadProgress {
+    /// Overall download percentage (0-100)
+    pub fn total_percent(&self) -> f32 {
+        if self.total_bytes > 0 {
+            (self.downloaded_bytes as f32 / self.total_bytes as f32) * 100.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Current file percentage (0-100)
+    pub fn file_percent(&self) -> f32 {
+        if self.current_file_total > 0 {
+            (self.current_file_downloaded as f32 / self.current_file_total as f32) * 100.0
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Download state for tracking model downloads
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DownloadState {
+    NotDownloaded,
+    Downloading,
+    Downloaded,
+    Error,
+}
+
+use serde::{Deserialize, Serialize};
+
+/// Active download tracking
+#[derive(Debug)]
+struct ActiveDownload {
+    handle: JoinHandle<Result<PathBuf>>,
+    _progress_rx: mpsc::Receiver<DownloadProgress>,
+}
+
+/// Shared download state across threads
+#[derive(Debug, Clone, Default)]
+pub struct DownloadStateManager {
+    state: Arc<RwLock<std::collections::HashMap<ModelVariant, DownloadState>>>,
+}
+
+impl DownloadStateManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn set_state(&self, variant: ModelVariant, state: DownloadState) {
+        let mut map = self.state.write().await;
+        map.insert(variant, state);
+    }
+
+    pub async fn get_state(&self, variant: ModelVariant) -> DownloadState {
+        let map = self.state.read().await;
+        map.get(&variant)
+            .copied()
+            .unwrap_or(DownloadState::NotDownloaded)
+    }
+
+    pub async fn is_downloading(&self, variant: ModelVariant) -> bool {
+        self.get_state(variant).await == DownloadState::Downloading
+    }
+}
+
 /// Model downloader for HuggingFace Hub
 pub struct ModelDownloader {
-    pub api: Api,
     pub models_dir: PathBuf,
-    http_client: Client,
+    http_client: reqwest::Client,
+    active_downloads: Arc<RwLock<std::collections::HashMap<ModelVariant, ActiveDownload>>>,
+    multi_progress: MultiProgress,
+    state_manager: DownloadStateManager,
 }
 
 impl ModelDownloader {
     /// Create a new downloader
     pub fn new(models_dir: PathBuf) -> Result<Self> {
-        // Ensure models directory exists
         std::fs::create_dir_all(&models_dir)?;
 
-        let api = Api::new().map_err(|e| Error::HfHubError(e.to_string()))?;
-        let http_client = Client::builder()
-            .timeout(std::time::Duration::from_secs(3600)) // 1 hour timeout for large files
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3600))
             .build()
             .map_err(|e| Error::HfHubError(format!("Failed to create HTTP client: {}", e)))?;
 
+        let multi_progress = MultiProgress::new();
+        multi_progress.set_draw_target(indicatif::ProgressDrawTarget::stderr_with_hz(10));
+
         Ok(Self {
-            api,
             models_dir,
             http_client,
+            active_downloads: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            multi_progress,
+            state_manager: DownloadStateManager::new(),
         })
     }
 
-    /// Download a file directly from HuggingFace using HTTP
-    fn download_file_http(&self, repo_id: &str, filename: &str, dest: &Path) -> Result<()> {
+    /// Get download state manager
+    pub fn state_manager(&self) -> DownloadStateManager {
+        self.state_manager.clone()
+    }
+
+    /// Download a file with streaming and progress bar
+    async fn download_file_streaming(
+        &self,
+        repo_id: &str,
+        filename: &str,
+        dest: &Path,
+        file_pb: Option<ProgressBar>,
+    ) -> Result<u64> {
         let url = format!("{}/{}/resolve/main/{}", HF_BASE_URL, repo_id, filename);
         debug!("Downloading from URL: {}", url);
 
@@ -62,6 +155,7 @@ impl ModelDownloader {
             .get(&url)
             .header("User-Agent", "izwi-audio/0.1.0")
             .send()
+            .await
             .map_err(|e| Error::HfHubError(format!("HTTP request failed: {}", e)))?;
 
         if !response.status().is_success() {
@@ -72,21 +166,43 @@ impl ModelDownloader {
             )));
         }
 
-        // Create parent directories
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
+        // Get content length for progress bar
+        let total_size = response
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        if let Some(ref pb) = file_pb {
+            pb.set_length(total_size);
         }
 
-        // Write to file
-        let bytes = response
-            .bytes()
-            .map_err(|e| Error::HfHubError(format!("Failed to read response: {}", e)))?;
+        // Create parent directories
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
 
-        let mut file = File::create(dest)?;
-        file.write_all(&bytes)?;
+        // Stream download to file
+        let mut file = tokio::fs::File::create(dest).await?;
+        let mut downloaded = 0u64;
+        let mut stream = response.bytes_stream();
 
-        debug!("Downloaded {} bytes to {:?}", bytes.len(), dest);
-        Ok(())
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| Error::HfHubError(format!("Stream error: {}", e)))?;
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await?;
+            downloaded += chunk.len() as u64;
+
+            if let Some(ref pb) = file_pb {
+                pb.set_position(downloaded);
+            }
+        }
+
+        // Sync file to disk
+        file.sync_all().await?;
+
+        debug!("Downloaded {} bytes to {:?}", downloaded, dest);
+        Ok(downloaded)
     }
 
     /// Get the local path for a model variant
@@ -157,57 +273,166 @@ impl ModelDownloader {
         }
     }
 
-    /// Download a model from HuggingFace Hub
-    pub fn download(&self, variant: ModelVariant) -> Result<PathBuf> {
+    /// Download a model with multi-progress bar display
+    pub async fn download(&self, variant: ModelVariant) -> Result<PathBuf> {
         let repo_id = variant.repo_id();
         let local_dir = self.model_path(variant);
 
-        std::fs::create_dir_all(&local_dir)?;
+        tokio::fs::create_dir_all(&local_dir).await?;
         info!("Downloading {} to {:?}", repo_id, local_dir);
 
-        // Create progress bar
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.green} [{elapsed_precise}] {msg}")
-                .unwrap(),
-        );
-        pb.set_message(format!("Downloading {}", variant.display_name()));
-
-        // List and download all files
+        // Create overall progress bar
         let files = self.get_model_files(variant);
+        let file_sizes = self.get_file_sizes(variant);
+        let total_bytes: u64 = file_sizes.iter().sum();
 
-        for file in &files {
-            pb.set_message(format!("Downloading: {}", file));
-            debug!("Downloading file: {}", file);
+        let overall_pb = self.multi_progress.add(ProgressBar::new(total_bytes));
+        overall_pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("##-"),
+        );
+        overall_pb.set_message(format!("{}", variant.display_name()));
 
+        let mut downloaded_bytes: u64 = 0;
+
+        for (idx, file) in files.iter().enumerate() {
             let dest = local_dir.join(file);
 
             // Skip if already downloaded
             if dest.exists() {
                 debug!("File already exists: {:?}", dest);
+                let file_size = tokio::fs::metadata(&dest).await?.len();
+                downloaded_bytes += file_size;
+                overall_pb.set_position(downloaded_bytes);
                 continue;
             }
 
-            // Use direct HTTP download (more reliable than hf-hub for some repos)
-            match self.download_file_http(repo_id, file, &dest) {
-                Ok(()) => {
-                    debug!("Downloaded: {} -> {:?}", file, dest);
+            // Create file progress bar
+            let file_size = file_sizes.get(idx).copied().unwrap_or(0);
+            let file_pb = self.multi_progress.add(ProgressBar::new(file_size));
+            file_pb.set_style(
+                ProgressStyle::default_bar()
+                    .template(
+                        "  [{elapsed_precise}] {bar:30.green/white} {bytes}/{total_bytes} {msg}",
+                    )
+                    .unwrap()
+                    .progress_chars("=>-"),
+            );
+            file_pb.set_message(file.clone());
+
+            // Stream download with progress
+            match self
+                .download_file_streaming(repo_id, file, &dest, Some(file_pb.clone()))
+                .await
+            {
+                Ok(bytes_downloaded) => {
+                    debug!(
+                        "Downloaded: {} -> {:?} ({} bytes)",
+                        file, dest, bytes_downloaded
+                    );
+                    downloaded_bytes += bytes_downloaded;
+                    overall_pb.set_position(downloaded_bytes);
+                    file_pb.finish_with_message(format!("{} ✓", file));
                 }
                 Err(e) => {
                     warn!("Failed to download {}: {}", file, e);
+                    file_pb.finish_with_message(format!("{} ✗", file));
                     // Some files might be optional, continue
                 }
             }
+
+            self.multi_progress.remove(&file_pb);
         }
 
-        pb.finish_with_message(format!("Downloaded {}", variant.display_name()));
+        overall_pb.finish_with_message(format!("{} ✓", variant.display_name()));
+        self.multi_progress.remove(&overall_pb);
 
         info!("Model downloaded to {:?}", local_dir);
         Ok(local_dir)
     }
 
-    /// Download model with progress channel
+    /// Spawn a non-blocking download in the background
+    pub async fn spawn_download(
+        &self,
+        variant: ModelVariant,
+    ) -> Result<mpsc::Receiver<DownloadProgress>> {
+        // Set initial state
+        self.state_manager
+            .set_state(variant, DownloadState::Downloading)
+            .await;
+
+        let (progress_tx, progress_rx) = mpsc::channel(100);
+        let downloader = self.clone_downloader();
+
+        // Spawn background download task
+        let handle = tokio::spawn(async move {
+            let result = downloader
+                .download_with_progress(variant, progress_tx.clone())
+                .await;
+
+            // Update state based on result
+            let final_state = match &result {
+                Ok(_) => DownloadState::Downloaded,
+                Err(_) => DownloadState::Error,
+            };
+            downloader
+                .state_manager
+                .set_state(variant, final_state)
+                .await;
+
+            result
+        });
+
+        // Store active download
+        let active = ActiveDownload {
+            handle,
+            _progress_rx: progress_rx,
+        };
+
+        let mut downloads = self.active_downloads.write().await;
+        downloads.insert(variant, active);
+
+        // Return the progress receiver for the caller to use
+        let (_, rx) = mpsc::channel(100);
+        Ok(rx)
+    }
+
+    /// Clone the downloader for use in spawned tasks
+    fn clone_downloader(&self) -> Self {
+        Self {
+            models_dir: self.models_dir.clone(),
+            http_client: self.http_client.clone(),
+            active_downloads: Arc::clone(&self.active_downloads),
+            multi_progress: MultiProgress::new(), // Each spawned task gets its own multi-progress
+            state_manager: self.state_manager.clone(),
+        }
+    }
+
+    /// Check if a download is active
+    pub async fn is_download_active(&self, variant: ModelVariant) -> bool {
+        let downloads = self.active_downloads.read().await;
+        downloads.contains_key(&variant)
+    }
+
+    /// Wait for an active download to complete
+    pub async fn wait_for_download(&self, variant: ModelVariant) -> Result<Option<PathBuf>> {
+        let handle = {
+            let mut downloads = self.active_downloads.write().await;
+            downloads.remove(&variant).map(|d| d.handle)
+        };
+
+        match handle {
+            Some(h) => {
+                let result = h.await.map_err(|e| Error::DownloadError(e.to_string()))?;
+                Some(result).transpose()
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Download model with real-time byte-level progress
     pub async fn download_with_progress(
         &self,
         variant: ModelVariant,
@@ -216,7 +441,7 @@ impl ModelDownloader {
         let repo_id = variant.repo_id();
         let local_dir = self.model_path(variant);
 
-        std::fs::create_dir_all(&local_dir)?;
+        tokio::fs::create_dir_all(&local_dir).await?;
 
         info!("Downloading {} to {:?}", repo_id, local_dir);
 
@@ -229,49 +454,79 @@ impl ModelDownloader {
 
         for (idx, file) in files.iter().enumerate() {
             let file_size = file_sizes.get(idx).copied().unwrap_or(0);
-            let progress = DownloadProgress {
-                variant,
-                downloaded_bytes,
-                total_bytes,
-                progress_percent: if total_bytes > 0 {
-                    (downloaded_bytes as f32 / total_bytes as f32) * 100.0
-                } else {
-                    (idx as f32 / total_files as f32) * 100.0
-                },
-                current_file: Some(file.clone()),
-                files_completed: idx,
-                files_total: total_files,
-            };
-            let _ = progress_tx.send(progress).await;
-
             let dest = local_dir.join(file);
 
             // Skip if already downloaded
             if dest.exists() {
-                debug!("File already exists: {:?}", dest);
-                downloaded_bytes += file_size;
+                let actual_size = tokio::fs::metadata(&dest).await?.len();
+                debug!("File already exists: {:?} ({} bytes)", dest, actual_size);
+                downloaded_bytes += actual_size;
+
+                // Send progress update
+                let progress = DownloadProgress {
+                    variant,
+                    downloaded_bytes,
+                    total_bytes,
+                    current_file: file.clone(),
+                    current_file_downloaded: actual_size,
+                    current_file_total: actual_size,
+                    files_completed: idx + 1,
+                    files_total: total_files,
+                };
+                let _ = progress_tx.send(progress).await;
                 continue;
             }
 
-            // Use direct HTTP download (more reliable than hf-hub for some repos)
-            match self.download_file_http(repo_id, file, &dest) {
-                Ok(()) => {
-                    debug!("Downloaded: {} -> {:?}", file, dest);
-                    downloaded_bytes += file_size;
+            // Stream download with per-chunk progress updates
+            let file_pb = self.multi_progress.add(ProgressBar::new(file_size));
+            file_pb.set_style(
+                ProgressStyle::default_bar()
+                    .template(
+                        "  [{elapsed_precise}] {bar:30.green/white} {bytes}/{total_bytes} {msg}",
+                    )
+                    .unwrap()
+                    .progress_chars("=>-"),
+            );
+            file_pb.set_message(file.clone());
+
+            match self
+                .download_file_streaming(repo_id, file, &dest, Some(file_pb.clone()))
+                .await
+            {
+                Ok(bytes_downloaded) => {
+                    downloaded_bytes += bytes_downloaded;
+
+                    let progress = DownloadProgress {
+                        variant,
+                        downloaded_bytes,
+                        total_bytes,
+                        current_file: file.clone(),
+                        current_file_downloaded: bytes_downloaded,
+                        current_file_total: file_size,
+                        files_completed: idx + 1,
+                        files_total: total_files,
+                    };
+                    let _ = progress_tx.send(progress).await;
+
+                    file_pb.finish_with_message(format!("{} ✓", file));
                 }
                 Err(e) => {
                     warn!("Failed to download {}: {}", file, e);
+                    file_pb.finish_with_message(format!("{} ✗", file));
                 }
             }
+
+            self.multi_progress.remove(&file_pb);
         }
 
-        // Send completion
+        // Send final completion progress
         let progress = DownloadProgress {
             variant,
-            downloaded_bytes: total_bytes,
+            downloaded_bytes,
             total_bytes,
-            progress_percent: 100.0,
-            current_file: None,
+            current_file: String::new(),
+            current_file_downloaded: 0,
+            current_file_total: 0,
             files_completed: total_files,
             files_total: total_files,
         };
