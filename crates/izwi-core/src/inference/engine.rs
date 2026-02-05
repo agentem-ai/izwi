@@ -85,7 +85,7 @@ impl InferenceEngine {
 
     /// Unload a model from memory
     pub async fn unload_model(&self, variant: ModelVariant) -> Result<()> {
-        if variant.is_asr() || variant.is_forced_aligner() {
+        if variant.is_asr() || variant.is_forced_aligner() || variant.is_voxtral() {
             self.model_registry.unload_asr(variant).await;
         }
         self.model_manager.unload_model(variant).await
@@ -111,7 +111,7 @@ impl InferenceEngine {
             .and_then(|i| i.local_path)
             .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
 
-        if variant.is_asr() || variant.is_forced_aligner() {
+        if variant.is_asr() || variant.is_forced_aligner() || variant.is_voxtral() {
             self.model_registry.load_asr(variant, &model_path).await?;
             self.model_manager.mark_loaded(variant).await;
             return Ok(());

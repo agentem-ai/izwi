@@ -5,6 +5,7 @@ pub mod qwen3;
 pub mod qwen3_asr;
 pub mod qwen3_tts;
 pub mod registry;
+pub mod voxtral;
 
 pub use device::{DeviceProfile, DeviceSelector};
 pub use registry::ModelRegistry;

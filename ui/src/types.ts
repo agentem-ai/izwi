@@ -49,12 +49,14 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
   transcription: {
     id: "transcription",
     label: "Transcription",
-    description: "Speech-to-text with Qwen3-ASR",
+    description:
+      "Speech-to-text with Qwen3-ASR and Voxtral models supporting 52+ languages",
     icon: "FileText",
-    modelFilter: (variant) => variant.includes("Qwen3-ASR"),
+    modelFilter: (variant) =>
+      variant.includes("Qwen3-ASR") || variant.includes("Voxtral"),
     emptyStateTitle: "No ASR Model Loaded",
     emptyStateDescription:
-      "Download and load a Qwen3-ASR model for speech transcription",
+      "Download and load a Qwen3-ASR or Voxtral model for speech transcription",
   },
 };
 

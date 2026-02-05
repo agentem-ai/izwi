@@ -134,6 +134,7 @@ fn parse_variant(s: &str) -> Result<ModelVariant, ApiError> {
         "LFM2-Audio-1.5B" => return Ok(ModelVariant::Lfm2Audio15B),
         "Qwen3-ASR-0.6B" => return Ok(ModelVariant::Qwen3Asr06B),
         "Qwen3-ASR-1.7B" => return Ok(ModelVariant::Qwen3Asr17B),
+        "Voxtral-Mini-4B-Realtime-2602" => return Ok(ModelVariant::VoxtralMini4BRealtime2602),
         _ => {}
     }
 
@@ -175,9 +176,12 @@ fn parse_variant(s: &str) -> Result<ModelVariant, ApiError> {
     if normalized.contains("lfm2") && normalized.contains("audio") {
         return Ok(ModelVariant::Lfm2Audio15B);
     }
+    if normalized.contains("voxtral") {
+        return Ok(ModelVariant::VoxtralMini4BRealtime2602);
+    }
 
     Err(ApiError::bad_request(format!(
-        "Unknown model variant: {}. Valid variants: Qwen3-TTS-12Hz-0.6B-Base, Qwen3-TTS-12Hz-0.6B-CustomVoice, Qwen3-TTS-12Hz-1.7B-Base, Qwen3-TTS-12Hz-1.7B-CustomVoice, Qwen3-TTS-12Hz-1.7B-VoiceDesign, Qwen3-TTS-Tokenizer-12Hz, LFM2-Audio-1.5B, Qwen3-ASR-0.6B, Qwen3-ASR-1.7B",
+        "Unknown model variant: {}. Valid variants: Qwen3-TTS-12Hz-0.6B-Base, Qwen3-TTS-12Hz-0.6B-CustomVoice, Qwen3-TTS-12Hz-1.7B-Base, Qwen3-TTS-12Hz-1.7B-CustomVoice, Qwen3-TTS-12Hz-1.7B-VoiceDesign, Qwen3-TTS-Tokenizer-12Hz, LFM2-Audio-1.5B, Qwen3-ASR-0.6B, Qwen3-ASR-1.7B, Voxtral-Mini-4B-Realtime-2602",
         s
     )))
 }
