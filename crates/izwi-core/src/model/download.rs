@@ -344,21 +344,8 @@ impl ModelDownloader {
                 "merges.txt".to_string(),
                 "preprocessor_config.json".to_string(),
             ]);
-            // Model weights - single file for 0.6B models
+            // All Qwen3-TTS models (0.6B and 1.7B) use single model.safetensors file
             files.push("model.safetensors".to_string());
-            // Sharded weights for 1.7B models
-            if matches!(
-                variant,
-                ModelVariant::Qwen3Tts12Hz17BBase
-                    | ModelVariant::Qwen3Tts12Hz17BCustomVoice
-                    | ModelVariant::Qwen3Tts12Hz17BVoiceDesign
-            ) {
-                files.extend([
-                    "model-00001-of-00002.safetensors".to_string(),
-                    "model-00002-of-00002.safetensors".to_string(),
-                    "model.safetensors.index.json".to_string(),
-                ]);
-            }
             // Speech tokenizer files (audio codec for decoding)
             files.extend([
                 "speech_tokenizer/config.json".to_string(),
@@ -388,6 +375,9 @@ impl ModelDownloader {
                         match variant {
                             ModelVariant::Qwen3Tts12Hz06BBase
                             | ModelVariant::Qwen3Tts12Hz06BCustomVoice => 1_800_000_000,
+                            ModelVariant::Qwen3Tts12Hz17BBase
+                            | ModelVariant::Qwen3Tts12Hz17BCustomVoice
+                            | ModelVariant::Qwen3Tts12Hz17BVoiceDesign => 3_850_000_000,
                             ModelVariant::Qwen3Asr06B => 1_800_000_000,
                             ModelVariant::Lfm2Audio15B => 2_900_000_000,
                             _ => 1_500_000_000,
