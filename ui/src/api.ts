@@ -127,7 +127,7 @@ export interface ASRStatusResponse {
 }
 
 class ApiClient {
-  private baseUrl: string;
+  readonly baseUrl: string;
 
   constructor(baseUrl: string = API_BASE) {
     this.baseUrl = baseUrl;
@@ -282,11 +282,9 @@ class ApiClient {
         });
 
         if (!response.ok) {
-          const error = await response
-            .json()
-            .catch(() => ({
-              error: { message: "Streaming transcription failed" },
-            }));
+          const error = await response.json().catch(() => ({
+            error: { message: "Streaming transcription failed" },
+          }));
           callbacks.onError?.(
             error.error?.message || "Streaming transcription failed",
           );
@@ -401,6 +399,14 @@ class ApiClient {
     variant: string,
   ): Promise<{ status: string; message: string }> {
     return this.request(`/models/${variant}`, { method: "DELETE" });
+  }
+
+  async cancelDownload(
+    variant: string,
+  ): Promise<{ status: string; message: string }> {
+    return this.request(`/models/${variant}/download/cancel`, {
+      method: "POST",
+    });
   }
 }
 

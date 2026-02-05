@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { api, ModelInfo } from "./api";
 import { Layout } from "./components/Layout";
@@ -16,8 +16,13 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<
-    Record<string, number>
+    Record<string, { percent: number; currentFile: string; status: string }>
   >({});
+
+  // Use ref to track polling state and active downloads
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const activeDownloadsRef = useRef<Set<string>>(new Set());
+  const eventSourcesRef = useRef<Record<string, EventSource>>({});
 
   const loadModels = useCallback(async () => {
     try {
@@ -43,62 +48,164 @@ function App() {
     init();
   }, []);
 
-  // Smart polling: only poll when there are active operations
+  // Smart polling: only poll when there are active operations, use ref to prevent duplicates
   useEffect(() => {
     const hasActiveOperations = models.some(
       (m) => m.status === "downloading" || m.status === "loading",
     );
 
+    // Clear existing polling if no active operations
     if (!hasActiveOperations) {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
       return;
     }
 
-    const interval = setInterval(loadModels, 2000);
-    return () => clearInterval(interval);
+    // Only start polling if not already polling
+    if (!pollingRef.current) {
+      pollingRef.current = setInterval(loadModels, 3000); // Increased to 3s to reduce server load
+    }
+
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+    };
   }, [models, loadModels]);
+
+  // Connect to SSE for real-time download progress
+  const connectDownloadStream = useCallback(
+    (variant: string) => {
+      // Close existing connection if any
+      if (eventSourcesRef.current[variant]) {
+        eventSourcesRef.current[variant].close();
+      }
+
+      const eventSource = new EventSource(
+        `${api.baseUrl}/models/${variant}/download/progress`,
+      );
+      eventSourcesRef.current[variant] = eventSource;
+
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          setDownloadProgress((prev) => ({
+            ...prev,
+            [variant]: {
+              percent: data.percent,
+              currentFile: data.current_file,
+              status: data.status,
+            },
+          }));
+
+          // Close connection when complete
+          if (data.status === "completed" || data.status === "error") {
+            eventSource.close();
+            delete eventSourcesRef.current[variant];
+            activeDownloadsRef.current.delete(variant);
+
+            // Refresh models after completion
+            loadModels();
+
+            // Clear progress after delay
+            setTimeout(() => {
+              setDownloadProgress((prev) => {
+                const { [variant]: _, ...rest } = prev;
+                return rest;
+              });
+            }, 2000);
+          }
+        } catch (err) {
+          console.error("Failed to parse progress event:", err);
+        }
+      };
+
+      eventSource.onerror = (err) => {
+        console.error("SSE error:", err);
+        eventSource.close();
+        delete eventSourcesRef.current[variant];
+      };
+    },
+    [loadModels],
+  );
 
   const handleDownload = async (variant: string) => {
     try {
+      // Prevent duplicate downloads
+      if (activeDownloadsRef.current.has(variant)) {
+        return;
+      }
+      activeDownloadsRef.current.add(variant);
+
       setModels((prev) =>
         prev.map((m) =>
           m.variant === variant ? { ...m, status: "downloading" as const } : m,
         ),
       );
 
-      // Simulate progress updates (real implementation would use SSE/WebSocket)
-      const progressInterval = setInterval(() => {
-        setDownloadProgress((prev) => {
-          const current = prev[variant] || 0;
-          if (current >= 95) {
-            clearInterval(progressInterval);
-            return prev;
-          }
-          return {
-            ...prev,
-            [variant]: Math.min(current + Math.random() * 15, 95),
-          };
-        });
-      }, 500);
+      // Start download
+      const response = await api.downloadModel(variant);
 
-      await api.downloadModel(variant);
-
-      clearInterval(progressInterval);
-      setDownloadProgress((prev) => ({ ...prev, [variant]: 100 }));
-
-      // Refresh models after download completes
-      await loadModels();
-
-      // Clear progress after a delay
-      setTimeout(() => {
-        setDownloadProgress((prev) => {
-          const { [variant]: _, ...rest } = prev;
-          return rest;
-        });
-      }, 1000);
-    } catch (err) {
+      if (response.status === "started" || response.status === "downloading") {
+        // Connect to SSE for progress updates
+        connectDownloadStream(variant);
+      } else {
+        // Download already complete or not started
+        activeDownloadsRef.current.delete(variant);
+        await loadModels();
+      }
+    } catch (err: any) {
       console.error("Download failed:", err);
-      setError("Failed to download model. Please try again.");
+      activeDownloadsRef.current.delete(variant);
+      setError(err.message || "Failed to download model. Please try again.");
+
+      // Close SSE connection on error
+      if (eventSourcesRef.current[variant]) {
+        eventSourcesRef.current[variant].close();
+        delete eventSourcesRef.current[variant];
+      }
+
       await loadModels();
+    }
+  };
+
+  const handleCancelDownload = async (variant: string) => {
+    try {
+      // Close SSE connection
+      if (eventSourcesRef.current[variant]) {
+        eventSourcesRef.current[variant].close();
+        delete eventSourcesRef.current[variant];
+      }
+
+      activeDownloadsRef.current.delete(variant);
+
+      await api.cancelDownload(variant);
+
+      // Update UI immediately
+      setDownloadProgress((prev) => {
+        const { [variant]: _, ...rest } = prev;
+        return rest;
+      });
+
+      setModels((prev) =>
+        prev.map((m) =>
+          m.variant === variant
+            ? {
+                ...m,
+                status: "not_downloaded" as const,
+                download_progress: null,
+              }
+            : m,
+        ),
+      );
+
+      await loadModels();
+    } catch (err: any) {
+      console.error("Cancel failed:", err);
+      setError(err.message || "Failed to cancel download.");
     }
   };
 
@@ -157,6 +264,7 @@ function App() {
     loading,
     downloadProgress,
     onDownload: handleDownload,
+    onCancelDownload: handleCancelDownload,
     onLoad: handleLoad,
     onUnload: handleUnload,
     onDelete: handleDelete,
@@ -201,6 +309,7 @@ function App() {
                 loading={loading}
                 downloadProgress={downloadProgress}
                 onDownload={handleDownload}
+                onCancelDownload={handleCancelDownload}
                 onLoad={handleLoad}
                 onUnload={handleUnload}
                 onDelete={handleDelete}

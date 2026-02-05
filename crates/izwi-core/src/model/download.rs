@@ -14,7 +14,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use reqwest;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -72,7 +72,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug)]
 struct ActiveDownload {
     handle: JoinHandle<Result<PathBuf>>,
-    _progress_rx: mpsc::Receiver<DownloadProgress>,
+    progress_tx: broadcast::Sender<DownloadProgress>,
+}
+
+impl ActiveDownload {
+    /// Subscribe to progress updates
+    fn subscribe(&self) -> broadcast::Receiver<DownloadProgress> {
+        self.progress_tx.subscribe()
+    }
 }
 
 /// Shared download state across threads
@@ -357,19 +364,21 @@ impl ModelDownloader {
     pub async fn spawn_download(
         &self,
         variant: ModelVariant,
-    ) -> Result<mpsc::Receiver<DownloadProgress>> {
+    ) -> Result<broadcast::Receiver<DownloadProgress>> {
         // Set initial state
         self.state_manager
             .set_state(variant, DownloadState::Downloading)
             .await;
 
-        let (progress_tx, progress_rx) = mpsc::channel(100);
+        // Create broadcast channel for progress (allows multiple subscribers)
+        let (progress_tx, _progress_rx) = broadcast::channel(100);
         let downloader = self.clone_downloader();
+        let progress_tx_clone = progress_tx.clone();
 
         // Spawn background download task
         let handle = tokio::spawn(async move {
             let result = downloader
-                .download_with_progress(variant, progress_tx.clone())
+                .download_with_progress(variant, progress_tx_clone)
                 .await;
 
             // Update state based on result
@@ -388,15 +397,14 @@ impl ModelDownloader {
         // Store active download
         let active = ActiveDownload {
             handle,
-            _progress_rx: progress_rx,
+            progress_tx: progress_tx.clone(),
         };
 
         let mut downloads = self.active_downloads.write().await;
         downloads.insert(variant, active);
 
         // Return the progress receiver for the caller to use
-        let (_, rx) = mpsc::channel(100);
-        Ok(rx)
+        Ok(progress_tx.subscribe())
     }
 
     /// Clone the downloader for use in spawned tasks
@@ -436,7 +444,7 @@ impl ModelDownloader {
     pub async fn download_with_progress(
         &self,
         variant: ModelVariant,
-        progress_tx: mpsc::Sender<DownloadProgress>,
+        progress_tx: broadcast::Sender<DownloadProgress>,
     ) -> Result<PathBuf> {
         let repo_id = variant.repo_id();
         let local_dir = self.model_path(variant);
@@ -473,7 +481,7 @@ impl ModelDownloader {
                     files_completed: idx + 1,
                     files_total: total_files,
                 };
-                let _ = progress_tx.send(progress).await;
+                let _ = progress_tx.send(progress);
                 continue;
             }
 
@@ -506,7 +514,7 @@ impl ModelDownloader {
                         files_completed: idx + 1,
                         files_total: total_files,
                     };
-                    let _ = progress_tx.send(progress).await;
+                    let _ = progress_tx.send(progress);
 
                     file_pb.finish_with_message(format!("{} ✓", file));
                 }
@@ -530,7 +538,7 @@ impl ModelDownloader {
             files_completed: total_files,
             files_total: total_files,
         };
-        let _ = progress_tx.send(progress).await;
+        let _ = progress_tx.send(progress);
 
         info!("Model downloaded to {:?}", local_dir);
         Ok(local_dir)
@@ -667,8 +675,12 @@ impl ModelDownloader {
                     || file.ends_with(".txt")
                     || file.ends_with(".jinja")
                 {
-                    // Config/text files are small
-                    100_000
+                    // Config/text files are small, except tekken.json which is a large tokenizer vocab
+                    if file == "tekken.json" {
+                        15_000_000 // ~15MB for tekken.json tokenizer vocab
+                    } else {
+                        100_000 // Small config files
+                    }
                 } else {
                     // Default for unknown files
                     10_000_000
@@ -684,6 +696,49 @@ impl ModelDownloader {
             Self::dir_size(&path).ok()
         } else {
             None
+        }
+    }
+
+    /// Subscribe to progress updates for an active download
+    pub async fn subscribe_progress(
+        &self,
+        variant: ModelVariant,
+    ) -> Result<broadcast::Receiver<DownloadProgress>> {
+        let downloads = self.active_downloads.read().await;
+        if let Some(active) = downloads.get(&variant) {
+            Ok(active.subscribe())
+        } else {
+            Err(Error::DownloadError(format!(
+                "No active download for {}",
+                variant
+            )))
+        }
+    }
+
+    /// Cancel an active download
+    pub async fn cancel_download(&self, variant: ModelVariant) -> Result<()> {
+        let handle = {
+            let mut downloads = self.active_downloads.write().await;
+            downloads.remove(&variant).map(|d| d.handle)
+        };
+
+        if let Some(h) = handle {
+            h.abort();
+            // Clean up partial downloads
+            let model_path = self.model_path(variant);
+            if model_path.exists() {
+                let _ = tokio::fs::remove_dir_all(&model_path).await;
+            }
+            // Update state
+            self.state_manager
+                .set_state(variant, DownloadState::NotDownloaded)
+                .await;
+            Ok(())
+        } else {
+            Err(Error::DownloadError(format!(
+                "No active download for {}",
+                variant
+            )))
         }
     }
 

@@ -7,6 +7,7 @@ import {
   Trash2,
   ChevronRight,
   Loader2,
+  X,
 } from "lucide-react";
 import { ModelInfo } from "../api";
 import clsx from "clsx";
@@ -41,7 +42,11 @@ interface ModelManagerProps {
   onUnload: (variant: string) => void;
   onDelete: (variant: string) => void;
   onSelect: (variant: string) => void;
-  downloadProgress: Record<string, number>;
+  onCancelDownload?: (variant: string) => void;
+  downloadProgress: Record<
+    string,
+    { percent: number; currentFile: string; status: string }
+  >;
   modelFilter?: (variant: string) => boolean;
   emptyStateTitle?: string;
   emptyStateDescription?: string;
@@ -145,6 +150,7 @@ export function ModelManager({
   onUnload,
   onDelete,
   onSelect,
+  onCancelDownload,
   downloadProgress,
   modelFilter,
   emptyStateTitle,
@@ -198,8 +204,8 @@ export function ModelManager({
         const isLoading = model.status === "loading";
         const isReady = model.status === "ready";
         const isDownloaded = model.status === "downloaded";
-        const progress =
-          downloadProgress[model.variant] || model.download_progress || 0;
+        const progressValue = downloadProgress[model.variant];
+        const progress = progressValue?.percent ?? model.download_progress ?? 0;
 
         return (
           <div
@@ -359,6 +365,19 @@ export function ModelManager({
 
                     {/* Actions */}
                     <div className="flex items-center gap-2 pt-2">
+                      {isDownloading && onCancelDownload && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onCancelDownload(model.variant);
+                          }}
+                          className="btn btn-danger text-sm flex-1"
+                        >
+                          <X className="w-4 h-4" />
+                          Cancel Download
+                        </button>
+                      )}
+
                       {model.status === "not_downloaded" && (
                         <button
                           onClick={(e) => {

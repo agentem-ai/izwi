@@ -20,12 +20,16 @@ import clsx from "clsx";
 interface MyModelsPageProps {
   models: ModelInfo[];
   loading: boolean;
-  downloadProgress: Record<string, number>;
+  downloadProgress: Record<
+    string,
+    { percent: number; currentFile: string; status: string }
+  >;
   onDownload: (variant: string) => void;
+  onCancelDownload?: (variant: string) => void;
   onLoad: (variant: string) => void;
   onUnload: (variant: string) => void;
   onDelete: (variant: string) => void;
-  onRefresh?: () => void;
+  onRefresh: () => void;
 }
 
 type FilterType = "all" | "downloaded" | "loaded" | "not_downloaded";
@@ -472,8 +476,9 @@ export function MyModelsPage({
             const isLoading = model.status === "loading";
             const isReady = model.status === "ready";
             const isDownloaded = model.status === "downloaded";
+            const progressValue = downloadProgress[model.variant];
             const progress =
-              downloadProgress[model.variant] || model.download_progress || 0;
+              progressValue?.percent ?? model.download_progress ?? 0;
 
             return (
               <div

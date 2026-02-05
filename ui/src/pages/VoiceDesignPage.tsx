@@ -8,8 +8,12 @@ interface VoiceDesignPageProps {
   models: ModelInfo[];
   selectedModel: string | null;
   loading: boolean;
-  downloadProgress: Record<string, number>;
+  downloadProgress: Record<
+    string,
+    { percent: number; currentFile: string; status: string }
+  >;
   onDownload: (variant: string) => void;
+  onCancelDownload?: (variant: string) => void;
   onLoad: (variant: string) => void;
   onUnload: (variant: string) => void;
   onDelete: (variant: string) => void;
@@ -23,6 +27,7 @@ export function VoiceDesignPage({
   loading,
   downloadProgress,
   onDownload,
+  onCancelDownload,
   onLoad,
   onUnload,
   onDelete,
@@ -75,6 +80,7 @@ export function VoiceDesignPage({
               models={models}
               selectedModel={relevantSelectedModel}
               onDownload={onDownload}
+              onCancelDownload={onCancelDownload}
               onLoad={onLoad}
               onUnload={onUnload}
               onDelete={onDelete}

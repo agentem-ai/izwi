@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{info, warn};
 
 use crate::audio::{AudioChunkBuffer, AudioCodec, AudioEncoder, StreamingConfig};
@@ -87,7 +87,7 @@ impl InferenceEngine {
     pub async fn spawn_download(
         &self,
         variant: ModelVariant,
-    ) -> Result<mpsc::Receiver<crate::model::download::DownloadProgress>> {
+    ) -> Result<broadcast::Receiver<crate::model::download::DownloadProgress>> {
         let progress_rx = self.model_manager.spawn_download(variant).await?;
         Ok(progress_rx)
     }

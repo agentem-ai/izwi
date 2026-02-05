@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::info;
 
 use crate::config::EngineConfig;
@@ -101,7 +101,7 @@ impl ModelManager {
     pub async fn download_model_with_progress(
         &self,
         variant: ModelVariant,
-        progress_tx: mpsc::Sender<DownloadProgress>,
+        progress_tx: broadcast::Sender<DownloadProgress>,
     ) -> Result<PathBuf> {
         // Update status
         {
@@ -243,7 +243,7 @@ impl ModelManager {
     pub async fn spawn_download(
         &self,
         variant: ModelVariant,
-    ) -> Result<mpsc::Receiver<DownloadProgress>> {
+    ) -> Result<broadcast::Receiver<DownloadProgress>> {
         // Update status
         {
             let mut models = self.models.write().await;
@@ -255,6 +255,28 @@ impl ModelManager {
         let progress_rx = self.downloader.spawn_download(variant).await?;
 
         Ok(progress_rx)
+    }
+
+    /// Subscribe to progress updates for an active download
+    pub async fn subscribe_progress(
+        &self,
+        variant: ModelVariant,
+    ) -> Result<broadcast::Receiver<DownloadProgress>> {
+        self.downloader.subscribe_progress(variant).await
+    }
+
+    /// Cancel an active download
+    pub async fn cancel_download(&self, variant: ModelVariant) -> Result<()> {
+        // Update status first
+        {
+            let mut models = self.models.write().await;
+            if let Some(state) = models.get_mut(&variant) {
+                state.info.status = ModelStatus::NotDownloaded;
+                state.info.download_progress = None;
+            }
+        }
+
+        self.downloader.cancel_download(variant).await
     }
 
     /// Check if a download is currently active

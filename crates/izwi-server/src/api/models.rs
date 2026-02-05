@@ -2,10 +2,13 @@
 
 use axum::{
     extract::{Path, State},
+    response::Sse,
     Json,
 };
+use futures::stream::Stream;
 use serde::Serialize;
-use tracing::info;
+use tokio::sync::mpsc;
+use tracing::{info, warn};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -39,6 +42,21 @@ pub async fn get_model_info(
         .ok_or_else(|| ApiError::not_found("Model not found"))?;
 
     Ok(Json(info))
+}
+
+/// SSE progress event
+#[derive(Serialize, Clone)]
+struct ProgressEvent {
+    variant: String,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+    current_file: String,
+    current_file_downloaded: u64,
+    current_file_total: u64,
+    files_completed: usize,
+    files_total: usize,
+    percent: f32,
+    status: String, // "downloading", "completed", "error"
 }
 
 /// Download progress response
@@ -129,6 +147,102 @@ pub async fn delete_model(
         status: "deleted",
         message: format!("Model {} deleted successfully", variant),
     }))
+}
+
+/// Stream download progress as SSE
+pub async fn download_progress_stream(
+    State(state): State<AppState>,
+    Path(variant): Path<String>,
+) -> Result<
+    Sse<impl Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>>,
+    ApiError,
+> {
+    use axum::response::sse::Event;
+    use futures::stream::StreamExt;
+
+    let variant = parse_variant(&variant)?;
+    info!("Starting SSE progress stream for: {}", variant);
+
+    // Get progress receiver from engine
+    let engine = state.engine.read().await;
+    let mut progress_rx = engine
+        .model_manager()
+        .subscribe_progress(variant)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to subscribe to progress: {}", e)))?;
+
+    let stream = async_stream::stream! {
+        loop {
+            match progress_rx.recv().await {
+                Ok(progress) => {
+                    let event = ProgressEvent {
+                        variant: progress.variant.to_string(),
+                        downloaded_bytes: progress.downloaded_bytes,
+                        total_bytes: progress.total_bytes,
+                        current_file: progress.current_file.clone(),
+                        current_file_downloaded: progress.current_file_downloaded,
+                        current_file_total: progress.current_file_total,
+                        files_completed: progress.files_completed,
+                        files_total: progress.files_total,
+                        percent: progress.total_percent(),
+                        status: if progress.files_completed >= progress.files_total {
+                            "completed".to_string()
+                        } else {
+                            "downloading".to_string()
+                        },
+                    };
+
+                    let json = serde_json::to_string(&event).unwrap_or_default();
+                    yield Ok(Event::default().data(json));
+
+                    // Stop if download is complete
+                    if event.status == "completed" {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    // Channel closed or lagged, stop streaming
+                    break;
+                }
+            }
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
+}
+
+/// Cancel an active download
+pub async fn cancel_download(
+    State(state): State<AppState>,
+    Path(variant): Path<String>,
+) -> Result<Json<DownloadResponse>, ApiError> {
+    let variant = parse_variant(&variant)?;
+    info!("Cancelling download for: {}", variant);
+
+    let engine = state.engine.read().await;
+
+    // Check if download is active
+    if !engine.is_download_active(variant).await {
+        return Ok(Json(DownloadResponse {
+            status: "not_active",
+            message: format!("No active download for {}", variant),
+        }));
+    }
+
+    // Cancel the download
+    match engine.model_manager().cancel_download(variant).await {
+        Ok(_) => Ok(Json(DownloadResponse {
+            status: "cancelled",
+            message: format!("Download of {} cancelled", variant),
+        })),
+        Err(e) => {
+            warn!("Failed to cancel download: {}", e);
+            Err(ApiError::internal(format!(
+                "Failed to cancel download: {}",
+                e
+            )))
+        }
+    }
 }
 
 /// Parse model variant from string

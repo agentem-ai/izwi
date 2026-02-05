@@ -28,6 +28,14 @@ pub fn create_router(state: AppState) -> Router {
         // Model management
         .route("/models", get(models::list_models))
         .route("/models/:variant/download", post(models::download_model))
+        .route(
+            "/models/:variant/download/progress",
+            get(models::download_progress_stream),
+        )
+        .route(
+            "/models/:variant/download/cancel",
+            post(models::cancel_download),
+        )
         .route("/models/:variant/load", post(models::load_model))
         .route("/models/:variant/unload", post(models::unload_model))
         .route(
