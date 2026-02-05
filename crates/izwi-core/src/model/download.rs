@@ -6,15 +6,13 @@
 //! - Non-blocking downloads with background task spawning
 //! - Real-time progress via channels
 
-use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use reqwest;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -153,6 +151,8 @@ impl ModelDownloader {
         filename: &str,
         dest: &Path,
         file_pb: Option<ProgressBar>,
+        progress_tx: Option<broadcast::Sender<DownloadProgress>>,
+        progress_template: Option<DownloadProgress>,
     ) -> Result<u64> {
         let url = format!("{}/{}/resolve/main/{}", HF_BASE_URL, repo_id, filename);
         debug!("Downloading from URL: {}", url);
@@ -202,6 +202,20 @@ impl ModelDownloader {
 
             if let Some(ref pb) = file_pb {
                 pb.set_position(downloaded);
+            }
+
+            // Send real-time progress update
+            if let Some(ref tx) = progress_tx {
+                if let Some(ref template) = progress_template {
+                    let progress = DownloadProgress {
+                        current_file_downloaded: downloaded,
+                        current_file_total: total_size.max(downloaded),
+                        // Calculate total downloaded: base bytes from completed files + current file progress
+                        downloaded_bytes: template.downloaded_bytes + downloaded,
+                        ..template.clone()
+                    };
+                    let _ = tx.send(progress);
+                }
             }
         }
 
@@ -331,7 +345,7 @@ impl ModelDownloader {
 
             // Stream download with progress
             match self
-                .download_file_streaming(repo_id, file, &dest, Some(file_pb.clone()))
+                .download_file_streaming(repo_id, file, &dest, Some(file_pb.clone()), None, None)
                 .await
             {
                 Ok(bytes_downloaded) => {
@@ -497,8 +511,27 @@ impl ModelDownloader {
             );
             file_pb.set_message(file.clone());
 
+            // Create progress template for real-time updates
+            let progress_template = DownloadProgress {
+                variant,
+                downloaded_bytes, // Base bytes from completed files
+                total_bytes,
+                current_file: file.clone(),
+                current_file_downloaded: 0,
+                current_file_total: file_size,
+                files_completed: idx,
+                files_total: total_files,
+            };
+
             match self
-                .download_file_streaming(repo_id, file, &dest, Some(file_pb.clone()))
+                .download_file_streaming(
+                    repo_id,
+                    file,
+                    &dest,
+                    Some(file_pb.clone()),
+                    Some(progress_tx.clone()),
+                    Some(progress_template),
+                )
                 .await
             {
                 Ok(bytes_downloaded) => {
