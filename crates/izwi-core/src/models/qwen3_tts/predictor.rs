@@ -65,28 +65,31 @@ pub struct CodePredictor {
 impl CodePredictor {
     /// Load the code predictor from VarBuilder
     pub fn load(cfg: CodePredictorConfig, vb: VarBuilder, num_code_groups: usize) -> Result<Self> {
-        // Load codec embeddings (one per codebook)
-        let mut codec_embeddings = Vec::with_capacity(num_code_groups);
-        for idx in 0..num_code_groups {
+        // Load codec embeddings (one per codebook, but weights only have 15)
+        // The model has embeddings 0-14 (15 total), not 16
+        let num_codec_embeddings = num_code_groups.min(15);
+        let mut codec_embeddings = Vec::with_capacity(num_codec_embeddings);
+        for idx in 0..num_codec_embeddings {
             let embed = candle_nn::embedding(
                 cfg.vocab_size,
                 cfg.hidden_size,
-                vb.pp(format!("codec_embedding.{idx}")),
+                vb.pp(format!("model.codec_embedding.{idx}")),
             )?;
             codec_embeddings.push(embed);
         }
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for idx in 0..cfg.num_hidden_layers {
-            let layer = Layer::load(&cfg, vb.pp(format!("layers.{idx}")))?;
+            let layer = Layer::load(&cfg, vb.pp(format!("model.layers.{idx}")))?;
             layers.push(layer);
         }
 
-        let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("norm"))?;
+        let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model.norm"))?;
 
-        // Load output heads (one per code group)
-        let mut lm_heads = Vec::with_capacity(num_code_groups);
-        for idx in 0..num_code_groups {
+        // Load output heads (one per code group, but weights only have 15)
+        let num_lm_heads = num_code_groups.min(15);
+        let mut lm_heads = Vec::with_capacity(num_lm_heads);
+        for idx in 0..num_lm_heads {
             let head = candle_nn::linear_no_bias(
                 cfg.hidden_size,
                 cfg.vocab_size,

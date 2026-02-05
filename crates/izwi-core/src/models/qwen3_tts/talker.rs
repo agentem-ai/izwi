@@ -365,9 +365,34 @@ impl Layer {
     }
 }
 
+/// Text projection MLP to project text embeddings to model hidden size
+struct TextProjection {
+    linear_fc1: Linear,
+    linear_fc2: Linear,
+}
+
+impl TextProjection {
+    fn load(text_hidden_size: usize, hidden_size: usize, vb: VarBuilder) -> Result<Self> {
+        let linear_fc1 =
+            candle_nn::linear(text_hidden_size, text_hidden_size, vb.pp("linear_fc1"))?;
+        let linear_fc2 = candle_nn::linear(text_hidden_size, hidden_size, vb.pp("linear_fc2"))?;
+        Ok(Self {
+            linear_fc1,
+            linear_fc2,
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let x = self.linear_fc1.forward(x)?;
+        let x = ops::silu(&x)?;
+        self.linear_fc2.forward(&x).map_err(Error::from)
+    }
+}
+
 /// Qwen3-TTS Talker model
 pub struct TalkerModel {
     text_embedding: Embedding,
+    text_projection: TextProjection,
     codec_embedding: Embedding,
     layers: Vec<Layer>,
     norm: RmsNorm,
@@ -382,24 +407,34 @@ impl TalkerModel {
     pub fn load(cfg: TalkerConfig, vb: VarBuilder) -> Result<Self> {
         let text_embedding = candle_nn::embedding(
             cfg.text_vocab_size,
-            cfg.hidden_size,
-            vb.pp("text_embedding"),
+            cfg.text_hidden_size,
+            vb.pp("model.text_embedding"),
         )?;
-        let codec_embedding =
-            candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("codec_embedding"))?;
-        let lm_head = candle_nn::linear_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
+        let text_projection = TextProjection::load(
+            cfg.text_hidden_size,
+            cfg.hidden_size,
+            vb.pp("text_projection"),
+        )?;
+        let codec_embedding = candle_nn::embedding(
+            cfg.vocab_size,
+            cfg.hidden_size,
+            vb.pp("model.codec_embedding"),
+        )?;
+        let lm_head =
+            candle_nn::linear_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("codec_head"))?;
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for idx in 0..cfg.num_hidden_layers {
-            let layer = Layer::load(&cfg, vb.pp(format!("layers.{idx}")))?;
+            let layer = Layer::load(&cfg, vb.pp(format!("model.layers.{idx}")))?;
             layers.push(layer);
         }
 
-        let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("norm"))?;
+        let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model.norm"))?;
         let use_mrope = cfg.uses_mrope();
 
         Ok(Self {
             text_embedding,
+            text_projection,
             codec_embedding,
             layers,
             norm,
@@ -434,9 +469,10 @@ impl TalkerModel {
     /// Get embeddings for token IDs
     /// Uses text_embedding for text tokens and codec_embedding for codec tokens
     pub fn embeddings(&self, input_ids: &Tensor) -> Result<Tensor> {
-        // For now, use text_embedding for all tokens
+        // For now, use text_embedding for all tokens and project to hidden_size
         // TODO: Properly handle mixed text/codec tokens based on vocab ranges
-        self.text_embedding.forward(input_ids).map_err(Error::from)
+        let text_embeds = self.text_embedding.forward(input_ids)?;
+        self.text_projection.forward(&text_embeds)
     }
 
     /// Forward pass with pre-computed embeddings

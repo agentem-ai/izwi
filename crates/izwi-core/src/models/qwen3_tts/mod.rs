@@ -5,11 +5,13 @@
 
 mod config;
 mod predictor;
+mod speech_tokenizer;
 mod talker;
 mod tokenizer;
 
 pub use config::{CodePredictorConfig, Qwen3TtsConfig, TalkerConfig};
 pub use predictor::{CodePredictor, CodePredictorCache};
+pub use speech_tokenizer::SpeechTokenizerDecoder;
 pub use talker::{TalkerCache, TalkerModel};
 pub use tokenizer::{SpeakerReference, TtsSpecialTokens, TtsTokenizer};
 
@@ -35,6 +37,8 @@ pub struct Qwen3TtsModel {
     talker: TalkerModel,
     /// Code predictor for multi-codebook generation
     code_predictor: CodePredictor,
+    /// Speech tokenizer decoder for codec to audio conversion
+    speech_tokenizer: SpeechTokenizerDecoder,
     /// Model configuration
     config: Qwen3TtsConfig,
 }
@@ -71,16 +75,22 @@ impl Qwen3TtsModel {
 
         // Load talker model
         info!("Loading talker model...");
-        let talker = TalkerModel::load(config.talker_config.clone(), vb.pp("talker.model"))?;
+        let talker = TalkerModel::load(config.talker_config.clone(), vb.pp("talker"))?;
 
         // Load code predictor
         info!("Loading code predictor...");
         let num_code_groups = config.talker_config.num_code_groups;
         let code_predictor = CodePredictor::load(
             config.talker_config.code_predictor_config.clone(),
-            vb.pp("talker.code_predictor.model"),
+            vb.pp("talker.code_predictor"),
             num_code_groups,
         )?;
+
+        // Load speech tokenizer decoder
+        info!("Loading speech tokenizer decoder...");
+        let speech_tokenizer_path = model_dir.join("speech_tokenizer");
+        let speech_tokenizer =
+            SpeechTokenizerDecoder::load(&speech_tokenizer_path, device.device.clone(), dtype)?;
 
         info!("Qwen3-TTS model loaded successfully on {:?}", device.kind);
 
@@ -91,6 +101,7 @@ impl Qwen3TtsModel {
             specials,
             talker,
             code_predictor,
+            speech_tokenizer,
             config,
         })
     }
@@ -116,15 +127,7 @@ impl Qwen3TtsModel {
         let codec_tokens = self.generate_codec_tokens(&input_ids)?;
 
         // Decode to audio using speech tokenizer
-        // For now, return empty - audio decoding will be implemented separately
-        let _audio = self.codec_to_audio(&codec_tokens)?;
-
-        // TODO: Implement proper audio decoding with speech tokenizer
-        // This requires loading and using the separate speech tokenizer model
-        Err(Error::ModelError(
-            "Audio decoding not yet implemented - speech tokenizer integration required"
-                .to_string(),
-        ))
+        self.codec_to_audio(&codec_tokens)
     }
 
     /// Generate speech with voice cloning
@@ -234,12 +237,40 @@ impl Qwen3TtsModel {
     }
 
     /// Convert codec tokens to audio waveform
-    fn codec_to_audio(&self, _codec_tokens: &[Vec<u32>]) -> Result<Vec<f32>> {
-        // This requires the speech tokenizer decoder (Code2Wav)
-        // For now, return empty - this will be implemented with the speech tokenizer
-        Err(Error::ModelError(
-            "Codec to audio decoding not yet implemented".to_string(),
-        ))
+    fn codec_to_audio(&self, codec_tokens: &[Vec<u32>]) -> Result<Vec<f32>> {
+        // Convert combined tokens back to raw codec indices for speech tokenizer
+        let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
+        let codec_vocab_size = self.tokenizer.codec_vocab_size() as u32;
+
+        let mut raw_codec_tokens: Vec<Vec<u32>> = Vec::new();
+
+        for (group_idx, group_tokens) in codec_tokens.iter().enumerate() {
+            let mut raw_tokens = Vec::new();
+            for &token in group_tokens {
+                // Convert combined token back to codec index
+                let codec_token = if group_idx == 0 {
+                    // First group: token - text_vocab_size
+                    if token >= text_vocab_size {
+                        token - text_vocab_size
+                    } else {
+                        token // Already a codec token
+                    }
+                } else {
+                    // Other groups: (token - text_vocab_size) - (group_idx * codec_vocab_size)
+                    let offset = text_vocab_size + (group_idx as u32 * codec_vocab_size);
+                    if token >= offset {
+                        token - offset
+                    } else {
+                        token
+                    }
+                };
+                raw_tokens.push(codec_token);
+            }
+            raw_codec_tokens.push(raw_tokens);
+        }
+
+        // Decode through speech tokenizer
+        self.speech_tokenizer.decode(&raw_codec_tokens)
     }
 
     /// List available preset speakers
