@@ -29,7 +29,10 @@ pub struct TtsSpecialTokens {
 
 impl TtsSpecialTokens {
     /// Create from main config and talker config
-    pub fn from_configs(main_config: &super::config::Qwen3TtsConfig, talker_config: &TalkerConfig) -> Self {
+    pub fn from_configs(
+        main_config: &super::config::Qwen3TtsConfig,
+        talker_config: &TalkerConfig,
+    ) -> Self {
         Self {
             assistant_token_id: main_config.assistant_token_id,
             im_end_token_id: main_config.im_end_token_id,
@@ -98,9 +101,24 @@ impl TtsTokenizer {
         talker_config: &TalkerConfig,
     ) -> Result<Self> {
         // Load base Qwen text tokenizer
-        let tokenizer_path = model_dir.join("tokenizer.json");
-        let text_tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
-            .map_err(|e| Error::ModelError(format!("Failed to load tokenizer: {}", e)))?;
+        // Qwen3-TTS models use vocab.json + merges.txt (BPE format), not tokenizer.json
+        let tokenizer_json_path = model_dir.join("tokenizer.json");
+        let vocab_path = model_dir.join("vocab.json");
+        let merges_path = model_dir.join("merges.txt");
+
+        let text_tokenizer = if tokenizer_json_path.exists() {
+            // Use tokenizer.json if available
+            tokenizers::Tokenizer::from_file(&tokenizer_json_path)
+                .map_err(|e| Error::ModelError(format!("Failed to load tokenizer: {}", e)))?
+        } else if vocab_path.exists() && merges_path.exists() {
+            // Build tokenizer from vocab.json + merges.txt (Qwen BPE format)
+            Self::build_bpe_tokenizer(&vocab_path, &merges_path)?
+        } else {
+            return Err(Error::ModelError(format!(
+                "No tokenizer found in {:?}. Expected tokenizer.json or vocab.json + merges.txt",
+                model_dir
+            )));
+        };
 
         Ok(Self {
             text_tokenizer,
@@ -113,12 +131,33 @@ impl TtsTokenizer {
         })
     }
 
+    /// Build a BPE tokenizer from vocab.json and merges.txt files
+    fn build_bpe_tokenizer(vocab_path: &Path, merges_path: &Path) -> Result<tokenizers::Tokenizer> {
+        use tokenizers::models::bpe::BPE;
+
+        let vocab_str = vocab_path
+            .to_str()
+            .ok_or_else(|| Error::ModelError("Invalid vocab path".to_string()))?;
+        let merges_str = merges_path
+            .to_str()
+            .ok_or_else(|| Error::ModelError("Invalid merges path".to_string()))?;
+
+        // Load vocab and merges using BPE builder
+        let bpe = BPE::from_file(vocab_str, merges_str)
+            .build()
+            .map_err(|e| Error::ModelError(format!("Failed to build BPE tokenizer: {}", e)))?;
+
+        let tokenizer = tokenizers::Tokenizer::new(bpe);
+        Ok(tokenizer)
+    }
+
     /// Encode text for TTS generation
     pub fn encode_text(&self, text: &str, language: Option<&str>) -> Result<Vec<u32>> {
-        let encoding = self.text_tokenizer
+        let encoding = self
+            .text_tokenizer
             .encode(text, true)
             .map_err(|e| Error::ModelError(format!("Tokenization failed: {}", e)))?;
-        
+
         Ok(encoding.get_ids().to_vec())
     }
 
@@ -130,7 +169,7 @@ impl TtsTokenizer {
             .filter(|&&t| t < self.text_vocab_size as u32)
             .copied()
             .collect();
-        
+
         self.text_tokenizer
             .decode(&text_tokens, true)
             .map_err(|e| Error::ModelError(format!("Decoding failed: {}", e)))
@@ -250,8 +289,8 @@ impl TtsTokenizer {
                 for (group_idx, group_tokens) in ref_codec_tokens.iter().enumerate() {
                     if t < group_tokens.len() {
                         // Offset token by text_vocab_size + group-specific offset
-                        let token = self.text_vocab_size as u32 
-                            + group_tokens[t] 
+                        let token = self.text_vocab_size as u32
+                            + group_tokens[t]
                             + (group_idx as u32 * self.codec_vocab_size as u32);
                         sequence.push(token);
                     }
@@ -282,20 +321,17 @@ impl TtsTokenizer {
 
     /// Decode codec tokens from model output
     /// Returns [num_code_groups, seq_len] token arrays
-    pub fn decode_codec_tokens(
-        &self,
-        tokens: &[u32],
-    ) -> Vec<Vec<u32>> {
+    pub fn decode_codec_tokens(&self, tokens: &[u32]) -> Vec<Vec<u32>> {
         let mut code_groups: Vec<Vec<u32>> = vec![Vec::new(); self.num_code_groups];
-        
+
         for &token in tokens {
             // Skip non-codec tokens
             if token < self.text_vocab_size as u32 {
                 continue;
             }
-            
+
             let codec_token = token - self.text_vocab_size as u32;
-            
+
             // Check if it's a special codec token
             if codec_token == self.specials.codec_eos_token_id {
                 break; // End of sequence
@@ -303,16 +339,16 @@ impl TtsTokenizer {
             if codec_token == self.specials.codec_pad_id {
                 continue; // Skip padding
             }
-            
+
             // Determine which codebook this belongs to
             let group_idx = (codec_token as usize) / self.codec_vocab_size;
             let group_token = (codec_token as usize) % self.codec_vocab_size;
-            
+
             if group_idx < self.num_code_groups {
                 code_groups[group_idx].push(group_token as u32);
             }
         }
-        
+
         code_groups
     }
 
@@ -355,10 +391,7 @@ pub fn build_chatml_prompt(text: &str, system_prompt: Option<&str>) -> String {
             system, text
         )
     } else {
-        format!(
-            "<|im_start|>assistant\n{}<|im_end|>",
-            text
-        )
+        format!("<|im_start|>assistant\n{}<|im_end|>", text)
     }
 }
 
@@ -383,7 +416,7 @@ mod tests {
             codec_think_bos_id: 2156,
             codec_think_eos_id: 2157,
         };
-        
+
         assert_eq!(specials.codec_bos_id, 2149);
         assert_eq!(specials.codec_eos_token_id, 2150);
     }

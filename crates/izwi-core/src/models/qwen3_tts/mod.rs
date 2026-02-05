@@ -66,20 +66,19 @@ impl Qwen3TtsModel {
 
         // Load model weights
         let weights_path = model_dir.join("model.safetensors");
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[weights_path], dtype, &device.device)?
-        };
+        let vb =
+            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], dtype, &device.device)? };
 
         // Load talker model
         info!("Loading talker model...");
-        let talker = TalkerModel::load(config.talker_config.clone(), vb.pp("talker"))?;
+        let talker = TalkerModel::load(config.talker_config.clone(), vb.pp("talker.model"))?;
 
         // Load code predictor
         info!("Loading code predictor...");
         let num_code_groups = config.talker_config.num_code_groups;
         let code_predictor = CodePredictor::load(
             config.talker_config.code_predictor_config.clone(),
-            vb.pp("code_predictor"),
+            vb.pp("talker.code_predictor.model"),
             num_code_groups,
         )?;
 
@@ -107,9 +106,9 @@ impl Qwen3TtsModel {
         info!("Generating speech with speaker: {}", speaker);
 
         // Build input sequence
-        let input_ids = self
-            .tokenizer
-            .build_input_sequence(text, Some(speaker), language, false)?;
+        let input_ids =
+            self.tokenizer
+                .build_input_sequence(text, Some(speaker), language, false)?;
 
         debug!("Input sequence length: {}", input_ids.len());
 
@@ -123,7 +122,8 @@ impl Qwen3TtsModel {
         // TODO: Implement proper audio decoding with speech tokenizer
         // This requires loading and using the separate speech tokenizer model
         Err(Error::ModelError(
-            "Audio decoding not yet implemented - speech tokenizer integration required".to_string(),
+            "Audio decoding not yet implemented - speech tokenizer integration required"
+                .to_string(),
         ))
     }
 
@@ -141,9 +141,9 @@ impl Qwen3TtsModel {
         let ref_codec_tokens = self.encode_reference_audio(reference)?;
 
         // Build input sequence with reference tokens
-        let input_ids = self
-            .tokenizer
-            .build_voice_clone_sequence(text, &ref_codec_tokens, language, false)?;
+        let input_ids =
+            self.tokenizer
+                .build_voice_clone_sequence(text, &ref_codec_tokens, language, false)?;
 
         // Generate codec tokens
         let codec_tokens = self.generate_codec_tokens(&input_ids)?;
@@ -158,14 +158,20 @@ impl Qwen3TtsModel {
         let mut predictor_cache = CodePredictorCache::new(self.code_predictor.num_layers());
 
         // Convert input to tensor
-        let input_tensor =
-            Tensor::from_vec(input_ids.to_vec(), (1, input_ids.len()), &self.device.device)?;
+        let input_tensor = Tensor::from_vec(
+            input_ids.to_vec(),
+            (1, input_ids.len()),
+            &self.device.device,
+        )?;
 
         // Initial forward pass through talker
-        let mut logits = self.talker.forward(&input_tensor, 0, Some(&mut talker_cache))?;
+        let mut logits = self
+            .talker
+            .forward(&input_tensor, 0, Some(&mut talker_cache))?;
 
         // Collect generated tokens
-        let mut all_code_groups: Vec<Vec<u32>> = vec![Vec::new(); self.config.talker_config.num_code_groups];
+        let mut all_code_groups: Vec<Vec<u32>> =
+            vec![Vec::new(); self.config.talker_config.num_code_groups];
         let mut pos = input_ids.len();
         let max_length = 2048; // Maximum audio length in tokens
 
@@ -190,9 +196,11 @@ impl Qwen3TtsModel {
             // Generate remaining codebooks using code predictor
             let first_codebook_tensor =
                 Tensor::from_vec(vec![first_codebook_token], (1, 1), &self.device.device)?;
-            let predictor_logits = self
-                .code_predictor
-                .forward(&first_codebook_tensor, pos, Some(&mut predictor_cache))?;
+            let predictor_logits = self.code_predictor.forward(
+                &first_codebook_tensor,
+                pos,
+                Some(&mut predictor_cache),
+            )?;
 
             // Sample from each code group's logits
             for (group_idx, group_logits) in predictor_logits.iter().enumerate().skip(1) {

@@ -53,10 +53,10 @@ impl CodePredictorCache {
 
 /// Code Predictor model
 pub struct CodePredictor {
-    embed_tokens: Embedding,
+    codec_embeddings: Vec<Embedding>,
     layers: Vec<Layer>,
     norm: RmsNorm,
-    code_heads: Vec<Linear>,
+    lm_heads: Vec<Linear>,
     device: Device,
     cfg: CodePredictorConfig,
     num_code_groups: usize,
@@ -65,8 +65,16 @@ pub struct CodePredictor {
 impl CodePredictor {
     /// Load the code predictor from VarBuilder
     pub fn load(cfg: CodePredictorConfig, vb: VarBuilder, num_code_groups: usize) -> Result<Self> {
-        let embed_tokens =
-            candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("embed_tokens"))?;
+        // Load codec embeddings (one per codebook)
+        let mut codec_embeddings = Vec::with_capacity(num_code_groups);
+        for idx in 0..num_code_groups {
+            let embed = candle_nn::embedding(
+                cfg.vocab_size,
+                cfg.hidden_size,
+                vb.pp(format!("codec_embedding.{idx}")),
+            )?;
+            codec_embeddings.push(embed);
+        }
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for idx in 0..cfg.num_hidden_layers {
@@ -76,22 +84,22 @@ impl CodePredictor {
 
         let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("norm"))?;
 
-        // Create output head for each code group
-        let mut code_heads = Vec::with_capacity(num_code_groups);
+        // Load output heads (one per code group)
+        let mut lm_heads = Vec::with_capacity(num_code_groups);
         for idx in 0..num_code_groups {
             let head = candle_nn::linear_no_bias(
                 cfg.hidden_size,
                 cfg.vocab_size,
-                vb.pp(format!("code_heads.{idx}")),
+                vb.pp(format!("lm_head.{idx}")),
             )?;
-            code_heads.push(head);
+            lm_heads.push(head);
         }
 
         Ok(Self {
-            embed_tokens,
+            codec_embeddings,
             layers,
             norm,
-            code_heads,
+            lm_heads,
             device: vb.device().clone(),
             cfg,
             num_code_groups,
@@ -120,8 +128,8 @@ impl CodePredictor {
         start_pos: usize,
         cache: Option<&mut CodePredictorCache>,
     ) -> Result<Vec<Tensor>> {
-        // Embed the first codebook tokens
-        let mut x = self.embed_tokens.forward(first_codebook)?;
+        // Embed the first codebook tokens using the first codec embedding
+        let mut x = self.codec_embeddings[0].forward(first_codebook)?;
 
         // Pass through transformer layers
         let mut cache_ref = cache;
@@ -134,7 +142,7 @@ impl CodePredictor {
 
         // Generate logits for each code group
         let mut outputs = Vec::with_capacity(self.num_code_groups);
-        for head in &self.code_heads {
+        for head in &self.lm_heads {
             let logits = head.forward(&x)?;
             outputs.push(logits);
         }
