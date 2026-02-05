@@ -466,16 +466,11 @@ impl SpeechTokenizerDecoder {
             vb.pp("quantizer.rvq_rest"),
         )?;
 
-        // Final decoder blocks (simplified - actual model has more complex upsampling)
-        let mut final_decoder = Vec::new();
-        // Create some decoder blocks
-        for i in 0..3 {
-            let block =
-                DecoderBlock::load(decoder_config.decoder_dim, 7, vb.pp(format!("decoder.{i}")))?;
-            final_decoder.push(block);
-        }
+        // Skip complex decoder blocks for now - just use final conv
+        // The actual model has upsampling blocks at decoder.decoder.{1-5}
+        let final_decoder = Vec::new();
 
-        // Final conv to produce audio
+        // Final conv to produce audio from decoder_dim channels
         let final_conv_config = Conv1dConfig {
             padding: 3, // kernel_size 7, so padding 3
             stride: 1,
@@ -483,13 +478,9 @@ impl SpeechTokenizerDecoder {
             groups: 1,
             ..Default::default()
         };
-        let final_conv = candle_nn::conv1d(
-            decoder_config.decoder_dim,
-            1,
-            7,
-            final_conv_config,
-            vb.pp("decoder.6"),
-        )?;
+        // Use 96 as input channels (actual weight shape [1, 96, 7])
+        // Config says decoder_dim is 1536 but actual weight is 96
+        let final_conv = candle_nn::conv1d(96, 1, 7, final_conv_config, vb.pp("decoder.6.conv"))?;
 
         Ok(Self {
             pre_conv,
