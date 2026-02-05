@@ -43,5 +43,5 @@ pub use engine::{
 pub use config::EngineConfig;
 pub use error::{Error, Result};
 pub use inference::{AudioChunk, GenerationConfig, InferenceEngine};
-pub use model::{ModelInfo, ModelManager, ModelVariant};
+pub use model::{DownloadProgress, ModelInfo, ModelManager, ModelVariant};
 pub use models::{DeviceProfile, DeviceSelector, ModelRegistry};

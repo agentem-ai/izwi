@@ -80,13 +80,8 @@ impl ModelManager {
             }
         }
 
-        // Perform download
-        let result = tokio::task::spawn_blocking({
-            let downloader = self.downloader.clone();
-            move || downloader.download(variant)
-        })
-        .await
-        .map_err(|e| Error::DownloadError(e.to_string()))??;
+        // Perform download (now async - no spawn_blocking needed)
+        let result = self.downloader.download(variant).await?;
 
         // Update status
         {
@@ -242,6 +237,42 @@ impl ModelManager {
         }
 
         Ok(())
+    }
+
+    /// Start a non-blocking background download
+    pub async fn spawn_download(
+        &self,
+        variant: ModelVariant,
+    ) -> Result<mpsc::Receiver<DownloadProgress>> {
+        // Update status
+        {
+            let mut models = self.models.write().await;
+            if let Some(state) = models.get_mut(&variant) {
+                state.info.status = ModelStatus::Downloading;
+            }
+        }
+
+        let progress_rx = self.downloader.spawn_download(variant).await?;
+
+        Ok(progress_rx)
+    }
+
+    /// Check if a download is currently active
+    pub async fn is_download_active(&self, variant: ModelVariant) -> bool {
+        self.downloader.is_download_active(variant).await
+    }
+
+    /// Wait for an active download to complete
+    pub async fn wait_for_download(&self, variant: ModelVariant) -> Result<Option<PathBuf>> {
+        self.downloader.wait_for_download(variant).await
+    }
+
+    /// Get download state
+    pub async fn get_download_state(
+        &self,
+        variant: ModelVariant,
+    ) -> super::download::DownloadState {
+        self.downloader.state_manager().get_state(variant).await
     }
 }
 

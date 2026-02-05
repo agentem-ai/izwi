@@ -83,6 +83,20 @@ impl InferenceEngine {
         Ok(())
     }
 
+    /// Spawn a non-blocking background download
+    pub async fn spawn_download(
+        &self,
+        variant: ModelVariant,
+    ) -> Result<mpsc::Receiver<crate::model::download::DownloadProgress>> {
+        let progress_rx = self.model_manager.spawn_download(variant).await?;
+        Ok(progress_rx)
+    }
+
+    /// Check if a download is active
+    pub async fn is_download_active(&self, variant: ModelVariant) -> bool {
+        self.model_manager.is_download_active(variant).await
+    }
+
     /// Unload a model from memory
     pub async fn unload_model(&self, variant: ModelVariant) -> Result<()> {
         if variant.is_asr() || variant.is_forced_aligner() || variant.is_voxtral() {
