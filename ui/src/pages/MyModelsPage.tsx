@@ -106,6 +106,14 @@ const MODEL_DETAILS: Record<
     capabilities: ["Transcription"],
     size: "4.7 GB",
   },
+  "Voxtral-Mini-4B-Realtime-2602": {
+    shortName: "Voxtral 4B",
+    fullName: "Voxtral Mini 4B Realtime",
+    description: "Realtime streaming ASR from Mistral AI",
+    category: "asr",
+    capabilities: ["Transcription", "Realtime"],
+    size: "~8 GB",
+  },
 };
 
 function parseSize(sizeStr: string): number {

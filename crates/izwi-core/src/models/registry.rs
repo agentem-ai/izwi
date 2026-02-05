@@ -41,10 +41,18 @@ impl ModelRegistry {
         variant: ModelVariant,
         model_dir: &Path,
     ) -> Result<Arc<Qwen3AsrModel>> {
-        if !variant.is_asr() && !variant.is_forced_aligner() {
+        if !variant.is_asr() && !variant.is_forced_aligner() && !variant.is_voxtral() {
             return Err(Error::InvalidInput(format!(
-                "Model variant {variant} is not an ASR or ForcedAligner model"
+                "Model variant {variant} is not an ASR, ForcedAligner, or Voxtral model"
             )));
+        }
+
+        // Voxtral models require vLLM for inference and are not loaded into native Candle runtime
+        // They are managed externally; just return a placeholder for now
+        if variant.is_voxtral() {
+            return Err(Error::InvalidInput(
+                "Voxtral models require vLLM for inference and are not supported by the native runtime".to_string()
+            ));
         }
 
         let cell = {

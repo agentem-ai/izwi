@@ -128,6 +128,15 @@ impl ModelDownloader {
             return has_config && has_vocab && has_model;
         }
 
+        if variant.is_voxtral() {
+            // Voxtral has sharded safetensors and tokenizer files
+            let has_config = path.join("config.json").exists();
+            let has_tokenizer =
+                path.join("tokenizer.json").exists() || path.join("tokenizer.model").exists();
+            let has_model = path.join("model-00001-of-00004.safetensors").exists();
+            return has_config && has_tokenizer && has_model;
+        }
+
         if variant.is_tokenizer() {
             path.join("tokenizer.json").exists() || path.join("vocab.json").exists()
         } else {
@@ -325,6 +334,25 @@ impl ModelDownloader {
             ];
         }
 
+        // Voxtral Mini 4B Realtime model - sharded safetensors
+        if variant.is_voxtral() {
+            return vec![
+                "config.json".to_string(),
+                "generation_config.json".to_string(),
+                "chat_template.json".to_string(),
+                "preprocessor_config.json".to_string(),
+                "tokenizer.json".to_string(),
+                "tokenizer_config.json".to_string(),
+                "special_tokens_map.json".to_string(),
+                "tokenizer.model".to_string(),
+                "model.safetensors.index.json".to_string(),
+                "model-00001-of-00004.safetensors".to_string(),
+                "model-00002-of-00004.safetensors".to_string(),
+                "model-00003-of-00004.safetensors".to_string(),
+                "model-00004-of-00004.safetensors".to_string(),
+            ];
+        }
+
         let mut files = vec![
             "config.json".to_string(),
             "generation_config.json".to_string(),
@@ -380,6 +408,7 @@ impl ModelDownloader {
                             | ModelVariant::Qwen3Tts12Hz17BVoiceDesign => 3_850_000_000,
                             ModelVariant::Qwen3Asr06B => 1_800_000_000,
                             ModelVariant::Lfm2Audio15B => 2_900_000_000,
+                            ModelVariant::VoxtralMini4BRealtime2602 => 2_000_000_000, // ~2GB per shard
                             _ => 1_500_000_000,
                         }
                     }

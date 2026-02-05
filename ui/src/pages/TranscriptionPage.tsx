@@ -47,7 +47,8 @@ export function TranscriptionPage({
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-white">Transcription</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Speech-to-text with Qwen3-ASR supporting 52 languages
+          Speech-to-text with Qwen3-ASR and Voxtral models supporting 52+
+          languages
         </p>
       </div>
 
@@ -56,7 +57,9 @@ export function TranscriptionPage({
         <div className="card p-3 lg:p-4">
           <div className="mb-3">
             <h2 className="text-sm font-medium text-white">Models</h2>
-            <p className="text-xs text-gray-500 mt-0.5">Qwen3-ASR compatible</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Qwen3-ASR and Voxtral compatible
+            </p>
           </div>
 
           {loading ? (

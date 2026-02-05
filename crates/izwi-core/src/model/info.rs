@@ -36,6 +36,9 @@ pub enum ModelVariant {
     /// Qwen3-ForcedAligner 0.6B model
     #[serde(rename = "Qwen3-ForcedAligner-0.6B")]
     Qwen3ForcedAligner06B,
+    /// Voxtral Mini 4B Realtime model from Mistral AI
+    #[serde(rename = "Voxtral-Mini-4B-Realtime-2602")]
+    VoxtralMini4BRealtime2602,
 }
 
 impl ModelVariant {
@@ -52,6 +55,7 @@ impl ModelVariant {
             Self::Qwen3Asr06B => "Qwen/Qwen3-ASR-0.6B",
             Self::Qwen3Asr17B => "Qwen/Qwen3-ASR-1.7B",
             Self::Qwen3ForcedAligner06B => "Qwen/Qwen3-ForcedAligner-0.6B",
+            Self::VoxtralMini4BRealtime2602 => "mistralai/Voxtral-Mini-4B-Realtime-2602",
         }
     }
 
@@ -68,6 +72,7 @@ impl ModelVariant {
             Self::Qwen3Asr06B => "Qwen3-ASR 0.6B",
             Self::Qwen3Asr17B => "Qwen3-ASR 1.7B",
             Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner 0.6B",
+            Self::VoxtralMini4BRealtime2602 => "Voxtral Mini 4B Realtime",
         }
     }
 
@@ -84,6 +89,7 @@ impl ModelVariant {
             Self::Qwen3Asr06B => "Qwen3-ASR-0.6B",
             Self::Qwen3Asr17B => "Qwen3-ASR-1.7B",
             Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner-0.6B",
+            Self::VoxtralMini4BRealtime2602 => "Voxtral-Mini-4B-Realtime-2602",
         }
     }
 
@@ -100,6 +106,7 @@ impl ModelVariant {
             Self::Qwen3Asr06B => 1_900_000_000,         // ~1.9GB
             Self::Qwen3Asr17B => 4_700_000_000,         // ~4.7GB
             Self::Qwen3ForcedAligner06B => 1_850_000_000, // ~1.85GB
+            Self::VoxtralMini4BRealtime2602 => 8_000_000_000, // ~8GB
         }
     }
 
@@ -115,6 +122,7 @@ impl ModelVariant {
             Self::Qwen3Asr06B => 2.5,
             Self::Qwen3Asr17B => 6.0,
             Self::Qwen3ForcedAligner06B => 2.5,
+            Self::VoxtralMini4BRealtime2602 => 16.0,
         }
     }
 
@@ -148,6 +156,11 @@ impl ModelVariant {
         )
     }
 
+    /// Whether this is a Voxtral model
+    pub fn is_voxtral(&self) -> bool {
+        matches!(self, Self::VoxtralMini4BRealtime2602)
+    }
+
     /// Get all available variants
     pub fn all() -> &'static [ModelVariant] {
         &[
@@ -161,6 +174,7 @@ impl ModelVariant {
             Self::Qwen3Asr06B,
             Self::Qwen3Asr17B,
             Self::Qwen3ForcedAligner06B,
+            Self::VoxtralMini4BRealtime2602,
         ]
     }
 }
