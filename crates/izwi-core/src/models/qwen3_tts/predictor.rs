@@ -65,6 +65,9 @@ pub struct CodePredictor {
 impl CodePredictor {
     /// Load the code predictor from VarBuilder
     pub fn load(cfg: CodePredictorConfig, vb: VarBuilder, num_code_groups: usize) -> Result<Self> {
+        // Use text_hidden_size for codec embeddings if specified, otherwise hidden_size
+        let codec_embed_dim = cfg.text_hidden_size.unwrap_or(cfg.hidden_size);
+
         // Load codec embeddings (one per codebook, but weights only have 15)
         // The model has embeddings 0-14 (15 total), not 16
         let num_codec_embeddings = num_code_groups.min(15);
@@ -72,7 +75,7 @@ impl CodePredictor {
         for idx in 0..num_codec_embeddings {
             let embed = candle_nn::embedding(
                 cfg.vocab_size,
-                cfg.hidden_size,
+                codec_embed_dim,
                 vb.pp(format!("model.codec_embedding.{idx}")),
             )?;
             codec_embeddings.push(embed);

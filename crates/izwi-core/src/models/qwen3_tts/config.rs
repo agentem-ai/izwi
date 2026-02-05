@@ -11,7 +11,7 @@ pub struct Qwen3TtsConfig {
     pub tokenizer_type: String,
     pub tts_model_size: String,
     pub tts_model_type: String,
-    
+
     /// Special token IDs
     pub assistant_token_id: u32,
     pub im_end_token_id: u32,
@@ -19,7 +19,7 @@ pub struct Qwen3TtsConfig {
     pub tts_bos_token_id: u32,
     pub tts_eos_token_id: u32,
     pub tts_pad_token_id: u32,
-    
+
     /// Talker (main LLM) configuration
     pub talker_config: TalkerConfig,
 }
@@ -44,26 +44,26 @@ pub struct TalkerConfig {
     pub hidden_act: String,
     pub use_cache: bool,
     pub position_id_per_seconds: usize,
-    
+
     /// MRoPE configuration
     #[serde(default)]
     pub rope_scaling: Option<RopeScalingConfig>,
-    
+
     /// Sliding window attention
     #[serde(default)]
     pub sliding_window: Option<usize>,
-    
+
     /// Code predictor configuration (for multi-codebook generation)
     pub code_predictor_config: CodePredictorConfig,
-    
+
     /// Speaker IDs mapping
     #[serde(default)]
     pub spk_id: HashMap<String, u32>,
-    
+
     /// Speaker dialect mapping
     #[serde(default)]
     pub spk_is_dialect: HashMap<String, serde_json::Value>,
-    
+
     /// Codec special token IDs
     pub codec_bos_id: u32,
     pub codec_eos_token_id: u32,
@@ -72,7 +72,7 @@ pub struct TalkerConfig {
     pub codec_pad_id: u32,
     pub codec_think_bos_id: u32,
     pub codec_think_eos_id: u32,
-    
+
     /// Language ID mapping
     #[serde(default)]
     pub codec_language_id: HashMap<String, u32>,
@@ -97,6 +97,9 @@ pub struct CodePredictorConfig {
     pub use_cache: bool,
     #[serde(default)]
     pub layer_types: Vec<String>,
+    /// Text hidden size for codec embeddings (may differ from hidden_size in larger models)
+    #[serde(default)]
+    pub text_hidden_size: Option<usize>,
 }
 
 /// RoPE scaling configuration for MRoPE (Multi-modal RoPE)
@@ -114,12 +117,12 @@ impl TalkerConfig {
     pub fn head_dim(&self) -> usize {
         self.head_dim
     }
-    
+
     /// Get number of KV groups for GQA
     pub fn num_kv_groups(&self) -> usize {
         self.num_attention_heads / self.num_key_value_heads
     }
-    
+
     /// Check if MRoPE is enabled
     pub fn uses_mrope(&self) -> bool {
         self.rope_scaling
@@ -127,7 +130,7 @@ impl TalkerConfig {
             .map(|s| s.interleaved.unwrap_or(false))
             .unwrap_or(false)
     }
-    
+
     /// Get MRoPE section configuration
     pub fn mrope_section(&self) -> Vec<usize> {
         self.rope_scaling
@@ -142,7 +145,7 @@ impl CodePredictorConfig {
     pub fn head_dim(&self) -> usize {
         self.head_dim
     }
-    
+
     /// Get number of KV groups for GQA
     pub fn num_kv_groups(&self) -> usize {
         self.num_attention_heads / self.num_key_value_heads
@@ -210,10 +213,13 @@ mod tests {
                 "codec_think_eos_id": 2157
             }
         }"#;
-        
+
         let config: Qwen3TtsConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.model_type, "qwen3_tts");
         assert_eq!(config.talker_config.hidden_size, 1024);
-        assert_eq!(config.talker_config.code_predictor_config.num_hidden_layers, 5);
+        assert_eq!(
+            config.talker_config.code_predictor_config.num_hidden_layers,
+            5
+        );
     }
 }

@@ -80,8 +80,11 @@ impl Qwen3TtsModel {
         // Load code predictor
         info!("Loading code predictor...");
         let num_code_groups = config.talker_config.num_code_groups;
+        // The code predictor's codec embeddings need to use the talker's text_hidden_size
+        let mut code_predictor_config = config.talker_config.code_predictor_config.clone();
+        code_predictor_config.text_hidden_size = Some(config.talker_config.text_hidden_size);
         let code_predictor = CodePredictor::load(
-            config.talker_config.code_predictor_config.clone(),
+            code_predictor_config,
             vb.pp("talker.code_predictor"),
             num_code_groups,
         )?;
@@ -368,6 +371,7 @@ mod tests {
                     hidden_act: "silu".to_string(),
                     use_cache: true,
                     layer_types: vec![],
+                    text_hidden_size: None,
                 },
                 codec_bos_id: 2149,
                 codec_eos_token_id: 2150,
