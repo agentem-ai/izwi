@@ -359,6 +359,13 @@ impl ModelDownloader {
                     "model.safetensors.index.json".to_string(),
                 ]);
             }
+            // Speech tokenizer files (audio codec for decoding)
+            files.extend([
+                "speech_tokenizer/config.json".to_string(),
+                "speech_tokenizer/configuration.json".to_string(),
+                "speech_tokenizer/model.safetensors".to_string(),
+                "speech_tokenizer/preprocessor_config.json".to_string(),
+            ]);
         }
 
         files
@@ -380,7 +387,7 @@ impl ModelDownloader {
                         // Single model file - varies by model
                         match variant {
                             ModelVariant::Qwen3Tts12Hz06BBase
-                            | ModelVariant::Qwen3Tts12Hz06BCustomVoice => 1_100_000_000,
+                            | ModelVariant::Qwen3Tts12Hz06BCustomVoice => 1_800_000_000,
                             ModelVariant::Qwen3Asr06B => 1_800_000_000,
                             ModelVariant::Lfm2Audio15B => 2_900_000_000,
                             _ => 1_500_000_000,

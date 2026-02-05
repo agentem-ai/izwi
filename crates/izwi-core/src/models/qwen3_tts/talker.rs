@@ -367,7 +367,8 @@ impl Layer {
 
 /// Qwen3-TTS Talker model
 pub struct TalkerModel {
-    embed_tokens: Embedding,
+    text_embedding: Embedding,
+    codec_embedding: Embedding,
     layers: Vec<Layer>,
     norm: RmsNorm,
     lm_head: Linear,
@@ -379,8 +380,13 @@ pub struct TalkerModel {
 impl TalkerModel {
     /// Load the talker model from VarBuilder
     pub fn load(cfg: TalkerConfig, vb: VarBuilder) -> Result<Self> {
-        let embed_tokens =
-            candle_nn::embedding(cfg.text_vocab_size, cfg.hidden_size, vb.pp("embed_tokens"))?;
+        let text_embedding = candle_nn::embedding(
+            cfg.text_vocab_size,
+            cfg.hidden_size,
+            vb.pp("text_embedding"),
+        )?;
+        let codec_embedding =
+            candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("codec_embedding"))?;
         let lm_head = candle_nn::linear_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
@@ -393,7 +399,8 @@ impl TalkerModel {
         let use_mrope = cfg.uses_mrope();
 
         Ok(Self {
-            embed_tokens,
+            text_embedding,
+            codec_embedding,
             layers,
             norm,
             lm_head,
@@ -425,8 +432,11 @@ impl TalkerModel {
     }
 
     /// Get embeddings for token IDs
+    /// Uses text_embedding for text tokens and codec_embedding for codec tokens
     pub fn embeddings(&self, input_ids: &Tensor) -> Result<Tensor> {
-        self.embed_tokens.forward(input_ids).map_err(Error::from)
+        // For now, use text_embedding for all tokens
+        // TODO: Properly handle mixed text/codec tokens based on vocab ranges
+        self.text_embedding.forward(input_ids).map_err(Error::from)
     }
 
     /// Forward pass with pre-computed embeddings
