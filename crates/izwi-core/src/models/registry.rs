@@ -36,10 +36,14 @@ impl ModelRegistry {
         &self.models_dir
     }
 
-    pub async fn load_asr(&self, variant: ModelVariant, model_dir: &Path) -> Result<Arc<Qwen3AsrModel>> {
-        if !variant.is_asr() {
+    pub async fn load_asr(
+        &self,
+        variant: ModelVariant,
+        model_dir: &Path,
+    ) -> Result<Arc<Qwen3AsrModel>> {
+        if !variant.is_asr() && !variant.is_forced_aligner() {
             return Err(Error::InvalidInput(format!(
-                "Model variant {variant} is not an ASR model"
+                "Model variant {variant} is not an ASR or ForcedAligner model"
             )));
         }
 
@@ -51,7 +55,7 @@ impl ModelRegistry {
                 .clone()
         };
 
-        info!("Loading native ASR model {variant} from {model_dir:?}");
+        info!("Loading native ASR/ForcedAligner model {variant} from {model_dir:?}");
 
         let model = cell
             .get_or_try_init({

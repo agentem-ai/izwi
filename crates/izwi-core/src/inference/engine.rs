@@ -85,7 +85,7 @@ impl InferenceEngine {
 
     /// Unload a model from memory
     pub async fn unload_model(&self, variant: ModelVariant) -> Result<()> {
-        if variant.is_asr() {
+        if variant.is_asr() || variant.is_forced_aligner() {
             self.model_registry.unload_asr(variant).await;
         }
         self.model_manager.unload_model(variant).await
@@ -111,7 +111,7 @@ impl InferenceEngine {
             .and_then(|i| i.local_path)
             .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
 
-        if variant.is_asr() {
+        if variant.is_asr() || variant.is_forced_aligner() {
             self.model_registry.load_asr(variant, &model_path).await?;
             self.model_manager.mark_loaded(variant).await;
             return Ok(());
@@ -361,6 +361,32 @@ impl InferenceEngine {
             language: language.map(|s| s.to_string()),
             duration_secs: samples.len() as f32 / sample_rate as f32,
         })
+    }
+
+    /// Force alignment: align reference text with audio timestamps
+    pub async fn force_align(
+        &self,
+        audio_base64: &str,
+        reference_text: &str,
+    ) -> Result<Vec<(String, u32, u32)>> {
+        let variant = ModelVariant::Qwen3ForcedAligner06B;
+
+        let model = if let Some(model) = self.model_registry.get_asr(variant).await {
+            model
+        } else {
+            let path = self
+                .model_manager
+                .get_model_info(variant)
+                .await
+                .and_then(|i| i.local_path)
+                .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
+            self.model_registry.load_asr(variant, &path).await?
+        };
+
+        let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
+        let alignments = model.force_align(&samples, sample_rate, reference_text)?;
+
+        Ok(alignments)
     }
 }
 

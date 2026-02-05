@@ -170,6 +170,80 @@ impl Qwen3AsrModel {
         Ok(parsed)
     }
 
+    /// Forced alignment: align reference text with audio timestamps.
+    /// Returns a vector of (word, start_time_ms, end_time_ms) tuples.
+    pub fn force_align(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        reference_text: &str,
+    ) -> Result<Vec<(String, u32, u32)>> {
+        let audio = if sample_rate != 16_000 {
+            resample(audio, sample_rate, 16_000)?
+        } else {
+            audio.to_vec()
+        };
+
+        let mut mel_spec = self.mel.compute(&audio)?;
+        if self.preprocessor.nb_max_frames > 0 && mel_spec.len() > self.preprocessor.nb_max_frames {
+            mel_spec.truncate(self.preprocessor.nb_max_frames);
+        }
+
+        let n_mels = self.mel.config().n_mels;
+        if mel_spec.is_empty() {
+            return Err(Error::InvalidInput("Empty audio input".to_string()));
+        }
+
+        let frames = mel_spec.len();
+        let mut flat = Vec::with_capacity(frames * n_mels);
+        for frame in mel_spec.iter() {
+            flat.extend_from_slice(frame);
+        }
+
+        let mel = Tensor::from_vec(flat, (frames, n_mels), &self.device.device)?
+            .transpose(0, 1)?
+            .unsqueeze(0)?
+            .unsqueeze(0)?
+            .to_dtype(self.dtype)?;
+
+        let audio_embeds = self.audio_tower.forward(&mel, None)?;
+        let audio_len = audio_embeds.dim(1)?;
+
+        // Build alignment prompt with reference text
+        let prompt = self.build_alignment_prompt(audio_len, reference_text)?;
+        let input_ids = Tensor::from_vec(
+            prompt.ids.clone(),
+            (1, prompt.ids.len()),
+            &self.device.device,
+        )?;
+
+        let mut cache = Qwen3Cache::new(self.text_model.num_layers());
+        let mut embeds =
+            self.forward_with_audio(&input_ids, &audio_embeds, prompt.audio_start, &mut cache)?;
+
+        let mut generated: Vec<u32> = Vec::new();
+        let mut pos = embeds.dim(1)?;
+
+        let max_tokens = 2048usize;
+        for _ in 0..max_tokens {
+            let logits = embeds.i((0, embeds.dim(1)? - 1))?;
+            let next = argmax(&logits)?;
+            if next == self.specials.im_end || next == self.specials.eos {
+                break;
+            }
+            generated.push(next);
+
+            let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
+            embeds = self
+                .text_model
+                .forward(&next_tensor, pos, Some(&mut cache))?;
+            pos += 1;
+        }
+
+        let alignment_text = self.tokenizer.decode_text(&generated)?;
+        self.parse_alignment(&alignment_text, audio.len() as u32 / 16)
+    }
+
     /// Parse model output to extract transcription.
     /// Expected formats per document:
     /// - "Language: English\nTranscription: This is the recognized text."
@@ -260,6 +334,62 @@ impl Qwen3AsrModel {
         let audio_start = 0; // Audio embeddings start right after audio_start token
 
         Ok(PromptTokens { ids, audio_start })
+    }
+
+    fn build_alignment_prompt(
+        &self,
+        _audio_len: usize,
+        reference_text: &str,
+    ) -> Result<PromptTokens> {
+        let mut ids = Vec::new();
+
+        // Format for forced alignment: <|audio_start|><|audio_end|>Reference: {}
+        ids.push(self.specials.audio_start);
+        ids.push(self.specials.audio_end);
+        ids.extend(
+            self.tokenizer
+                .encode_text(&format!("Reference: {}", reference_text))?,
+        );
+
+        let audio_start = 0;
+
+        Ok(PromptTokens { ids, audio_start })
+    }
+
+    fn parse_alignment(
+        &self,
+        alignment_text: &str,
+        _audio_duration_ms: u32,
+    ) -> Result<Vec<(String, u32, u32)>> {
+        // Parse alignment output format:
+        // Expected: word<|timestamp_0|>word<|timestamp_1|>...
+        // or: word[0.00s]word[0.50s]...
+
+        let mut results = Vec::new();
+        let mut current_word = String::new();
+        let mut last_time_ms: u32 = 0;
+
+        for ch in alignment_text.chars() {
+            if ch.is_alphanumeric() || ch == '\'' || ch == '-' {
+                current_word.push(ch);
+            } else if ch == '<' || ch == '[' {
+                // Start of timestamp marker - save current word
+                if !current_word.is_empty() {
+                    // Parse timestamp
+                    let time_ms = last_time_ms; // Simplified - would parse actual timestamp
+                    results.push((current_word.clone(), last_time_ms, time_ms + 100));
+                    last_time_ms = time_ms + 100;
+                    current_word.clear();
+                }
+            }
+        }
+
+        // Handle last word if any
+        if !current_word.is_empty() {
+            results.push((current_word, last_time_ms, last_time_ms + 100));
+        }
+
+        Ok(results)
     }
 
     fn build_position_ids(

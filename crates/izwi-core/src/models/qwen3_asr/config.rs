@@ -11,6 +11,12 @@ pub struct Qwen3AsrConfig {
     pub thinker_config: ThinkerConfig,
     #[serde(default)]
     pub support_languages: Vec<String>,
+    /// Timestamp token ID for forced alignment (present in ForcedAligner models)
+    #[serde(default)]
+    pub timestamp_token_id: Option<u32>,
+    /// Timestamp segment time in ms (present in ForcedAligner models)
+    #[serde(default)]
+    pub timestamp_segment_time: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
