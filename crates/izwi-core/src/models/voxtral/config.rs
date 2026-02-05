@@ -4,41 +4,169 @@ use serde::Deserialize;
 
 use crate::models::qwen3::Qwen3Config;
 
-/// Main Voxtral configuration
+/// Voxtral params.json configuration (Mistral format)
 #[derive(Debug, Clone, Deserialize)]
 pub struct VoxtralConfig {
-    pub model_type: String,
-    pub text_config: MistralConfig,
-    pub audio_config: AudioEncoderConfig,
-    pub downsample_factor: usize,
-    pub block_pool_size: usize,
-    pub num_delay_tokens: usize,
-    #[serde(default)]
-    pub is_causal: bool,
-    #[serde(default = "default_transcription_delay_ms")]
-    pub transcription_delay_ms: f32,
-    #[serde(default = "default_streaming_look_ahead_ms")]
-    pub streaming_look_ahead_ms: f32,
-    #[serde(default = "default_streaming_look_back_ms")]
-    pub streaming_look_back_ms: f32,
-    #[serde(default = "default_frame_rate")]
+    /// Text model dimension (hidden_size)
+    #[serde(rename = "dim")]
+    pub text_dim: usize,
+    /// Text model number of layers
+    #[serde(rename = "n_layers")]
+    pub text_n_layers: usize,
+    pub head_dim: usize,
+    /// Text model hidden dimension (intermediate_size)
+    #[serde(rename = "hidden_dim")]
+    pub text_hidden_dim: usize,
+    /// Text model number of attention heads
+    #[serde(rename = "n_heads")]
+    pub text_n_heads: usize,
+    /// Text model number of key/value heads
+    #[serde(rename = "n_kv_heads")]
+    pub text_n_kv_heads: usize,
+    pub use_biases: bool,
+    pub causal: bool,
+    pub rope_theta: f64,
+    #[serde(rename = "norm_eps")]
+    pub norm_eps: f64,
+    pub vocab_size: usize,
+    pub model_parallel: usize,
+    pub tied_embeddings: bool,
+    pub sliding_window: usize,
+    pub model_max_length: usize,
+    /// Multimodal configuration (contains audio encoder)
+    pub multimodal: MultimodalConfig,
+    pub ada_rms_norm_t_cond: bool,
+    pub ada_rms_norm_t_cond_dim: usize,
+}
+
+impl VoxtralConfig {
+    /// Get text config as MistralConfig
+    pub fn text_config(&self) -> MistralConfig {
+        MistralConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.text_dim,
+            intermediate_size: self.text_hidden_dim,
+            num_hidden_layers: self.text_n_layers,
+            num_attention_heads: self.text_n_heads,
+            num_key_value_heads: self.text_n_kv_heads,
+            max_position_embeddings: self.model_max_length,
+            rms_norm_eps: self.norm_eps,
+            rope_theta: self.rope_theta as f32,
+            tie_word_embeddings: self.tied_embeddings,
+            sliding_window: self.sliding_window,
+            use_sliding_window: self.sliding_window > 0,
+        }
+    }
+
+    /// Get audio encoder config
+    pub fn audio_config(&self) -> AudioEncoderConfig {
+        let whisper = &self.multimodal.whisper_model_args.encoder_args;
+        AudioEncoderConfig {
+            d_model: whisper.dim,
+            encoder_layers: whisper.n_layers,
+            encoder_attention_heads: whisper.n_heads,
+            encoder_ffn_dim: whisper.hidden_dim,
+            num_mel_bins: whisper.audio_encoding_args.num_mel_bins,
+            max_source_positions: whisper.max_source_positions.unwrap_or(1500),
+            window_size: whisper.audio_encoding_args.window_size,
+            hop_length: whisper.audio_encoding_args.hop_length,
+            sampling_rate: whisper.audio_encoding_args.sampling_rate,
+            is_causal: whisper.causal,
+            conv1_kernel_size: 3,
+            conv1_stride: 1,
+            conv2_kernel_size: 3,
+            conv2_stride: 2,
+            global_log_mel_max: whisper.audio_encoding_args.global_log_mel_max,
+        }
+    }
+
+    /// Get downsample factor
+    pub fn downsample_factor(&self) -> usize {
+        self.multimodal
+            .whisper_model_args
+            .downsample_args
+            .downsample_factor
+    }
+
+    /// Get frame rate
+    pub fn frame_rate(&self) -> f32 {
+        self.multimodal
+            .whisper_model_args
+            .encoder_args
+            .audio_encoding_args
+            .frame_rate
+    }
+
+    /// Get number of delay tokens
+    pub fn num_delay_tokens(&self) -> usize {
+        // Calculate from frame rate and typical delay
+        // Voxtral uses ~400ms delay, at 12.5 frames/sec = 5 tokens
+        5
+    }
+
+    /// Get block pool size
+    pub fn block_pool_size(&self) -> usize {
+        // Default pooling factor
+        4
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MultimodalConfig {
+    #[serde(rename = "whisper_model_args")]
+    pub whisper_model_args: WhisperModelArgs,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WhisperModelArgs {
+    #[serde(rename = "encoder_args")]
+    pub encoder_args: WhisperEncoderArgs,
+    #[serde(rename = "downsample_args")]
+    pub downsample_args: DownsampleArgs,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WhisperEncoderArgs {
+    #[serde(rename = "audio_encoding_args")]
+    pub audio_encoding_args: AudioEncodingArgs,
+    pub dim: usize,
+    #[serde(rename = "n_layers")]
+    pub n_layers: usize,
+    pub head_dim: usize,
+    #[serde(rename = "hidden_dim")]
+    pub hidden_dim: usize,
+    #[serde(rename = "n_heads")]
+    pub n_heads: usize,
+    pub vocab_size: usize,
+    #[serde(rename = "n_kv_heads")]
+    pub n_kv_heads: usize,
+    pub use_biases: bool,
+    pub use_cache: bool,
+    pub rope_theta: f64,
+    pub causal: bool,
+    pub norm_eps: f64,
+    pub pos_embed: String,
+    pub max_source_positions: Option<usize>,
+    pub ffn_type: String,
+    pub norm_type: String,
+    pub sliding_window: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AudioEncodingArgs {
+    pub sampling_rate: usize,
     pub frame_rate: f32,
+    pub num_mel_bins: usize,
+    pub hop_length: usize,
+    pub window_size: usize,
+    pub chunk_length_s: Option<f32>,
+    pub global_log_mel_max: Option<f32>,
+    pub transcription_format: String,
 }
 
-fn default_transcription_delay_ms() -> f32 {
-    400.0
-}
-
-fn default_streaming_look_ahead_ms() -> f32 {
-    80.0
-}
-
-fn default_streaming_look_back_ms() -> f32 {
-    160.0
-}
-
-fn default_frame_rate() -> f32 {
-    12.5
+#[derive(Debug, Clone, Deserialize)]
+pub struct DownsampleArgs {
+    pub downsample_factor: usize,
 }
 
 /// Mistral text model configuration

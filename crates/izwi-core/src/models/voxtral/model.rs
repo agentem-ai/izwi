@@ -31,14 +31,19 @@ pub struct VoxtralRealtimeModel {
 impl VoxtralRealtimeModel {
     /// Load model from directory
     pub fn load(model_dir: &Path, device: DeviceProfile) -> Result<Self> {
-        let config_path = model_dir.join("config.json");
+        // Try params.json (Voxtral format) first, then config.json (standard)
+        let config_path = if model_dir.join("params.json").exists() {
+            model_dir.join("params.json")
+        } else {
+            model_dir.join("config.json")
+        };
         let config_str = std::fs::read_to_string(&config_path)
             .map_err(|e| Error::ModelLoadError(format!("Failed to read config: {}", e)))?;
         let config: VoxtralConfig = serde_json::from_str(&config_str)
             .map_err(|e| Error::ModelLoadError(format!("Failed to parse config: {}", e)))?;
 
         // Setup audio processing
-        let audio_cfg = &config.audio_config;
+        let audio_cfg = config.audio_config();
         let mel_cfg = MelConfig {
             sample_rate: audio_cfg.sampling_rate,
             n_fft: audio_cfg.window_size,
@@ -53,13 +58,13 @@ impl VoxtralRealtimeModel {
         // Setup tokenizer
         let audio_config = AudioConfig {
             sampling_rate: audio_cfg.sampling_rate,
-            frame_rate: config.frame_rate,
+            frame_rate: config.frame_rate(),
             window_size: audio_cfg.window_size,
             hop_length: audio_cfg.hop_length,
             num_mel_bins: audio_cfg.num_mel_bins,
-            n_delay_tokens: config.num_delay_tokens,
+            n_delay_tokens: config.num_delay_tokens(),
         };
-        let tokenizer = VoxtralTokenizer::new(config.text_config.vocab_size, audio_config);
+        let tokenizer = VoxtralTokenizer::new(config.text_config().vocab_size, audio_config);
 
         let dtype = device.select_dtype(None);
 
@@ -68,20 +73,20 @@ impl VoxtralRealtimeModel {
         let vb = load_weights(model_dir, dtype, &device_clone)?;
 
         // Load components
-        let whisper_encoder = WhisperEncoder::load(&config.audio_config, vb.pp("whisper_encoder"))?;
+        let whisper_encoder = WhisperEncoder::load(&audio_cfg, vb.pp("whisper_encoder"))?;
 
-        let hidden_size = config.audio_config.d_model * config.downsample_factor;
+        let hidden_size = audio_cfg.d_model * config.downsample_factor();
         let audio_adapter = AudioLanguageAdapter::load(
             hidden_size,
-            config.text_config.hidden_size,
+            config.text_config().hidden_size,
             vb.pp("audio_language_adapter"),
         )?;
 
         let language_model =
-            Qwen3Model::load(config.text_config.clone().into(), vb.pp("language_model"))?;
+            Qwen3Model::load(config.text_config().into(), vb.pp("language_model"))?;
 
         let time_embedding =
-            TimeEmbedding::new(config.text_config.hidden_size, 10000.0, &device.device)?;
+            TimeEmbedding::new(config.text_config().hidden_size, 10000.0, &device.device)?;
 
         info!("Loaded Voxtral Realtime model on {:?}", device.kind);
 
@@ -154,7 +159,7 @@ impl VoxtralRealtimeModel {
 
         // Apply time conditioning
         let time_tensor = Tensor::from_vec(
-            vec![self.config.num_delay_tokens as f32],
+            vec![self.config.num_delay_tokens() as f32],
             (1,),
             &self.device.device,
         )?
@@ -199,7 +204,7 @@ impl VoxtralRealtimeModel {
     /// Pool audio embeddings by block_size
     fn pool_audio_embeddings(&self, audio_embeds: &Tensor) -> Result<Tensor> {
         let (bsz, seq_len, hidden) = audio_embeds.dims3()?;
-        let pool_size = self.config.block_pool_size;
+        let pool_size = self.config.block_pool_size();
 
         // Ensure seq_len is divisible by pool_size
         let new_len = seq_len / pool_size;
@@ -542,6 +547,20 @@ fn load_weights<'a>(
     dtype: DType,
     device: &'a DeviceProfile,
 ) -> Result<VarBuilder<'a>> {
+    // Voxtral uses consolidated.safetensors (single file)
+    let consolidated_path = model_dir.join("consolidated.safetensors");
+    if consolidated_path.exists() {
+        info!("Loading Voxtral from consolidated.safetensors");
+        unsafe {
+            return VarBuilder::from_mmaped_safetensors(
+                &[consolidated_path],
+                dtype,
+                &device.device,
+            )
+            .map_err(|e| Error::ModelLoadError(format!("Failed to load weights: {}", e)));
+        }
+    }
+
     let index_path = model_dir.join("model.safetensors.index.json");
 
     if index_path.exists() {
