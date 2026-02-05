@@ -74,9 +74,42 @@ impl Qwen3AsrModel {
         let mel = MelSpectrogram::new(mel_cfg)?;
 
         let dtype = device.select_dtype(config.thinker_config.dtype.as_deref());
-        let weights_path = model_dir.join("model.safetensors");
-        let vb =
-            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], dtype, &device.device) }?;
+
+        // Check for sharded weights (1.7B model) vs single file (0.6B model)
+        let index_path = model_dir.join("model.safetensors.index.json");
+        let vb = if index_path.exists() {
+            // Load sharded weights
+            let index_data = std::fs::read_to_string(&index_path)?;
+            let index: serde_json::Value = serde_json::from_str(&index_data)?;
+
+            // Collect unique shard files from the index
+            let weight_map = index
+                .get("weight_map")
+                .and_then(|m| m.as_object())
+                .ok_or_else(|| {
+                    Error::InvalidInput("Invalid model.safetensors.index.json format".to_string())
+                })?;
+
+            let mut shard_files: Vec<String> = weight_map
+                .values()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+            shard_files.sort();
+            shard_files.dedup();
+
+            let shard_paths: Vec<std::path::PathBuf> =
+                shard_files.iter().map(|f| model_dir.join(f)).collect();
+
+            info!(
+                "Loading sharded ASR model with {} shard files",
+                shard_paths.len()
+            );
+            unsafe { VarBuilder::from_mmaped_safetensors(&shard_paths, dtype, &device.device)? }
+        } else {
+            // Load single file
+            let weights_path = model_dir.join("model.safetensors");
+            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], dtype, &device.device)? }
+        };
         let vb = vb.pp("thinker");
 
         let audio_cfg = config.thinker_config.audio_config.clone();
