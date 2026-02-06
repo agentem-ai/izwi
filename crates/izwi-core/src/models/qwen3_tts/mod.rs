@@ -56,13 +56,9 @@ impl Qwen3TtsModel {
         info!("Model type: {}", config.tts_model_type);
         info!("Model size: {}", config.tts_model_size);
 
-        // Setup dtype based on device
-        let dtype = if device.kind.is_cpu() {
-            DType::F32
-        } else {
-            // Use BF16 for GPU/Metal if supported, otherwise F16
-            DType::BF16
-        };
+        // BF16 matmul coverage is incomplete across backends in Candle.
+        // Keep TTS inference on F32 for correctness/stability.
+        let dtype = DType::F32;
 
         // Load tokenizer
         let specials = TtsSpecialTokens::from_configs(&config, &config.talker_config);
@@ -167,6 +163,8 @@ impl Qwen3TtsModel {
     fn generate_codec_tokens(&self, input_ids: &[u32]) -> Result<Vec<Vec<u32>>> {
         let mut talker_cache = TalkerCache::new(self.talker.num_layers());
         let mut predictor_cache = CodePredictorCache::new(self.code_predictor.num_layers());
+        let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
+        let codec_vocab_size = self.tokenizer.codec_vocab_size() as u32;
 
         // Convert input to tensor
         let input_tensor = Tensor::from_vec(
@@ -185,24 +183,29 @@ impl Qwen3TtsModel {
             vec![Vec::new(); self.config.talker_config.num_code_groups];
         let mut pos = input_ids.len();
         let max_length = 2048; // Maximum audio length in tokens
+        let min_tokens_before_eos = 8usize;
 
         for _step in 0..max_length {
             // Get last position logits
             let last_logits = logits.i((0, logits.dim(1)? - 1))?;
 
-            // Sample first codebook token (semantic)
-            let first_codebook_token = argmax(&last_logits)?;
+            // Sample first codebook token (semantic) from valid semantic ids plus EOS.
+            let allow_eos = all_code_groups[0].len() >= min_tokens_before_eos;
+            let first_codebook_token = argmax_semantic(
+                &last_logits,
+                codec_vocab_size,
+                self.specials.codec_eos_token_id,
+                allow_eos,
+            )?;
 
             // Check for end of sequence
-            if first_codebook_token >= self.tokenizer.text_vocab_size() as u32 {
-                let codec_token = first_codebook_token - self.tokenizer.text_vocab_size() as u32;
-                if codec_token == self.specials.codec_eos_token_id {
-                    break;
-                }
+            if allow_eos && first_codebook_token == self.specials.codec_eos_token_id {
+                break;
             }
+            let first_combined_token = text_vocab_size + first_codebook_token;
 
-            // Add first codebook token
-            all_code_groups[0].push(first_codebook_token);
+            // Store semantic token in combined-vocab format.
+            all_code_groups[0].push(first_combined_token);
 
             // Generate remaining codebooks using code predictor
             let first_codebook_tensor =
@@ -213,11 +216,15 @@ impl Qwen3TtsModel {
                 Some(&mut predictor_cache),
             )?;
 
-            // Sample from each code group's logits
-            for (group_idx, group_logits) in predictor_logits.iter().enumerate().skip(1) {
+            // Sample all acoustic groups (groups 1..15).
+            for (acoustic_idx, group_logits) in predictor_logits.iter().enumerate() {
+                let group_idx = acoustic_idx + 1;
+                if group_idx >= all_code_groups.len() {
+                    break;
+                }
                 let group_token = argmax(&group_logits.i((0, 0))?)?;
                 // Offset token by text_vocab_size for combined vocab
-                let combined_token = self.tokenizer.text_vocab_size() as u32
+                let combined_token = text_vocab_size
                     + group_token
                     + (group_idx as u32 * self.tokenizer.codec_vocab_size() as u32);
                 all_code_groups[group_idx].push(combined_token);
@@ -225,7 +232,7 @@ impl Qwen3TtsModel {
 
             // Prepare next input token for talker
             let next_token_tensor =
-                Tensor::from_vec(vec![first_codebook_token], (1, 1), &self.device.device)?;
+                Tensor::from_vec(vec![first_combined_token], (1, 1), &self.device.device)?;
             logits = self
                 .talker
                 .forward(&next_token_tensor, pos, Some(&mut talker_cache))?;
@@ -315,6 +322,35 @@ fn argmax(logits: &Tensor) -> Result<u32> {
         }
     }
     Ok(max_idx as u32)
+}
+
+fn argmax_semantic(
+    logits: &Tensor,
+    semantic_vocab_size: u32,
+    eos_token_id: u32,
+    allow_eos: bool,
+) -> Result<u32> {
+    let logits = logits.to_dtype(DType::F32)?;
+    let values = logits.to_vec1::<f32>()?;
+    let mut max_idx: Option<usize> = None;
+    let mut max_val = f32::NEG_INFINITY;
+
+    for (idx, &val) in values.iter().enumerate() {
+        let token_id = idx as u32;
+        let allowed =
+            token_id < semantic_vocab_size || (allow_eos && token_id == eos_token_id);
+        if !allowed {
+            continue;
+        }
+        if val > max_val {
+            max_val = val;
+            max_idx = Some(idx);
+        }
+    }
+
+    max_idx
+        .map(|idx| idx as u32)
+        .ok_or_else(|| Error::InferenceError("No valid semantic token candidates".to_string()))
 }
 
 /// Load a Qwen3-TTS model
