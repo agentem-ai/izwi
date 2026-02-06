@@ -20,7 +20,7 @@ impl Default for MelConfig {
     fn default() -> Self {
         Self {
             sample_rate: 16_000,
-            n_fft: 512,      // Nearest power of 2 >= window size (400)
+            n_fft: 400,      // Whisper/Qwen3-ASR uses 400 (25ms window at 16kHz)
             hop_length: 160, // 10ms at 16kHz
             n_mels: 128,
             f_min: 0.0,
@@ -181,13 +181,15 @@ impl MelSpectrogram {
             .collect();
         let filter_freqs: Vec<f32> = mel_points.iter().map(|&m| mel_to_hertz(m)).collect();
 
-        let mut mel_filters = vec![vec![0.0; n_mels]; n_freqs];
-        for freq_idx in 0..n_freqs {
-            let freq = fft_freqs[freq_idx];
-            for mel_idx in 0..n_mels {
-                let lower = filter_freqs[mel_idx];
-                let center = filter_freqs[mel_idx + 1];
-                let upper = filter_freqs[mel_idx + 2];
+        // Shape: [n_mels, n_freqs] - each row is a mel bin's weights across frequencies
+        let mut mel_filters = vec![vec![0.0; n_freqs]; n_mels];
+        for mel_idx in 0..n_mels {
+            let lower = filter_freqs[mel_idx];
+            let center = filter_freqs[mel_idx + 1];
+            let upper = filter_freqs[mel_idx + 2];
+
+            for freq_idx in 0..n_freqs {
+                let freq = fft_freqs[freq_idx];
 
                 let down = if center > lower {
                     (freq - lower) / (center - lower)
@@ -200,7 +202,7 @@ impl MelSpectrogram {
                     0.0
                 };
                 let val = down.min(up).max(0.0);
-                mel_filters[freq_idx][mel_idx] = val;
+                mel_filters[mel_idx][freq_idx] = val;
             }
         }
 
@@ -211,9 +213,9 @@ impl MelSpectrogram {
             let high = filter_freqs[mel_idx + 2];
             norms[mel_idx] = if high > low { 2.0 / (high - low) } else { 0.0 };
         }
-        for freq_idx in 0..n_freqs {
-            for mel_idx in 0..n_mels {
-                mel_filters[freq_idx][mel_idx] *= norms[mel_idx];
+        for mel_idx in 0..n_mels {
+            for freq_idx in 0..n_freqs {
+                mel_filters[mel_idx][freq_idx] *= norms[mel_idx];
             }
         }
 
