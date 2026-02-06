@@ -32,6 +32,7 @@ function App() {
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const activeDownloadsRef = useRef<Set<string>>(new Set());
   const eventSourcesRef = useRef<Record<string, EventSource>>({});
+  const initializedRef = useRef(false);
 
   const loadModels = useCallback(async () => {
     try {
@@ -49,6 +50,10 @@ function App() {
   }, [selectedModel]);
 
   useEffect(() => {
+    // Prevent duplicate calls from React StrictMode
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
     const init = async () => {
       setLoading(true);
       await loadModels();

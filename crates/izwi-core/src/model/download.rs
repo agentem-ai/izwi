@@ -266,12 +266,11 @@ impl ModelDownloader {
         }
 
         if variant.is_voxtral() {
-            // Voxtral has sharded safetensors and tokenizer files
-            let has_config = path.join("config.json").exists();
-            let has_tokenizer =
-                path.join("tokenizer.json").exists() || path.join("tokenizer.model").exists();
-            let has_model = path.join("model-00001-of-00004.safetensors").exists();
-            return has_config && has_tokenizer && has_model;
+            // Voxtral Mini 4B Realtime uses params.json, tekken.json, and consolidated.safetensors
+            let has_params = path.join("params.json").exists();
+            let has_tekken = path.join("tekken.json").exists();
+            let has_model = path.join("consolidated.safetensors").exists();
+            return has_params && has_tekken && has_model;
         }
 
         if variant.is_tokenizer() {
