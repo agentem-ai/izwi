@@ -140,9 +140,7 @@ impl Attention {
         start_pos: usize,
         position_ids: Option<&Tensor>,
     ) -> Result<Tensor> {
-        let bsz = x.dim(0)?;
         let seq_len = x.dim(1)?;
-        let heads = x.dim(2)?;
         let half_dim = self.head_dim / 2;
 
         let (cos, sin) = if self.use_mrope {
@@ -179,23 +177,20 @@ impl Attention {
             )?
         };
 
-        // Apply rotary embeddings
-        let x = x.reshape((bsz, seq_len, heads, half_dim, 2))?;
-        let x1 = x.narrow(4, 0, 1)?.squeeze(4)?;
-        let x2 = x.narrow(4, 1, 1)?.squeeze(4)?;
-
+        // Qwen RoPE uses rotate_half(x) over [first_half, second_half].
+        let cos = Tensor::cat(&[cos.clone(), cos], 1)?;
+        let sin = Tensor::cat(&[sin.clone(), sin], 1)?;
         let cos = cos.unsqueeze(0)?.unsqueeze(2)?;
         let sin = sin.unsqueeze(0)?.unsqueeze(2)?;
 
-        let rot1 = x1.broadcast_mul(&cos)?;
-        let rot1 = rot1.broadcast_sub(&x2.broadcast_mul(&sin)?)?;
-        let rot2 = x1.broadcast_mul(&sin)?;
-        let rot2 = rot2.broadcast_add(&x2.broadcast_mul(&cos)?)?;
+        let x1 = x.narrow(3, 0, half_dim)?;
+        let x2 = x.narrow(3, half_dim, half_dim)?;
+        let minus_one = Tensor::from_vec(vec![-1.0f32], (1,), x.device())?.to_dtype(x.dtype())?;
+        let neg_x2 = x2.broadcast_mul(&minus_one)?;
+        let rotated = Tensor::cat(&[neg_x2, x1], 3)?;
 
-        let rot1 = rot1.unsqueeze(4)?;
-        let rot2 = rot2.unsqueeze(4)?;
-        let out = Tensor::cat(&[rot1, rot2], 4)?;
-        out.reshape((bsz, seq_len, heads, self.head_dim))
+        let out = x.broadcast_mul(&cos)?;
+        out.broadcast_add(&rotated.broadcast_mul(&sin)?)
             .map_err(Error::from)
     }
 
@@ -469,10 +464,51 @@ impl TalkerModel {
     /// Get embeddings for token IDs
     /// Uses text_embedding for text tokens and codec_embedding for codec tokens
     pub fn embeddings(&self, input_ids: &Tensor) -> Result<Tensor> {
-        // For now, use text_embedding for all tokens and project to hidden_size
-        // TODO: Properly handle mixed text/codec tokens based on vocab ranges
-        let text_embeds = self.text_embedding.forward(input_ids)?;
-        self.text_projection.forward(&text_embeds)
+        let ids = input_ids.to_vec2::<u32>()?;
+
+        // Fast path: all text ids.
+        if ids
+            .iter()
+            .all(|row| row.iter().all(|id| (*id as usize) < self.cfg.text_vocab_size))
+        {
+            let text_embeds = self.text_embedding.forward(input_ids)?;
+            return self.text_projection.forward(&text_embeds);
+        }
+
+        // Mixed text/codec path:
+        // - text ids: [0, text_vocab_size)
+        // - codec/control ids: text_vocab_size + codec_id
+        let mut batch_embeds = Vec::with_capacity(ids.len());
+        for row in ids.iter() {
+            if row.is_empty() {
+                return Err(Error::InvalidInput("Empty token row in talker embeddings".to_string()));
+            }
+
+            let mut token_embeds = Vec::with_capacity(row.len());
+            for &token_id in row {
+                let embed = if (token_id as usize) < self.cfg.text_vocab_size {
+                    let token = Tensor::from_vec(vec![token_id], (1,), &self.device)?;
+                    let text = self.text_embedding.forward(&token)?;
+                    self.text_projection.forward(&text)?
+                } else {
+                    let codec_id = token_id - self.cfg.text_vocab_size as u32;
+                    if (codec_id as usize) >= self.cfg.vocab_size {
+                        return Err(Error::InvalidInput(format!(
+                            "Codec token out of range: token_id={token_id}, codec_id={codec_id}, codec_vocab={}",
+                            self.cfg.vocab_size
+                        )));
+                    }
+                    let token = Tensor::from_vec(vec![codec_id], (1,), &self.device)?;
+                    self.codec_embedding.forward(&token)?
+                };
+                token_embeds.push(embed);
+            }
+
+            let row_embed = Tensor::cat(&token_embeds, 0)?;
+            batch_embeds.push(row_embed);
+        }
+
+        Tensor::stack(&batch_embeds, 0).map_err(Error::from)
     }
 
     /// Forward pass with pre-computed embeddings
@@ -504,9 +540,13 @@ fn repeat_kv(x: &Tensor, num_heads: usize, num_kv_heads: usize) -> Result<Tensor
         return Ok(x.clone());
     }
     let repeats = num_heads / num_kv_heads;
-    let mut parts = Vec::with_capacity(repeats);
-    for _ in 0..repeats {
-        parts.push(x.clone());
+    let mut parts = Vec::with_capacity(num_heads);
+    // Repeat each KV head consecutively: [h0, h0, h1, h1, ...].
+    for kv_idx in 0..num_kv_heads {
+        let head = x.narrow(2, kv_idx, 1)?;
+        for _ in 0..repeats {
+            parts.push(head.clone());
+        }
     }
     Tensor::cat(&parts, 2).map_err(Error::from)
 }
@@ -552,55 +592,47 @@ fn build_mrope_cache(
 ) -> Result<(Tensor, Tensor)> {
     let half_dim = head_dim / 2;
 
-    // Validate mrope_section
-    if mrope_section.is_empty() || mrope_section.iter().sum::<usize>() != half_dim {
+    if mrope_section.len() < 3 {
         return build_rope_cache(seq_len, head_dim, 0, rope_theta, device, dtype);
     }
 
     let positions = position_ids.to_vec2::<i64>()?;
-    if positions.len() != 3 {
+    if positions.len() != 3 || positions.iter().any(|axis| axis.len() < seq_len) {
         return build_rope_cache(seq_len, head_dim, 0, rope_theta, device, dtype);
     }
 
-    // Build inverse frequencies
     let mut inv_freq = Vec::with_capacity(half_dim);
     for i in 0..half_dim {
         let power = (2.0 * i as f64) / head_dim as f64;
         inv_freq.push((1.0 / rope_theta.powf(power)) as f32);
     }
 
-    // Build cos/sin for each of the 3 axes
-    let mut cos_axes = Vec::with_capacity(3);
-    let mut sin_axes = Vec::with_capacity(3);
+    // Match Qwen3 interleaved MRoPE layout.
+    let h_limit = mrope_section[1].saturating_mul(3).min(half_dim);
+    let w_limit = mrope_section[2].saturating_mul(3).min(half_dim);
 
-    for axis in 0..3 {
-        let mut angles = Vec::with_capacity(seq_len * half_dim);
-        for &pos in positions[axis].iter() {
-            let p = pos as f32;
-            for &inv in inv_freq.iter() {
-                angles.push(p * inv);
-            }
+    let mut cos_data = Vec::with_capacity(seq_len * half_dim);
+    let mut sin_data = Vec::with_capacity(seq_len * half_dim);
+    for t in 0..seq_len {
+        let p0 = positions[0][t] as f32;
+        let p1 = positions[1][t] as f32;
+        let p2 = positions[2][t] as f32;
+        for (dim, &inv) in inv_freq.iter().enumerate() {
+            let pos = if dim % 3 == 1 && dim < h_limit {
+                p1
+            } else if dim % 3 == 2 && dim < w_limit {
+                p2
+            } else {
+                p0
+            };
+            let angle = pos * inv;
+            cos_data.push(angle.cos());
+            sin_data.push(angle.sin());
         }
-        let angles = Tensor::from_vec(angles, (seq_len, half_dim), device)?;
-        cos_axes.push(angles.cos()?.to_dtype(dtype)?);
-        sin_axes.push(angles.sin()?.to_dtype(dtype)?);
     }
 
-    // Concatenate sections from different axes
-    let mut cos_parts = Vec::with_capacity(3);
-    let mut sin_parts = Vec::with_capacity(3);
-    let mut start = 0usize;
-
-    for (axis, section) in mrope_section.iter().enumerate() {
-        let cos = cos_axes[axis].narrow(1, start, *section)?;
-        let sin = sin_axes[axis].narrow(1, start, *section)?;
-        cos_parts.push(cos);
-        sin_parts.push(sin);
-        start += *section;
-    }
-
-    let cos = Tensor::cat(&cos_parts, 1)?;
-    let sin = Tensor::cat(&sin_parts, 1)?;
+    let cos = Tensor::from_vec(cos_data, (seq_len, half_dim), device)?.to_dtype(dtype)?;
+    let sin = Tensor::from_vec(sin_data, (seq_len, half_dim), device)?.to_dtype(dtype)?;
     Ok((cos, sin))
 }
 

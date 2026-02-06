@@ -256,9 +256,7 @@ impl Attention {
     }
 
     fn apply_rope(&self, x: Tensor, start_pos: usize) -> Result<Tensor> {
-        let bsz = x.dim(0)?;
         let seq_len = x.dim(1)?;
-        let heads = x.dim(2)?;
         let half_dim = self.head_dim / 2;
 
         let (cos, sin) = build_rope_cache(
@@ -270,22 +268,19 @@ impl Attention {
             x.dtype(),
         )?;
 
-        let x = x.reshape((bsz, seq_len, heads, half_dim, 2))?;
-        let x1 = x.narrow(4, 0, 1)?.squeeze(4)?;
-        let x2 = x.narrow(4, 1, 1)?.squeeze(4)?;
-
+        let cos = Tensor::cat(&[cos.clone(), cos], 1)?;
+        let sin = Tensor::cat(&[sin.clone(), sin], 1)?;
         let cos = cos.unsqueeze(0)?.unsqueeze(2)?;
         let sin = sin.unsqueeze(0)?.unsqueeze(2)?;
 
-        let rot1 = x1.broadcast_mul(&cos)?;
-        let rot1 = rot1.broadcast_sub(&x2.broadcast_mul(&sin)?)?;
-        let rot2 = x1.broadcast_mul(&sin)?;
-        let rot2 = rot2.broadcast_add(&x2.broadcast_mul(&cos)?)?;
+        let x1 = x.narrow(3, 0, half_dim)?;
+        let x2 = x.narrow(3, half_dim, half_dim)?;
+        let minus_one = Tensor::from_vec(vec![-1.0f32], (1,), x.device())?.to_dtype(x.dtype())?;
+        let neg_x2 = x2.broadcast_mul(&minus_one)?;
+        let rotated = Tensor::cat(&[neg_x2, x1], 3)?;
 
-        let rot1 = rot1.unsqueeze(4)?;
-        let rot2 = rot2.unsqueeze(4)?;
-        let out = Tensor::cat(&[rot1, rot2], 4)?;
-        out.reshape((bsz, seq_len, heads, self.head_dim))
+        let out = x.broadcast_mul(&cos)?;
+        out.broadcast_add(&rotated.broadcast_mul(&sin)?)
             .map_err(Error::from)
     }
 
@@ -395,9 +390,12 @@ fn repeat_kv(x: &Tensor, num_heads: usize, num_kv_heads: usize) -> Result<Tensor
         return Ok(x.clone());
     }
     let repeats = num_heads / num_kv_heads;
-    let mut parts = Vec::with_capacity(repeats);
-    for _ in 0..repeats {
-        parts.push(x.clone());
+    let mut parts = Vec::with_capacity(num_heads);
+    for kv_idx in 0..num_kv_heads {
+        let head = x.narrow(2, kv_idx, 1)?;
+        for _ in 0..repeats {
+            parts.push(head.clone());
+        }
     }
     Tensor::cat(&parts, 2).map_err(Error::from)
 }

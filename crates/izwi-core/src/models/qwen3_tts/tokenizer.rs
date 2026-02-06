@@ -5,7 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::models::qwen3_tts::config::TalkerConfig;
-use serde::Deserialize;
+use crate::tokenizer::Tokenizer as BaseTokenizer;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -54,7 +54,7 @@ impl TtsSpecialTokens {
 /// TTS Tokenizer that wraps the base Qwen text tokenizer
 pub struct TtsTokenizer {
     /// Base text tokenizer (Qwen)
-    text_tokenizer: tokenizers::Tokenizer,
+    text_tokenizer: BaseTokenizer,
     /// Special tokens
     specials: TtsSpecialTokens,
     /// Speaker ID mapping
@@ -100,25 +100,10 @@ impl TtsTokenizer {
         specials: TtsSpecialTokens,
         talker_config: &TalkerConfig,
     ) -> Result<Self> {
-        // Load base Qwen text tokenizer
-        // Qwen3-TTS models use vocab.json + merges.txt (BPE format), not tokenizer.json
-        let tokenizer_json_path = model_dir.join("tokenizer.json");
-        let vocab_path = model_dir.join("vocab.json");
-        let merges_path = model_dir.join("merges.txt");
-
-        let text_tokenizer = if tokenizer_json_path.exists() {
-            // Use tokenizer.json if available
-            tokenizers::Tokenizer::from_file(&tokenizer_json_path)
-                .map_err(|e| Error::ModelError(format!("Failed to load tokenizer: {}", e)))?
-        } else if vocab_path.exists() && merges_path.exists() {
-            // Build tokenizer from vocab.json + merges.txt (Qwen BPE format)
-            Self::build_bpe_tokenizer(&vocab_path, &merges_path)?
-        } else {
-            return Err(Error::ModelError(format!(
-                "No tokenizer found in {:?}. Expected tokenizer.json or vocab.json + merges.txt",
-                model_dir
-            )));
-        };
+        // Use the shared tokenizer loader so byte-level BPE and added-token ids
+        // match HuggingFace tokenizer behavior.
+        let text_tokenizer =
+            BaseTokenizer::from_path_with_expected_vocab(model_dir, Some(talker_config.text_vocab_size))?;
 
         Ok(Self {
             text_tokenizer,
@@ -131,34 +116,10 @@ impl TtsTokenizer {
         })
     }
 
-    /// Build a BPE tokenizer from vocab.json and merges.txt files
-    fn build_bpe_tokenizer(vocab_path: &Path, merges_path: &Path) -> Result<tokenizers::Tokenizer> {
-        use tokenizers::models::bpe::BPE;
-
-        let vocab_str = vocab_path
-            .to_str()
-            .ok_or_else(|| Error::ModelError("Invalid vocab path".to_string()))?;
-        let merges_str = merges_path
-            .to_str()
-            .ok_or_else(|| Error::ModelError("Invalid merges path".to_string()))?;
-
-        // Load vocab and merges using BPE builder
-        let bpe = BPE::from_file(vocab_str, merges_str)
-            .build()
-            .map_err(|e| Error::ModelError(format!("Failed to build BPE tokenizer: {}", e)))?;
-
-        let tokenizer = tokenizers::Tokenizer::new(bpe);
-        Ok(tokenizer)
-    }
-
     /// Encode text for TTS generation
     pub fn encode_text(&self, text: &str, language: Option<&str>) -> Result<Vec<u32>> {
-        let encoding = self
-            .text_tokenizer
-            .encode(text, true)
-            .map_err(|e| Error::ModelError(format!("Tokenization failed: {}", e)))?;
-
-        Ok(encoding.get_ids().to_vec())
+        let _ = language;
+        self.text_tokenizer.encode(text)
     }
 
     /// Decode text tokens back to string
@@ -170,9 +131,7 @@ impl TtsTokenizer {
             .copied()
             .collect();
 
-        self.text_tokenizer
-            .decode(&text_tokens, true)
-            .map_err(|e| Error::ModelError(format!("Decoding failed: {}", e)))
+        self.text_tokenizer.decode(&text_tokens)
     }
 
     /// Get speaker ID by name
