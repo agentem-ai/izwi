@@ -50,8 +50,7 @@ pub struct AsrStatusResponse {
 
 /// Get ASR native status
 pub async fn status(State(state): State<AppState>) -> Result<Json<AsrStatusResponse>, ApiError> {
-    let engine = state.engine.read().await;
-    let models = engine.model_manager().list_models().await;
+    let models = state.engine.model_manager().list_models().await;
 
     let cached_models: Vec<String> = models
         .into_iter()
@@ -72,9 +71,10 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<AsrStatusRespo
 }
 
 /// Load the default ASR model (native)
-pub async fn start_daemon(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
-    let mut engine = state.engine.write().await;
-    engine.load_model(ModelVariant::Qwen3Asr06B).await?;
+pub async fn start_daemon(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.engine.load_model(ModelVariant::Qwen3Asr06B).await?;
     Ok(Json(serde_json::json!({
         "success": true,
         "message": "ASR model loaded"
@@ -82,27 +82,35 @@ pub async fn start_daemon(State(state): State<AppState>) -> Result<Json<serde_js
 }
 
 /// Unload ASR models (native)
-pub async fn stop_daemon(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
-    let engine = state.engine.read().await;
-    engine.unload_model(ModelVariant::Qwen3Asr06B).await?;
-    let _ = engine.unload_model(ModelVariant::Qwen3Asr17B).await;
+pub async fn stop_daemon(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.engine.unload_model(ModelVariant::Qwen3Asr06B).await?;
+    let _ = state.engine.unload_model(ModelVariant::Qwen3Asr17B).await;
     Ok(Json(serde_json::json!({
         "success": true,
         "message": "ASR model unloaded"
     })))
 }
 
-/// Transcribe audio to text
+/// Transcribe audio to text with backpressure
 pub async fn transcribe(
     State(state): State<AppState>,
     Json(req): Json<TranscribeRequest>,
 ) -> Result<Json<TranscribeResponse>, ApiError> {
     info!("ASR request: {} bytes", req.audio_base64.len());
-    let engine = state.engine.read().await;
+
+    // Acquire permit for concurrency limiting
+    let _permit = state.acquire_permit().await;
 
     let start = Instant::now();
-    let result = engine
-        .asr_transcribe(&req.audio_base64, req.model_id.as_deref(), req.language.as_deref())
+    let result = state
+        .engine
+        .asr_transcribe(
+            &req.audio_base64,
+            req.model_id.as_deref(),
+            req.language.as_deref(),
+        )
         .await?;
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
 

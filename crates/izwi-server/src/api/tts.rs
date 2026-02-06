@@ -1,16 +1,17 @@
-//! TTS generation API endpoints
+//! TTS generation API endpoints with high-concurrency optimizations
 
 use axum::{
     body::Body,
     extract::State,
-    http::{header, Response},
+    http::{header, Response, StatusCode},
     Json,
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -74,47 +75,55 @@ pub struct TTSStats {
     pub rtf: f32,
 }
 
-/// Generate audio (non-streaming)
+/// Generate audio (non-streaming) with backpressure
 pub async fn generate(
     State(state): State<AppState>,
     Json(req): Json<TTSRequest>,
 ) -> Result<Response<Body>, ApiError> {
     info!("TTS request: {} chars", req.text.len());
-    info!(
-        "Voice clone - ref_audio: {}, ref_text: {}",
-        req.reference_audio.is_some(),
-        req.reference_text.is_some()
-    );
 
-    let engine = state.engine.read().await;
+    // Acquire permit for concurrency limiting (backpressure)
+    let _permit = state.acquire_permit().await;
 
-    // Build generation request
-    let mut gen_config = GenerationConfig::default();
-    gen_config.streaming = false;
-    if let Some(t) = req.temperature {
-        gen_config.temperature = t;
-    }
-    if let Some(s) = req.speed {
-        gen_config.speed = s;
-    }
-    gen_config.speaker = req.speaker.clone();
+    // Set timeout for request
+    let timeout = Duration::from_secs(state.request_timeout_secs);
 
-    let gen_request = GenerationRequest {
-        id: uuid::Uuid::new_v4().to_string(),
-        text: req.text,
-        config: gen_config,
-        reference_audio: req.reference_audio,
-        reference_text: req.reference_text,
-        voice_description: req.voice_description,
-    };
+    let result = tokio::time::timeout(timeout, async {
+        // Build generation request
+        let mut gen_config = GenerationConfig::default();
+        gen_config.streaming = false;
+        if let Some(t) = req.temperature {
+            gen_config.temperature = t;
+        }
+        if let Some(s) = req.speed {
+            gen_config.speed = s;
+        }
+        gen_config.speaker = req.speaker;
 
-    // Generate audio
-    let result = engine.generate(gen_request).await?;
+        let gen_request = GenerationRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            text: req.text,
+            config: gen_config,
+            reference_audio: req.reference_audio,
+            reference_text: req.reference_text,
+            voice_description: req.voice_description,
+        };
+
+        // Generate audio (spawn_blocking happens inside generate)
+        state.engine.generate(gen_request).await
+    })
+    .await
+    .map_err(|_| ApiError::internal("Request timeout"))??;
 
     // Encode to requested format
     let format = parse_format(&req.format)?;
-    let encoder = engine.audio_encoder();
-    let audio_bytes = encoder.encode(&result.samples, format)?;
+    let encoder = state.engine.audio_encoder().await;
+    let samples = result.samples.clone();
+
+    // Spawn blocking for audio encoding (CPU intensive)
+    let audio_bytes = tokio::task::spawn_blocking(move || encoder.encode(&samples, format))
+        .await
+        .map_err(|e| ApiError::internal(format!("Audio encoding failed: {}", e)))??;
 
     // Return based on format
     let content_type = izwi_core::audio::AudioEncoder::content_type(format);
@@ -166,14 +175,15 @@ pub async fn generate(
     }
 }
 
-/// Generate audio with streaming
+/// Generate audio with streaming and backpressure
 pub async fn generate_stream(
     State(state): State<AppState>,
     Json(req): Json<TTSRequest>,
 ) -> Result<Response<Body>, ApiError> {
     info!("Streaming TTS request: {} chars", req.text.len());
 
-    let engine = state.engine.read().await;
+    // Acquire permit for concurrency limiting
+    let _permit = state.acquire_permit().await;
 
     // Build generation request
     let mut gen_config = GenerationConfig::default();
@@ -184,7 +194,7 @@ pub async fn generate_stream(
     if let Some(s) = req.speed {
         gen_config.speed = s;
     }
-    gen_config.speaker = req.speaker.clone();
+    gen_config.speaker = req.speaker;
 
     let gen_request = GenerationRequest {
         id: uuid::Uuid::new_v4().to_string(),
@@ -196,17 +206,25 @@ pub async fn generate_stream(
     };
 
     let format = parse_format(&req.format)?;
-    let sample_rate = engine.sample_rate();
+    let sample_rate = state.engine.sample_rate().await;
 
     // Create channel for streaming chunks
     let (tx, rx) = mpsc::channel::<AudioChunk>(32);
 
-    // Spawn generation task
-    let engine_clone = state.engine.clone();
+    // Spawn generation task with timeout
+    let engine = state.engine.clone();
     let request_clone = gen_request.clone();
+    let timeout = Duration::from_secs(state.request_timeout_secs);
+
     tokio::spawn(async move {
-        let engine = engine_clone.read().await;
-        if let Err(e) = engine.generate_streaming(request_clone, tx).await {
+        let result = tokio::time::timeout(timeout, async {
+            engine.generate_streaming(request_clone, tx).await
+        })
+        .await;
+
+        if let Err(_) = result {
+            tracing::error!("Streaming generation timeout");
+        } else if let Err(e) = result.unwrap() {
             tracing::error!("Streaming generation error: {}", e);
         }
     });

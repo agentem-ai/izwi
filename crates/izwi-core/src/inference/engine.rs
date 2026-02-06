@@ -24,19 +24,19 @@ pub struct AsrTranscription {
     pub duration_secs: f32,
 }
 
-/// Main TTS inference engine
+/// Main TTS inference engine with interior mutability for concurrent access
 pub struct InferenceEngine {
     config: EngineConfig,
     model_manager: Arc<ModelManager>,
     model_registry: Arc<ModelRegistry>,
-    tokenizer: Option<Tokenizer>,
-    codec: AudioCodec,
+    tokenizer: RwLock<Option<Tokenizer>>,
+    codec: RwLock<AudioCodec>,
     _kv_cache: KVCache,
     streaming_config: StreamingConfig,
     /// Currently loaded native TTS model
     tts_model: Arc<RwLock<Option<Qwen3TtsModel>>>,
     /// Currently loaded model path
-    loaded_model_path: Option<PathBuf>,
+    loaded_model_path: RwLock<Option<PathBuf>>,
     /// Device profile for inference
     device: DeviceProfile,
 }
@@ -57,12 +57,12 @@ impl InferenceEngine {
             config,
             model_manager,
             model_registry,
-            tokenizer: None,
-            codec,
+            tokenizer: RwLock::new(None),
+            codec: RwLock::new(codec),
             _kv_cache: kv_cache,
             streaming_config: StreamingConfig::default(),
             tts_model: Arc::new(RwLock::new(None)),
-            loaded_model_path: None,
+            loaded_model_path: RwLock::new(None),
             device,
         })
     }
@@ -105,8 +105,8 @@ impl InferenceEngine {
         self.model_manager.unload_model(variant).await
     }
 
-    /// Load a model for inference
-    pub async fn load_model(&mut self, variant: ModelVariant) -> Result<()> {
+    /// Load a model for inference (now with interior mutability)
+    pub async fn load_model(&self, variant: ModelVariant) -> Result<()> {
         // Ensure model is downloaded
         if !self.model_manager.is_ready(variant).await {
             let info = self.model_manager.get_model_info(variant).await;
@@ -138,7 +138,8 @@ impl InferenceEngine {
 
             let mut model_guard = self.tts_model.write().await;
             *model_guard = Some(tts_model);
-            self.loaded_model_path = Some(model_path.clone());
+            let mut path_guard = self.loaded_model_path.write().await;
+            *path_guard = Some(model_path.clone());
 
             info!("Native TTS model loaded successfully");
             self.model_manager.mark_loaded(variant).await;
@@ -149,7 +150,8 @@ impl InferenceEngine {
         match Tokenizer::from_path(&model_path) {
             Ok(tokenizer) => {
                 info!("Loaded tokenizer from {:?}", model_path);
-                self.tokenizer = Some(tokenizer);
+                let mut guard = self.tokenizer.write().await;
+                *guard = Some(tokenizer);
             }
             Err(e) => {
                 warn!("Failed to load tokenizer: {}", e);
@@ -158,50 +160,70 @@ impl InferenceEngine {
 
         // Load codec if this is a tokenizer model
         if variant.is_tokenizer() {
-            self.codec.load_weights(&model_path)?;
+            let mut codec_guard = self.codec.write().await;
+            codec_guard.load_weights(&model_path)?;
         }
 
         Ok(())
     }
 
-    /// Generate audio from text (non-streaming) using native model
+    /// Generate audio from text (non-streaming) using native model - now with spawn_blocking
     pub async fn generate(&self, request: GenerationRequest) -> Result<GenerationResult> {
         let start_time = std::time::Instant::now();
 
-        let tts_model = self.tts_model.read().await;
-        let model = tts_model
-            .as_ref()
-            .ok_or_else(|| Error::InferenceError("No TTS model loaded".to_string()))?;
+        // Clone necessary data for spawn_blocking
+        let tts_model = self.tts_model.clone();
+        let text = request.text.clone();
+        let speaker = request.config.speaker.clone();
+        let voice_description = request.voice_description.clone();
+        let ref_audio = request.reference_audio.clone();
+        let ref_text = request.reference_text.clone();
+        let request_id = request.id.clone();
 
-        info!("Generating TTS for: {}", request.text);
+        // Run CPU-intensive generation in spawn_blocking
+        let samples = tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Handle::try_current();
+            let model_guard = rt
+                .as_ref()
+                .map(|r| r.block_on(async { tts_model.read().await }))
+                .unwrap_or_else(|_| {
+                    // Fallback: this shouldn't happen in normal async context
+                    panic!("No async runtime available");
+                });
 
-        // Generate using native model
-        let samples = if request.reference_audio.is_some() && request.reference_text.is_some() {
-            // Voice cloning mode
-            let ref_audio = request.reference_audio.unwrap_or_default();
-            let ref_bytes = base64_decode(&ref_audio).map_err(|e| {
-                Error::InferenceError(format!("Failed to decode reference audio: {}", e))
-            })?;
+            let model = model_guard
+                .as_ref()
+                .ok_or_else(|| Error::InferenceError("No TTS model loaded".to_string()))?;
 
-            let (ref_samples, sample_rate) = decode_wav_bytes(&ref_bytes)?;
+            if ref_audio.is_some() && ref_text.is_some() {
+                // Voice cloning mode
+                let ref_audio = ref_audio.unwrap_or_default();
+                let ref_bytes = base64_decode(&ref_audio).map_err(|e| {
+                    Error::InferenceError(format!("Failed to decode reference audio: {}", e))
+                })?;
 
-            let speaker_ref = SpeakerReference {
-                audio_samples: ref_samples,
-                text: request.reference_text.unwrap_or_default(),
-                sample_rate,
-            };
+                let (ref_samples, sample_rate) = decode_wav_bytes(&ref_bytes)?;
 
-            model.generate_with_voice_clone(&request.text, &speaker_ref, Some("Auto"))?
-        } else {
-            // Preset speaker mode
-            let speaker = request.config.speaker.as_deref().unwrap_or("Vivian");
-            model.generate_with_speaker(
-                &request.text,
-                speaker,
-                Some("Auto"),
-                request.voice_description.as_deref(),
-            )?
-        };
+                let speaker_ref = SpeakerReference {
+                    audio_samples: ref_samples,
+                    text: ref_text.unwrap_or_default(),
+                    sample_rate,
+                };
+
+                model.generate_with_voice_clone(&text, &speaker_ref, Some("Auto"))
+            } else {
+                // Preset speaker mode
+                let speaker = speaker.as_deref().unwrap_or("Vivian");
+                model.generate_with_speaker(
+                    &text,
+                    speaker,
+                    Some("Auto"),
+                    voice_description.as_deref(),
+                )
+            }
+        })
+        .await
+        .map_err(|e| Error::InferenceError(format!("Generation task failed: {}", e)))??;
 
         let total_time_ms = start_time.elapsed().as_secs_f32() * 1000.0;
         let num_samples = samples.len();
@@ -212,7 +234,7 @@ impl InferenceEngine {
         );
 
         Ok(GenerationResult {
-            request_id: request.id,
+            request_id,
             samples,
             sample_rate: 24000,
             total_tokens: num_samples / 256,
@@ -260,7 +282,8 @@ impl InferenceEngine {
     ) -> Result<Vec<Vec<u32>>> {
         // Placeholder: Generate dummy tokens
         // In real implementation, this runs the transformer forward pass
-        let num_codebooks = self.codec.config().num_codebooks;
+        let codec = self.codec.read().await;
+        let num_codebooks = codec.config().num_codebooks;
         let num_tokens = config.max_tokens.min(256);
 
         let mut audio_tokens = Vec::with_capacity(num_codebooks);
@@ -283,7 +306,8 @@ impl InferenceEngine {
     ) -> Result<Vec<u32>> {
         // Placeholder: Generate single token per codebook
         // In real implementation, this runs incremental inference
-        let num_codebooks = self.codec.config().num_codebooks;
+        let codec = self.codec.read().await;
+        let num_codebooks = codec.config().num_codebooks;
         let tokens: Vec<u32> = (0..num_codebooks)
             .map(|_i| (rand_u32() % 4096) as u32)
             .collect();
@@ -310,14 +334,15 @@ impl InferenceEngine {
         &self.config
     }
 
-    /// Get codec sample rate
-    pub fn sample_rate(&self) -> u32 {
-        self.codec.sample_rate()
+    /// Get codec sample rate (acquires read lock)
+    pub async fn sample_rate(&self) -> u32 {
+        self.codec.read().await.sample_rate()
     }
 
-    /// Create audio encoder
-    pub fn audio_encoder(&self) -> AudioEncoder {
-        AudioEncoder::new(self.codec.sample_rate(), 1)
+    /// Create audio encoder (acquires read lock)
+    pub async fn audio_encoder(&self) -> AudioEncoder {
+        let codec = self.codec.read().await;
+        AudioEncoder::new(codec.sample_rate(), 1)
     }
 
     /// Get available speakers for the loaded model

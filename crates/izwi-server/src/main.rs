@@ -84,8 +84,7 @@ async fn shutdown_signal(state: AppState) {
 
     // Cleanup: stop all daemons
     info!("Stopping all daemons...");
-    let engine = state.engine.read().await;
-    if let Err(e) = engine.stop_all_daemons() {
+    if let Err(e) = state.engine.stop_all_daemons() {
         warn!("Error stopping daemons: {}", e);
     } else {
         info!("All daemons stopped");

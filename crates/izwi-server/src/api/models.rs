@@ -22,8 +22,7 @@ pub struct ModelsResponse {
 
 /// List all available models
 pub async fn list_models(State(state): State<AppState>) -> Result<Json<ModelsResponse>, ApiError> {
-    let engine = state.engine.read().await;
-    let models = engine.list_models().await;
+    let models = state.engine.list_models().await;
     Ok(Json(ModelsResponse { models }))
 }
 
@@ -33,9 +32,9 @@ pub async fn get_model_info(
     Path(variant): Path<String>,
 ) -> Result<Json<ModelInfo>, ApiError> {
     let variant = parse_variant(&variant)?;
-    let engine = state.engine.read().await;
 
-    let info = engine
+    let info = state
+        .engine
         .model_manager()
         .get_model_info(variant)
         .await
@@ -74,10 +73,8 @@ pub async fn download_model(
     let variant = parse_variant(&variant)?;
     info!("Starting non-blocking download for model: {}", variant);
 
-    let engine = state.engine.read().await;
-
     // Check if already downloading
-    if engine.is_download_active(variant).await {
+    if state.engine.is_download_active(variant).await {
         return Ok(Json(DownloadResponse {
             status: "downloading",
             message: format!("Model {} is already being downloaded", variant),
@@ -85,7 +82,7 @@ pub async fn download_model(
     }
 
     // Spawn non-blocking download
-    engine.spawn_download(variant).await?;
+    state.engine.spawn_download(variant).await?;
 
     Ok(Json(DownloadResponse {
         status: "started",
@@ -101,8 +98,7 @@ pub async fn load_model(
     let variant = parse_variant(&variant)?;
     info!("Loading model: {}", variant);
 
-    let mut engine = state.engine.write().await;
-    engine.load_model(variant).await?;
+    state.engine.load_model(variant).await?;
 
     Ok(Json(DownloadResponse {
         status: "loaded",
@@ -118,8 +114,7 @@ pub async fn unload_model(
     let variant = parse_variant(&variant)?;
     info!("Unloading model: {}", variant);
 
-    let engine = state.engine.read().await;
-    engine.unload_model(variant).await?;
+    state.engine.unload_model(variant).await?;
 
     Ok(Json(DownloadResponse {
         status: "unloaded",
@@ -135,13 +130,11 @@ pub async fn delete_model(
     let variant = parse_variant(&variant)?;
     info!("Deleting model: {}", variant);
 
-    let engine = state.engine.read().await;
-
     // First unload if loaded
-    let _ = engine.model_manager().unload_model(variant).await;
+    let _ = state.engine.model_manager().unload_model(variant).await;
 
     // Delete the model files
-    engine.model_manager().delete_model(variant).await?;
+    state.engine.model_manager().delete_model(variant).await?;
 
     Ok(Json(DownloadResponse {
         status: "deleted",
@@ -158,14 +151,13 @@ pub async fn download_progress_stream(
     ApiError,
 > {
     use axum::response::sse::Event;
-    use futures::stream::StreamExt;
 
     let variant = parse_variant(&variant)?;
     info!("Starting SSE progress stream for: {}", variant);
 
     // Get progress receiver from engine
-    let engine = state.engine.read().await;
-    let mut progress_rx = engine
+    let mut progress_rx = state
+        .engine
         .model_manager()
         .subscribe_progress(variant)
         .await
@@ -219,10 +211,8 @@ pub async fn cancel_download(
     let variant = parse_variant(&variant)?;
     info!("Cancelling download for: {}", variant);
 
-    let engine = state.engine.read().await;
-
     // Check if download is active
-    if !engine.is_download_active(variant).await {
+    if !state.engine.is_download_active(variant).await {
         return Ok(Json(DownloadResponse {
             status: "not_active",
             message: format!("No active download for {}", variant),
@@ -230,7 +220,7 @@ pub async fn cancel_download(
     }
 
     // Cancel the download
-    match engine.model_manager().cancel_download(variant).await {
+    match state.engine.model_manager().cancel_download(variant).await {
         Ok(_) => Ok(Json(DownloadResponse {
             status: "cancelled",
             message: format!("Download of {} cancelled", variant),
