@@ -63,7 +63,7 @@ impl Qwen3Cache {
         }
     }
 
-    fn append(&mut self, layer: usize, k: Tensor, v: Tensor) -> Result<(Tensor, Tensor)> {
+    pub fn append(&mut self, layer: usize, k: Tensor, v: Tensor) -> Result<(Tensor, Tensor)> {
         let k = if let Some(prev) = &self.k[layer] {
             Tensor::cat(&[prev, &k], 1)?
         } else {
@@ -147,18 +147,31 @@ impl Qwen3Attention {
         })
     }
 
-    fn apply_qk_norm(&self, x: Tensor, norm: &Option<RmsNorm>, heads: usize, seq_len: usize) -> Result<Tensor> {
+    fn apply_qk_norm(
+        &self,
+        x: Tensor,
+        norm: &Option<RmsNorm>,
+        heads: usize,
+        seq_len: usize,
+    ) -> Result<Tensor> {
         if let Some(norm) = norm {
             let bsz = x.dim(0)?;
             let reshaped = x.reshape((bsz * seq_len * heads, self.head_dim))?;
             let normed = norm.forward(&reshaped)?;
-            normed.reshape((bsz, seq_len, heads, self.head_dim)).map_err(Error::from)
+            normed
+                .reshape((bsz, seq_len, heads, self.head_dim))
+                .map_err(Error::from)
         } else {
             Ok(x)
         }
     }
 
-    fn apply_rope(&self, x: Tensor, start_pos: usize, position_ids: Option<&Tensor>) -> Result<Tensor> {
+    fn apply_rope(
+        &self,
+        x: Tensor,
+        start_pos: usize,
+        position_ids: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let bsz = x.dim(0)?;
         let seq_len = x.dim(1)?;
         let heads = x.dim(2)?;
@@ -212,7 +225,8 @@ impl Qwen3Attention {
         let rot1 = rot1.unsqueeze(4)?;
         let rot2 = rot2.unsqueeze(4)?;
         let out = Tensor::cat(&[rot1, rot2], 4)?;
-        out.reshape((bsz, seq_len, heads, self.head_dim)).map_err(Error::from)
+        out.reshape((bsz, seq_len, heads, self.head_dim))
+            .map_err(Error::from)
     }
 
     fn forward(
@@ -226,12 +240,18 @@ impl Qwen3Attention {
         let bsz = x.dim(0)?;
         let seq_len = x.dim(1)?;
 
-        let mut q = self.q_proj.forward(x)?
-            .reshape((bsz, seq_len, self.num_heads, self.head_dim))?;
-        let mut k = self.k_proj.forward(x)?
-            .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
-        let v = self.v_proj.forward(x)?
-            .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
+        let mut q =
+            self.q_proj
+                .forward(x)?
+                .reshape((bsz, seq_len, self.num_heads, self.head_dim))?;
+        let mut k =
+            self.k_proj
+                .forward(x)?
+                .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
+        let v =
+            self.v_proj
+                .forward(x)?
+                .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
 
         q = self.apply_qk_norm(q, &self.q_norm, self.num_heads, seq_len)?;
         k = self.apply_qk_norm(k, &self.k_norm, self.num_kv_heads, seq_len)?;
@@ -260,8 +280,8 @@ impl Qwen3Attention {
 
         let mut att = q.matmul(&k.transpose(1, 2)?)?;
         let scale = (self.head_dim as f64).sqrt();
-        let scale_t = Tensor::from_vec(vec![scale as f32], (1,), att.device())?
-            .to_dtype(att.dtype())?;
+        let scale_t =
+            Tensor::from_vec(vec![scale as f32], (1,), att.device())?.to_dtype(att.dtype())?;
         att = att.broadcast_div(&scale_t)?;
 
         if seq_len > 1 || start_pos == 0 {
@@ -272,7 +292,9 @@ impl Qwen3Attention {
         let att = ops::softmax(&att, D::Minus1)?;
         let out = att.matmul(&v)?;
         let out = out.reshape((bsz, self.num_heads, seq_len, self.head_dim))?;
-        let out = out.transpose(1, 2)?.reshape((bsz, seq_len, self.num_heads * self.head_dim))?;
+        let out = out
+            .transpose(1, 2)?
+            .reshape((bsz, seq_len, self.num_heads * self.head_dim))?;
 
         let out = self.o_proj.forward(&out)?;
         Ok(out)
@@ -319,9 +341,14 @@ struct Qwen3Layer {
 
 impl Qwen3Layer {
     fn load(cfg: &Qwen3Config, vb: VarBuilder) -> Result<Self> {
-        let input_layernorm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
+        let input_layernorm =
+            candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
         let self_attn = Qwen3Attention::load(cfg, vb.pp("self_attn"))?;
-        let post_attention_layernorm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("post_attention_layernorm"))?;
+        let post_attention_layernorm = candle_nn::rms_norm(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            vb.pp("post_attention_layernorm"),
+        )?;
         let mlp = Qwen3Mlp::load(cfg, vb.pp("mlp"))?;
         Ok(Self {
             input_layernorm,
@@ -340,9 +367,9 @@ impl Qwen3Layer {
         layer_idx: usize,
     ) -> Result<Tensor> {
         let normed = self.input_layernorm.forward(x)?;
-        let attn_out = self
-            .self_attn
-            .forward(&normed, start_pos, position_ids, cache, layer_idx)?;
+        let attn_out =
+            self.self_attn
+                .forward(&normed, start_pos, position_ids, cache, layer_idx)?;
         let x = x.broadcast_add(&attn_out)?;
 
         let normed = self.post_attention_layernorm.forward(&x)?;
@@ -364,7 +391,8 @@ pub struct Qwen3Model {
 
 impl Qwen3Model {
     pub fn load(cfg: Qwen3Config, vb: VarBuilder) -> Result<Self> {
-        let embed_tokens = candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("model.embed_tokens"))?;
+        let embed_tokens =
+            candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("model.embed_tokens"))?;
         let lm_head = candle_nn::linear_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for idx in 0..cfg.num_hidden_layers {
@@ -399,7 +427,12 @@ impl Qwen3Model {
         self.layers.len()
     }
 
-    pub fn forward(&self, input_ids: &Tensor, start_pos: usize, cache: Option<&mut Qwen3Cache>) -> Result<Tensor> {
+    pub fn forward(
+        &self,
+        input_ids: &Tensor,
+        start_pos: usize,
+        cache: Option<&mut Qwen3Cache>,
+    ) -> Result<Tensor> {
         let embeds = self.embeddings(input_ids)?;
         self.forward_with_embeds(&embeds, start_pos, cache, None)
     }
@@ -430,7 +463,7 @@ impl Qwen3Model {
     }
 }
 
-fn repeat_kv(x: &Tensor, num_heads: usize, num_kv_heads: usize) -> Result<Tensor> {
+pub fn repeat_kv(x: &Tensor, num_heads: usize, num_kv_heads: usize) -> Result<Tensor> {
     if num_heads == num_kv_heads {
         return Ok(x.clone());
     }
@@ -442,7 +475,7 @@ fn repeat_kv(x: &Tensor, num_heads: usize, num_kv_heads: usize) -> Result<Tensor
     Tensor::cat(&parts, 2).map_err(Error::from)
 }
 
-fn build_rope_cache(
+pub fn build_rope_cache(
     seq_len: usize,
     head_dim: usize,
     start_pos: usize,
@@ -470,7 +503,7 @@ fn build_rope_cache(
     Ok((cos, sin))
 }
 
-fn build_mrope_cache(
+pub fn build_mrope_cache(
     seq_len: usize,
     head_dim: usize,
     rope_theta: f64,
@@ -526,7 +559,7 @@ fn build_mrope_cache(
     Ok((cos, sin))
 }
 
-fn causal_mask(
+pub fn causal_mask(
     seq_len: usize,
     total_len: usize,
     start_pos: usize,

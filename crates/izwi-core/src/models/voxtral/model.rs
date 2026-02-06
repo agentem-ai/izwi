@@ -9,7 +9,8 @@ use tracing::info;
 use crate::audio::{MelConfig, MelSpectrogram};
 use crate::error::{Error, Result};
 use crate::models::device::DeviceProfile;
-use crate::models::qwen3::{Qwen3Cache, Qwen3Model};
+use crate::models::qwen3::Qwen3Cache;
+use crate::models::voxtral_lm::VoxtralLM;
 
 use super::audio::{AudioLanguageAdapter, TimeEmbedding};
 use super::config::VoxtralConfig;
@@ -23,7 +24,7 @@ pub struct VoxtralRealtimeModel {
     config: VoxtralConfig,
     whisper_encoder: WhisperEncoder,
     audio_adapter: AudioLanguageAdapter,
-    language_model: Qwen3Model,
+    language_model: VoxtralLM,
     time_embedding: TimeEmbedding,
     mel: MelSpectrogram,
 }
@@ -73,17 +74,19 @@ impl VoxtralRealtimeModel {
         let vb = load_weights(model_dir, dtype, &device_clone)?;
 
         // Load components
-        let whisper_encoder = WhisperEncoder::load(&audio_cfg, vb.pp("whisper_encoder"))?;
+        // Note: Checkpoint uses mm_streams_embeddings.embedding_module prefix for audio components
+        let whisper_prefix = "mm_streams_embeddings.embedding_module.whisper_encoder";
+        let whisper_encoder = WhisperEncoder::load_voxtral(&audio_cfg, vb.pp(whisper_prefix))?;
 
         let hidden_size = audio_cfg.d_model * config.downsample_factor();
         let audio_adapter = AudioLanguageAdapter::load(
             hidden_size,
             config.text_config().hidden_size,
-            vb.pp("audio_language_adapter"),
+            vb.pp("mm_streams_embeddings.embedding_module.audio_language_projection"),
         )?;
 
-        let language_model =
-            Qwen3Model::load(config.text_config().into(), vb.pp("language_model"))?;
+        // Language model uses root-level layers.* and norm (Mistral-style)
+        let language_model = VoxtralLM::load(config.text_config().into(), vb.clone())?;
 
         let time_embedding =
             TimeEmbedding::new(config.text_config().hidden_size, 10000.0, &device.device)?;
@@ -226,13 +229,28 @@ pub struct WhisperEncoder {
     conv1: candle_nn::Conv1d,
     conv2: candle_nn::Conv1d,
     layers: Vec<WhisperEncoderLayer>,
-    ln_post: candle_nn::LayerNorm,
+    ln_post: Option<candle_nn::LayerNorm>,
+    ln_post_rms: Option<candle_nn::RmsNorm>,
     embed_positions: Tensor,
     is_causal: bool,
 }
 
 impl WhisperEncoder {
+    /// Load for standard Whisper format
     pub fn load(cfg: &super::config::AudioEncoderConfig, vb: VarBuilder) -> Result<Self> {
+        Self::load_internal(cfg, vb, false)
+    }
+
+    /// Load for Voxtral checkpoint format (different tensor naming)
+    pub fn load_voxtral(cfg: &super::config::AudioEncoderConfig, vb: VarBuilder) -> Result<Self> {
+        Self::load_internal(cfg, vb, true)
+    }
+
+    fn load_internal(
+        cfg: &super::config::AudioEncoderConfig,
+        vb: VarBuilder,
+        is_voxtral: bool,
+    ) -> Result<Self> {
         let conv1_config = candle_nn::Conv1dConfig {
             stride: cfg.conv1_stride,
             padding: 1,
@@ -248,31 +266,60 @@ impl WhisperEncoder {
             ..Default::default()
         };
 
-        let conv1 = candle_nn::conv1d(
-            cfg.num_mel_bins,
-            cfg.d_model,
-            cfg.conv1_kernel_size,
-            conv1_config,
-            vb.pp("conv1"),
-        )?;
-
-        let conv2 = candle_nn::conv1d(
-            cfg.d_model,
-            cfg.d_model,
-            cfg.conv2_kernel_size,
-            conv2_config,
-            vb.pp("conv2"),
-        )?;
+        // Voxtral uses conv_layers.0.conv and conv_layers.1.conv
+        let (conv1, conv2) = if is_voxtral {
+            let conv1 = candle_nn::conv1d(
+                cfg.num_mel_bins,
+                cfg.d_model,
+                cfg.conv1_kernel_size,
+                conv1_config,
+                vb.pp("conv_layers.0.conv"),
+            )?;
+            let conv2 = candle_nn::conv1d(
+                cfg.d_model,
+                cfg.d_model,
+                cfg.conv2_kernel_size,
+                conv2_config,
+                vb.pp("conv_layers.1.conv"),
+            )?;
+            (conv1, conv2)
+        } else {
+            let conv1 = candle_nn::conv1d(
+                cfg.num_mel_bins,
+                cfg.d_model,
+                cfg.conv1_kernel_size,
+                conv1_config,
+                vb.pp("conv1"),
+            )?;
+            let conv2 = candle_nn::conv1d(
+                cfg.d_model,
+                cfg.d_model,
+                cfg.conv2_kernel_size,
+                conv2_config,
+                vb.pp("conv2"),
+            )?;
+            (conv1, conv2)
+        };
 
         let mut layers = Vec::with_capacity(cfg.encoder_layers);
         for i in 0..cfg.encoder_layers {
-            layers.push(WhisperEncoderLayer::load(
-                cfg,
-                vb.pp(format!("layers.{i}")),
-            )?);
+            // Voxtral uses transformer.layers.{i} instead of layers.{i}
+            let layer_vb = if is_voxtral {
+                vb.pp(format!("transformer.layers.{i}"))
+            } else {
+                vb.pp(format!("layers.{i}"))
+            };
+            layers.push(WhisperEncoderLayer::load(cfg, layer_vb, is_voxtral)?);
         }
 
-        let ln_post = candle_nn::layer_norm(cfg.d_model, 1e-5, vb.pp("ln_post"))?;
+        let (ln_post, ln_post_rms) = if is_voxtral {
+            // Voxtral uses transformer.norm (RMSNorm)
+            let norm = candle_nn::rms_norm(cfg.d_model, 1e-5, vb.pp("transformer.norm"))?;
+            (None, Some(norm))
+        } else {
+            let norm = candle_nn::layer_norm(cfg.d_model, 1e-5, vb.pp("ln_post"))?;
+            (Some(norm), None)
+        };
 
         // Sinusoidal position embeddings
         let max_len = cfg.max_source_positions;
@@ -302,6 +349,7 @@ impl WhisperEncoder {
             conv2,
             layers,
             ln_post,
+            ln_post_rms,
             embed_positions,
             is_causal: cfg.is_causal,
         })
@@ -333,9 +381,13 @@ impl WhisperEncoder {
             x = layer.forward(&x, self.is_causal)?;
         }
 
-        self.ln_post
-            .forward(&x)
-            .map_err(|e| Error::InferenceError(e.to_string()))
+        // Final layer norm
+        if self.ln_post_rms.is_some() {
+            self.ln_post_rms.as_ref().unwrap().forward(&x)
+        } else {
+            self.ln_post.as_ref().unwrap().forward(&x)
+        }
+        .map_err(|e| Error::InferenceError(e.to_string()))
     }
 
     /// Forward only conv layers (for realtime processing)
@@ -362,42 +414,108 @@ impl WhisperEncoder {
 
 /// Whisper encoder layer
 struct WhisperEncoderLayer {
-    self_attn_layer_norm: candle_nn::LayerNorm,
+    self_attn_layer_norm: Option<candle_nn::LayerNorm>,
+    final_layer_norm: Option<candle_nn::LayerNorm>,
+    self_attn_rms_norm: Option<candle_nn::RmsNorm>,
+    final_rms_norm: Option<candle_nn::RmsNorm>,
     self_attn: WhisperAttention,
-    final_layer_norm: candle_nn::LayerNorm,
-    fc1: candle_nn::Linear,
-    fc2: candle_nn::Linear,
+    fc1: Option<candle_nn::Linear>,
+    fc2: Option<candle_nn::Linear>,
+    ffn_w1: Option<candle_nn::Linear>,
+    ffn_w2: Option<candle_nn::Linear>,
+    ffn_w3: Option<candle_nn::Linear>,
+    is_voxtral: bool,
 }
 
 impl WhisperEncoderLayer {
-    pub fn load(cfg: &super::config::AudioEncoderConfig, vb: VarBuilder) -> Result<Self> {
-        let self_attn_layer_norm =
-            candle_nn::layer_norm(cfg.d_model, 1e-5, vb.pp("self_attn_layer_norm"))?;
-        let self_attn = WhisperAttention::load(cfg, vb.pp("self_attn"))?;
-        let final_layer_norm = candle_nn::layer_norm(cfg.d_model, 1e-5, vb.pp("final_layer_norm"))?;
-        let fc1 = candle_nn::linear(cfg.d_model, cfg.encoder_ffn_dim, vb.pp("fc1"))?;
-        let fc2 = candle_nn::linear(cfg.encoder_ffn_dim, cfg.d_model, vb.pp("fc2"))?;
+    pub fn load(
+        cfg: &super::config::AudioEncoderConfig,
+        vb: VarBuilder,
+        is_voxtral: bool,
+    ) -> Result<Self> {
+        let (self_attn_layer_norm, self_attn_rms_norm, self_attn, final_layer_norm, final_rms_norm) =
+            if is_voxtral {
+                let norm = candle_nn::rms_norm(cfg.d_model, 1e-5, vb.pp("attention_norm"))?;
+                let attn = WhisperAttention::load_voxtral(cfg, vb.pp("attention"))?;
+                let ffn_norm = candle_nn::rms_norm(cfg.d_model, 1e-5, vb.pp("ffn_norm"))?;
+                (None, Some(norm), attn, None, Some(ffn_norm))
+            } else {
+                let norm = candle_nn::layer_norm(cfg.d_model, 1e-5, vb.pp("self_attn_layer_norm"))?;
+                let attn = WhisperAttention::load(cfg, vb.pp("self_attn"))?;
+                let ffn_norm = candle_nn::layer_norm(cfg.d_model, 1e-5, vb.pp("final_layer_norm"))?;
+                (Some(norm), None, attn, Some(ffn_norm), None)
+            };
+
+        let (fc1, fc2, ffn_w1, ffn_w2, ffn_w3) = if is_voxtral {
+            // Voxtral uses w1, w2, w3 for feed-forward (no bias)
+            let w1 = candle_nn::linear_no_bias(
+                cfg.d_model,
+                cfg.encoder_ffn_dim,
+                vb.pp("feed_forward.w1"),
+            )?;
+            let w2 = candle_nn::linear_no_bias(
+                cfg.encoder_ffn_dim,
+                cfg.d_model,
+                vb.pp("feed_forward.w2"),
+            )?;
+            let w3 = candle_nn::linear_no_bias(
+                cfg.d_model,
+                cfg.encoder_ffn_dim,
+                vb.pp("feed_forward.w3"),
+            )?;
+            (None, None, Some(w1), Some(w2), Some(w3))
+        } else {
+            let fc1 = candle_nn::linear(cfg.d_model, cfg.encoder_ffn_dim, vb.pp("fc1"))?;
+            let fc2 = candle_nn::linear(cfg.encoder_ffn_dim, cfg.d_model, vb.pp("fc2"))?;
+            (Some(fc1), Some(fc2), None, None, None)
+        };
 
         Ok(Self {
             self_attn_layer_norm,
+            self_attn_rms_norm,
             self_attn,
             final_layer_norm,
+            final_rms_norm,
             fc1,
             fc2,
+            ffn_w1,
+            ffn_w2,
+            ffn_w3,
+            is_voxtral,
         })
     }
 
     pub fn forward(&self, x: &Tensor, is_causal: bool) -> Result<Tensor> {
         let residual = x;
-        let x = self.self_attn_layer_norm.forward(x)?;
+        let x = if self.is_voxtral {
+            self.self_attn_rms_norm.as_ref().unwrap().forward(x)?
+        } else {
+            self.self_attn_layer_norm.as_ref().unwrap().forward(x)?
+        };
         let x = self.self_attn.forward(&x, is_causal)?;
         let x = (residual + x)?;
 
         let residual = &x;
-        let x = self.final_layer_norm.forward(&x)?;
-        let x = self.fc1.forward(&x)?;
-        let x = gelu(&x)?;
-        let x = self.fc2.forward(&x)?;
+        let x = if self.is_voxtral {
+            self.final_rms_norm.as_ref().unwrap().forward(&x)?
+        } else {
+            self.final_layer_norm.as_ref().unwrap().forward(&x)?
+        };
+
+        // FFN: Voxtral uses SwiGLU (w1, w2, w3), standard uses GELU (fc1, fc2)
+        let x = if self.is_voxtral {
+            let w1_out = self.ffn_w1.as_ref().unwrap().forward(&x)?;
+            let w3_out = self.ffn_w3.as_ref().unwrap().forward(&x)?;
+            // SwiGLU: silu(w1) * w3
+            let silu_w1 = candle_nn::ops::silu(&w1_out)?;
+            let gated = silu_w1.broadcast_mul(&w3_out)?;
+            self.ffn_w2.as_ref().unwrap().forward(&gated)?
+        } else {
+            let x = self.fc1.as_ref().unwrap().forward(&x)?;
+            let x = gelu(&x)?;
+            self.fc2.as_ref().unwrap().forward(&x)?
+        };
+
         residual
             .broadcast_add(&x)
             .map_err(|e| Error::InferenceError(e.to_string()))
@@ -416,13 +534,45 @@ struct WhisperAttention {
 }
 
 impl WhisperAttention {
+    /// Load for standard Whisper format  
     pub fn load(cfg: &super::config::AudioEncoderConfig, vb: VarBuilder) -> Result<Self> {
-        let head_dim = cfg.d_model / cfg.encoder_attention_heads;
+        Self::load_internal(cfg, vb, false)
+    }
 
-        let q_proj = candle_nn::linear(cfg.d_model, cfg.d_model, vb.pp("q_proj"))?;
-        let k_proj = candle_nn::linear(cfg.d_model, cfg.d_model, vb.pp("k_proj"))?;
-        let v_proj = candle_nn::linear(cfg.d_model, cfg.d_model, vb.pp("v_proj"))?;
-        let out_proj = candle_nn::linear(cfg.d_model, cfg.d_model, vb.pp("out_proj"))?;
+    /// Load for Voxtral checkpoint format
+    pub fn load_voxtral(cfg: &super::config::AudioEncoderConfig, vb: VarBuilder) -> Result<Self> {
+        Self::load_internal(cfg, vb, true)
+    }
+
+    fn load_internal(
+        cfg: &super::config::AudioEncoderConfig,
+        vb: VarBuilder,
+        is_voxtral: bool,
+    ) -> Result<Self> {
+        // Use explicit head_dim from config if available, otherwise compute
+        let head_dim = if cfg.head_dim > 0 {
+            cfg.head_dim
+        } else {
+            cfg.d_model / cfg.encoder_attention_heads
+        };
+        let qkv_proj_dim = cfg.encoder_attention_heads * head_dim;
+
+        let (q_proj, k_proj, v_proj, out_proj) = if is_voxtral {
+            // Voxtral uses wq, wk, wv with shape [n_heads * head_dim, d_model]
+            // Note: wk has no bias, others have bias
+            let q = candle_nn::linear(cfg.d_model, qkv_proj_dim, vb.pp("wq"))?;
+            let k = candle_nn::linear_no_bias(cfg.d_model, qkv_proj_dim, vb.pp("wk"))?;
+            let v = candle_nn::linear(cfg.d_model, qkv_proj_dim, vb.pp("wv"))?;
+            let out = candle_nn::linear(qkv_proj_dim, cfg.d_model, vb.pp("wo"))?;
+            (q, k, v, out)
+        } else {
+            // Standard Whisper uses q_proj, k_proj, v_proj, out_proj
+            let q = candle_nn::linear(cfg.d_model, qkv_proj_dim, vb.pp("q_proj"))?;
+            let k = candle_nn::linear(cfg.d_model, qkv_proj_dim, vb.pp("k_proj"))?;
+            let v = candle_nn::linear(cfg.d_model, qkv_proj_dim, vb.pp("v_proj"))?;
+            let out = candle_nn::linear(qkv_proj_dim, cfg.d_model, vb.pp("out_proj"))?;
+            (q, k, v, out)
+        };
 
         let scale = (head_dim as f64).powf(-0.5);
 

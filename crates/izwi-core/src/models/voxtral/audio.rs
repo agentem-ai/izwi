@@ -54,8 +54,9 @@ pub struct AudioLanguageAdapter {
 
 impl AudioLanguageAdapter {
     pub fn load(hidden_size: usize, dim: usize, vb: candle_nn::VarBuilder) -> Result<Self> {
-        let w_in = candle_nn::linear_no_bias(hidden_size, dim, vb.pp("w_in"))?;
-        let w_out = candle_nn::linear_no_bias(dim, dim, vb.pp("w_out"))?;
+        // Voxtral uses sequential indices: 0 for w_in, 2 for w_out
+        let w_in = candle_nn::linear_no_bias(hidden_size, dim, vb.pp("0"))?;
+        let w_out = candle_nn::linear_no_bias(dim, dim, vb.pp("2"))?;
 
         Ok(Self { w_in, w_out })
     }
