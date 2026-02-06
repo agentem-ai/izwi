@@ -49,6 +49,7 @@ impl VoxtralConfig {
             num_hidden_layers: self.text_n_layers,
             num_attention_heads: self.text_n_heads,
             num_key_value_heads: self.text_n_kv_heads,
+            head_dim: self.head_dim,
             max_position_embeddings: self.model_max_length,
             rms_norm_eps: self.norm_eps,
             rope_theta: self.rope_theta as f32,
@@ -77,6 +78,7 @@ impl VoxtralConfig {
             conv2_kernel_size: 3,
             conv2_stride: 2,
             global_log_mel_max: whisper.audio_encoding_args.global_log_mel_max,
+            head_dim: whisper.head_dim,
         }
     }
 
@@ -178,6 +180,8 @@ pub struct MistralConfig {
     pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
     pub num_key_value_heads: usize,
+    #[serde(default)]
+    pub head_dim: usize,
     pub max_position_embeddings: usize,
     pub rms_norm_eps: f64,
     pub rope_theta: f32,
@@ -207,6 +211,8 @@ pub struct AudioEncoderConfig {
     pub conv2_stride: usize,
     #[serde(default = "default_global_log_mel_max")]
     pub global_log_mel_max: Option<f32>,
+    #[serde(default)]
+    pub head_dim: usize,
 }
 
 fn default_global_log_mel_max() -> Option<f32> {
@@ -221,7 +227,11 @@ impl From<MistralConfig> for Qwen3Config {
             num_attention_heads: cfg.num_attention_heads,
             num_hidden_layers: cfg.num_hidden_layers,
             num_key_value_heads: cfg.num_key_value_heads,
-            head_dim: None,
+            head_dim: if cfg.head_dim > 0 {
+                Some(cfg.head_dim)
+            } else {
+                None
+            },
             rms_norm_eps: cfg.rms_norm_eps,
             rope_theta: cfg.rope_theta as f64,
             vocab_size: cfg.vocab_size,

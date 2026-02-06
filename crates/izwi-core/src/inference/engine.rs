@@ -14,6 +14,7 @@ use crate::inference::generation::{
 use crate::inference::kv_cache::{KVCache, KVCacheConfig};
 use crate::model::{ModelInfo, ModelManager, ModelVariant};
 use crate::models::qwen3_tts::{Qwen3TtsModel, SpeakerReference, TtsTokenizer};
+use crate::models::voxtral::VoxtralRealtimeModel;
 use crate::models::{DeviceProfile, DeviceSelector, ModelRegistry};
 use crate::tokenizer::Tokenizer;
 
@@ -99,8 +100,10 @@ impl InferenceEngine {
 
     /// Unload a model from memory
     pub async fn unload_model(&self, variant: ModelVariant) -> Result<()> {
-        if variant.is_asr() || variant.is_forced_aligner() || variant.is_voxtral() {
+        if variant.is_asr() || variant.is_forced_aligner() {
             self.model_registry.unload_asr(variant).await;
+        } else if variant.is_voxtral() {
+            self.model_registry.unload_voxtral(variant).await;
         }
         self.model_manager.unload_model(variant).await
     }
@@ -125,8 +128,16 @@ impl InferenceEngine {
             .and_then(|i| i.local_path)
             .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
 
-        if variant.is_asr() || variant.is_forced_aligner() || variant.is_voxtral() {
+        if variant.is_asr() || variant.is_forced_aligner() {
             self.model_registry.load_asr(variant, &model_path).await?;
+            self.model_manager.mark_loaded(variant).await;
+            return Ok(());
+        }
+
+        if variant.is_voxtral() {
+            self.model_registry
+                .load_voxtral(variant, &model_path)
+                .await?;
             self.model_manager.mark_loaded(variant).await;
             return Ok(());
         }
@@ -363,6 +374,47 @@ impl InferenceEngine {
     /// Preload a model (no-op for native implementation)
     pub fn preload_model(&self, _model_path: &str) -> Result<()> {
         Ok(())
+    }
+
+    /// Transcribe audio with Voxtral Realtime (native).
+    pub async fn voxtral_transcribe(
+        &self,
+        audio_base64: &str,
+        language: Option<&str>,
+    ) -> Result<AsrTranscription> {
+        let variant = ModelVariant::VoxtralMini4BRealtime2602;
+
+        let model = if let Some(model) = self.model_registry.get_voxtral(variant).await {
+            model
+        } else {
+            let path = self
+                .model_manager
+                .get_model_info(variant)
+                .await
+                .and_then(|i| i.local_path)
+                .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
+            self.model_registry.load_voxtral(variant, &path).await?
+        };
+
+        let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
+        let samples_len = samples.len();
+
+        // Run transcription in spawn_blocking for CPU-intensive work
+        let text = tokio::task::spawn_blocking({
+            let model = model.clone();
+            let language = language.map(|s| s.to_string());
+            move || model.transcribe(&samples, sample_rate, language.as_deref())
+        })
+        .await
+        .map_err(|e| {
+            Error::InferenceError(format!("Voxtral transcription task failed: {}", e))
+        })??;
+
+        Ok(AsrTranscription {
+            text,
+            language: language.map(|s| s.to_string()),
+            duration_secs: samples_len as f32 / sample_rate as f32,
+        })
     }
 
     // ============ Qwen3-ASR Methods ============
