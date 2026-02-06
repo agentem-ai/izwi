@@ -75,17 +75,17 @@ impl VoxtralTokenizer {
             vocab_size,
         }
     }
-    
+
     /// Get special token IDs
     pub fn specials(&self) -> &SpecialTokenIds {
         &self.specials
     }
-    
+
     /// Get audio configuration
     pub fn audio_config(&self) -> &AudioConfig {
         &self.audio_config
     }
-    
+
     /// Build transcription prompt
     pub fn build_transcription_prompt(&self, audio_len_tokens: usize) -> Vec<u32> {
         // Format: [begin_audio] [audio_tokens...] [end_audio]
@@ -94,7 +94,7 @@ impl VoxtralTokenizer {
         tokens.push(self.specials.end_audio);
         tokens
     }
-    
+
     /// Decode generated tokens to text
     pub fn decode_text(&self, tokens: &[u32]) -> Result<String> {
         // For now, return placeholder - actual implementation would use

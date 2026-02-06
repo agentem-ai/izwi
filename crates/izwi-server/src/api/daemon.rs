@@ -33,7 +33,7 @@ pub struct DaemonResponse {
 }
 
 /// Get daemon status
-/// 
+///
 /// Since native Rust models don't use daemons, this always returns
 /// a status indicating the native engine is ready.
 pub async fn get_status(State(_state): State<AppState>) -> Json<DaemonStatus> {
@@ -48,7 +48,7 @@ pub async fn get_status(State(_state): State<AppState>) -> Json<DaemonStatus> {
 }
 
 /// Start the daemon
-/// 
+///
 /// Deprecated: Native Rust models don't use daemons.
 pub async fn start_daemon(
     State(_state): State<AppState>,
@@ -62,7 +62,7 @@ pub async fn start_daemon(
 }
 
 /// Stop the daemon
-/// 
+///
 /// Deprecated: Native Rust models don't use daemons.
 pub async fn stop_daemon(
     State(_state): State<AppState>,
@@ -76,16 +76,22 @@ pub async fn stop_daemon(
 }
 
 /// Preload a model into the daemon cache
-/// 
+///
 /// Deprecated: Model loading is handled on-demand by the native engine.
 pub async fn preload_model(
     State(_state): State<AppState>,
     Json(request): Json<PreloadRequest>,
 ) -> Result<Json<DaemonResponse>, (StatusCode, Json<DaemonResponse>)> {
-    info!("Model preload requested: {} (native models handle loading on-demand)", request.model_path);
+    info!(
+        "Model preload requested: {} (native models handle loading on-demand)",
+        request.model_path
+    );
 
     Ok(Json(DaemonResponse {
         success: true,
-        message: format!("Native engine will load '{}' on first use", request.model_path),
+        message: format!(
+            "Native engine will load '{}' on first use",
+            request.model_path
+        ),
     }))
 }

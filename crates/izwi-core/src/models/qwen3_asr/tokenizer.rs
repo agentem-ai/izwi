@@ -17,6 +17,7 @@ pub struct SpecialTokenIds {
     pub audio_end: u32,
     pub audio_token: u32,
     pub eos: u32,
+    pub eos_alt: Option<u32>,
     pub pad: u32,
 }
 
@@ -51,18 +52,19 @@ impl AsrTokenizer {
         let config: TokenizerConfig = serde_json::from_str(&config_str)?;
 
         let mut id_for = |token: &str| -> Option<u32> {
-            config
-                .added_tokens_decoder
-                .iter()
-                .find_map(|(id, entry)| if entry.content == token { id.parse().ok() } else { None })
+            config.added_tokens_decoder.iter().find_map(|(id, entry)| {
+                if entry.content == token {
+                    id.parse().ok()
+                } else {
+                    None
+                }
+            })
         };
 
-        let im_start = id_for("<|im_start|>").ok_or_else(|| {
-            Error::TokenizationError("Missing <|im_start|> token id".to_string())
-        })?;
-        let im_end = id_for("<|im_end|>").ok_or_else(|| {
-            Error::TokenizationError("Missing <|im_end|> token id".to_string())
-        })?;
+        let im_start = id_for("<|im_start|>")
+            .ok_or_else(|| Error::TokenizationError("Missing <|im_start|> token id".to_string()))?;
+        let im_end = id_for("<|im_end|>")
+            .ok_or_else(|| Error::TokenizationError("Missing <|im_end|> token id".to_string()))?;
         let audio_start = id_for("<|audio_start|>").ok_or_else(|| {
             Error::TokenizationError("Missing <|audio_start|> token id".to_string())
         })?;
@@ -78,6 +80,7 @@ impl AsrTokenizer {
             .as_deref()
             .and_then(&mut id_for)
             .unwrap_or(im_end);
+        let eos_alt = id_for("<|endoftext|>");
         let pad = config
             .pad_token
             .as_deref()
@@ -94,6 +97,7 @@ impl AsrTokenizer {
                 audio_end,
                 audio_token,
                 eos,
+                eos_alt,
                 pad,
             },
         })

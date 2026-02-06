@@ -28,5 +28,5 @@ Cargo.lock
 .env.local
 
 # Test outputs
-*.wav
+# *.wav
 *.mp3

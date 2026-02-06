@@ -468,9 +468,14 @@ pub fn repeat_kv(x: &Tensor, num_heads: usize, num_kv_heads: usize) -> Result<Te
         return Ok(x.clone());
     }
     let repeats = num_heads / num_kv_heads;
-    let mut parts = Vec::with_capacity(repeats);
-    for _ in 0..repeats {
-        parts.push(x.clone());
+    let mut parts = Vec::with_capacity(num_heads);
+    // Repeat each KV head consecutively: [h0, h0, h1, h1, ...].
+    // Concatenating full tensors would produce [h0..hk, h0..hk], which is incorrect.
+    for kv_idx in 0..num_kv_heads {
+        let head = x.narrow(2, kv_idx, 1)?;
+        for _ in 0..repeats {
+            parts.push(head.clone());
+        }
     }
     Tensor::cat(&parts, 2).map_err(Error::from)
 }

@@ -124,6 +124,9 @@ impl ModelDownloader {
 
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(3600))
+            // Avoid macOS SystemConfiguration proxy lookups which can fail in
+            // restricted runtime environments (sandboxed agents/CI).
+            .no_proxy()
             .build()
             .map_err(|e| Error::HfHubError(format!("Failed to create HTTP client: {}", e)))?;
 

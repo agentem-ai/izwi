@@ -7,20 +7,17 @@ use candle_nn::{layer_norm, Conv2d, Conv2dConfig, LayerNorm, Linear, VarBuilder}
 use crate::error::Result;
 use crate::models::qwen3_asr::config::AudioConfig;
 
-/// Compute output length after CNN downsampling (3 conv2d layers with stride=2).
-/// Each layer roughly halves the length, giving ~8x total downsampling.
+/// Compute output length after feature extraction/downsampling.
+/// Matches upstream Qwen3-ASR `_get_feat_extract_output_lengths`.
 pub fn get_cnn_output_lengths(input_lengths: &[usize]) -> Vec<usize> {
     input_lengths
         .iter()
         .map(|&len| {
-            // Apply 3 conv2d layers with stride=2, kernel=3, padding=1
-            // Formula: output = (input + 2*padding - kernel) / stride + 1
-            // = (input - 1) / 2 + 1 = ceil(input / 2)
-            let mut out = len;
-            for _ in 0..3 {
-                out = (out + 1) / 2; // Equivalent to ceil(out / 2)
-            }
-            out
+            let input_lengths_leave = len % 100;
+            let feat_lengths = (input_lengths_leave.saturating_sub(1)) / 2 + 1;
+            (((feat_lengths.saturating_sub(1)) / 2 + 1).saturating_sub(1)) / 2
+                + 1
+                + (len / 100) * 13
         })
         .collect()
 }
@@ -75,8 +72,11 @@ fn create_chunked_attention_mask(
 
     // For each chunk, allow attention within the chunk
     for i in 1..cu_seqlens.len() {
-        let start = cu_seqlens[i - 1] as usize;
-        let end = cu_seqlens[i] as usize;
+        let start = (cu_seqlens[i - 1].max(0) as usize).min(seq_len);
+        let end = (cu_seqlens[i].max(0) as usize).min(seq_len);
+        if end <= start {
+            continue;
+        }
         for row in start..end {
             for col in start..end {
                 mask[row * seq_len + col] = 0.0;
@@ -273,53 +273,128 @@ impl AudioTower {
     }
 
     pub fn forward(&self, mel: &Tensor, feature_lens: Option<&[usize]>) -> Result<Tensor> {
-        let _mel_len = mel.dim(3)?;
+        let bsz = mel.dim(0)?;
+        if bsz != 1 {
+            return Err(crate::error::Error::InvalidInput(
+                "Qwen3-ASR audio tower currently supports batch size 1".to_string(),
+            ));
+        }
 
-        // mel: [b, 1, n_mels, frames]
-        let mut x = self.conv2d1.forward(mel)?;
+        let n_mels = mel.dim(2)?;
+        let total_frames = mel.dim(3)?;
+        let mut input_len = feature_lens
+            .and_then(|lens| lens.first().copied())
+            .unwrap_or(total_frames);
+        input_len = input_len.min(total_frames);
+        if input_len == 0 {
+            return Err(crate::error::Error::InvalidInput(
+                "Empty audio feature sequence".to_string(),
+            ));
+        }
+
+        let n_window = self.cfg.n_window.unwrap_or(50);
+        let n_window_infer = self.cfg.n_window_infer.unwrap_or(800);
+        let chunk_input_len = n_window * 2;
+        if chunk_input_len == 0 {
+            return Err(crate::error::Error::InvalidInput(
+                "Invalid audio chunk size".to_string(),
+            ));
+        }
+
+        // Match upstream: split features into fixed-size chunks before CNN.
+        let feature_seq = mel.i((0, 0))?.transpose(0, 1)?; // [frames, n_mels]
+        let mut chunk_lengths = Vec::new();
+        let mut remaining = input_len;
+        while remaining > 0 {
+            let take = remaining.min(chunk_input_len);
+            chunk_lengths.push(take);
+            remaining -= take;
+        }
+
+        let mut chunks = Vec::with_capacity(chunk_lengths.len());
+        let mut offset = 0usize;
+        for &len in &chunk_lengths {
+            let chunk = feature_seq.narrow(0, offset, len)?;
+            offset += len;
+            if len < chunk_input_len {
+                let pad = Tensor::zeros((chunk_input_len - len, n_mels), chunk.dtype(), chunk.device())?;
+                chunks.push(Tensor::cat(&[chunk, pad], 0)?);
+            } else {
+                chunks.push(chunk);
+            }
+        }
+
+        let chunk_refs: Vec<&Tensor> = chunks.iter().collect();
+        let mut x = Tensor::stack(&chunk_refs, 0)?; // [num_chunks, chunk_input_len, n_mels]
+        x = x.transpose(1, 2)?.unsqueeze(1)?; // [num_chunks, 1, n_mels, chunk_input_len]
+
+        x = self.conv2d1.forward(&x)?;
         x = gelu(&x)?;
         x = self.conv2d2.forward(&x)?;
         x = gelu(&x)?;
         x = self.conv2d3.forward(&x)?;
         x = gelu(&x)?;
 
-        let bsz = x.dim(0)?;
+        let num_chunks = x.dim(0)?;
         let channels = x.dim(1)?;
         let freq = x.dim(2)?;
         let frames = x.dim(3)?;
 
         // [b, c, f, t] -> [b, t, c, f]
-        let x = x.transpose(1, 3)?.transpose(2, 3)?;
-        let x = x.reshape((bsz, frames, channels * freq))?;
+        x = x.transpose(1, 3)?.transpose(2, 3)?;
+        x = x.reshape((num_chunks, frames, channels * freq))?;
 
-        let mut x = self.conv_out.forward(&x)?;
+        x = self.conv_out.forward(&x)?;
 
-        // Add positional embedding (convert to match x's dtype)
         let pos_emb = self.pos_embed.get(x.dim(1)?)?;
         let pos_emb = pos_emb.unsqueeze(0)?.to_dtype(x.dtype())?;
         x = x.broadcast_add(&pos_emb)?;
 
-        // Create cu_seqlens based on feature_lens
-        let cu_seqlens = if let Some(lens) = feature_lens {
-            let n_window = self.cfg.n_window.unwrap_or(100);
-            let n_window_infer = self.cfg.n_window_infer.unwrap_or(400);
-            let window_frames = frames * (n_window_infer / (n_window * 2));
-
-            let mut cu = vec![0i64];
-            for &len in lens {
-                let num_full = len / window_frames;
-                let remainder = len % window_frames;
-                for _ in 0..num_full {
-                    cu.push(*cu.last().unwrap() + window_frames as i64);
-                }
-                if remainder > 0 {
-                    cu.push(*cu.last().unwrap() + remainder as i64);
-                }
+        // Remove padded chunk tails after CNN and pack chunks back to one sequence.
+        let chunk_out_lens = get_cnn_output_lengths(&chunk_lengths);
+        let mut packed_chunks = Vec::with_capacity(chunk_out_lens.len());
+        for (idx, &len) in chunk_out_lens.iter().enumerate() {
+            let keep = len.min(frames);
+            if keep == 0 {
+                continue;
             }
-            cu
-        } else {
-            vec![0, x.dim(1)? as i64]
-        };
+            let chunk = x.i(idx)?.narrow(0, 0, keep)?;
+            packed_chunks.push(chunk);
+        }
+        let packed_refs: Vec<&Tensor> = packed_chunks.iter().collect();
+        let mut x = Tensor::cat(&packed_refs, 0)?.unsqueeze(0)?; // [1, total_frames_after_cnn, d_model]
+        let packed_len = x.dim(1)?;
+
+        // Build chunked self-attention windows in the CNN-downsampled domain.
+        let cnn_lengths = get_cnn_output_lengths(&[input_len]);
+        let max_chunk_after_cnn = get_cnn_output_lengths(&[chunk_input_len])[0].max(1);
+        let infer_ratio = (n_window_infer / chunk_input_len).max(1);
+        let window_after_cnn = max_chunk_after_cnn * infer_ratio;
+
+        let mut cu_seqlens = vec![0i64];
+        for &len in &cnn_lengths {
+            let mut rem = len;
+            while rem > window_after_cnn {
+                cu_seqlens.push(*cu_seqlens.last().unwrap() + window_after_cnn as i64);
+                rem -= window_after_cnn;
+            }
+            if rem > 0 {
+                cu_seqlens.push(*cu_seqlens.last().unwrap() + rem as i64);
+            }
+        }
+        let packed_len_i64 = packed_len as i64;
+        for v in &mut cu_seqlens {
+            if *v > packed_len_i64 {
+                *v = packed_len_i64;
+            }
+        }
+        cu_seqlens.dedup();
+        if *cu_seqlens.last().unwrap_or(&0) < packed_len_i64 {
+            cu_seqlens.push(packed_len_i64);
+        }
+        if cu_seqlens.len() < 2 {
+            cu_seqlens = vec![0, packed_len_i64];
+        }
 
         for layer in &self.layers {
             x = layer.forward(&x, &cu_seqlens)?;

@@ -64,9 +64,8 @@ impl MelSpectrogram {
         let mel_spec = self.apply_mel_filterbank(&power_spec);
         let mut log_mel = self.log_mel(&mel_spec);
 
-        if !log_mel.is_empty() {
-            log_mel.pop();
-        }
+        // NOTE: Qwen3-ASR may need all frames including the last one
+        // Previously we did: if !log_mel.is_empty() { log_mel.pop(); }
 
         if self.config.normalize {
             Self::whisper_normalize(&mut log_mel);
@@ -270,6 +269,6 @@ fn mel_to_hertz(mel: f32) -> f32 {
     if mel < min_log_mel {
         200.0 * mel / 3.0
     } else {
-        min_log_hertz * (logstep * (mel - min_log_mel)).exp()
+        min_log_hertz * ((mel - min_log_mel) * logstep).exp()
     }
 }

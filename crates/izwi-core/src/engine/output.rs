@@ -9,9 +9,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use super::executor::ExecutorOutput;
-use super::types::{
-    AudioOutput, EngineOutput, FinishReason, RequestId, SequenceId, TokenStats,
-};
+use super::types::{AudioOutput, EngineOutput, FinishReason, RequestId, SequenceId, TokenStats};
 
 /// Streaming output chunk.
 #[derive(Debug, Clone)]
@@ -142,10 +140,12 @@ impl OutputProcessor {
             None
         };
 
-        let audio = executor_output.audio.unwrap_or_else(|| AudioOutput::empty(self.sample_rate));
+        let audio = executor_output
+            .audio
+            .unwrap_or_else(|| AudioOutput::empty(self.sample_rate));
         let num_tokens = executor_output.tokens_generated.max(
             // Estimate tokens from audio length if not provided
-            (audio.samples.len() / 256).max(1)
+            (audio.samples.len() / 256).max(1),
         );
 
         let token_stats = TokenStats {
@@ -207,18 +207,20 @@ impl OutputProcessor {
 
         // Send chunks when buffer is large enough
         while session.samples_buffer.len() >= self.streaming_chunk_size {
-            let chunk_samples: Vec<f32> = session.samples_buffer
+            let chunk_samples: Vec<f32> = session
+                .samples_buffer
                 .drain(..self.streaming_chunk_size)
                 .collect();
 
             let stats = StreamingStats {
                 total_samples: session.total_samples_sent + chunk_samples.len(),
-                total_duration_secs: (session.total_samples_sent + chunk_samples.len()) as f32 
+                total_duration_secs: (session.total_samples_sent + chunk_samples.len()) as f32
                     / self.sample_rate as f32,
                 chunks_sent: session.chunks_sent + 1,
                 elapsed_secs: session.start_time.elapsed().as_secs_f32(),
-                rtf: session.start_time.elapsed().as_secs_f32() 
-                    / ((session.total_samples_sent + chunk_samples.len()) as f32 / self.sample_rate as f32),
+                rtf: session.start_time.elapsed().as_secs_f32()
+                    / ((session.total_samples_sent + chunk_samples.len()) as f32
+                        / self.sample_rate as f32),
             };
 
             let output = StreamingOutput {
@@ -261,7 +263,7 @@ impl OutputProcessor {
             chunks_sent: session.chunks_sent + 1,
             elapsed_secs: session.start_time.elapsed().as_secs_f32(),
             rtf: if total_samples > 0 {
-                session.start_time.elapsed().as_secs_f32() 
+                session.start_time.elapsed().as_secs_f32()
                     / (total_samples as f32 / self.sample_rate as f32)
             } else {
                 0.0
@@ -360,26 +362,27 @@ mod tests {
     #[test]
     fn test_stop_checker() {
         let checker = StopChecker::new(vec![151673], 100, 1000);
-        
+
         // Should not stop
         assert!(checker.should_stop(50, 100, Some(12345)).is_none());
-        
+
         // Should stop - max tokens
-        assert_eq!(checker.should_stop(100, 150, None), Some(FinishReason::MaxTokens));
-        
+        assert_eq!(
+            checker.should_stop(100, 150, None),
+            Some(FinishReason::MaxTokens)
+        );
+
         // Should stop - stop token
-        assert_eq!(checker.should_stop(50, 100, Some(151673)), Some(FinishReason::StopToken));
+        assert_eq!(
+            checker.should_stop(50, 100, Some(151673)),
+            Some(FinishReason::StopToken)
+        );
     }
 
     #[test]
     fn test_streaming_output() {
-        let chunk = StreamingOutput::new(
-            "test-req".to_string(),
-            0,
-            vec![0.0; 4800],
-            24000,
-        );
-        
+        let chunk = StreamingOutput::new("test-req".to_string(), 0, vec![0.0; 4800], 24000);
+
         assert_eq!(chunk.duration_secs(), 0.2); // 4800 samples at 24kHz = 200ms
     }
 }

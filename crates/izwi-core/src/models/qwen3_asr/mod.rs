@@ -15,7 +15,6 @@ use crate::audio::{MelConfig, MelSpectrogram};
 use crate::error::{Error, Result};
 use crate::models::device::DeviceProfile;
 use crate::models::qwen3::{Qwen3Cache, Qwen3Model};
-use crate::models::qwen3_asr::config::AudioConfig;
 
 use audio::AudioTower;
 use config::Qwen3AsrConfig;
@@ -64,16 +63,17 @@ impl Qwen3AsrModel {
 
         let mel_cfg = MelConfig {
             sample_rate: 16_000,
-            n_fft: preprocessor.n_fft.max(400),
-            hop_length: preprocessor.hop_length.max(160),
-            n_mels: preprocessor.feature_size.max(128),
+            n_fft: preprocessor.n_fft,
+            hop_length: preprocessor.hop_length,
+            n_mels: preprocessor.feature_size,
             f_min: 0.0,
             f_max: 8_000.0,
             normalize: true,
         };
         let mel = MelSpectrogram::new(mel_cfg)?;
 
-        let dtype = device.select_dtype(config.thinker_config.dtype.as_deref());
+        // ASR decoding quality is sensitive to precision; prefer fp32 for stability.
+        let dtype = DType::F32;
 
         // Check for sharded weights (1.7B model) vs single file (0.6B model)
         let index_path = model_dir.join("model.safetensors.index.json");
@@ -137,6 +137,7 @@ impl Qwen3AsrModel {
         sample_rate: u32,
         language: Option<&str>,
     ) -> Result<String> {
+        let debug_tokens = false;
         let audio = if sample_rate != 16_000 {
             resample(audio, sample_rate, 16_000)?
         } else {
@@ -165,7 +166,8 @@ impl Qwen3AsrModel {
             .unsqueeze(0)? // [1, 1, n_mels, frames]
             .to_dtype(self.dtype)?;
 
-        let audio_embeds = self.audio_tower.forward(&mel, None)?; // [1, t, hidden]
+        let feature_lens = vec![frames];
+        let audio_embeds = self.audio_tower.forward(&mel, Some(&feature_lens))?; // [1, t, hidden]
         let audio_len = audio_embeds.dim(1)?;
 
         let prompt = self.build_prompt(audio_len, language)?;
@@ -176,25 +178,69 @@ impl Qwen3AsrModel {
         )?;
 
         let mut cache = Qwen3Cache::new(self.text_model.num_layers());
-        let mut embeds =
-            self.forward_with_audio(&input_ids, &audio_embeds, prompt.audio_start, &mut cache)?;
+        let mut embeds = self.forward_with_audio(
+            &input_ids,
+            &audio_embeds,
+            prompt.audio_pad_start,
+            prompt.audio_pad_len,
+            &mut cache,
+        )?;
+
+        // Calculate the starting position for text generation
+        // The generated tokens should continue from the end of the prompt sequence
+        // embeds shape is [1, seq_len, hidden] where seq_len includes:
+        // im_start, user, audio_start, [audio_embeds], audio_end, [language], im_end, im_start, assistant
+        let base_pos = embeds.dim(1)?;
+        let mrope_delta: isize = if self.text_model.uses_mrope() {
+            next_decode_position(
+                prompt.ids.len(),
+                0,
+                Some((prompt.audio_pad_start, prompt.audio_pad_len)),
+            ) as isize
+                - base_pos as isize
+        } else {
+            0
+        };
+        let mut pos = base_pos;
 
         let mut generated: Vec<u32> = Vec::new();
-        let mut pos = embeds.dim(1)?;
 
-        let max_tokens = 1024usize;
+        // Long repetitive generations are almost always degenerate for ASR.
+        // Keep this bounded to reduce latency and prevent runaway gibberish.
+        let max_tokens = 256usize;
         for _ in 0..max_tokens {
-            let logits = embeds.i((0, embeds.dim(1)? - 1))?;
+            // Get logits for the last position only
+            let logits = embeds.i((0, embeds.dim(1)? - 1))?; // [vocab_size]
             let next = argmax(&logits)?;
-            if next == self.specials.im_end || next == self.specials.eos {
+
+            if next == self.specials.im_end {
+                if debug_tokens {
+                    eprintln!("ASR stop token id={next}");
+                }
                 break;
+            }
+            if debug_tokens && generated.len() < 32 {
+                eprintln!("ASR token[{}] id={next}", generated.len());
             }
             generated.push(next);
 
+            // Forward pass for next token with updated position
             let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
-            embeds = self
-                .text_model
-                .forward(&next_tensor, pos, Some(&mut cache))?;
+            if self.text_model.uses_mrope() {
+                let next_embeds = self.text_model.embeddings(&next_tensor)?;
+                let mrope_start = (pos as isize + mrope_delta).max(0) as usize;
+                let position_ids = self.build_position_ids(1, mrope_start, None)?;
+                embeds = self.text_model.forward_with_embeds(
+                    &next_embeds,
+                    pos,
+                    Some(&mut cache),
+                    Some(&position_ids),
+                )?;
+            } else {
+                embeds = self
+                    .text_model
+                    .forward(&next_tensor, pos, Some(&mut cache))?;
+            }
             pos += 1;
         }
 
@@ -236,10 +282,11 @@ impl Qwen3AsrModel {
         let mel = Tensor::from_vec(flat, (frames, n_mels), &self.device.device)?
             .transpose(0, 1)?
             .unsqueeze(0)?
-            .unsqueeze(0)?
-            .to_dtype(self.dtype)?;
+            .unsqueeze(0)?; // [1, 1, n_mels, frames]
+                            // NOTE: Keeping mel as F32
 
-        let audio_embeds = self.audio_tower.forward(&mel, None)?;
+        let feature_lens = vec![frames];
+        let audio_embeds = self.audio_tower.forward(&mel, Some(&feature_lens))?;
         let audio_len = audio_embeds.dim(1)?;
 
         // Build alignment prompt with reference text
@@ -251,25 +298,55 @@ impl Qwen3AsrModel {
         )?;
 
         let mut cache = Qwen3Cache::new(self.text_model.num_layers());
-        let mut embeds =
-            self.forward_with_audio(&input_ids, &audio_embeds, prompt.audio_start, &mut cache)?;
+        let mut embeds = self.forward_with_audio(
+            &input_ids,
+            &audio_embeds,
+            prompt.audio_pad_start,
+            prompt.audio_pad_len,
+            &mut cache,
+        )?;
+
+        let base_pos = embeds.dim(1)?;
+        let mrope_delta: isize = if self.text_model.uses_mrope() {
+            next_decode_position(
+                prompt.ids.len(),
+                0,
+                Some((prompt.audio_pad_start, prompt.audio_pad_len)),
+            ) as isize
+                - base_pos as isize
+        } else {
+            0
+        };
+        let mut pos = base_pos;
 
         let mut generated: Vec<u32> = Vec::new();
-        let mut pos = embeds.dim(1)?;
 
         let max_tokens = 2048usize;
         for _ in 0..max_tokens {
             let logits = embeds.i((0, embeds.dim(1)? - 1))?;
             let next = argmax(&logits)?;
+
             if next == self.specials.im_end || next == self.specials.eos {
                 break;
             }
             generated.push(next);
 
             let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
-            embeds = self
-                .text_model
-                .forward(&next_tensor, pos, Some(&mut cache))?;
+            if self.text_model.uses_mrope() {
+                let next_embeds = self.text_model.embeddings(&next_tensor)?;
+                let mrope_start = (pos as isize + mrope_delta).max(0) as usize;
+                let position_ids = self.build_position_ids(1, mrope_start, None)?;
+                embeds = self.text_model.forward_with_embeds(
+                    &next_embeds,
+                    pos,
+                    Some(&mut cache),
+                    Some(&position_ids),
+                )?;
+            } else {
+                embeds = self
+                    .text_model
+                    .forward(&next_tensor, pos, Some(&mut cache))?;
+            }
             pos += 1;
         }
 
@@ -277,74 +354,100 @@ impl Qwen3AsrModel {
         self.parse_alignment(&alignment_text, audio.len() as u32 / 16)
     }
 
-    /// Parse model output to extract transcription.
-    /// Expected formats per document:
-    /// - "Language: English\nTranscription: This is the recognized text."
-    /// - "No speech detected in the audio."
     fn parse_output(&self, raw_output: &str) -> Result<String> {
-        let trimmed = raw_output.trim();
+        let trimmed = collapse_whitespace(raw_output.trim());
+        if trimmed.is_empty() {
+            return Ok(String::new());
+        }
 
-        // Check for "No speech detected"
         if trimmed.contains("No speech detected") {
             return Ok(String::new());
         }
 
-        // Look for "Transcription:" prefix
-        if let Some(idx) = trimmed.find("Transcription:") {
-            let after = &trimmed[idx + "Transcription:".len()..];
-            return Ok(after.trim().to_string());
+        let mut text = trimmed;
+
+        // Qwen3-ASR commonly emits: "language English<asr_text>..."
+        // Split on the last tag in case intermediate tags are present.
+        if let Some((_, tail)) = text.rsplit_once("<asr_text>") {
+            text = tail.to_string();
         }
 
-        // If no Transcription: prefix, return the full text (minus any Language: prefix)
-        if let Some(idx) = trimmed.find('\n') {
-            let after_newline = &trimmed[idx + 1..];
-            if !after_newline.is_empty() {
-                return Ok(after_newline.trim().to_string());
+        // Backward compatibility with older output styles.
+        if let Some(idx) = text.find("Transcription:") {
+            text = text[idx + "Transcription:".len()..].to_string();
+        }
+
+        if text.to_lowercase().starts_with("language ") {
+            if let Some(newline_idx) = text.find('\n') {
+                text = text[newline_idx + 1..].to_string();
+            } else {
+                let mut parts = text.splitn(3, ' ');
+                let _ = parts.next(); // "language"
+                let _ = parts.next(); // language name
+                text = parts.next().unwrap_or_default().to_string();
             }
         }
 
-        Ok(trimmed.to_string())
+        if text == "<non_speech>" {
+            return Ok(String::new());
+        }
+
+        text = text.replace("<|im_end|>", "");
+        text = collapse_whitespace(text.trim());
+        text = strip_runaway_repetition(&text);
+        Ok(text.trim().to_string())
     }
 
     fn forward_with_audio(
         &self,
         input_ids: &Tensor,
         audio_embeds: &Tensor,
-        audio_start: usize,
+        audio_pad_start: usize,
+        audio_pad_len: usize,
         cache: &mut Qwen3Cache,
     ) -> Result<Tensor> {
         let embeds = self.text_model.embeddings(input_ids)?;
+        let seq_len = embeds.dim(1)?;
+        let model_audio_len = audio_embeds.dim(1)?;
+        if audio_pad_len == 0 {
+            return Err(Error::InvalidInput(
+                "Audio placeholder length must be at least 1".to_string(),
+            ));
+        }
+        if model_audio_len != audio_pad_len {
+            return Err(Error::InvalidInput(format!(
+                "Audio placeholder mismatch: prompt has {audio_pad_len}, embeddings have {model_audio_len}"
+            )));
+        }
 
-        // audio_start is the position of audio_start token
-        // We need to inject audio_embeds between audio_start (position audio_start)
-        // and audio_end (position audio_start + 1)
-        // So: [tokens before audio_start, audio_start embedding, audio_embeds, tokens after audio_end]
+        if audio_pad_start + audio_pad_len > seq_len {
+            return Err(Error::InvalidInput(
+                "Audio placeholder span is out of prompt bounds".to_string(),
+            ));
+        }
 
-        // Get embeddings before audio_start (if any)
-        let before = if audio_start > 0 {
-            embeds.narrow(1, 0, audio_start)?
+        // Replace the contiguous <|audio_pad|> span with projected audio embeddings.
+        let before = if audio_pad_start > 0 {
+            embeds.narrow(1, 0, audio_pad_start)?
         } else {
-            // Empty tensor with correct shape [1, 0, hidden_size]
             Tensor::zeros((1, 0, embeds.dim(2)?), embeds.dtype(), embeds.device())?
         };
 
-        // Get audio_start token embedding (single token)
-        let audio_start_embed = embeds.narrow(1, audio_start, 1)?;
-
-        // Get embeddings after audio_end (skip audio_start and audio_end)
-        let after_start = audio_start + 2; // Skip audio_start and audio_end tokens
-        let after = if after_start < embeds.dim(1)? {
-            embeds.narrow(1, after_start, embeds.dim(1)? - after_start)?
+        let after_start = audio_pad_start + audio_pad_len;
+        let after = if after_start < seq_len {
+            embeds.narrow(1, after_start, seq_len - after_start)?
         } else {
-            // Empty tensor
             Tensor::zeros((1, 0, embeds.dim(2)?), embeds.dtype(), embeds.device())?
         };
 
-        // Concatenate: before + audio_start_embed + audio_embeds + after
-        let embeds = Tensor::cat(&[before, audio_start_embed, audio_embeds.clone(), after], 1)?;
+        let embeds = Tensor::cat(&[before, audio_embeds.clone(), after], 1)?;
 
         let position_ids = if self.text_model.uses_mrope() {
-            Some(self.build_position_ids(embeds.dim(1)?, audio_start, audio_embeds.dim(1)?)?)
+            Some(self.build_position_ids(
+                embeds.dim(1)?,
+                0,
+                Some((audio_pad_start, audio_pad_len)),
+            )?)
         } else {
             None
         };
@@ -352,41 +455,72 @@ impl Qwen3AsrModel {
             .forward_with_embeds(&embeds, 0, Some(cache), position_ids.as_ref())
     }
 
-    fn build_prompt(&self, _audio_len: usize, language: Option<&str>) -> Result<PromptTokens> {
+    fn build_prompt(&self, audio_len: usize, language: Option<&str>) -> Result<PromptTokens> {
+        // Mirror official Qwen3-ASR generation prompt semantics:
+        // <|im_start|>user\n{audio}<|im_end|>\n<|im_start|>assistant\n
+        // and language forcing:
+        // <|im_start|>assistant\n language {Language}<asr_text>
         let mut ids = Vec::new();
-
-        // Format: <|audio_start|><|audio_end|> or with language: <|audio_start|><|audio_end|>Language: {}
+        ids.push(self.specials.im_start);
+        ids.extend(self.tokenizer.encode_text("user\n")?);
         ids.push(self.specials.audio_start);
+
+        let audio_pad_start = ids.len();
+        ids.extend(std::iter::repeat_n(self.specials.audio_token, audio_len));
+
         ids.push(self.specials.audio_end);
+        ids.push(self.specials.im_end);
+        ids.extend(self.tokenizer.encode_text("\n")?);
+        ids.push(self.specials.im_start);
+        ids.extend(self.tokenizer.encode_text("assistant\n")?);
+        let forced_lang = normalized_language_name(language.unwrap_or("Auto"));
+        ids.extend(
+            self.tokenizer
+                .encode_text(&format!(" language {forced_lang}<asr_text>"))?,
+        );
 
-        if let Some(lang) = language {
-            ids.extend(self.tokenizer.encode_text(&format!("Language: {}", lang))?);
-        }
-
-        // Find position where audio embeddings will be injected (right after audio_start)
-        let audio_start = 0; // Audio embeddings start right after audio_start token
-
-        Ok(PromptTokens { ids, audio_start })
+        Ok(PromptTokens {
+            ids,
+            audio_pad_start,
+            audio_pad_len: audio_len,
+        })
     }
 
     fn build_alignment_prompt(
         &self,
-        _audio_len: usize,
+        audio_len: usize,
         reference_text: &str,
     ) -> Result<PromptTokens> {
         let mut ids = Vec::new();
 
-        // Format for forced alignment: <|audio_start|><|audio_end|>Reference: {}
+        ids.push(self.specials.im_start);
+        ids.extend(self.tokenizer.encode_text("system\n")?);
+        ids.push(self.specials.im_end);
+        ids.extend(self.tokenizer.encode_text("\n")?);
+
+        ids.push(self.specials.im_start);
+        ids.extend(self.tokenizer.encode_text("user\n")?);
+
         ids.push(self.specials.audio_start);
+        let audio_pad_start = ids.len();
+        ids.extend(std::iter::repeat_n(self.specials.audio_token, audio_len));
         ids.push(self.specials.audio_end);
         ids.extend(
             self.tokenizer
-                .encode_text(&format!("Reference: {}", reference_text))?,
+                .encode_text(&format!("Reference: {}\n", reference_text))?,
         );
 
-        let audio_start = 0;
+        ids.push(self.specials.im_end);
+        ids.extend(self.tokenizer.encode_text("\n")?);
 
-        Ok(PromptTokens { ids, audio_start })
+        ids.push(self.specials.im_start);
+        ids.extend(self.tokenizer.encode_text("assistant\n")?);
+
+        Ok(PromptTokens {
+            ids,
+            audio_pad_start,
+            audio_pad_len: audio_len,
+        })
     }
 
     fn parse_alignment(
@@ -428,40 +562,14 @@ impl Qwen3AsrModel {
     fn build_position_ids(
         &self,
         seq_len: usize,
-        _audio_start: usize,
-        audio_len: usize,
+        start_pos: usize,
+        audio_span: Option<(usize, usize)>,
     ) -> Result<Tensor> {
-        // MRoPE: 3D position IDs for temporal, height, width dimensions
-        // Audio embeddings are injected at positions 1 to audio_len (after audio_start token at pos 0)
-        // Audio region: positions 1 to audio_len (inclusive of audio embeddings)
-        let audio_embed_start = 1; // audio_start token is at position 0, embeddings start at 1
-        let audio_embed_end = audio_embed_start + audio_len;
+        let positions = build_mrope_positions(seq_len, start_pos, audio_span);
 
         let mut data = Vec::with_capacity(3 * seq_len);
-
-        // Temporal dimension (dim 0) - continuous positions for all tokens
-        for pos in 0..seq_len {
-            data.push(pos as i64);
-        }
-
-        // Height dimension (dim 1) - 0 for text, audio positions for audio embeddings
-        for pos in 0..seq_len {
-            if pos >= audio_embed_start && pos < audio_embed_end {
-                // Audio embedding positions use their own temporal positions
-                data.push((pos - audio_embed_start) as i64);
-            } else {
-                data.push(0i64);
-            }
-        }
-
-        // Width dimension (dim 2) - 0 for text, audio positions for audio embeddings
-        for pos in 0..seq_len {
-            if pos >= audio_embed_start && pos < audio_embed_end {
-                // Audio embedding positions use their own temporal positions
-                data.push((pos - audio_embed_start) as i64);
-            } else {
-                data.push(0i64);
-            }
+        for _axis in 0..3 {
+            data.extend_from_slice(&positions);
         }
 
         Tensor::from_vec(data, (3, seq_len), &self.device.device).map_err(Error::from)
@@ -470,7 +578,133 @@ impl Qwen3AsrModel {
 
 struct PromptTokens {
     ids: Vec<u32>,
-    audio_start: usize,
+    audio_pad_start: usize,
+    audio_pad_len: usize,
+}
+
+fn normalized_language_name(language: &str) -> String {
+    let lang = language.trim();
+    if lang.eq_ignore_ascii_case("auto") {
+        return "Auto".to_string();
+    }
+
+    let mut out = String::with_capacity(lang.len());
+    let mut new_word = true;
+    for ch in lang.chars() {
+        if ch.is_ascii_alphabetic() {
+            if new_word {
+                out.push(ch.to_ascii_uppercase());
+                new_word = false;
+            } else {
+                out.push(ch.to_ascii_lowercase());
+            }
+        } else {
+            out.push(ch);
+            new_word = ch == ' ' || ch == '-' || ch == '_';
+        }
+    }
+    out
+}
+
+fn chunked_audio_index(index: i64, chunk_size: i64) -> i64 {
+    let chunk_id = index.div_euclid(chunk_size);
+    let offset = index.rem_euclid(chunk_size);
+    chunk_id * (chunk_size / 4 + 1) + offset / 4
+}
+
+fn build_mrope_positions(
+    seq_len: usize,
+    start_pos: usize,
+    audio_span: Option<(usize, usize)>,
+) -> Vec<i64> {
+    if let Some((audio_start, audio_len)) = audio_span {
+        let mut pos = Vec::with_capacity(seq_len);
+        let mut st = 0usize;
+        let mut st_idx = start_pos as i64;
+
+        if audio_start > 0 {
+            let text_len = audio_start.min(seq_len);
+            for i in 0..text_len {
+                pos.push(st_idx + i as i64);
+            }
+            st += text_len;
+            st_idx += text_len as i64;
+        }
+
+        if audio_len > 0 && st < seq_len {
+            let audio_take = audio_len.min(seq_len - st);
+            for i in 0..audio_take {
+                let idx = st_idx + i as i64;
+                pos.push(chunked_audio_index(idx, 13));
+            }
+            st += audio_take;
+            st_idx = pos.iter().copied().max().unwrap_or(st_idx) + 1;
+        }
+
+        if st < seq_len {
+            let tail = seq_len - st;
+            for i in 0..tail {
+                pos.push(st_idx + i as i64);
+            }
+        }
+
+        pos
+    } else {
+        (start_pos..start_pos + seq_len).map(|p| p as i64).collect()
+    }
+}
+
+fn next_decode_position(seq_len: usize, start_pos: usize, audio_span: Option<(usize, usize)>) -> i64 {
+    build_mrope_positions(seq_len, start_pos, audio_span)
+        .into_iter()
+        .max()
+        .unwrap_or(start_pos as i64)
+        + 1
+}
+
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_runaway_repetition(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 16 {
+        return text.to_string();
+    }
+
+    let mut out: Vec<&str> = Vec::with_capacity(words.len());
+    let mut i = 0usize;
+
+    while i < words.len() {
+        let mut compressed = false;
+        for window in (1..=8).rev() {
+            if i + window * 4 > words.len() {
+                continue;
+            }
+            let pattern = &words[i..i + window];
+            let mut reps = 1usize;
+            while i + (reps + 1) * window <= words.len()
+                && &words[i + reps * window..i + (reps + 1) * window] == pattern
+            {
+                reps += 1;
+            }
+
+            if reps >= 4 {
+                out.extend_from_slice(pattern);
+                out.extend_from_slice(pattern);
+                i += reps * window;
+                compressed = true;
+                break;
+            }
+        }
+
+        if !compressed {
+            out.push(words[i]);
+            i += 1;
+        }
+    }
+
+    out.join(" ")
 }
 
 fn resample(audio: &[f32], src_rate: u32, dst_rate: u32) -> Result<Vec<f32>> {

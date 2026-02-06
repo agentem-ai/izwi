@@ -7,11 +7,11 @@
 //! - KV cache utilization
 //! - Queue depth monitoring
 
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 /// Global metrics collector for the engine.
@@ -75,15 +75,12 @@ impl MetricsCollector {
 
         // Update counters
         self.total_requests.fetch_add(1, Ordering::Relaxed);
-        self.total_tokens.fetch_add(tokens_generated, Ordering::Relaxed);
-        self.total_audio_duration_us.fetch_add(
-            audio_duration.as_micros() as u64,
-            Ordering::Relaxed,
-        );
-        self.total_processing_time_us.fetch_add(
-            latency.as_micros() as u64,
-            Ordering::Relaxed,
-        );
+        self.total_tokens
+            .fetch_add(tokens_generated, Ordering::Relaxed);
+        self.total_audio_duration_us
+            .fetch_add(audio_duration.as_micros() as u64, Ordering::Relaxed);
+        self.total_processing_time_us
+            .fetch_add(latency.as_micros() as u64, Ordering::Relaxed);
 
         // Add samples
         {
@@ -148,7 +145,7 @@ impl MetricsCollector {
         self.total_tokens.store(0, Ordering::Relaxed);
         self.total_audio_duration_us.store(0, Ordering::Relaxed);
         self.total_processing_time_us.store(0, Ordering::Relaxed);
-        
+
         self.latency_samples.write().await.clear();
         self.rtf_samples.write().await.clear();
         self.throughput_samples.write().await.clear();
@@ -228,7 +225,9 @@ impl RequestTimer {
     /// Stop the timer and record metrics.
     pub async fn stop(self, tokens_generated: u64, audio_duration: Duration) {
         let latency = self.start.elapsed();
-        self.metrics.record_request(latency, tokens_generated, audio_duration).await;
+        self.metrics
+            .record_request(latency, tokens_generated, audio_duration)
+            .await;
     }
 
     /// Get elapsed time without stopping.
@@ -250,10 +249,10 @@ fn compute_percentile(samples: &VecDeque<f64>, percentile: f64) -> f64 {
     if samples.is_empty() {
         return 0.0;
     }
-    
+
     let mut sorted: Vec<f64> = samples.iter().copied().collect();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    
+
     let index = ((percentile * sorted.len() as f64) as usize).min(sorted.len() - 1);
     sorted[index]
 }
@@ -286,7 +285,7 @@ impl BenchmarkResult {
         metrics: MetricsSnapshot,
     ) -> Self {
         let total_secs = total_duration.as_secs_f64();
-        
+
         Self {
             name: name.into(),
             num_requests,
@@ -336,20 +335,16 @@ mod tests {
     #[tokio::test]
     async fn test_metrics_collector() {
         let collector = MetricsCollector::new();
-        
+
         // Record some requests
-        collector.record_request(
-            Duration::from_millis(100),
-            50,
-            Duration::from_secs(1),
-        ).await;
-        
-        collector.record_request(
-            Duration::from_millis(200),
-            100,
-            Duration::from_secs(2),
-        ).await;
-        
+        collector
+            .record_request(Duration::from_millis(100), 50, Duration::from_secs(1))
+            .await;
+
+        collector
+            .record_request(Duration::from_millis(200), 100, Duration::from_secs(2))
+            .await;
+
         let snapshot = collector.snapshot().await;
         assert_eq!(snapshot.total_requests, 2);
         assert_eq!(snapshot.total_tokens, 150);
@@ -361,7 +356,7 @@ mod tests {
         for i in 1..=100 {
             samples.push_back(i as f64);
         }
-        
+
         assert!((compute_percentile(&samples, 0.50) - 50.0).abs() < 2.0);
         assert!((compute_percentile(&samples, 0.90) - 90.0).abs() < 2.0);
     }
