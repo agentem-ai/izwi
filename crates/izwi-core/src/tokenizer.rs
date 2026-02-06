@@ -116,21 +116,28 @@ impl Tokenizer {
                 .collect();
             added.sort_by_key(|(id, _, _)| *id);
 
-            let mut special_tokens = Vec::new();
-            let mut normal_tokens = Vec::new();
-            for (_, token, is_special) in added {
-                if is_special {
-                    special_tokens.push(token);
-                } else {
-                    normal_tokens.push(token);
+            // Preserve upstream token ids exactly by inserting in id order.
+            // Grouping normal/special tokens changes insertion order and shifts ids
+            // for control tokens like <asr_text>, breaking prompt semantics.
+            for (expected_id, token, is_special) in added {
+                let current_size = inner.get_vocab_size(true) as u32;
+                if expected_id < current_size {
+                    continue;
                 }
-            }
+                if expected_id > current_size {
+                    let missing = (expected_id - current_size) as usize;
+                    let mut fillers = Vec::with_capacity(missing);
+                    for idx in 0..missing {
+                        fillers.push(AddedToken::from(format!("<|gap_{}|>", current_size + idx as u32), false));
+                    }
+                    inner.add_tokens(&fillers);
+                }
 
-            if !normal_tokens.is_empty() {
-                inner.add_tokens(&normal_tokens);
-            }
-            if !special_tokens.is_empty() {
-                inner.add_special_tokens(&special_tokens);
+                if is_special {
+                    inner.add_special_tokens(&[token]);
+                } else {
+                    inner.add_tokens(&[token]);
+                }
             }
         }
 

@@ -210,22 +210,20 @@ impl Qwen3Attention {
             )?
         };
 
-        let x = x.reshape((bsz, seq_len, heads, half_dim, 2))?;
-        let x1 = x.narrow(4, 0, 1)?.squeeze(4)?;
-        let x2 = x.narrow(4, 1, 1)?.squeeze(4)?;
-
-        let cos = cos.unsqueeze(0)?.unsqueeze(2)?; // [1, seq, 1, half]
+        // Qwen RoPE uses rotate_half(x) over [first_half, second_half], not pairwise rotation.
+        let cos = Tensor::cat(&[cos.clone(), cos], 1)?; // [seq, head_dim]
+        let sin = Tensor::cat(&[sin.clone(), sin], 1)?; // [seq, head_dim]
+        let cos = cos.unsqueeze(0)?.unsqueeze(2)?; // [1, seq, 1, head_dim]
         let sin = sin.unsqueeze(0)?.unsqueeze(2)?;
 
-        let rot1 = x1.broadcast_mul(&cos)?;
-        let rot1 = rot1.broadcast_sub(&x2.broadcast_mul(&sin)?)?;
-        let rot2 = x1.broadcast_mul(&sin)?;
-        let rot2 = rot2.broadcast_add(&x2.broadcast_mul(&cos)?)?;
+        let x1 = x.narrow(3, 0, half_dim)?;
+        let x2 = x.narrow(3, half_dim, half_dim)?;
+        let minus_one = Tensor::from_vec(vec![-1.0f32], (1,), x.device())?.to_dtype(x.dtype())?;
+        let neg_x2 = x2.broadcast_mul(&minus_one)?;
+        let rotated = Tensor::cat(&[neg_x2, x1], 3)?;
 
-        let rot1 = rot1.unsqueeze(4)?;
-        let rot2 = rot2.unsqueeze(4)?;
-        let out = Tensor::cat(&[rot1, rot2], 4)?;
-        out.reshape((bsz, seq_len, heads, self.head_dim))
+        let out = x.broadcast_mul(&cos)?;
+        out.broadcast_add(&rotated.broadcast_mul(&sin)?)
             .map_err(Error::from)
     }
 
@@ -518,12 +516,12 @@ pub fn build_mrope_cache(
     mrope_section: &[usize],
 ) -> Result<(Tensor, Tensor)> {
     let half_dim = head_dim / 2;
-    if mrope_section.is_empty() || mrope_section.iter().sum::<usize>() != half_dim {
+    if mrope_section.len() < 3 {
         return build_rope_cache(seq_len, head_dim, 0, rope_theta, device, dtype);
     }
 
     let positions = position_ids.to_vec2::<i64>()?;
-    if positions.len() != 3 {
+    if positions.len() != 3 || positions.iter().any(|axis| axis.len() < seq_len) {
         return build_rope_cache(seq_len, head_dim, 0, rope_theta, device, dtype);
     }
 
@@ -533,34 +531,33 @@ pub fn build_mrope_cache(
         inv_freq.push((1.0 / rope_theta.powf(power)) as f32);
     }
 
-    let mut cos_axes = Vec::with_capacity(3);
-    let mut sin_axes = Vec::with_capacity(3);
-    for axis in 0..3 {
-        let mut angles = Vec::with_capacity(seq_len * half_dim);
-        for &pos in positions[axis].iter() {
-            let p = pos as f32;
-            for &inv in inv_freq.iter() {
-                angles.push(p * inv);
-            }
+    // Match Qwen3 Omni's interleaved MRoPE layout:
+    // T,H,W,T,H,W,... for the first 3*section dims, then T for the tail.
+    let h_limit = mrope_section[1].saturating_mul(3).min(half_dim);
+    let w_limit = mrope_section[2].saturating_mul(3).min(half_dim);
+
+    let mut cos_data = Vec::with_capacity(seq_len * half_dim);
+    let mut sin_data = Vec::with_capacity(seq_len * half_dim);
+    for t in 0..seq_len {
+        let p0 = positions[0][t] as f32;
+        let p1 = positions[1][t] as f32;
+        let p2 = positions[2][t] as f32;
+        for (dim, &inv) in inv_freq.iter().enumerate() {
+            let pos = if dim % 3 == 1 && dim < h_limit {
+                p1
+            } else if dim % 3 == 2 && dim < w_limit {
+                p2
+            } else {
+                p0
+            };
+            let angle = pos * inv;
+            cos_data.push(angle.cos());
+            sin_data.push(angle.sin());
         }
-        let angles = Tensor::from_vec(angles, (seq_len, half_dim), device)?;
-        cos_axes.push(angles.cos()?.to_dtype(dtype)?);
-        sin_axes.push(angles.sin()?.to_dtype(dtype)?);
     }
 
-    let mut cos_parts = Vec::with_capacity(3);
-    let mut sin_parts = Vec::with_capacity(3);
-    let mut start = 0usize;
-    for (axis, section) in mrope_section.iter().enumerate() {
-        let cos = cos_axes[axis].narrow(1, start, *section)?;
-        let sin = sin_axes[axis].narrow(1, start, *section)?;
-        cos_parts.push(cos);
-        sin_parts.push(sin);
-        start += *section;
-    }
-
-    let cos = Tensor::cat(&cos_parts, 1)?;
-    let sin = Tensor::cat(&sin_parts, 1)?;
+    let cos = Tensor::from_vec(cos_data, (seq_len, half_dim), device)?.to_dtype(dtype)?;
+    let sin = Tensor::from_vec(sin_data, (seq_len, half_dim), device)?.to_dtype(dtype)?;
     Ok((cos, sin))
 }
 
