@@ -524,11 +524,11 @@ impl InferenceEngine {
         model_id: Option<&str>,
         language: Option<&str>,
     ) -> Result<AsrTranscription> {
-        let variant = match model_id {
-            Some(id) if id.contains("1.7") => ModelVariant::Qwen3Asr17B,
-            Some(_) => ModelVariant::Qwen3Asr06B,
-            None => ModelVariant::Qwen3Asr06B,
-        };
+        let variant = parse_asr_variant(model_id)?;
+
+        if variant.is_voxtral() {
+            return self.voxtral_transcribe(audio_base64, language).await;
+        }
 
         let model = if let Some(model) = self.model_registry.get_asr(variant).await {
             model
@@ -577,6 +577,27 @@ impl InferenceEngine {
 
         Ok(alignments)
     }
+}
+
+fn parse_asr_variant(model_id: Option<&str>) -> Result<ModelVariant> {
+    use ModelVariant::*;
+
+    let variant = match model_id {
+        Some("Qwen3-ASR-0.6B") | None => Qwen3Asr06B,
+        Some("Qwen3-ASR-0.6B-4bit") => Qwen3Asr06B4Bit,
+        Some("Qwen3-ASR-0.6B-8bit") => Qwen3Asr06B8Bit,
+        Some("Qwen3-ASR-0.6B-bf16") => Qwen3Asr06BBf16,
+        Some("Qwen3-ASR-1.7B") => Qwen3Asr17B,
+        Some("Qwen3-ASR-1.7B-4bit") => Qwen3Asr17B4Bit,
+        Some("Qwen3-ASR-1.7B-8bit") => Qwen3Asr17B8Bit,
+        Some("Qwen3-ASR-1.7B-bf16") => Qwen3Asr17BBf16,
+        Some("Voxtral-Mini-4B-Realtime-2602") => VoxtralMini4BRealtime2602,
+        Some(id) if id.contains("voxtral") => VoxtralMini4BRealtime2602,
+        Some(id) if id.contains("1.7") => Qwen3Asr17B,
+        Some(_) => Qwen3Asr06B,
+    };
+
+    Ok(variant)
 }
 
 fn rand_u32() -> u32 {

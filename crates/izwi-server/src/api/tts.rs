@@ -3,7 +3,7 @@
 use axum::{
     body::Body,
     extract::State,
-    http::{header, Response, StatusCode},
+    http::{header, Response},
     Json,
 };
 use futures::StreamExt;
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -23,6 +23,10 @@ use izwi_core::inference::{AudioChunk, GenerationConfig, GenerationRequest};
 pub struct TTSRequest {
     /// Text to synthesize
     pub text: String,
+
+    /// Optional TTS model variant to use for this request
+    #[serde(default)]
+    pub model_id: Option<String>,
 
     /// Speaker/voice ID
     #[serde(default)]
@@ -87,8 +91,17 @@ pub async fn generate(
 
     // Set timeout for request
     let timeout = Duration::from_secs(state.request_timeout_secs);
+    let requested_tts_variant = req
+        .model_id
+        .as_deref()
+        .map(parse_tts_model_variant)
+        .transpose()?;
 
     let result = tokio::time::timeout(timeout, async {
+        if let Some(variant) = requested_tts_variant {
+            state.engine.load_model(variant).await?;
+        }
+
         // Build generation request
         let mut gen_config = GenerationConfig::default();
         gen_config.streaming = false;
@@ -185,6 +198,11 @@ pub async fn generate_stream(
     // Acquire permit for concurrency limiting
     let _permit = state.acquire_permit().await;
 
+    if let Some(model_id) = req.model_id.as_deref() {
+        let variant = parse_tts_model_variant(model_id)?;
+        state.engine.load_model(variant).await?;
+    }
+
     // Build generation request
     let mut gen_config = GenerationConfig::default();
     gen_config.streaming = true;
@@ -255,4 +273,33 @@ fn parse_format(s: &str) -> Result<AudioFormat, ApiError> {
             s
         ))),
     }
+}
+
+fn parse_tts_model_variant(model_id: &str) -> Result<izwi_core::ModelVariant, ApiError> {
+    use izwi_core::ModelVariant;
+
+    let variant = match model_id {
+        "Qwen3-TTS-12Hz-0.6B-Base" => ModelVariant::Qwen3Tts12Hz06BBase,
+        "Qwen3-TTS-12Hz-0.6B-Base-4bit" => ModelVariant::Qwen3Tts12Hz06BBase4Bit,
+        "Qwen3-TTS-12Hz-0.6B-Base-8bit" => ModelVariant::Qwen3Tts12Hz06BBase8Bit,
+        "Qwen3-TTS-12Hz-0.6B-Base-bf16" => ModelVariant::Qwen3Tts12Hz06BBaseBf16,
+        "Qwen3-TTS-12Hz-0.6B-CustomVoice" => ModelVariant::Qwen3Tts12Hz06BCustomVoice,
+        "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit" => ModelVariant::Qwen3Tts12Hz06BCustomVoice4Bit,
+        "Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit" => ModelVariant::Qwen3Tts12Hz06BCustomVoice8Bit,
+        "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16" => ModelVariant::Qwen3Tts12Hz06BCustomVoiceBf16,
+        "Qwen3-TTS-12Hz-1.7B-Base" => ModelVariant::Qwen3Tts12Hz17BBase,
+        "Qwen3-TTS-12Hz-1.7B-CustomVoice" => ModelVariant::Qwen3Tts12Hz17BCustomVoice,
+        "Qwen3-TTS-12Hz-1.7B-VoiceDesign" => ModelVariant::Qwen3Tts12Hz17BVoiceDesign,
+        "Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit" => ModelVariant::Qwen3Tts12Hz17BVoiceDesign4Bit,
+        "Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit" => ModelVariant::Qwen3Tts12Hz17BVoiceDesign8Bit,
+        "Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16" => ModelVariant::Qwen3Tts12Hz17BVoiceDesignBf16,
+        _ => {
+            return Err(ApiError::bad_request(format!(
+                "Unsupported TTS model_id: {}",
+                model_id
+            )))
+        }
+    };
+
+    Ok(variant)
 }
