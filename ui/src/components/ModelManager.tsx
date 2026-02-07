@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { ModelInfo } from "../api";
+import { withQwen3Prefix } from "../utils/modelDisplay";
 import clsx from "clsx";
 
 function parseSize(sizeStr: string): number {
@@ -335,6 +336,7 @@ export function ModelManager({
           features: [],
           size: "",
         };
+        const displayName = withQwen3Prefix(details.shortName, model.variant);
 
         const isSelected = selectedModel === model.variant;
         const isExpanded = expandedModel === model.variant;
@@ -417,7 +419,7 @@ export function ModelManager({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-white">
-                      {details.shortName}
+                      {displayName}
                     </span>
                     {isSelected && (
                       <span className="text-[10px] px-1.5 py-0.5 bg-white/10 text-white rounded">

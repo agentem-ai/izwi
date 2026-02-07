@@ -78,11 +78,11 @@ const NAV_ITEMS: NavItem[] = [
 
 const BOTTOM_NAV_ITEMS: NavItem[] = [
   {
-    id: "my-models",
-    label: "My Models",
+    id: "models",
+    label: "Models",
     description: "Manage your downloaded models",
     icon: Box,
-    path: "/my-models",
+    path: "/models",
   },
 ];
 
