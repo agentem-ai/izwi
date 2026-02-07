@@ -266,12 +266,22 @@ impl Qwen3ChatModel {
 
         let mut ids = Vec::new();
         for message in &prompt_messages {
+            let content = if matches!(message.role, ChatRole::Assistant) {
+                strip_think_blocks(message.content.trim())
+            } else {
+                message.content.trim().to_string()
+            };
+
+            if content.is_empty() {
+                continue;
+            }
+
             ids.push(self.tokenizer.specials.im_start);
             ids.extend(
                 self.tokenizer
                     .encode_text(&format!("{}\n", message.role.as_prompt_role()))?,
             );
-            ids.extend(self.tokenizer.encode_text(message.content.trim())?);
+            ids.extend(self.tokenizer.encode_text(&content)?);
             ids.push(self.tokenizer.specials.im_end);
             ids.extend(self.tokenizer.encode_text("\n")?);
         }
@@ -281,6 +291,30 @@ impl Qwen3ChatModel {
 
         Ok(ids)
     }
+}
+
+fn strip_think_blocks(input: &str) -> String {
+    let mut output = input.to_string();
+    let open = "<think>";
+    let close = "</think>";
+
+    loop {
+        let Some(start) = output.find(open) else {
+            break;
+        };
+
+        let search_from = start + open.len();
+        if let Some(end_rel) = output[search_from..].find(close) {
+            let end = search_from + end_rel + close.len();
+            output.replace_range(start..end, "");
+            continue;
+        }
+
+        output.truncate(start);
+        break;
+    }
+
+    output.trim().to_string()
 }
 
 fn parse_qwen3_config(config_str: &str) -> Result<Qwen3Config> {
