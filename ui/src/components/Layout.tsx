@@ -6,6 +6,7 @@ import {
   Users,
   Wand2,
   FileText,
+  MessageSquare,
   Box,
   Github,
   Waves,
@@ -57,6 +58,13 @@ const NAV_ITEMS: NavItem[] = [
     description: "Speech-to-text conversion",
     icon: FileText,
     path: "/transcription",
+  },
+  {
+    id: "chat",
+    label: "Chat",
+    description: "Text-to-text conversation",
+    icon: MessageSquare,
+    path: "/chat",
   },
 ];
 

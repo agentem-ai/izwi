@@ -2,7 +2,8 @@ export type ViewMode =
   | "custom-voice"
   | "voice-clone"
   | "voice-design"
-  | "transcription";
+  | "transcription"
+  | "chat";
 
 export interface ViewConfig {
   id: ViewMode;
@@ -57,6 +58,15 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
     emptyStateTitle: "No ASR Model Loaded",
     emptyStateDescription:
       "Download and load a Qwen3-ASR or Voxtral model for speech transcription",
+  },
+  chat: {
+    id: "chat",
+    label: "Chat",
+    description: "Text-to-text chat with Qwen3",
+    icon: "MessageSquare",
+    modelFilter: (variant) => variant === "Qwen3-0.6B-4bit",
+    emptyStateTitle: "No Chat Model Loaded",
+    emptyStateDescription: "Load Qwen3-0.6B-4bit to start chatting",
   },
 };
 

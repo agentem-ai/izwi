@@ -33,7 +33,7 @@ interface MyModelsPageProps {
 }
 
 type FilterType = "all" | "downloaded" | "loaded" | "not_downloaded";
-type CategoryType = "all" | "tts" | "asr";
+type CategoryType = "all" | "tts" | "asr" | "chat";
 
 const MODEL_DETAILS: Record<
   string,
@@ -41,7 +41,7 @@ const MODEL_DETAILS: Record<
     shortName: string;
     fullName: string;
     description: string;
-    category: "tts" | "asr";
+    category: "tts" | "asr" | "chat";
     capabilities: string[];
     size: string;
   }
@@ -174,6 +174,15 @@ const MODEL_DETAILS: Record<
     category: "tts",
     capabilities: ["TTS", "ASR", "Audio Chat"],
     size: "3.0 GB",
+  },
+  // Text Chat
+  "Qwen3-0.6B-4bit": {
+    shortName: "Qwen3 Chat 0.6B",
+    fullName: "Qwen3 0.6B (MLX 4-bit)",
+    description: "Compact text-to-text model for local chat",
+    category: "chat",
+    capabilities: ["Text Chat", "4-bit"],
+    size: "0.9 GB",
   },
   // ASR 0.6B models
   "Qwen3-ASR-0.6B": {
@@ -561,6 +570,7 @@ export function MyModelsPage({
                       { id: "all" as CategoryType, label: "All" },
                       { id: "tts" as CategoryType, label: "Text to Speech" },
                       { id: "asr" as CategoryType, label: "Transcription" },
+                      { id: "chat" as CategoryType, label: "Chat" },
                     ].map((option) => (
                       <button
                         key={option.id}
