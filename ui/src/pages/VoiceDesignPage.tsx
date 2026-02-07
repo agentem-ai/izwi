@@ -10,7 +10,13 @@ interface VoiceDesignPageProps {
   loading: boolean;
   downloadProgress: Record<
     string,
-    { percent: number; currentFile: string; status: string }
+    {
+      percent: number;
+      currentFile: string;
+      status: string;
+      downloadedBytes: number;
+      totalBytes: number;
+    }
   >;
   onDownload: (variant: string) => void;
   onCancelDownload?: (variant: string) => void;

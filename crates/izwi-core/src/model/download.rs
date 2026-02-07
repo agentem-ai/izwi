@@ -268,6 +268,16 @@ impl ModelDownloader {
             return has_config && has_vocab && has_chat_template && has_model;
         }
 
+        if variant.is_chat() {
+            let has_config = path.join("config.json").exists();
+            let has_tokenizer = path.join("tokenizer.json").exists()
+                || (path.join("vocab.json").exists() && path.join("merges.txt").exists());
+            // Some exported variants include index.json, some don't.
+            let has_model = path.join("model.safetensors").exists()
+                || path.join("model-00001-of-00002.safetensors").exists();
+            return has_config && has_tokenizer && has_model;
+        }
+
         if variant.is_forced_aligner() {
             // ForcedAligner has similar structure to ASR
             let has_config = path.join("config.json").exists();
@@ -414,6 +424,13 @@ impl ModelDownloader {
                 .state_manager
                 .set_state(variant, final_state)
                 .await;
+
+            // Remove finished task from active-downloads registry so UI/handlers
+            // stop treating completed downloads as active.
+            {
+                let mut downloads = downloader.active_downloads.write().await;
+                downloads.remove(&variant);
+            }
 
             result
         });
@@ -632,6 +649,21 @@ impl ModelDownloader {
             return files;
         }
 
+        if variant.is_chat() {
+            return vec![
+                "config.json".to_string(),
+                "generation_config.json".to_string(),
+                "chat_template.jinja".to_string(),
+                "tokenizer.json".to_string(),
+                "tokenizer_config.json".to_string(),
+                "special_tokens_map.json".to_string(),
+                "vocab.json".to_string(),
+                "merges.txt".to_string(),
+                "model.safetensors".to_string(),
+                "model.safetensors.index.json".to_string(),
+            ];
+        }
+
         // Qwen3-ForcedAligner model
         if variant.is_forced_aligner() {
             return vec![
@@ -767,6 +799,7 @@ impl ModelDownloader {
                     | ModelVariant::Qwen3Tts12Hz17BCustomVoice
                     | ModelVariant::Qwen3Tts12Hz17BVoiceDesign => 3_850_000_000,
                     ModelVariant::Qwen3Asr06B => 1_800_000_000,
+                    ModelVariant::Qwen306B4Bit => 800_000_000,
                     ModelVariant::Lfm2Audio15B => 2_900_000_000,
                     ModelVariant::VoxtralMini4BRealtime2602 => 8_900_000_000,
                     _ => 1_500_000_000,

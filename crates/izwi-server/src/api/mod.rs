@@ -1,6 +1,7 @@
 //! API routes and handlers
 
 mod asr;
+mod chat;
 mod daemon;
 mod health;
 mod models;
@@ -50,7 +51,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/asr/start", post(asr::start_daemon))
         .route("/asr/stop", post(asr::stop_daemon))
         .route("/asr/transcribe", post(asr::transcribe))
-        .route("/asr/transcribe/stream", post(asr::transcribe_stream));
+        .route("/asr/transcribe/stream", post(asr::transcribe_stream))
+        // Text chat endpoints
+        .route("/chat/completions", post(chat::complete))
+        .route("/chat/completions/stream", post(chat::complete_stream));
 
     Router::new()
         .nest("/api/v1", api_routes)

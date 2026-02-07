@@ -12,7 +12,7 @@ use tokenizers::models::bpe::BPE;
 use tokenizers::pre_tokenizers::byte_level::ByteLevel;
 use tokenizers::AddedToken;
 use tokenizers::Tokenizer as HfTokenizer;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
 
@@ -41,7 +41,15 @@ impl Tokenizer {
     ) -> Result<Self> {
         let tokenizer_path = model_dir.join("tokenizer.json");
         if tokenizer_path.exists() {
-            return Self::from_tokenizer_json(&tokenizer_path);
+            match Self::from_tokenizer_json(&tokenizer_path) {
+                Ok(tokenizer) => return Ok(tokenizer),
+                Err(err) => {
+                    warn!(
+                        "Failed to parse tokenizer.json at {:?}: {}. Falling back to vocab.json + merges.txt",
+                        tokenizer_path, err
+                    );
+                }
+            }
         }
 
         let vocab_path = model_dir.join("vocab.json");

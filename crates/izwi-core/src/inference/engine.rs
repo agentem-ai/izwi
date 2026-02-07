@@ -13,6 +13,7 @@ use crate::inference::generation::{
 };
 use crate::inference::kv_cache::{KVCache, KVCacheConfig};
 use crate::model::{ModelInfo, ModelManager, ModelVariant};
+use crate::models::qwen3_chat::{ChatMessage, Qwen3ChatModel};
 use crate::models::qwen3_tts::{
     Qwen3TtsModel, SpeakerReference, TtsGenerationParams, TtsTokenizer,
 };
@@ -25,6 +26,13 @@ pub struct AsrTranscription {
     pub text: String,
     pub language: Option<String>,
     pub duration_secs: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatGeneration {
+    pub text: String,
+    pub tokens_generated: usize,
+    pub generation_time_ms: f64,
 }
 
 /// Main TTS inference engine with interior mutability for concurrent access
@@ -104,6 +112,8 @@ impl InferenceEngine {
     pub async fn unload_model(&self, variant: ModelVariant) -> Result<()> {
         if variant.is_asr() || variant.is_forced_aligner() {
             self.model_registry.unload_asr(variant).await;
+        } else if variant.is_chat() {
+            self.model_registry.unload_chat(variant).await;
         } else if variant.is_voxtral() {
             self.model_registry.unload_voxtral(variant).await;
         }
@@ -132,6 +142,12 @@ impl InferenceEngine {
 
         if variant.is_asr() || variant.is_forced_aligner() {
             self.model_registry.load_asr(variant, &model_path).await?;
+            self.model_manager.mark_loaded(variant).await;
+            return Ok(());
+        }
+
+        if variant.is_chat() {
+            self.model_registry.load_chat(variant, &model_path).await?;
             self.model_manager.mark_loaded(variant).await;
             return Ok(());
         }
@@ -387,6 +403,77 @@ impl InferenceEngine {
         Ok(())
     }
 
+    async fn get_or_load_chat_model(&self, variant: ModelVariant) -> Result<Arc<Qwen3ChatModel>> {
+        if !variant.is_chat() {
+            return Err(Error::InvalidInput(format!(
+                "Model {variant} is not a chat model"
+            )));
+        }
+
+        if let Some(model) = self.model_registry.get_chat(variant).await {
+            return Ok(model);
+        }
+
+        let path = self
+            .model_manager
+            .get_model_info(variant)
+            .await
+            .and_then(|i| i.local_path)
+            .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
+
+        let model = self.model_registry.load_chat(variant, &path).await?;
+        self.model_manager.mark_loaded(variant).await;
+        Ok(model)
+    }
+
+    pub async fn chat_generate(
+        &self,
+        variant: ModelVariant,
+        messages: Vec<ChatMessage>,
+        max_new_tokens: usize,
+    ) -> Result<ChatGeneration> {
+        let model = self.get_or_load_chat_model(variant).await?;
+        let started = std::time::Instant::now();
+
+        let output = tokio::task::spawn_blocking(move || model.generate(&messages, max_new_tokens))
+            .await
+            .map_err(|e| Error::InferenceError(format!("Chat generation task failed: {}", e)))??;
+
+        Ok(ChatGeneration {
+            text: output.text,
+            tokens_generated: output.tokens_generated,
+            generation_time_ms: started.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    pub async fn chat_generate_streaming<F>(
+        &self,
+        variant: ModelVariant,
+        messages: Vec<ChatMessage>,
+        max_new_tokens: usize,
+        on_delta: F,
+    ) -> Result<ChatGeneration>
+    where
+        F: FnMut(String) + Send + 'static,
+    {
+        let model = self.get_or_load_chat_model(variant).await?;
+        let started = std::time::Instant::now();
+
+        let output = tokio::task::spawn_blocking(move || {
+            let mut callback = on_delta;
+            let mut emit = |delta: &str| callback(delta.to_string());
+            model.generate_with_callback(&messages, max_new_tokens, &mut emit)
+        })
+        .await
+        .map_err(|e| Error::InferenceError(format!("Chat generation task failed: {}", e)))??;
+
+        Ok(ChatGeneration {
+            text: output.text,
+            tokens_generated: output.tokens_generated,
+            generation_time_ms: started.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
     /// Transcribe audio with Voxtral Realtime (native).
     pub async fn voxtral_transcribe(
         &self,
@@ -585,21 +672,15 @@ fn preprocess_reference_audio(mut samples: Vec<f32>, sample_rate: u32) -> Vec<f3
         *sample -= mean;
     }
 
-    let initial_peak = samples
-        .iter()
-        .fold(0.0f32, |p, &s| p.max(s.abs()));
+    let initial_peak = samples.iter().fold(0.0f32, |p, &s| p.max(s.abs()));
     if initial_peak < 1e-5 {
         return Vec::new();
     }
 
     // Trim leading/trailing silence while keeping short context margins.
     let silence_threshold = (initial_peak * 0.04).max(0.0025);
-    let first_idx = samples
-        .iter()
-        .position(|s| s.abs() >= silence_threshold);
-    let last_idx = samples
-        .iter()
-        .rposition(|s| s.abs() >= silence_threshold);
+    let first_idx = samples.iter().position(|s| s.abs() >= silence_threshold);
+    let last_idx = samples.iter().rposition(|s| s.abs() >= silence_threshold);
     if let (Some(first), Some(last)) = (first_idx, last_idx) {
         let margin = ((sample_rate as f32) * 0.12) as usize;
         let start = first.saturating_sub(margin);

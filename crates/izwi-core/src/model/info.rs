@@ -78,6 +78,9 @@ pub enum ModelVariant {
     /// Qwen3-ASR 1.7B model (MLX bf16)
     #[serde(rename = "Qwen3-ASR-1.7B-bf16")]
     Qwen3Asr17BBf16,
+    /// Qwen3 0.6B text model (MLX 4-bit)
+    #[serde(rename = "Qwen3-0.6B-4bit")]
+    Qwen306B4Bit,
     /// Qwen3-ForcedAligner 0.6B model
     #[serde(rename = "Qwen3-ForcedAligner-0.6B")]
     Qwen3ForcedAligner06B,
@@ -126,6 +129,7 @@ impl ModelVariant {
             Self::Qwen3Asr17B4Bit => "mlx-community/Qwen3-ASR-1.7B-4bit",
             Self::Qwen3Asr17B8Bit => "mlx-community/Qwen3-ASR-1.7B-8bit",
             Self::Qwen3Asr17BBf16 => "mlx-community/Qwen3-ASR-1.7B-bf16",
+            Self::Qwen306B4Bit => "mlx-community/Qwen3-0.6B-4bit",
             Self::Qwen3ForcedAligner06B => "Qwen/Qwen3-ForcedAligner-0.6B",
             Self::VoxtralMini4BRealtime2602 => "mistralai/Voxtral-Mini-4B-Realtime-2602",
         }
@@ -158,6 +162,7 @@ impl ModelVariant {
             Self::Qwen3Asr17B4Bit => "Qwen3-ASR 1.7B 4-bit",
             Self::Qwen3Asr17B8Bit => "Qwen3-ASR 1.7B 8-bit",
             Self::Qwen3Asr17BBf16 => "Qwen3-ASR 1.7B bf16",
+            Self::Qwen306B4Bit => "Qwen3 0.6B 4-bit",
             Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner 0.6B",
             Self::VoxtralMini4BRealtime2602 => "Voxtral Mini 4B Realtime",
         }
@@ -190,6 +195,7 @@ impl ModelVariant {
             Self::Qwen3Asr17B4Bit => "Qwen3-ASR-1.7B-4bit",
             Self::Qwen3Asr17B8Bit => "Qwen3-ASR-1.7B-8bit",
             Self::Qwen3Asr17BBf16 => "Qwen3-ASR-1.7B-bf16",
+            Self::Qwen306B4Bit => "Qwen3-0.6B-4bit",
             Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner-0.6B",
             Self::VoxtralMini4BRealtime2602 => "Voxtral-Mini-4B-Realtime-2602",
         }
@@ -222,6 +228,7 @@ impl ModelVariant {
             Self::Qwen3Asr17B4Bit => 1_607_633_106,     // ~1.50 GB
             Self::Qwen3Asr17B8Bit => 2_467_859_030,     // ~2.30 GB
             Self::Qwen3Asr17BBf16 => 4_080_710_353,     // ~3.80 GB
+            Self::Qwen306B4Bit => 900_000_000,          // ~0.84 GB (est)
             Self::Qwen3ForcedAligner06B => 1_840_072_459, // ~1.71 GB
             Self::VoxtralMini4BRealtime2602 => 8_000_000_000, // ~7.45 GB (est)
         }
@@ -254,6 +261,7 @@ impl ModelVariant {
             | Self::Qwen3Asr17B4Bit
             | Self::Qwen3Asr17B8Bit
             | Self::Qwen3Asr17BBf16 => 6.0,
+            Self::Qwen306B4Bit => 2.0,
             Self::Qwen3ForcedAligner06B => 2.5,
             Self::VoxtralMini4BRealtime2602 => 16.0,
         }
@@ -288,6 +296,12 @@ impl ModelVariant {
     pub fn is_forced_aligner(&self) -> bool {
         matches!(self, Self::Qwen3ForcedAligner06B)
     }
+
+    /// Whether this is a text chat model
+    pub fn is_chat(&self) -> bool {
+        matches!(self, Self::Qwen306B4Bit)
+    }
+
     pub fn is_tts(&self) -> bool {
         matches!(
             self,
@@ -332,6 +346,7 @@ impl ModelVariant {
                 | Self::Qwen3Asr17B4Bit
                 | Self::Qwen3Asr17B8Bit
                 | Self::Qwen3Asr17BBf16
+                | Self::Qwen306B4Bit
         )
     }
 
@@ -362,6 +377,7 @@ impl ModelVariant {
             Self::Qwen3Asr17B4Bit,
             Self::Qwen3Asr17B8Bit,
             Self::Qwen3Asr17BBf16,
+            Self::Qwen306B4Bit,
             Self::Qwen3ForcedAligner06B,
             Self::VoxtralMini4BRealtime2602,
         ]

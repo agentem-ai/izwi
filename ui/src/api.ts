@@ -24,6 +24,54 @@ export interface ModelsResponse {
 }
 
 // ============================================================================
+// Chat Types
+// ============================================================================
+
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface ChatCompletionRequest {
+  model_id?: string;
+  messages: ChatMessage[];
+  max_tokens?: number;
+}
+
+export interface ChatCompletionResponse {
+  model_id: string;
+  message: ChatMessage;
+  stats: {
+    tokens_generated: number;
+    generation_time_ms: number;
+  };
+}
+
+export type ChatStreamEvent =
+  | { event: "start"; model_id: string }
+  | { event: "delta"; delta: string }
+  | {
+      event: "done";
+      model_id: string;
+      message: string;
+      stats: {
+        tokens_generated: number;
+        generation_time_ms: number;
+      };
+    }
+  | { event: "error"; error: string };
+
+export interface ChatStreamCallbacks {
+  onStart?: (modelId: string) => void;
+  onDelta?: (delta: string) => void;
+  onDone?: (
+    message: string,
+    stats: { tokens_generated: number; generation_time_ms: number },
+  ) => void;
+  onError?: (error: string) => void;
+}
+
+// ============================================================================
 // Unified TTS Types
 // ============================================================================
 
@@ -258,6 +306,97 @@ class ApiClient {
       method: "POST",
       body: JSON.stringify(request),
     });
+  }
+
+  async chatCompletions(
+    request: ChatCompletionRequest,
+  ): Promise<ChatCompletionResponse> {
+    return this.request("/chat/completions", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
+  chatCompletionsStream(
+    request: ChatCompletionRequest,
+    callbacks: ChatStreamCallbacks,
+  ): AbortController {
+    const abortController = new AbortController();
+
+    const startStream = async () => {
+      try {
+        const response = await fetch(`${this.baseUrl}/chat/completions/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(request),
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) {
+          const error = await response
+            .json()
+            .catch(() => ({ error: { message: "Chat streaming failed" } }));
+          callbacks.onError?.(error.error?.message || "Chat streaming failed");
+          return;
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          callbacks.onError?.("No response body");
+          return;
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (!data) continue;
+
+            try {
+              const event = JSON.parse(data) as ChatStreamEvent;
+              switch (event.event) {
+                case "start":
+                  callbacks.onStart?.(event.model_id);
+                  break;
+                case "delta":
+                  callbacks.onDelta?.(event.delta);
+                  break;
+                case "done":
+                  callbacks.onDone?.(event.message, event.stats);
+                  return;
+                case "error":
+                  callbacks.onError?.(event.error);
+                  return;
+              }
+            } catch {
+              // Skip malformed SSE payloads.
+            }
+          }
+        }
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") {
+          callbacks.onError?.(
+            error instanceof Error ? error.message : "Chat stream error",
+          );
+        }
+      }
+    };
+
+    startStream();
+    return abortController;
   }
 
   /**

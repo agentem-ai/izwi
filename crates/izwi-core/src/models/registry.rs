@@ -11,6 +11,7 @@ use crate::model::ModelVariant;
 
 use super::device::DeviceProfile;
 use super::qwen3_asr::Qwen3AsrModel;
+use super::qwen3_chat::Qwen3ChatModel;
 use super::voxtral::VoxtralRealtimeModel;
 
 #[derive(Clone)]
@@ -18,6 +19,7 @@ pub struct ModelRegistry {
     models_dir: PathBuf,
     device: DeviceProfile,
     asr_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<Qwen3AsrModel>>>>>>,
+    chat_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<Qwen3ChatModel>>>>>>,
     voxtral_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<VoxtralRealtimeModel>>>>>>,
 }
 
@@ -27,6 +29,7 @@ impl ModelRegistry {
             models_dir,
             device,
             asr_models: Arc::new(RwLock::new(HashMap::new())),
+            chat_models: Arc::new(RwLock::new(HashMap::new())),
             voxtral_models: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -66,6 +69,43 @@ impl ModelRegistry {
                 let device = self.device.clone();
                 move || async move {
                     tokio::task::spawn_blocking(move || Qwen3AsrModel::load(&model_dir, device))
+                        .await
+                        .map_err(|e| Error::ModelLoadError(e.to_string()))?
+                        .map(Arc::new)
+                }
+            })
+            .await?;
+
+        Ok(model.clone())
+    }
+
+    pub async fn load_chat(
+        &self,
+        variant: ModelVariant,
+        model_dir: &Path,
+    ) -> Result<Arc<Qwen3ChatModel>> {
+        if !variant.is_chat() {
+            return Err(Error::InvalidInput(format!(
+                "Model variant {variant} is not a chat model"
+            )));
+        }
+
+        let cell = {
+            let mut guard = self.chat_models.write().await;
+            guard
+                .entry(variant)
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
+        };
+
+        info!("Loading native chat model {variant} from {model_dir:?}");
+
+        let model = cell
+            .get_or_try_init({
+                let model_dir = model_dir.to_path_buf();
+                let device = self.device.clone();
+                move || async move {
+                    tokio::task::spawn_blocking(move || Qwen3ChatModel::load(&model_dir, device))
                         .await
                         .map_err(|e| Error::ModelLoadError(e.to_string()))?
                         .map(Arc::new)
@@ -120,6 +160,11 @@ impl ModelRegistry {
         guard.get(&variant).and_then(|cell| cell.get().cloned())
     }
 
+    pub async fn get_chat(&self, variant: ModelVariant) -> Option<Arc<Qwen3ChatModel>> {
+        let guard = self.chat_models.read().await;
+        guard.get(&variant).and_then(|cell| cell.get().cloned())
+    }
+
     pub async fn get_voxtral(&self, variant: ModelVariant) -> Option<Arc<VoxtralRealtimeModel>> {
         let guard = self.voxtral_models.read().await;
         guard.get(&variant).and_then(|cell| cell.get().cloned())
@@ -127,6 +172,11 @@ impl ModelRegistry {
 
     pub async fn unload_asr(&self, variant: ModelVariant) {
         let mut guard = self.asr_models.write().await;
+        guard.remove(&variant);
+    }
+
+    pub async fn unload_chat(&self, variant: ModelVariant) {
+        let mut guard = self.chat_models.write().await;
         guard.remove(&variant);
     }
 

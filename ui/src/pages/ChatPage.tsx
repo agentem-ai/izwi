@@ -1,10 +1,10 @@
 import { motion } from "framer-motion";
 import { ModelInfo } from "../api";
 import { ModelManager } from "../components/ModelManager";
-import { VoiceClonePlayground } from "../components/VoiceClonePlayground";
+import { ChatPlayground } from "../components/ChatPlayground";
 import { VIEW_CONFIGS } from "../types";
 
-interface VoiceCloningPageProps {
+interface ChatPageProps {
   models: ModelInfo[];
   selectedModel: string | null;
   loading: boolean;
@@ -27,7 +27,7 @@ interface VoiceCloningPageProps {
   onError: (message: string) => void;
 }
 
-export function VoiceCloningPage({
+export function ChatPage({
   models,
   selectedModel,
   loading,
@@ -39,8 +39,8 @@ export function VoiceCloningPage({
   onDelete,
   onSelect,
   onError,
-}: VoiceCloningPageProps) {
-  const viewConfig = VIEW_CONFIGS["voice-clone"];
+}: ChatPageProps) {
+  const viewConfig = VIEW_CONFIGS["chat"];
 
   const relevantSelectedModel = (() => {
     if (!selectedModel) return null;
@@ -56,20 +56,17 @@ export function VoiceCloningPage({
   return (
     <div className="max-w-6xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-xl font-semibold text-white">Voice Cloning</h1>
+        <h1 className="text-xl font-semibold text-white">Chat</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Clone any voice with a reference audio sample
+          Text-to-text conversation with Qwen3-0.6B-4bit
         </p>
       </div>
 
       <div className="grid lg:grid-cols-[320px,1fr] gap-4 lg:gap-6">
-        {/* Models sidebar */}
         <div className="card p-3 lg:p-4">
           <div className="mb-3">
             <h2 className="text-sm font-medium text-white">Models</h2>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Base model compatible
-            </p>
+            <p className="text-xs text-gray-500 mt-0.5">Chat compatible</p>
           </div>
 
           {loading ? (
@@ -99,11 +96,10 @@ export function VoiceCloningPage({
           )}
         </div>
 
-        {/* Playground */}
         <div>
-          <VoiceClonePlayground
+          <ChatPlayground
             selectedModel={relevantSelectedModel}
-            onModelRequired={() => onError("Please load a Base model first")}
+            onModelRequired={() => onError("Please load Qwen3-0.6B-4bit first")}
           />
         </div>
       </div>

@@ -191,6 +191,14 @@ const MODEL_DETAILS: Record<
     features: ["TTS", "ASR", "Audio-to-audio chat", "4 voice styles"],
     size: "3.0 GB",
   },
+  "Qwen3-0.6B-4bit": {
+    shortName: "Qwen3 Chat 0.6B",
+    fullName: "Qwen3 0.6B (MLX 4-bit)",
+    description: "Compact text-to-text chat model optimized for local inference",
+    features: ["Text chat", "4-bit quantized", "Fast response"],
+    size: "0.9 GB",
+    quantization: "4-bit",
+  },
   "Qwen3-ASR-0.6B": {
     shortName: "ASR 0.6B",
     fullName: "Qwen3-ASR 0.6B",

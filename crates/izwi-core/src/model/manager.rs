@@ -3,12 +3,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, RwLock};
 use tracing::info;
 
 use crate::config::EngineConfig;
 use crate::error::{Error, Result};
-use crate::model::download::{DownloadProgress, ModelDownloader};
+use crate::model::download::{DownloadProgress, DownloadState, ModelDownloader};
 use crate::model::info::{ModelInfo, ModelStatus, ModelVariant};
 use crate::model::weights::ModelWeights;
 
@@ -57,14 +57,57 @@ impl ModelManager {
         })
     }
 
+    async fn refresh_model_states(&self) {
+        let mut models = self.models.write().await;
+        for (variant, state) in models.iter_mut() {
+            if state.info.status == ModelStatus::Ready || state.info.status == ModelStatus::Loading
+            {
+                continue;
+            }
+
+            let is_downloaded = self.downloader.is_downloaded(*variant);
+            let download_state = self.downloader.state_manager().get_state(*variant).await;
+
+            if is_downloaded {
+                state.info.status = ModelStatus::Downloaded;
+                state.info.local_path = Some(self.downloader.model_path(*variant));
+                state.info.size_bytes = self.downloader.get_cached_size(*variant);
+                state.info.download_progress = Some(100.0);
+                state.info.error_message = None;
+                continue;
+            }
+
+            match download_state {
+                DownloadState::Downloading => {
+                    state.info.status = ModelStatus::Downloading;
+                    if state.info.download_progress.is_none() {
+                        state.info.download_progress = Some(0.0);
+                    }
+                }
+                DownloadState::Error => {
+                    state.info.status = ModelStatus::Error;
+                    state.info.error_message = Some("Download failed".to_string());
+                }
+                DownloadState::Downloaded | DownloadState::NotDownloaded => {
+                    state.info.status = ModelStatus::NotDownloaded;
+                    state.info.local_path = None;
+                    state.info.size_bytes = None;
+                    state.info.download_progress = None;
+                }
+            }
+        }
+    }
+
     /// Get list of all available models with their status
     pub async fn list_models(&self) -> Vec<ModelInfo> {
+        self.refresh_model_states().await;
         let models = self.models.read().await;
         models.values().map(|s| s.info.clone()).collect()
     }
 
     /// Get info for a specific model
     pub async fn get_model_info(&self, variant: ModelVariant) -> Option<ModelInfo> {
+        self.refresh_model_states().await;
         let models = self.models.read().await;
         models.get(&variant).map(|s| s.info.clone())
     }

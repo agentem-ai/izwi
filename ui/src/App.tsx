@@ -7,6 +7,7 @@ import {
   VoiceCloningPage,
   VoiceDesignPage,
   TranscriptionPage,
+  ChatPage,
   MyModelsPage,
 } from "./pages";
 
@@ -317,6 +318,7 @@ function App() {
             path="/transcription"
             element={<TranscriptionPage {...pageProps} />}
           />
+          <Route path="/chat" element={<ChatPage {...pageProps} />} />
           <Route
             path="/my-models"
             element={

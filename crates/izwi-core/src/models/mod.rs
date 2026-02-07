@@ -5,6 +5,7 @@ pub mod gguf_loader;
 pub mod mlx_compat;
 pub mod qwen3;
 pub mod qwen3_asr;
+pub mod qwen3_chat;
 pub mod qwen3_tts;
 pub mod registry;
 pub mod voxtral;
