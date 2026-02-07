@@ -31,7 +31,6 @@ pub mod config;
 pub mod engine;
 pub mod error;
 pub mod families;
-pub mod inference;
 pub mod model;
 pub mod models;
 pub mod runtime;
@@ -47,12 +46,10 @@ pub use engine::{
 // Legacy re-exports for backward compatibility
 pub use config::EngineConfig;
 pub use error::{Error, Result};
-pub use inference::{AudioChunk, GenerationConfig, InferenceEngine};
-
-// Canonical runtime-facing re-exports
 pub use runtime::{
     AsrTranscription, ChatGeneration, ChunkStats, GenerationRequest, GenerationResult,
 };
+pub use runtime::{AudioChunk, GenerationConfig, InferenceEngine};
 
 // Catalog/model metadata re-exports
 pub use catalog::{

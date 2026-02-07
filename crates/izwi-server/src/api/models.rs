@@ -19,10 +19,53 @@ pub struct ModelsResponse {
     pub models: Vec<ModelInfo>,
 }
 
+#[derive(Serialize)]
+pub struct OpenAiModelsResponse {
+    pub object: &'static str,
+    pub data: Vec<OpenAiModel>,
+}
+
+#[derive(Serialize)]
+pub struct OpenAiModel {
+    pub id: String,
+    pub object: &'static str,
+    pub owned_by: &'static str,
+}
+
 /// List all available models
 pub async fn list_models(State(state): State<AppState>) -> Result<Json<ModelsResponse>, ApiError> {
     let models = state.engine.list_models().await;
     Ok(Json(ModelsResponse { models }))
+}
+
+/// OpenAI-compatible model listing.
+pub async fn list_models_openai(
+    State(state): State<AppState>,
+) -> Result<Json<OpenAiModelsResponse>, ApiError> {
+    let models = state.engine.list_models().await;
+    let data = models
+        .into_iter()
+        .map(|model| OpenAiModel {
+            id: model.variant.dir_name().to_string(),
+            object: "model",
+            owned_by: "agentem",
+        })
+        .collect();
+
+    Ok(Json(OpenAiModelsResponse {
+        object: "list",
+        data,
+    }))
+}
+
+/// OpenAI-compatible model retrieval.
+pub async fn get_model_openai(Path(model): Path<String>) -> Result<Json<OpenAiModel>, ApiError> {
+    let variant = parse_variant(&model)?;
+    Ok(Json(OpenAiModel {
+        id: variant.dir_name().to_string(),
+        object: "model",
+        owned_by: "agentem",
+    }))
 }
 
 /// Get info for a specific model

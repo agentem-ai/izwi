@@ -17,41 +17,40 @@ use crate::state::AppState;
 
 /// Create the main API router
 pub fn create_router(state: AppState) -> Router {
-    let api_routes = Router::new()
+    let v1_routes = Router::new()
         // Health check
         .route("/health", get(health::health_check))
+        // OpenAI-compatible model endpoints
+        .route("/models", get(models::list_models_openai))
+        .route("/models/:model", get(models::get_model_openai))
+        // OpenAI-compatible audio and chat endpoints
+        .route("/audio/speech", post(tts::speech))
+        .route("/audio/transcriptions", post(asr::transcriptions))
+        .route("/chat/completions", post(chat::completions))
+        // Admin model management endpoints for local runtime operations
+        .route("/admin/models", get(models::list_models))
         // Model management
-        .route("/models", get(models::list_models))
-        .route("/models/:variant/download", post(models::download_model))
         .route(
-            "/models/:variant/download/progress",
+            "/admin/models/:variant/download",
+            post(models::download_model),
+        )
+        .route(
+            "/admin/models/:variant/download/progress",
             get(models::download_progress_stream),
         )
         .route(
-            "/models/:variant/download/cancel",
+            "/admin/models/:variant/download/cancel",
             post(models::cancel_download),
         )
-        .route("/models/:variant/load", post(models::load_model))
-        .route("/models/:variant/unload", post(models::unload_model))
+        .route("/admin/models/:variant/load", post(models::load_model))
+        .route("/admin/models/:variant/unload", post(models::unload_model))
         .route(
-            "/models/:variant",
+            "/admin/models/:variant",
             get(models::get_model_info).delete(models::delete_model),
-        )
-        // TTS generation (Qwen3-TTS)
-        .route("/tts/generate", post(tts::generate))
-        .route("/tts/stream", post(tts::generate_stream))
-        // Qwen3-ASR endpoints
-        .route("/asr/status", get(asr::status))
-        .route("/asr/start", post(asr::start_model))
-        .route("/asr/stop", post(asr::stop_model))
-        .route("/asr/transcribe", post(asr::transcribe))
-        .route("/asr/transcribe/stream", post(asr::transcribe_stream))
-        // Text chat endpoints
-        .route("/chat/completions", post(chat::complete))
-        .route("/chat/completions/stream", post(chat::complete_stream));
+        );
 
     Router::new()
-        .nest("/api/v1", api_routes)
+        .nest("/v1", v1_routes)
         // Serve static files for UI
         .fallback_service(
             tower_http::services::ServeDir::new("ui/dist")

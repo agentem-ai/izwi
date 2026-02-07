@@ -88,6 +88,7 @@ export function VoicePlayground({
 
       const request = {
         text: text.trim(),
+        model_id: selectedModel,
         max_tokens: 0,
         speaker: useVoiceClone ? undefined : speaker,
         reference_audio: useVoiceClone

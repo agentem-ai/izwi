@@ -1,7 +1,7 @@
 //! Text-to-speech runtime methods.
 
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
 use crate::models::qwen3_tts::{SpeakerReference, TtsGenerationParams};
@@ -56,15 +56,34 @@ impl InferenceEngine {
 
                 model.generate_with_voice_clone(&text, &speaker_ref, Some("Auto"))
             } else {
-                let speaker = speaker.as_deref().unwrap_or("Vivian");
                 let params = TtsGenerationParams::from_generation_config(&runtime_gen_config);
-                model.generate_with_speaker_params(
-                    &text,
-                    speaker,
-                    Some("Auto"),
-                    voice_description.as_deref(),
-                    &params,
-                )
+                let available_speakers = model.available_speakers();
+                let requested_speaker = speaker.as_deref().filter(|s| !s.trim().is_empty());
+
+                if available_speakers.is_empty() {
+                    if let Some(req_speaker) = requested_speaker {
+                        debug!(
+                            "Model has no preset speakers; ignoring requested speaker '{}'",
+                            req_speaker
+                        );
+                    }
+                    model.generate_with_text_params(
+                        &text,
+                        Some("Auto"),
+                        voice_description.as_deref(),
+                        &params,
+                    )
+                } else {
+                    let speaker_to_use =
+                        requested_speaker.unwrap_or_else(|| available_speakers[0].as_str());
+                    model.generate_with_speaker_params(
+                        &text,
+                        speaker_to_use,
+                        Some("Auto"),
+                        voice_description.as_deref(),
+                        &params,
+                    )
+                }
             }
         })
         .await
