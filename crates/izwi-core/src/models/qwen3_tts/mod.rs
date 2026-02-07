@@ -17,6 +17,7 @@ pub use tokenizer::{SpeakerReference, TtsSpecialTokens, TtsTokenizer};
 
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
+use std::collections::HashSet;
 use std::cmp::Ordering;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -222,47 +223,33 @@ impl Qwen3TtsModel {
     ) -> Result<Vec<f32>> {
         info!("Generating speech with voice cloning");
 
-        // Encode reference audio to codec tokens
-        // This requires the speech tokenizer encoder
         let ref_codec_tokens = self.encode_reference_audio(reference)?;
-        let has_reference_tokens = ref_codec_tokens.iter().any(|group| !group.is_empty());
-
-        // Until the native reference encoder is implemented, avoid the legacy
-        // voice-clone generation branch. It tends to over-generate and produce
-        // robotic output when no conditioning tokens are available.
-        if !has_reference_tokens {
-            let params = TtsGenerationParams::default();
-            let text_ids = self.tokenizer.encode_text(text, language)?;
-            let language_id = language
-                .map(|l| self.tokenizer.get_language_id(l))
-                .unwrap_or_else(|| self.tokenizer.get_language_id("english"));
-            let fallback_speaker_id = self.fallback_speaker_id();
-            tracing::warn!(
-                "Voice cloning reference conditioning unavailable; falling back to unconditioned base generation (speaker_id: {}, language_id: {})",
-                fallback_speaker_id,
-                language_id
-            );
-            let codec_tokens = self.generate_codec_tokens_custom_voice(
-                &text_ids,
-                fallback_speaker_id,
-                language_id,
-                &params,
-            )?;
-            return self.codec_to_audio(&codec_tokens);
+        if ref_codec_tokens.is_empty() || ref_codec_tokens[0].is_empty() {
+            return Err(Error::ModelError(
+                "Voice cloning reference encoder produced no conditioning tokens".to_string(),
+            ));
         }
 
         // Build input sequence with reference tokens
         let input_ids =
             self.tokenizer
-                .build_voice_clone_sequence(text, &ref_codec_tokens, language, false)?;
+                .build_voice_clone_sequence(
+                    text,
+                    reference.text.as_str(),
+                    &ref_codec_tokens,
+                    language,
+                    false,
+                )?;
 
         // Guardrail for the legacy path so failed EOS sampling cannot produce
         // minute-long audio for short text.
         let text_ids = self.tokenizer.encode_text(text, language)?;
-        let legacy_max_frames = (text_ids.len().max(1) * 4 + 24).clamp(48usize, 256usize);
+        let legacy_max_frames = (text_ids.len().max(1) * 8 + 48).clamp(80usize, 512usize);
+        let params = TtsGenerationParams::default();
 
         // Generate codec tokens
-        let codec_tokens = self.generate_codec_tokens_legacy(&input_ids, legacy_max_frames)?;
+        let codec_tokens =
+            self.generate_codec_tokens_legacy(&input_ids, legacy_max_frames, &params)?;
 
         // Decode to audio
         self.codec_to_audio(&codec_tokens)
@@ -273,11 +260,16 @@ impl Qwen3TtsModel {
         &self,
         input_ids: &[u32],
         max_length: usize,
+        params: &TtsGenerationParams,
     ) -> Result<Vec<Vec<u32>>> {
         let mut talker_cache = TalkerCache::new(self.talker.num_layers());
         let mut predictor_cache = CodePredictorCache::new(self.code_predictor.num_layers());
         let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
-        let codec_vocab_size = self.tokenizer.codec_vocab_size() as u32;
+        let acoustic_vocab_size = self.tokenizer.codec_vocab_size() as u32;
+        // Talker logits are over full codec vocab (semantic + control).
+        let talker_codec_vocab_size = self.config.talker_config.vocab_size as u32;
+        // Official suppression keeps semantic IDs [0, vocab-1024) and EOS.
+        let semantic_vocab_size = talker_codec_vocab_size.saturating_sub(1024);
 
         // Convert input to tensor
         let input_tensor = Tensor::from_vec(
@@ -297,6 +289,8 @@ impl Qwen3TtsModel {
         let mut pos = input_ids.len();
         let max_length = max_length.clamp(16, 1024);
         let min_tokens_before_eos = 8usize;
+        let mut rng = SimpleRng::new();
+        let mut semantic_history: Vec<u32> = Vec::new();
 
         for _step in 0..max_length {
             // Get last position logits
@@ -304,16 +298,24 @@ impl Qwen3TtsModel {
 
             // Sample first codebook token (semantic) from valid semantic ids plus EOS.
             let allow_eos = all_code_groups[0].len() >= min_tokens_before_eos;
-            let first_codebook_token = argmax_semantic(
+            let first_codebook_token = sample_semantic(
                 &last_logits,
-                codec_vocab_size,
+                semantic_vocab_size,
                 self.specials.codec_eos_token_id,
                 allow_eos,
+                params,
+                &semantic_history,
+                &mut rng,
             )?;
 
             // Check for end of sequence
             if allow_eos && first_codebook_token == self.specials.codec_eos_token_id {
                 break;
+            }
+            semantic_history.push(first_codebook_token);
+            if semantic_history.len() > 256 {
+                let drain = semantic_history.len() - 256;
+                semantic_history.drain(0..drain);
             }
             let first_combined_token = text_vocab_size + first_codebook_token;
 
@@ -337,7 +339,7 @@ impl Qwen3TtsModel {
                 let group_token = argmax(&group_logits.i((0, 0))?)?;
                 let combined_token = text_vocab_size
                     + group_token
-                    + (group_idx as u32 * self.tokenizer.codec_vocab_size() as u32);
+                    + (group_idx as u32 * acoustic_vocab_size);
                 all_code_groups[group_idx].push(combined_token);
             }
 
@@ -350,29 +352,21 @@ impl Qwen3TtsModel {
             pos += 1;
         }
 
+        let semantic_len = all_code_groups.first().map(|g| g.len()).unwrap_or(0);
+        let semantic_unique = all_code_groups
+            .first()
+            .map(|g| g.iter().copied().collect::<HashSet<_>>().len())
+            .unwrap_or(0);
+        let semantic_preview: Vec<u32> = all_code_groups
+            .first()
+            .map(|g| g.iter().take(24).copied().collect())
+            .unwrap_or_default();
+        debug!(
+            "Voice clone legacy decode stats: semantic_len={}, semantic_unique={}, preview={:?}",
+            semantic_len, semantic_unique, semantic_preview
+        );
+
         Ok(all_code_groups)
-    }
-
-    fn fallback_speaker_id(&self) -> u32 {
-        const PREFERRED: &[&str] = &[
-            "Vivian",
-            "Serena",
-            "Ryan",
-            "Aiden",
-            "Dylan",
-            "Eric",
-            "Sohee",
-            "Ono_anna",
-            "Uncle_fu",
-        ];
-
-        for candidate in PREFERRED {
-            if let Some(id) = self.tokenizer.get_speaker_id(candidate) {
-                return id;
-            }
-        }
-        // Base checkpoints ship empty `spk_id`; codec PAD is the safest neutral fallback.
-        self.specials.codec_pad_id
     }
 
     /// Official-style CustomVoice generation path:
@@ -547,18 +541,18 @@ impl Qwen3TtsModel {
 
     /// Encode reference audio to codec tokens for voice cloning
     fn encode_reference_audio(&self, reference: &SpeakerReference) -> Result<Vec<Vec<u32>>> {
-        // The native encoder path is not implemented yet. Do not hard-fail voice-clone
-        // requests; fall back to generating without reference codec conditioning.
-        //
-        // This keeps the /voice-cloning route functional while we add the tokenizer
-        // encoder implementation in a follow-up.
-        tracing::debug!(
-            "Reference audio encoder is not implemented yet ({} samples @ {} Hz, transcript chars: {})",
-            reference.audio_samples.len(),
-            reference.sample_rate,
+        let codec_tokens = self
+            .speech_tokenizer
+            .encode_reference_audio(&reference.audio_samples, reference.sample_rate)?;
+        let num_groups = codec_tokens.len();
+        let num_frames = codec_tokens.first().map(|g| g.len()).unwrap_or(0);
+        debug!(
+            "Reference audio encoded for voice cloning ({} groups x {} frames, transcript chars: {})",
+            num_groups,
+            num_frames,
             reference.text.len()
         );
-        Ok(Vec::new())
+        Ok(codec_tokens)
     }
 
     /// Convert codec tokens to audio waveform
@@ -861,17 +855,38 @@ fn normalize_audio(samples: &mut [f32]) {
         }
     }
 
-    // Tame overly hot outputs which sound robotic after int16 conversion.
+    // Keep output loudness within a practical band for WAV playback.
     let mut power = 0.0f64;
     for &s in samples.iter() {
         power += (s as f64) * (s as f64);
     }
     let rms = (power / samples.len() as f64).sqrt() as f32;
-    let target_rms = 0.12f32;
-    if rms > target_rms && rms > 1e-6 {
-        let scale = target_rms / rms;
+    let max_rms = 0.12f32;
+    let min_rms = 0.04f32;
+    if rms > max_rms && rms > 1e-6 {
+        let scale = max_rms / rms;
         for s in samples.iter_mut() {
             *s *= scale;
+        }
+    } else if rms < min_rms && rms > 1e-6 {
+        let scale = (min_rms / rms).min(8.0);
+        for s in samples.iter_mut() {
+            *s *= scale;
+        }
+
+        // Re-apply peak guard after boosting.
+        let mut peak = 0.0f32;
+        for &s in samples.iter() {
+            let a = s.abs();
+            if a > peak {
+                peak = a;
+            }
+        }
+        if peak > 0.95 {
+            let scale = 0.95 / peak;
+            for s in samples.iter_mut() {
+                *s *= scale;
+            }
         }
     }
 }

@@ -220,6 +220,7 @@ impl TtsTokenizer {
     pub fn build_voice_clone_sequence(
         &self,
         text: &str,
+        reference_text: &str,
         ref_codec_tokens: &[Vec<u32>], // [num_code_groups, seq_len]
         language: Option<&str>,
         use_thinking: bool,
@@ -232,8 +233,17 @@ impl TtsTokenizer {
         // Add assistant role marker
         sequence.push(self.specials.assistant_token_id);
 
-        // Encode and add text
-        let text_ids = self.encode_text(text, language)?;
+        // Encode and add text (include reference transcript context for ICL-style prompting).
+        let text_prompt = if reference_text.trim().is_empty() {
+            text.to_string()
+        } else {
+            format!(
+                "Reference transcript: {}\nTarget transcript: {}",
+                reference_text.trim(),
+                text.trim()
+            )
+        };
+        let text_ids = self.encode_text(&text_prompt, language)?;
         sequence.extend(text_ids);
 
         // Add IM_END
@@ -242,20 +252,23 @@ impl TtsTokenizer {
         // Add TTS_BOS
         sequence.push(self.specials.tts_bos_token_id);
 
-        // Add reference audio tokens if provided
-        // Reference tokens are interleaved: [c0_t0, c1_t0, ..., cN_t0, c0_t1, c1_t1, ...]
+        // Add reference audio tokens (semantic group only).
+        // Talker input accepts only base codec IDs [0, codec_vocab_size).
         if !ref_codec_tokens.is_empty() && !ref_codec_tokens[0].is_empty() {
-            let seq_len = ref_codec_tokens[0].len();
-            for t in 0..seq_len {
-                for (group_idx, group_tokens) in ref_codec_tokens.iter().enumerate() {
-                    if t < group_tokens.len() {
-                        // Offset token by text_vocab_size + group-specific offset
-                        let token = self.text_vocab_size as u32
-                            + group_tokens[t]
-                            + (group_idx as u32 * self.codec_vocab_size as u32);
-                        sequence.push(token);
-                    }
-                }
+            let codec_vocab = self.codec_vocab_size as u32;
+            let ref_token_budget = if reference_text.trim().is_empty() {
+                240usize
+            } else {
+                let approx_frames = reference_text.chars().count().saturating_mul(7);
+                approx_frames.clamp(48usize, 320usize)
+            };
+            for &semantic_code in ref_codec_tokens[0].iter().take(ref_token_budget) {
+                let normalized = if semantic_code < codec_vocab {
+                    semantic_code
+                } else {
+                    semantic_code % codec_vocab
+                };
+                sequence.push(self.text_vocab_size as u32 + normalized);
             }
         }
 
@@ -274,8 +287,7 @@ impl TtsTokenizer {
         }
 
         // Add CODEC_BOS
-        let codec_bos_token = self.text_vocab_size as u32 + self.specials.codec_bos_id;
-        sequence.push(codec_bos_token);
+        sequence.push(self.text_vocab_size as u32 + self.specials.codec_bos_id);
 
         Ok(sequence)
     }
