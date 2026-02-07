@@ -72,10 +72,6 @@ pub struct EngineCoreConfig {
     /// Enable request preemption when KV cache is full
     #[serde(default = "default_enable_preemption")]
     pub enable_preemption: bool,
-
-    /// Python daemon socket paths
-    #[serde(default)]
-    pub daemon_config: DaemonConfig,
 }
 
 fn default_models_dir() -> PathBuf {
@@ -147,7 +143,6 @@ impl Default for EngineCoreConfig {
             use_metal: default_use_metal(),
             num_threads: default_num_threads(),
             enable_preemption: default_enable_preemption(),
-            daemon_config: DaemonConfig::default(),
         }
     }
 }
@@ -172,46 +167,5 @@ impl EngineCoreConfig {
         let dtype_bytes = 2; // float16
 
         self.max_blocks * self.block_size * hidden_dim * num_layers * 2 * dtype_bytes
-    }
-}
-
-/// Configuration for Python daemon processes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DaemonConfig {
-    /// Socket path for TTS daemon (Qwen3-TTS)
-    #[serde(default = "default_tts_socket")]
-    pub tts_socket_path: PathBuf,
-
-    /// Timeout for daemon operations (seconds)
-    #[serde(default = "default_daemon_timeout")]
-    pub timeout_secs: u64,
-
-    /// Auto-start daemon if not running
-    #[serde(default = "default_auto_start")]
-    pub auto_start: bool,
-
-    /// Preload model on daemon start
-    #[serde(default)]
-    pub preload_model: bool,
-}
-
-fn default_tts_socket() -> PathBuf {
-    PathBuf::from("/tmp/izwi_tts_daemon.sock")
-}
-fn default_daemon_timeout() -> u64 {
-    300
-} // 5 minutes for slow operations
-fn default_auto_start() -> bool {
-    true
-}
-
-impl Default for DaemonConfig {
-    fn default() -> Self {
-        Self {
-            tts_socket_path: default_tts_socket(),
-            timeout_secs: default_daemon_timeout(),
-            auto_start: default_auto_start(),
-            preload_model: false,
-        }
     }
 }

@@ -1,5 +1,5 @@
 # =============================================================================
-# Izwi Audio - Multi-stage Dockerfile
+# Izwi Audio - Multi-stage Dockerfile (Rust-native runtime)
 # Supports both CPU and CUDA environments
 # =============================================================================
 
@@ -41,33 +41,12 @@ COPY crates/ crates/
 RUN cargo build --release --bin izwi
 
 # -----------------------------------------------------------------------------
-# Stage 3: Python environment with uv
+# Stage 3: Production runtime (CPU)
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS python-builder
-
-WORKDIR /app
-
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-# Copy Python project files
-COPY pyproject.toml README.md ./
-COPY scripts/ scripts/
-
-# Create virtual environment and install dependencies
-ENV UV_COMPILE_BYTECODE=1
-ENV UV_LINK_MODE=copy
-
-RUN uv venv /app/.venv
-RUN uv pip install --python /app/.venv/bin/python -e .
-
-# -----------------------------------------------------------------------------
-# Stage 4: Production runtime (CPU)
-# -----------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS production
+FROM debian:bookworm-slim AS production
 
 LABEL org.opencontainers.image.title="Izwi Audio"
-LABEL org.opencontainers.image.description="Qwen3-TTS inference engine"
+LABEL org.opencontainers.image.description="Rust-native audio inference engine"
 LABEL org.opencontainers.image.vendor="Agentem"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
@@ -79,12 +58,9 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     ffmpeg \
     libsndfile1 \
+    curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 izwi
-
-# Copy Python virtual environment
-COPY --from=python-builder /app/.venv /app/.venv
-COPY --from=python-builder /app/scripts /app/scripts
 
 # Copy Rust binary
 COPY --from=rust-builder /app/target/release/izwi /usr/local/bin/izwi
@@ -96,8 +72,6 @@ COPY --from=ui-builder /app/ui/dist /app/ui/dist
 COPY config.toml /app/config.toml
 
 # Set up environment
-ENV PATH="/app/.venv/bin:$PATH"
-ENV PYTHONUNBUFFERED=1
 ENV IZWI_CONFIG_PATH=/app/config.toml
 
 # Create directories for models and data
@@ -120,40 +94,26 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 CMD ["izwi"]
 
 # -----------------------------------------------------------------------------
-# Stage 5: Production runtime with CUDA support
+# Stage 4: Production runtime with CUDA support
 # -----------------------------------------------------------------------------
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS production-cuda
 
 LABEL org.opencontainers.image.title="Izwi Audio (CUDA)"
-LABEL org.opencontainers.image.description="Qwen3-TTS inference engine with CUDA support"
+LABEL org.opencontainers.image.description="Rust-native audio inference engine with CUDA support"
 LABEL org.opencontainers.image.vendor="Agentem"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 WORKDIR /app
 
-# Install Python and runtime dependencies
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
-    python3.12 \
-    python3.12-venv \
-    python3-pip \
     libssl3 \
     ca-certificates \
     ffmpeg \
     libsndfile1 \
     curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -m -u 1000 izwi \
-    && ln -sf /usr/bin/python3.12 /usr/bin/python
-
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-# Copy Python project files and install with CUDA extras
-COPY pyproject.toml README.md ./
-COPY scripts/ scripts/
-
-RUN uv venv /app/.venv && \
-    uv pip install --python /app/.venv/bin/python -e ".[cuda]"
+    && useradd -m -u 1000 izwi
 
 # Copy Rust binary
 COPY --from=rust-builder /app/target/release/izwi /usr/local/bin/izwi
@@ -165,8 +125,6 @@ COPY --from=ui-builder /app/ui/dist /app/ui/dist
 COPY config.toml /app/config.toml
 
 # Set up environment
-ENV PATH="/app/.venv/bin:$PATH"
-ENV PYTHONUNBUFFERED=1
 ENV IZWI_CONFIG_PATH=/app/config.toml
 
 # Create directories for models and data
@@ -182,7 +140,7 @@ EXPOSE 8080
 USER izwi
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8080/api/v1/models || exit 1
 
 # Start the server

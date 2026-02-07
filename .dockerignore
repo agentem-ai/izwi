@@ -12,12 +12,11 @@ target/
 *.pdb
 *.log
 
-# Python
+# Language/runtime caches
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
 .venv/
 venv/
 ENV/

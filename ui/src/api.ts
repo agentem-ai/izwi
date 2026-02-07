@@ -294,14 +294,6 @@ class ApiClient {
     return this.request("/asr/status");
   }
 
-  async asrStartDaemon(): Promise<{ success: boolean; message: string }> {
-    return this.request("/asr/start", { method: "POST" });
-  }
-
-  async asrStopDaemon(): Promise<{ success: boolean; message: string }> {
-    return this.request("/asr/stop", { method: "POST" });
-  }
-
   async asrTranscribe(
     request: ASRTranscribeRequest,
   ): Promise<ASRTranscribeResponse> {

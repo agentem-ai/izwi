@@ -69,7 +69,7 @@ case "${1:-help}" in
         print_header
         echo -e "${YELLOW}Starting Rust backend with hot reload...${NC}"
         docker compose -f docker-compose.dev.yml exec dev \
-            bash -c "export PATH=/app/.venv/bin:\$PATH && cargo watch -x run"
+            bash -c "cargo watch -x run"
         ;;
     
     frontend)

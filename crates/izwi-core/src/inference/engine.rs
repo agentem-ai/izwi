@@ -402,16 +402,6 @@ impl InferenceEngine {
         Ok(model.available_speakers().into_iter().cloned().collect())
     }
 
-    /// Stop all daemons (no-op for native implementation)
-    pub fn stop_all_daemons(&self) -> Result<()> {
-        Ok(())
-    }
-
-    /// Preload a model (no-op for native implementation)
-    pub fn preload_model(&self, _model_path: &str) -> Result<()> {
-        Ok(())
-    }
-
     async fn get_or_load_chat_model(&self, variant: ModelVariant) -> Result<Arc<Qwen3ChatModel>> {
         if !variant.is_chat() {
             return Err(Error::InvalidInput(format!(

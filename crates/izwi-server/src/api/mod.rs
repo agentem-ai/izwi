@@ -2,7 +2,6 @@
 
 mod asr;
 mod chat;
-mod daemon;
 mod health;
 mod models;
 mod tts;
@@ -21,11 +20,6 @@ pub fn create_router(state: AppState) -> Router {
     let api_routes = Router::new()
         // Health check
         .route("/health", get(health::health_check))
-        // Daemon management
-        .route("/daemon/status", get(daemon::get_status))
-        .route("/daemon/start", post(daemon::start_daemon))
-        .route("/daemon/stop", post(daemon::stop_daemon))
-        .route("/daemon/preload", post(daemon::preload_model))
         // Model management
         .route("/models", get(models::list_models))
         .route("/models/:variant/download", post(models::download_model))
@@ -48,8 +42,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/tts/stream", post(tts::generate_stream))
         // Qwen3-ASR endpoints
         .route("/asr/status", get(asr::status))
-        .route("/asr/start", post(asr::start_daemon))
-        .route("/asr/stop", post(asr::stop_daemon))
+        .route("/asr/start", post(asr::start_model))
+        .route("/asr/stop", post(asr::stop_model))
         .route("/asr/transcribe", post(asr::transcribe))
         .route("/asr/transcribe/stream", post(asr::transcribe_stream))
         // Text chat endpoints

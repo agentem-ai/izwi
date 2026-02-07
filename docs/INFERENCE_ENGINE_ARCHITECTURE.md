@@ -74,7 +74,7 @@ The architecture draws from **vLLM** (UC Berkeley), specifically:
 │  │   Request    │  │           │  │      Engine Core          │ │
 │  │  Processor   │──│ Scheduler │──│  ┌────────────────────┐  │ │
 │  │              │  │           │  │  │  Model Executor    │  │ │
-│  └──────────────┘  └───────────┘  │  │  (Python Bridge)   │  │ │
+│  └──────────────┘  └───────────┘  │  │  (Native Rust)     │  │ │
 │                                    │  └────────────────────┘  │ │
 │  ┌──────────────┐                 │  ┌────────────────────┐  │ │
 │  │   Output     │◄────────────────│  │  KV Cache Manager  │  │ │
@@ -302,7 +302,7 @@ pub async fn finish_streaming(&mut self, request_id: &RequestId,
 Trait-based design allowing multiple backends:
 
 **Current Implementation:**
-- **PythonExecutor**: Bridges to Python daemons (lfm2_daemon.py, tts_daemon.py)
+- **NativeExecutor**: Executes using native Rust model implementations
 
 **Future Implementations:**
 - Native Rust inference (MLX-rs, candle, etc.)
@@ -320,11 +320,10 @@ pub trait ModelExecutor {
 }
 ```
 
-**PythonExecutor Details:**
-- Manages daemon lifecycle (start/stop)
-- Unix socket communication
-- Automatic retry with fallback
-- Supports batching (future enhancement)
+**NativeExecutor Details:**
+- Uses in-process Rust execution
+- No external runtime dependencies
+- Supports extension to additional native backends
 
 ### 8. MetricsCollector
 
@@ -398,7 +397,7 @@ pub async fn reset(&self)
        │ 5. Execute scheduled
        ▼
 ┌─────────────────────┐
-│  ModelExecutor      │ ◄── Python daemon
+│  ModelExecutor      │ ◄── Native Rust backend
 │ - Forward pass      │     Model inference
 │ - Audio generation  │     Token sampling
 └──────┬──────────────┘
@@ -706,7 +705,6 @@ pub struct EngineCoreConfig {
     
     // Advanced
     pub enable_preemption: bool,            // Default: true
-    pub daemon_config: DaemonConfig,
 }
 ```
 
@@ -994,7 +992,7 @@ let config = EngineCoreConfig {
 - Reduce batch size
 - Reduce max_tokens_per_step
 - Check CPU/memory usage
-- Verify daemon is using MPS (Apple Silicon)
+- Verify Metal is enabled on Apple Silicon
 
 ```rust
 let config = EngineCoreConfig {
@@ -1004,23 +1002,14 @@ let config = EngineCoreConfig {
 };
 ```
 
-#### 3. Python daemon not starting
+#### 3. Native model initialization failure
 
-**Symptom:** "Daemon not available" errors
+**Symptom:** model load/inference errors during startup
 
 **Solutions:**
-- Check Python dependencies installed
-- Verify socket path permissions
-- Check daemon logs in stderr
-- Manually start daemon for debugging
-
-```bash
-# Start daemon manually
-python scripts/lfm2_daemon.py
-
-# Check socket
-ls -la /tmp/izwi_lfm2_daemon.sock
-```
+- Verify model files are downloaded and complete
+- Check GPU/Metal availability and driver support
+- Enable debug logs for `izwi_core` and inspect model loading paths
 
 #### 4. Out of memory
 
@@ -1103,7 +1092,7 @@ When extending the engine:
 - [ ] Prefix caching for common prompts
 - [ ] Speculative decoding
 - [ ] Multi-GPU support
-- [ ] Request batching in Python daemon
+- [ ] Request batching in native executor
 - [ ] Disk-based KV cache swapping
 - [ ] Dynamic batching
 - [ ] Model parallelism

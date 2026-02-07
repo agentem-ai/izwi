@@ -1,7 +1,7 @@
 //! Izwi TTS Server - HTTP API for Qwen3-TTS inference
 
 use tokio::signal;
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod api;
@@ -81,12 +81,5 @@ async fn shutdown_signal(state: AppState) {
             info!("Received SIGTERM, shutting down...");
         },
     }
-
-    // Cleanup: stop all daemons
-    info!("Stopping all daemons...");
-    if let Err(e) = state.engine.stop_all_daemons() {
-        warn!("Error stopping daemons: {}", e);
-    } else {
-        info!("All daemons stopped");
-    }
+    drop(state);
 }

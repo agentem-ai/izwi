@@ -37,7 +37,6 @@ A high-performance, Rust-based text-to-speech inference engine optimized for Qwe
 ### Native Development
 - macOS 12+ with Apple Silicon (M1/M2/M3) or Linux with CUDA
 - **Rust 1.83+** (required for tokenizers dependency)
-- **Python 3.11+** with uv package manager
 - Node.js 18+ (for UI development)
 
 ### Docker (Recommended)
@@ -85,25 +84,14 @@ cd ui && npm run dev --host # Frontend dev server
 
 ## Quick Start (Native)
 
-### 1. Install Python Dependencies (uv)
-
-```bash
-# Install uv if not already installed
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Create virtual environment and install dependencies
-uv venv
-uv pip install -e .
-```
-
-### 2. Build the Rust Server
+### 1. Build the Rust Server
 
 ```bash
 # Build in release mode
 cargo build --release
 ```
 
-### 3. Build the Web UI
+### 2. Build the Web UI
 
 ```bash
 cd ui
@@ -112,19 +100,16 @@ npm run build
 cd ..
 ```
 
-### 4. Run the Server
+### 3. Run the Server
 
 ```bash
-# Activate Python environment first
-source .venv/bin/activate
-
 # Run the server
 ./target/release/izwi
 ```
 
 The server will start at `http://localhost:8080`
 
-### 5. Open the UI
+### 4. Open the UI
 
 Navigate to `http://localhost:8080` in your browser.
 
@@ -134,7 +119,6 @@ Navigate to `http://localhost:8080` in your browser.
 
 **Terminal 1 - Rust Server:**
 ```bash
-source .venv/bin/activate
 cargo run
 ```
 

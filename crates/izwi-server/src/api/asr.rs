@@ -44,7 +44,7 @@ pub struct AsrStats {
     pub rtf: Option<f64>,
 }
 
-/// ASR daemon status response
+/// ASR runtime status response
 #[derive(Debug, Serialize)]
 pub struct AsrStatusResponse {
     pub running: bool,
@@ -76,7 +76,7 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<AsrStatusRespo
 }
 
 /// Load the default ASR model (native)
-pub async fn start_daemon(
+pub async fn start_model(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     state.engine.load_model(ModelVariant::Qwen3Asr06B).await?;
@@ -87,7 +87,7 @@ pub async fn start_daemon(
 }
 
 /// Unload ASR models (native)
-pub async fn stop_daemon(
+pub async fn stop_model(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     state.engine.unload_model(ModelVariant::Qwen3Asr06B).await?;

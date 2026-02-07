@@ -90,7 +90,7 @@ impl EngineCore {
 
         info!("Initializing engine core");
 
-        // Initialize executor (starts daemon processes)
+        // Initialize executor backend
         self.executor.initialize().await?;
 
         self.initialized = true;
