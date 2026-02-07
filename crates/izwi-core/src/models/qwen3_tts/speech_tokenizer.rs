@@ -6,8 +6,8 @@
 
 use candle_core::{DType, Device, Tensor, D};
 use candle_nn::{
-    ops, Conv1d, Conv1dConfig, ConvTranspose1d, ConvTranspose1dConfig, LayerNorm,
-    LayerNormConfig, Linear, Module, RmsNorm, VarBuilder,
+    ops, Conv1d, Conv1dConfig, ConvTranspose1d, ConvTranspose1dConfig, LayerNorm, LayerNormConfig,
+    Linear, Module, RmsNorm, VarBuilder,
 };
 use serde::Deserialize;
 use tracing::info;
@@ -153,7 +153,9 @@ impl SnakeBeta {
         let alpha = self.alpha.unsqueeze(0)?.unsqueeze(2)?.exp()?;
         let beta = self.beta.unsqueeze(0)?.unsqueeze(2)?.exp()?;
         let sin2 = x.broadcast_mul(&alpha)?.sin()?.sqr()?;
-        let inv_beta = beta.broadcast_add(&Tensor::new(1e-9f32, x.device())?)?.recip()?;
+        let inv_beta = beta
+            .broadcast_add(&Tensor::new(1e-9f32, x.device())?)?
+            .recip()?;
         x.broadcast_add(&sin2.broadcast_mul(&inv_beta)?)
             .map_err(Error::from)
     }
@@ -171,7 +173,15 @@ impl ResidualUnit {
     fn load(channels: usize, dilation: usize, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
             act1: SnakeBeta::load(channels, vb.pp("act1"))?,
-            conv1: CausalConv1d::load(channels, channels, 7, dilation, 1, true, vb.pp("conv1.conv"))?,
+            conv1: CausalConv1d::load(
+                channels,
+                channels,
+                7,
+                dilation,
+                1,
+                true,
+                vb.pp("conv1.conv"),
+            )?,
             act2: SnakeBeta::load(channels, vb.pp("act2"))?,
             conv2: CausalConv1d::load(channels, channels, 1, 1, 1, true, vb.pp("conv2.conv"))?,
         })
@@ -366,18 +376,18 @@ impl Attention {
         let bsz = x.dim(0)?;
         let seq_len = x.dim(1)?;
 
-        let mut q = self
-            .q_proj
-            .forward(x)?
-            .reshape((bsz, seq_len, self.num_heads, self.head_dim))?;
-        let mut k = self
-            .k_proj
-            .forward(x)?
-            .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
-        let v = self
-            .v_proj
-            .forward(x)?
-            .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
+        let mut q =
+            self.q_proj
+                .forward(x)?
+                .reshape((bsz, seq_len, self.num_heads, self.head_dim))?;
+        let mut k =
+            self.k_proj
+                .forward(x)?
+                .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
+        let v =
+            self.v_proj
+                .forward(x)?
+                .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
 
         q = self.apply_rope(q)?;
         k = self.apply_rope(k)?;
@@ -396,7 +406,8 @@ impl Attention {
         let v = v.reshape((bsz * self.num_heads, total_len, self.head_dim))?;
 
         let mut att = q.matmul(&k.transpose(1, 2)?)?;
-        let scale = Tensor::new((self.head_dim as f32).sqrt(), att.device())?.to_dtype(att.dtype())?;
+        let scale =
+            Tensor::new((self.head_dim as f32).sqrt(), att.device())?.to_dtype(att.dtype())?;
         att = att.broadcast_div(&scale)?;
 
         let mask = causal_mask(seq_len, total_len, 0, att.device(), att.dtype())?;
@@ -504,12 +515,20 @@ struct RVQCodebook {
 }
 
 impl RVQCodebook {
-    fn load(vb: VarBuilder, layer_idx: usize, codebook_size: usize, codebook_dim: usize) -> Result<Self> {
+    fn load(
+        vb: VarBuilder,
+        layer_idx: usize,
+        codebook_size: usize,
+        codebook_dim: usize,
+    ) -> Result<Self> {
         let embedding_sum = vb.get(
             (codebook_size, codebook_dim),
             &format!("vq.layers.{layer_idx}._codebook.embedding_sum"),
         )?;
-        let cluster_usage = vb.get((codebook_size,), &format!("vq.layers.{layer_idx}._codebook.cluster_usage"))?;
+        let cluster_usage = vb.get(
+            (codebook_size,),
+            &format!("vq.layers.{layer_idx}._codebook.cluster_usage"),
+        )?;
         let cluster_usage = cluster_usage.clamp(1e-7f64, f64::MAX)?;
         let embeddings = embedding_sum.broadcast_div(&cluster_usage.unsqueeze(1)?)?;
         Ok(Self {
@@ -525,7 +544,9 @@ impl RVQCodebook {
         let embeddings = self.embeddings.index_select(&flat_indices, 0)?;
         let mut target_shape = original_shape;
         target_shape.push(self.codebook_dim);
-        embeddings.reshape(target_shape.as_slice()).map_err(Error::from)
+        embeddings
+            .reshape(target_shape.as_slice())
+            .map_err(Error::from)
     }
 }
 
@@ -536,7 +557,12 @@ struct RVQFirstQuantizer {
 }
 
 impl RVQFirstQuantizer {
-    fn load(vb: VarBuilder, codebook_size: usize, codebook_dim: usize, hidden_size: usize) -> Result<Self> {
+    fn load(
+        vb: VarBuilder,
+        codebook_size: usize,
+        codebook_dim: usize,
+        hidden_size: usize,
+    ) -> Result<Self> {
         let codebook = RVQCodebook::load(vb.clone(), 0, codebook_size, codebook_dim)?;
         let output_proj = candle_nn::conv1d_no_bias(
             codebook_dim,
@@ -566,7 +592,8 @@ impl RVQFirstQuantizer {
         }
         let mapped = Tensor::from_vec(flat_codes, flat.dims(), codes.device())?;
         let embeddings = self.codebook.lookup(&mapped)?;
-        let embeddings = embeddings.reshape((codes.dim(0)?, codes.dim(1)?, self.codebook.codebook_dim))?;
+        let embeddings =
+            embeddings.reshape((codes.dim(0)?, codes.dim(1)?, self.codebook.codebook_dim))?;
         let embeddings = embeddings.transpose(1, 2)?;
         self.output_proj.forward(&embeddings).map_err(Error::from)
     }
@@ -588,7 +615,12 @@ impl RVQRestQuantizer {
     ) -> Result<Self> {
         let mut codebooks = Vec::with_capacity(num_codebooks);
         for i in 0..num_codebooks {
-            codebooks.push(RVQCodebook::load(vb.clone(), i, codebook_size, codebook_dim)?);
+            codebooks.push(RVQCodebook::load(
+                vb.clone(),
+                i,
+                codebook_size,
+                codebook_dim,
+            )?);
         }
         let output_proj = candle_nn::conv1d_no_bias(
             codebook_dim,
@@ -616,10 +648,7 @@ impl RVQRestQuantizer {
             let group_tokens = codec_tokens.get(idx + 1);
             let mut values = Vec::with_capacity(seq_len);
             for t in 0..seq_len {
-                let token = group_tokens
-                    .and_then(|g| g.get(t))
-                    .copied()
-                    .unwrap_or(0);
+                let token = group_tokens.and_then(|g| g.get(t)).copied().unwrap_or(0);
                 values.push((token as i64).rem_euclid(codebook.codebook_size as i64));
             }
             let codes = Tensor::from_vec(values, (1, seq_len), device)?;
@@ -747,7 +776,8 @@ impl SpeechTokenizerDecoder {
         }
 
         let final_snake = SnakeBeta::load(in_channels, vb.pp("decoder.5"))?;
-        let final_conv = CausalConv1d::load(in_channels, 1, 7, 1, 1, true, vb.pp("decoder.6.conv"))?;
+        let final_conv =
+            CausalConv1d::load(in_channels, 1, 7, 1, 1, true, vb.pp("decoder.6.conv"))?;
 
         Ok(Self {
             rvq_first,
@@ -775,10 +805,7 @@ impl SpeechTokenizerDecoder {
         }
 
         let seq_len = codec_tokens[0].len();
-        let first_codes: Vec<i64> = codec_tokens[0]
-            .iter()
-            .map(|&x| x as i64)
-            .collect();
+        let first_codes: Vec<i64> = codec_tokens[0].iter().map(|&x| x as i64).collect();
         let first_tensor = Tensor::from_vec(first_codes, (1, seq_len), &self.device)?;
 
         // RVQ decode (first + residual codebooks) and project to hidden features.
@@ -811,16 +838,6 @@ impl SpeechTokenizerDecoder {
         // Clamp to audio range and flatten to mono sample vector.
         let audio = audio.clamp(-1.0f32, 1.0f32)?;
         let mut audio_vec = audio.squeeze(0)?.squeeze(0)?.to_vec1::<f32>()?;
-
-        // Keep exact frame-rate contract for downstream duration accounting.
-        let expected_len = seq_len.saturating_mul(self.decode_upsample_rate);
-        if expected_len > 0 {
-            if audio_vec.len() > expected_len {
-                audio_vec.truncate(expected_len);
-            } else if audio_vec.len() < expected_len {
-                audio_vec.resize(expected_len, 0.0);
-            }
-        }
 
         Ok(audio_vec)
     }

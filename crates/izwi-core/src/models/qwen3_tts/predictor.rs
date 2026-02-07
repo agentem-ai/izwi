@@ -4,7 +4,7 @@
 //! has produced the first (semantic) codebook. It uses a smaller transformer
 //! for efficient multi-token prediction.
 
-use candle_core::{DType, Device, Tensor, D};
+use candle_core::{DType, Device, IndexOp, Tensor, D};
 use candle_nn::{ops, Embedding, Linear, Module, RmsNorm, VarBuilder};
 
 use crate::error::{Error, Result};
@@ -54,6 +54,7 @@ impl CodePredictorCache {
 /// Code Predictor model
 pub struct CodePredictor {
     codec_embeddings: Vec<Embedding>,
+    small_to_mtp_projection: Option<Linear>,
     layers: Vec<Layer>,
     norm: RmsNorm,
     lm_heads: Vec<Linear>,
@@ -81,6 +82,16 @@ impl CodePredictor {
             codec_embeddings.push(embed);
         }
 
+        let small_to_mtp_projection = if codec_embed_dim != cfg.hidden_size {
+            Some(candle_nn::linear(
+                codec_embed_dim,
+                cfg.hidden_size,
+                vb.pp("small_to_mtp_projection"),
+            )?)
+        } else {
+            None
+        };
+
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for idx in 0..cfg.num_hidden_layers {
             let layer = Layer::load(&cfg, vb.pp(format!("model.layers.{idx}")))?;
@@ -103,6 +114,7 @@ impl CodePredictor {
 
         Ok(Self {
             codec_embeddings,
+            small_to_mtp_projection,
             layers,
             norm,
             lm_heads,
@@ -136,6 +148,9 @@ impl CodePredictor {
     ) -> Result<Vec<Tensor>> {
         // Embed the first codebook tokens using the first codec embedding
         let mut x = self.codec_embeddings[0].forward(first_codebook)?;
+        if let Some(proj) = &self.small_to_mtp_projection {
+            x = proj.forward(&x)?;
+        }
 
         // Pass through transformer layers
         let mut cache_ref = cache;
@@ -154,6 +169,93 @@ impl CodePredictor {
         }
 
         Ok(outputs)
+    }
+
+    /// Generate all acoustic code groups autoregressively.
+    ///
+    /// The predictor consumes [talker_hidden, semantic_embed] as prefill context,
+    /// then predicts 15 acoustic codes one-by-one using KV cache.
+    pub fn generate_acoustic_codes(
+        &self,
+        talker_hidden: &Tensor,
+        semantic_embed: &Tensor,
+        cache: &mut CodePredictorCache,
+    ) -> Result<Vec<u32>> {
+        cache.clear();
+
+        let input = Tensor::cat(&[talker_hidden, semantic_embed], 1)?;
+        let mut hidden = if let Some(proj) = &self.small_to_mtp_projection {
+            proj.forward(&input)?
+        } else {
+            input
+        };
+
+        for (idx, layer) in self.layers.iter().enumerate() {
+            hidden = layer.forward(&hidden, 0, Some(cache), idx)?;
+        }
+        hidden = self.norm.forward(&hidden)?;
+
+        let seq_len = hidden.dim(1)?;
+        let last_hidden = hidden.i((.., seq_len - 1..seq_len, ..))?;
+
+        let num_acoustic = self.lm_heads.len();
+        if num_acoustic == 0 {
+            return Ok(Vec::new());
+        }
+
+        let first_logits = self.lm_heads[0].forward(&last_hidden)?;
+        let mut prev_code = argmax_token(&first_logits.i((0, 0))?)?;
+        let mut all_codes = Vec::with_capacity(num_acoustic);
+        all_codes.push(prev_code);
+
+        let mut offset = seq_len;
+        for group_idx in 1..num_acoustic {
+            let prev_tensor = Tensor::from_vec(vec![prev_code], (1,), &self.device)?;
+            let mut step_hidden = self.codec_embeddings[group_idx - 1].forward(&prev_tensor)?;
+            step_hidden = step_hidden.unsqueeze(0)?;
+            if let Some(proj) = &self.small_to_mtp_projection {
+                step_hidden = proj.forward(&step_hidden)?;
+            }
+
+            for (idx, layer) in self.layers.iter().enumerate() {
+                step_hidden = layer.forward(&step_hidden, offset, Some(cache), idx)?;
+            }
+            step_hidden = self.norm.forward(&step_hidden)?;
+
+            let logits = self.lm_heads[group_idx].forward(&step_hidden)?;
+            prev_code = argmax_token(&logits.i((0, 0))?)?;
+            all_codes.push(prev_code);
+            offset += 1;
+        }
+
+        Ok(all_codes)
+    }
+
+    /// Sum acoustic embeddings for the 15 generated acoustic codes.
+    /// Returned tensor shape is [1, 1, codec_embed_dim].
+    pub fn get_acoustic_embeddings_sum(&self, acoustic_codes: &[u32]) -> Result<Tensor> {
+        if acoustic_codes.len() != self.codec_embeddings.len() {
+            return Err(Error::InvalidInput(format!(
+                "Expected {} acoustic codes, got {}",
+                self.codec_embeddings.len(),
+                acoustic_codes.len()
+            )));
+        }
+
+        let first_code = Tensor::from_vec(vec![acoustic_codes[0]], (1,), &self.device)?;
+        let mut sum = self.codec_embeddings[0]
+            .forward(&first_code)?
+            .unsqueeze(0)?;
+
+        for (group_idx, &code) in acoustic_codes.iter().enumerate().skip(1) {
+            let code_tensor = Tensor::from_vec(vec![code], (1,), &self.device)?;
+            let embed = self.codec_embeddings[group_idx]
+                .forward(&code_tensor)?
+                .unsqueeze(0)?;
+            sum = sum.broadcast_add(&embed)?;
+        }
+
+        Ok(sum)
     }
 }
 
@@ -212,6 +314,8 @@ struct Attention {
     k_proj: Linear,
     v_proj: Linear,
     o_proj: Linear,
+    q_norm: RmsNorm,
+    k_norm: RmsNorm,
     num_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
@@ -242,17 +346,36 @@ impl Attention {
             cfg.hidden_size,
             vb.pp("o_proj"),
         )?;
+        let q_norm = candle_nn::rms_norm(head_dim, cfg.rms_norm_eps, vb.pp("q_norm"))?;
+        let k_norm = candle_nn::rms_norm(head_dim, cfg.rms_norm_eps, vb.pp("k_norm"))?;
 
         Ok(Self {
             q_proj,
             k_proj,
             v_proj,
             o_proj,
+            q_norm,
+            k_norm,
             num_heads: cfg.num_attention_heads,
             num_kv_heads: cfg.num_key_value_heads,
             head_dim,
             rope_theta: cfg.rope_theta,
         })
+    }
+
+    fn apply_qk_norm(
+        &self,
+        x: Tensor,
+        heads: usize,
+        seq_len: usize,
+        norm: &RmsNorm,
+    ) -> Result<Tensor> {
+        let bsz = x.dim(0)?;
+        let reshaped = x.reshape((bsz * seq_len * heads, self.head_dim))?;
+        let normed = norm.forward(&reshaped)?;
+        normed
+            .reshape((bsz, seq_len, heads, self.head_dim))
+            .map_err(Error::from)
     }
 
     fn apply_rope(&self, x: Tensor, start_pos: usize) -> Result<Tensor> {
@@ -306,6 +429,9 @@ impl Attention {
             self.v_proj
                 .forward(x)?
                 .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
+
+        q = self.apply_qk_norm(q, self.num_heads, seq_len, &self.q_norm)?;
+        k = self.apply_qk_norm(k, self.num_kv_heads, seq_len, &self.k_norm)?;
 
         q = self.apply_rope(q, start_pos)?;
         k = self.apply_rope(k, start_pos)?;
@@ -449,4 +575,18 @@ fn causal_mask(
     Tensor::from_vec(data, (1, seq_len, total_len), device)?
         .to_dtype(dtype)
         .map_err(Error::from)
+}
+
+fn argmax_token(logits: &Tensor) -> Result<u32> {
+    let logits = logits.to_dtype(DType::F32)?;
+    let values = logits.to_vec1::<f32>()?;
+    let mut max_idx = 0usize;
+    let mut max_val = f32::NEG_INFINITY;
+    for (idx, &val) in values.iter().enumerate() {
+        if val > max_val {
+            max_val = val;
+            max_idx = idx;
+        }
+    }
+    Ok(max_idx as u32)
 }

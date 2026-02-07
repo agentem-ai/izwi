@@ -317,7 +317,11 @@ impl AudioTower {
             let chunk = feature_seq.narrow(0, offset, len)?;
             offset += len;
             if len < chunk_input_len {
-                let pad = Tensor::zeros((chunk_input_len - len, n_mels), chunk.dtype(), chunk.device())?;
+                let pad = Tensor::zeros(
+                    (chunk_input_len - len, n_mels),
+                    chunk.dtype(),
+                    chunk.device(),
+                )?;
                 chunks.push(Tensor::cat(&[chunk, pad], 0)?);
             } else {
                 chunks.push(chunk);

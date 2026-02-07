@@ -128,7 +128,10 @@ impl Tokenizer {
                     let missing = (expected_id - current_size) as usize;
                     let mut fillers = Vec::with_capacity(missing);
                     for idx in 0..missing {
-                        fillers.push(AddedToken::from(format!("<|gap_{}|>", current_size + idx as u32), false));
+                        fillers.push(AddedToken::from(
+                            format!("<|gap_{}|>", current_size + idx as u32),
+                            false,
+                        ));
                     }
                     inner.add_tokens(&fillers);
                 }

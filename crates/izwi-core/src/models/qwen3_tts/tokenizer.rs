@@ -102,8 +102,10 @@ impl TtsTokenizer {
     ) -> Result<Self> {
         // Use the shared tokenizer loader so byte-level BPE and added-token ids
         // match HuggingFace tokenizer behavior.
-        let text_tokenizer =
-            BaseTokenizer::from_path_with_expected_vocab(model_dir, Some(talker_config.text_vocab_size))?;
+        let text_tokenizer = BaseTokenizer::from_path_with_expected_vocab(
+            model_dir,
+            Some(talker_config.text_vocab_size),
+        )?;
 
         Ok(Self {
             text_tokenizer,

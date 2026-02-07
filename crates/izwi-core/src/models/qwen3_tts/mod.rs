@@ -17,11 +17,56 @@ pub use tokenizer::{SpeakerReference, TtsSpecialTokens, TtsTokenizer};
 
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
+use std::cmp::Ordering;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
 use crate::error::{Error, Result};
 use crate::models::device::DeviceProfile;
+
+const NEWLINE_TOKEN_ID: u32 = 198;
+
+/// Runtime generation settings for semantic token sampling.
+#[derive(Debug, Clone)]
+pub struct TtsGenerationParams {
+    /// Semantic token temperature. <= 0 means greedy.
+    pub temperature: f32,
+    /// Top-p nucleus sampling threshold.
+    pub top_p: f32,
+    /// Top-k sampling cutoff. 0 means disabled.
+    pub top_k: usize,
+    /// Repetition penalty for previously sampled semantic tokens.
+    pub repetition_penalty: f32,
+    /// Maximum generated codec frames.
+    pub max_frames: usize,
+}
+
+impl Default for TtsGenerationParams {
+    fn default() -> Self {
+        // Mirrors the official generation_config defaults.
+        Self {
+            temperature: 0.9,
+            top_p: 1.0,
+            top_k: 50,
+            repetition_penalty: 1.05,
+            max_frames: 512,
+        }
+    }
+}
+
+impl TtsGenerationParams {
+    /// Convert external generation config to TTS sampling params.
+    pub fn from_generation_config(cfg: &crate::inference::GenerationConfig) -> Self {
+        Self {
+            temperature: cfg.temperature.max(0.0),
+            top_p: cfg.top_p.clamp(0.0, 1.0),
+            top_k: if cfg.top_k == 0 { 50 } else { cfg.top_k },
+            repetition_penalty: cfg.repetition_penalty.max(1.0),
+            max_frames: cfg.max_tokens.clamp(16, 8192),
+        }
+    }
+}
 
 /// Qwen3-TTS Model for speech synthesis
 pub struct Qwen3TtsModel {
@@ -118,17 +163,51 @@ impl Qwen3TtsModel {
         language: Option<&str>,
         _instruct: Option<&str>,
     ) -> Result<Vec<f32>> {
+        self.generate_with_speaker_params(
+            text,
+            speaker,
+            language,
+            _instruct,
+            &TtsGenerationParams::default(),
+        )
+    }
+
+    /// Generate speech with a preset speaker (CustomVoice mode) and explicit sampling params.
+    pub fn generate_with_speaker_params(
+        &self,
+        text: &str,
+        speaker: &str,
+        language: Option<&str>,
+        _instruct: Option<&str>,
+        params: &TtsGenerationParams,
+    ) -> Result<Vec<f32>> {
         info!("Generating speech with speaker: {}", speaker);
 
-        // Build input sequence
-        let input_ids =
-            self.tokenizer
-                .build_input_sequence(text, Some(speaker), language, false)?;
+        let text_ids = self.tokenizer.encode_text(text, language)?;
+        let speaker_id = self.tokenizer.get_speaker_id(speaker).ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "Unknown speaker '{speaker}'. Available speakers: {}",
+                self.tokenizer
+                    .available_speakers()
+                    .into_iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
+        let language_id = language
+            .map(|l| self.tokenizer.get_language_id(l))
+            .unwrap_or_else(|| self.tokenizer.get_language_id("english"));
 
-        debug!("Input sequence length: {}", input_ids.len());
+        debug!(
+            "Text token length: {}, speaker_id: {}, language_id: {}",
+            text_ids.len(),
+            speaker_id,
+            language_id
+        );
 
-        // Generate codec tokens
-        let codec_tokens = self.generate_codec_tokens(&input_ids)?;
+        let codec_tokens =
+            self.generate_codec_tokens_custom_voice(&text_ids, speaker_id, language_id, params)?;
 
         // Decode to audio using speech tokenizer
         self.codec_to_audio(&codec_tokens)
@@ -153,14 +232,14 @@ impl Qwen3TtsModel {
                 .build_voice_clone_sequence(text, &ref_codec_tokens, language, false)?;
 
         // Generate codec tokens
-        let codec_tokens = self.generate_codec_tokens(&input_ids)?;
+        let codec_tokens = self.generate_codec_tokens_legacy(&input_ids)?;
 
         // Decode to audio
         self.codec_to_audio(&codec_tokens)
     }
 
-    /// Generate codec tokens using the talker and code predictor
-    fn generate_codec_tokens(&self, input_ids: &[u32]) -> Result<Vec<Vec<u32>>> {
+    /// Legacy codec generation path used by not-yet-updated flows (e.g. voice cloning).
+    fn generate_codec_tokens_legacy(&self, input_ids: &[u32]) -> Result<Vec<Vec<u32>>> {
         let mut talker_cache = TalkerCache::new(self.talker.num_layers());
         let mut predictor_cache = CodePredictorCache::new(self.code_predictor.num_layers());
         let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
@@ -216,14 +295,12 @@ impl Qwen3TtsModel {
                 Some(&mut predictor_cache),
             )?;
 
-            // Sample all acoustic groups (groups 1..15).
             for (acoustic_idx, group_logits) in predictor_logits.iter().enumerate() {
                 let group_idx = acoustic_idx + 1;
                 if group_idx >= all_code_groups.len() {
                     break;
                 }
                 let group_token = argmax(&group_logits.i((0, 0))?)?;
-                // Offset token by text_vocab_size for combined vocab
                 let combined_token = text_vocab_size
                     + group_token
                     + (group_idx as u32 * self.tokenizer.codec_vocab_size() as u32);
@@ -240,6 +317,176 @@ impl Qwen3TtsModel {
         }
 
         Ok(all_code_groups)
+    }
+
+    /// Official-style CustomVoice generation path:
+    /// prefill with fused role/codec/text embeddings, then per-frame semantic+acoustic+trailing-text fusion.
+    fn generate_codec_tokens_custom_voice(
+        &self,
+        text_ids: &[u32],
+        speaker_id: u32,
+        language_id: u32,
+        params: &TtsGenerationParams,
+    ) -> Result<Vec<Vec<u32>>> {
+        let mut talker_cache = TalkerCache::new(self.talker.num_layers());
+        let mut predictor_cache = CodePredictorCache::new(self.code_predictor.num_layers());
+        let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
+        let acoustic_vocab_size = self.tokenizer.codec_vocab_size() as u32;
+        // Talker logits are over full codec vocab (semantic + control).
+        let talker_codec_vocab_size = self.config.talker_config.vocab_size as u32;
+        // Official suppression keeps semantic IDs [0, vocab-1024) and EOS.
+        let semantic_vocab_size = talker_codec_vocab_size.saturating_sub(1024);
+
+        let prefill_embeds =
+            self.build_custom_voice_prefill_embeddings(text_ids, speaker_id, language_id)?;
+        let prefill_len = prefill_embeds.dim(1)?;
+        let (mut last_hidden, mut last_logits) =
+            self.talker
+                .prefill_with_embeds(&prefill_embeds, &mut talker_cache, None)?;
+
+        let mut all_code_groups: Vec<Vec<u32>> =
+            vec![Vec::new(); self.config.talker_config.num_code_groups];
+        let min_tokens_before_eos = 8usize;
+        // Keep generation bounded if EOS is not sampled.
+        let heuristic_max_frames = (text_ids.len().max(1) * 8 + 48).clamp(80usize, 512usize);
+        let max_frames = params
+            .max_frames
+            .clamp(16usize, 8192usize)
+            .min(heuristic_max_frames.max(16));
+        let (trailing_text_hidden, trailing_text_len, tts_pad_embed) =
+            self.build_trailing_text_embeddings(text_ids, max_frames)?;
+        let mut offset = prefill_len;
+        let mut rng = SimpleRng::new();
+        let mut semantic_history: Vec<u32> = Vec::new();
+
+        for frame_idx in 0..max_frames {
+            let allow_eos = all_code_groups[0].len() >= min_tokens_before_eos;
+            let semantic_token = sample_semantic(
+                &last_logits.i((0, 0))?,
+                semantic_vocab_size,
+                self.specials.codec_eos_token_id,
+                allow_eos,
+                params,
+                &semantic_history,
+                &mut rng,
+            )?;
+            if allow_eos && semantic_token == self.specials.codec_eos_token_id {
+                break;
+            }
+            semantic_history.push(semantic_token);
+            if semantic_history.len() > 256 {
+                let drain = semantic_history.len() - 256;
+                semantic_history.drain(0..drain);
+            }
+
+            all_code_groups[0].push(text_vocab_size + semantic_token);
+
+            let semantic_embed = self.talker.get_codec_embedding(semantic_token)?;
+            let acoustic_codes = self.code_predictor.generate_acoustic_codes(
+                &last_hidden,
+                &semantic_embed,
+                &mut predictor_cache,
+            )?;
+            let acoustic_embed_sum = self
+                .code_predictor
+                .get_acoustic_embeddings_sum(&acoustic_codes)?;
+            for (acoustic_idx, &group_token) in acoustic_codes.iter().enumerate() {
+                let group_idx = acoustic_idx + 1;
+                if group_idx < all_code_groups.len() {
+                    let combined_token =
+                        text_vocab_size + group_token + (group_idx as u32 * acoustic_vocab_size);
+                    all_code_groups[group_idx].push(combined_token);
+                }
+            }
+
+            let text_addition = if frame_idx < trailing_text_len {
+                trailing_text_hidden.i((.., frame_idx..frame_idx + 1, ..))?
+            } else {
+                tts_pad_embed.clone()
+            };
+
+            let step_input = semantic_embed
+                .broadcast_add(&acoustic_embed_sum)?
+                .broadcast_add(&text_addition)?;
+            let (new_hidden, new_logits) =
+                self.talker
+                    .generate_step_with_embed(&step_input, &mut talker_cache, offset)?;
+            last_hidden = new_hidden;
+            last_logits = new_logits;
+            offset += 1;
+        }
+
+        Ok(all_code_groups)
+    }
+
+    fn build_custom_voice_prefill_embeddings(
+        &self,
+        text_ids: &[u32],
+        speaker_id: u32,
+        language_id: u32,
+    ) -> Result<Tensor> {
+        let role_prefix = self.talker.get_projected_text_embeddings(&[
+            self.specials.im_start_token_id,
+            self.specials.assistant_token_id,
+            NEWLINE_TOKEN_ID,
+        ])?;
+
+        let codec_prefix = self.talker.get_codec_embedding_batch(&[
+            self.specials.codec_think_id,
+            self.specials.codec_think_bos_id,
+            language_id,
+            self.specials.codec_think_eos_id,
+            speaker_id,
+            self.specials.codec_pad_id,
+            self.specials.codec_bos_id,
+        ])?;
+        let codec_first6 = codec_prefix.i((.., ..6, ..))?;
+
+        let tts_overlay_ids = vec![self.specials.tts_pad_token_id; 5];
+        let mut tts_overlay_ids_with_bos = tts_overlay_ids;
+        tts_overlay_ids_with_bos.push(self.specials.tts_bos_token_id);
+        let tts_overlay = self
+            .talker
+            .get_projected_text_embeddings(&tts_overlay_ids_with_bos)?;
+        let codec_hidden = tts_overlay.broadcast_add(&codec_first6)?;
+
+        let mut hidden = Tensor::cat(&[&role_prefix, &codec_hidden], 1)?;
+
+        if let Some(&first_text_id) = text_ids.first() {
+            let first_text_proj = self
+                .talker
+                .get_projected_text_embeddings(&[first_text_id])?;
+            let codec_bos_embed = codec_prefix.i((.., 6..7, ..))?;
+            let first_combined = first_text_proj.broadcast_add(&codec_bos_embed)?;
+            hidden = Tensor::cat(&[&hidden, &first_combined], 1)?;
+        }
+
+        Ok(hidden)
+    }
+
+    fn build_trailing_text_embeddings(
+        &self,
+        text_ids: &[u32],
+        max_frames: usize,
+    ) -> Result<(Tensor, usize, Tensor)> {
+        let trailing = if text_ids.len() > 1 {
+            let trailing_end = (1 + max_frames).min(text_ids.len());
+            let remaining = self
+                .talker
+                .get_projected_text_embeddings(&text_ids[1..trailing_end])?;
+            let eos_embed = self
+                .talker
+                .get_projected_special_embed(self.specials.tts_eos_token_id)?;
+            Tensor::cat(&[&remaining, &eos_embed], 1)?
+        } else {
+            self.talker
+                .get_projected_special_embed(self.specials.tts_eos_token_id)?
+        };
+        let trailing_len = trailing.dim(1)?;
+        let tts_pad = self
+            .talker
+            .get_projected_special_embed(self.specials.tts_pad_token_id)?;
+        Ok((trailing, trailing_len, tts_pad))
     }
 
     /// Encode reference audio to codec tokens for voice cloning
@@ -285,7 +532,9 @@ impl Qwen3TtsModel {
         }
 
         // Decode through speech tokenizer
-        self.speech_tokenizer.decode(&raw_codec_tokens)
+        let mut audio = self.speech_tokenizer.decode(&raw_codec_tokens)?;
+        normalize_audio(&mut audio);
+        Ok(audio)
     }
 
     /// List available preset speakers
@@ -337,8 +586,7 @@ fn argmax_semantic(
 
     for (idx, &val) in values.iter().enumerate() {
         let token_id = idx as u32;
-        let allowed =
-            token_id < semantic_vocab_size || (allow_eos && token_id == eos_token_id);
+        let allowed = token_id < semantic_vocab_size || (allow_eos && token_id == eos_token_id);
         if !allowed {
             continue;
         }
@@ -351,6 +599,218 @@ fn argmax_semantic(
     max_idx
         .map(|idx| idx as u32)
         .ok_or_else(|| Error::InferenceError("No valid semantic token candidates".to_string()))
+}
+
+fn sample_semantic(
+    logits: &Tensor,
+    semantic_vocab_size: u32,
+    eos_token_id: u32,
+    allow_eos: bool,
+    params: &TtsGenerationParams,
+    history: &[u32],
+    rng: &mut SimpleRng,
+) -> Result<u32> {
+    let logits = logits.to_dtype(DType::F32)?;
+    let mut values = logits.to_vec1::<f32>()?;
+
+    // Token suppression: keep semantic range and optional EOS only.
+    for (idx, v) in values.iter_mut().enumerate() {
+        let token_id = idx as u32;
+        let allowed = token_id < semantic_vocab_size || (allow_eos && token_id == eos_token_id);
+        if !allowed {
+            *v = f32::NEG_INFINITY;
+        }
+    }
+
+    // Repetition penalty over recent semantic history.
+    if params.repetition_penalty > 1.0 && !history.is_empty() {
+        let mut seen = vec![false; values.len()];
+        for &token in history {
+            let idx = token as usize;
+            if idx < seen.len() {
+                seen[idx] = true;
+            }
+        }
+        for (idx, seen_flag) in seen.iter().enumerate() {
+            if !*seen_flag {
+                continue;
+            }
+            let v = &mut values[idx];
+            if !v.is_finite() {
+                continue;
+            }
+            if *v > 0.0 {
+                *v /= params.repetition_penalty;
+            } else {
+                *v *= params.repetition_penalty;
+            }
+        }
+    }
+
+    // Greedy fallback when sampling is effectively disabled.
+    if params.temperature <= 1e-5 {
+        return argmax_semantic(&logits, semantic_vocab_size, eos_token_id, allow_eos);
+    }
+
+    let temperature = params.temperature.max(1e-5);
+    for v in values.iter_mut() {
+        if v.is_finite() {
+            *v /= temperature;
+        }
+    }
+
+    let mut candidates: Vec<usize> = values
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &v)| if v.is_finite() { Some(idx) } else { None })
+        .collect();
+    if candidates.is_empty() {
+        return argmax_semantic(&logits, semantic_vocab_size, eos_token_id, allow_eos);
+    }
+
+    // Top-k filtering.
+    if params.top_k > 0 && params.top_k < candidates.len() {
+        candidates.sort_by(|&a, &b| values[b].partial_cmp(&values[a]).unwrap_or(Ordering::Equal));
+        candidates.truncate(params.top_k);
+    }
+
+    let max_logit = candidates
+        .iter()
+        .map(|&idx| values[idx])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut probs: Vec<(usize, f32)> = candidates
+        .iter()
+        .map(|&idx| (idx, (values[idx] - max_logit).exp()))
+        .collect();
+
+    let mut sum: f32 = probs.iter().map(|(_, p)| *p).sum();
+    if !sum.is_finite() || sum <= 0.0 {
+        return argmax_semantic(&logits, semantic_vocab_size, eos_token_id, allow_eos);
+    }
+    for (_, p) in probs.iter_mut() {
+        *p /= sum;
+    }
+
+    // Top-p filtering over normalized probabilities.
+    if params.top_p < 1.0 {
+        probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+        let cutoff = params.top_p.max(1e-6);
+        let mut cumsum = 0.0f32;
+        let mut keep = 0usize;
+        for (_, p) in probs.iter() {
+            cumsum += *p;
+            keep += 1;
+            if cumsum >= cutoff {
+                break;
+            }
+        }
+        probs.truncate(keep.max(1));
+        sum = probs.iter().map(|(_, p)| *p).sum();
+        if sum > 0.0 {
+            for (_, p) in probs.iter_mut() {
+                *p /= sum;
+            }
+        }
+    }
+
+    let r = rng.next_f32();
+    let mut acc = 0.0f32;
+    for (idx, p) in probs.iter() {
+        acc += *p;
+        if r <= acc {
+            return Ok(*idx as u32);
+        }
+    }
+
+    // Numerical fallback: pick max probability candidate.
+    probs
+        .iter()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))
+        .map(|(idx, _)| *idx as u32)
+        .ok_or_else(|| Error::InferenceError("Failed to sample semantic token".to_string()))
+}
+
+struct SimpleRng {
+    state: u64,
+}
+
+impl SimpleRng {
+    fn new() -> Self {
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9E37_79B9_7F4A_7C15);
+        Self {
+            state: seed ^ 0xA076_1D64_78BD_642F,
+        }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        // xorshift64*
+        let mut x = self.state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.state = x;
+        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
+    }
+
+    fn next_f32(&mut self) -> f32 {
+        (self.next_u32() as f64 / (u32::MAX as f64 + 1.0)) as f32
+    }
+}
+
+fn normalize_audio(samples: &mut [f32]) {
+    if samples.is_empty() {
+        return;
+    }
+
+    // Drop non-finite values and remove DC offset.
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for s in samples.iter_mut() {
+        if !s.is_finite() {
+            *s = 0.0;
+            continue;
+        }
+        sum += *s as f64;
+        count += 1;
+    }
+    if count > 0 {
+        let mean = (sum / count as f64) as f32;
+        for s in samples.iter_mut() {
+            *s -= mean;
+        }
+    }
+
+    // Peak normalize to avoid hard clipping in WAV encoder.
+    let mut peak = 0.0f32;
+    for &s in samples.iter() {
+        let a = s.abs();
+        if a > peak {
+            peak = a;
+        }
+    }
+    if peak > 0.95 {
+        let scale = 0.95 / peak;
+        for s in samples.iter_mut() {
+            *s *= scale;
+        }
+    }
+
+    // Tame overly hot outputs which sound robotic after int16 conversion.
+    let mut power = 0.0f64;
+    for &s in samples.iter() {
+        power += (s as f64) * (s as f64);
+    }
+    let rms = (power / samples.len() as f64).sqrt() as f32;
+    let target_rms = 0.12f32;
+    if rms > target_rms && rms > 1e-6 {
+        let scale = target_rms / rms;
+        for s in samples.iter_mut() {
+            *s *= scale;
+        }
+    }
 }
 
 /// Load a Qwen3-TTS model

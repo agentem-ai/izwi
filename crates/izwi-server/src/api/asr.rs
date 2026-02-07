@@ -172,12 +172,12 @@ async fn parse_transcribe_request(req: Request) -> Result<TranscribeRequest, Api
             match name.as_str() {
                 "audio" => {
                     let bytes = field.bytes().await.map_err(|e| {
-                        ApiError::bad_request(format!("Failed reading multipart 'audio' field: {e}"))
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'audio' field: {e}"
+                        ))
                     })?;
                     if bytes.is_empty() {
-                        return Err(ApiError::bad_request(
-                            "Multipart 'audio' field is empty",
-                        ));
+                        return Err(ApiError::bad_request("Multipart 'audio' field is empty"));
                     }
                     audio_base64 = Some(base64::engine::general_purpose::STANDARD.encode(&bytes));
                 }

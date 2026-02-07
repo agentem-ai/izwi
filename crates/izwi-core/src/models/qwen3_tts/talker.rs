@@ -4,7 +4,7 @@
 //! It uses a Qwen3 architecture with MRoPE (Multi-modal Rotary Position Embeddings)
 //! to handle both text and audio modalities.
 
-use candle_core::{DType, Device, Tensor, D};
+use candle_core::{DType, Device, IndexOp, Tensor, D};
 use candle_nn::{ops, Embedding, Linear, Module, RmsNorm, VarBuilder};
 
 use crate::error::{Error, Result};
@@ -467,10 +467,10 @@ impl TalkerModel {
         let ids = input_ids.to_vec2::<u32>()?;
 
         // Fast path: all text ids.
-        if ids
-            .iter()
-            .all(|row| row.iter().all(|id| (*id as usize) < self.cfg.text_vocab_size))
-        {
+        if ids.iter().all(|row| {
+            row.iter()
+                .all(|id| (*id as usize) < self.cfg.text_vocab_size)
+        }) {
             let text_embeds = self.text_embedding.forward(input_ids)?;
             return self.text_projection.forward(&text_embeds);
         }
@@ -481,7 +481,9 @@ impl TalkerModel {
         let mut batch_embeds = Vec::with_capacity(ids.len());
         for row in ids.iter() {
             if row.is_empty() {
-                return Err(Error::InvalidInput("Empty token row in talker embeddings".to_string()));
+                return Err(Error::InvalidInput(
+                    "Empty token row in talker embeddings".to_string(),
+                ));
             }
 
             let mut token_embeds = Vec::with_capacity(row.len());
@@ -519,13 +521,99 @@ impl TalkerModel {
         mut cache: Option<&mut TalkerCache>,
         position_ids: Option<&Tensor>,
     ) -> Result<Tensor> {
+        let (_hidden, logits) =
+            self.forward_with_embeds_and_hidden(embeds, start_pos, cache, position_ids)?;
+        Ok(logits)
+    }
+
+    /// Forward pass with pre-computed embeddings, returning both hidden states and logits.
+    pub fn forward_with_embeds_and_hidden(
+        &self,
+        embeds: &Tensor,
+        start_pos: usize,
+        mut cache: Option<&mut TalkerCache>,
+        position_ids: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor)> {
         let mut x = embeds.clone();
         for (idx, layer) in self.layers.iter().enumerate() {
             let cache_ref = cache.as_deref_mut();
             x = layer.forward(&x, start_pos, position_ids, cache_ref, idx)?;
         }
-        let x = self.norm.forward(&x)?;
-        self.lm_head.forward(&x).map_err(Error::from)
+        let hidden = self.norm.forward(&x)?;
+        let logits = self.lm_head.forward(&hidden)?;
+        Ok((hidden, logits))
+    }
+
+    /// Prefill pass from externally assembled embeddings.
+    /// Returns (last_hidden, last_logits), each shaped [1, 1, ...].
+    pub fn prefill_with_embeds(
+        &self,
+        embeds: &Tensor,
+        cache: &mut TalkerCache,
+        position_ids: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor)> {
+        let (hidden, logits) =
+            self.forward_with_embeds_and_hidden(embeds, 0, Some(cache), position_ids)?;
+        let seq_len = hidden.dim(1)?;
+        let last_hidden = hidden.i((.., seq_len - 1..seq_len, ..))?;
+        let last_logits = logits.i((.., seq_len - 1..seq_len, ..))?;
+        Ok((last_hidden, last_logits))
+    }
+
+    /// Incremental generation step from an externally assembled single-step embedding.
+    /// Returns (hidden, logits) for the provided step; shapes are [1, 1, ...].
+    pub fn generate_step_with_embed(
+        &self,
+        input_embed: &Tensor,
+        cache: &mut TalkerCache,
+        offset: usize,
+    ) -> Result<(Tensor, Tensor)> {
+        self.forward_with_embeds_and_hidden(input_embed, offset, Some(cache), None)
+    }
+
+    /// Get projected text embeddings for a sequence of token IDs.
+    /// Output shape: [1, seq_len, hidden_size].
+    pub fn get_projected_text_embeddings(&self, token_ids: &[u32]) -> Result<Tensor> {
+        if token_ids.is_empty() {
+            return Ok(Tensor::zeros(
+                (1, 0, self.cfg.hidden_size),
+                DType::F32,
+                &self.device,
+            )?);
+        }
+        let ids_tensor = Tensor::from_vec(token_ids.to_vec(), (token_ids.len(),), &self.device)?;
+        let embeds = self.text_embedding.forward(&ids_tensor)?;
+        let embeds = embeds.unsqueeze(0)?;
+        self.text_projection.forward(&embeds)
+    }
+
+    /// Get projected text embedding for a single token ID.
+    /// Output shape: [1, 1, hidden_size].
+    pub fn get_projected_special_embed(&self, token_id: u32) -> Result<Tensor> {
+        self.get_projected_text_embeddings(&[token_id])
+    }
+
+    /// Get codec embedding for a single codec token ID.
+    /// Output shape: [1, 1, hidden_size].
+    pub fn get_codec_embedding(&self, token_id: u32) -> Result<Tensor> {
+        let token_tensor = Tensor::from_vec(vec![token_id], (1,), &self.device)?;
+        let embed = self.codec_embedding.forward(&token_tensor)?;
+        embed.unsqueeze(0).map_err(Error::from)
+    }
+
+    /// Get codec embeddings for a sequence of codec token IDs.
+    /// Output shape: [1, seq_len, hidden_size].
+    pub fn get_codec_embedding_batch(&self, token_ids: &[u32]) -> Result<Tensor> {
+        if token_ids.is_empty() {
+            return Ok(Tensor::zeros(
+                (1, 0, self.cfg.hidden_size),
+                DType::F32,
+                &self.device,
+            )?);
+        }
+        let ids_tensor = Tensor::from_vec(token_ids.to_vec(), (token_ids.len(),), &self.device)?;
+        let embed = self.codec_embedding.forward(&ids_tensor)?;
+        embed.unsqueeze(0).map_err(Error::from)
     }
 
     /// Check if using MRoPE

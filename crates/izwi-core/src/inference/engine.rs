@@ -13,7 +13,9 @@ use crate::inference::generation::{
 };
 use crate::inference::kv_cache::{KVCache, KVCacheConfig};
 use crate::model::{ModelInfo, ModelManager, ModelVariant};
-use crate::models::qwen3_tts::{Qwen3TtsModel, SpeakerReference, TtsTokenizer};
+use crate::models::qwen3_tts::{
+    Qwen3TtsModel, SpeakerReference, TtsGenerationParams, TtsTokenizer,
+};
 use crate::models::voxtral::VoxtralRealtimeModel;
 use crate::models::{DeviceProfile, DeviceSelector, ModelRegistry};
 use crate::tokenizer::Tokenizer;
@@ -186,6 +188,7 @@ impl InferenceEngine {
         let tts_model = self.tts_model.clone();
         let text = request.text.clone();
         let speaker = request.config.speaker.clone();
+        let runtime_gen_config = request.config.clone();
         let voice_description = request.voice_description.clone();
         let ref_audio = request.reference_audio.clone();
         let ref_text = request.reference_text.clone();
@@ -225,11 +228,13 @@ impl InferenceEngine {
             } else {
                 // Preset speaker mode
                 let speaker = speaker.as_deref().unwrap_or("Vivian");
-                model.generate_with_speaker(
+                let params = TtsGenerationParams::from_generation_config(&runtime_gen_config);
+                model.generate_with_speaker_params(
                     &text,
                     speaker,
                     Some("Auto"),
                     voice_description.as_deref(),
+                    &params,
                 )
             }
         })
