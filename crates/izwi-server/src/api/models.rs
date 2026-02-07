@@ -7,12 +7,11 @@ use axum::{
 };
 use futures::stream::Stream;
 use serde::Serialize;
-use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::{ModelInfo, ModelVariant};
+use izwi_core::{parse_model_variant, ModelInfo, ModelVariant};
 
 /// Response for model list
 #[derive(Serialize)]
@@ -237,142 +236,5 @@ pub async fn cancel_download(
 
 /// Parse model variant from string
 fn parse_variant(s: &str) -> Result<ModelVariant, ApiError> {
-    // Exact matches for HuggingFace model names (used in URLs)
-    match s {
-        "Qwen3-TTS-12Hz-0.6B-Base" => return Ok(ModelVariant::Qwen3Tts12Hz06BBase),
-        "Qwen3-TTS-12Hz-0.6B-Base-4bit" => return Ok(ModelVariant::Qwen3Tts12Hz06BBase4Bit),
-        "Qwen3-TTS-12Hz-0.6B-Base-8bit" => return Ok(ModelVariant::Qwen3Tts12Hz06BBase8Bit),
-        "Qwen3-TTS-12Hz-0.6B-Base-bf16" => return Ok(ModelVariant::Qwen3Tts12Hz06BBaseBf16),
-        "Qwen3-TTS-12Hz-0.6B-CustomVoice" => return Ok(ModelVariant::Qwen3Tts12Hz06BCustomVoice),
-        "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit" => {
-            return Ok(ModelVariant::Qwen3Tts12Hz06BCustomVoice4Bit)
-        }
-        "Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit" => {
-            return Ok(ModelVariant::Qwen3Tts12Hz06BCustomVoice8Bit)
-        }
-        "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16" => {
-            return Ok(ModelVariant::Qwen3Tts12Hz06BCustomVoiceBf16)
-        }
-        "Qwen3-TTS-12Hz-1.7B-Base" => return Ok(ModelVariant::Qwen3Tts12Hz17BBase),
-        "Qwen3-TTS-12Hz-1.7B-CustomVoice" => return Ok(ModelVariant::Qwen3Tts12Hz17BCustomVoice),
-        "Qwen3-TTS-12Hz-1.7B-VoiceDesign" => return Ok(ModelVariant::Qwen3Tts12Hz17BVoiceDesign),
-        "Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit" => {
-            return Ok(ModelVariant::Qwen3Tts12Hz17BVoiceDesign4Bit)
-        }
-        "Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit" => {
-            return Ok(ModelVariant::Qwen3Tts12Hz17BVoiceDesign8Bit)
-        }
-        "Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16" => {
-            return Ok(ModelVariant::Qwen3Tts12Hz17BVoiceDesignBf16)
-        }
-        "Qwen3-TTS-Tokenizer-12Hz" => return Ok(ModelVariant::Qwen3TtsTokenizer12Hz),
-        "LFM2-Audio-1.5B" => return Ok(ModelVariant::Lfm2Audio15B),
-        "Qwen3-ASR-0.6B" => return Ok(ModelVariant::Qwen3Asr06B),
-        "Qwen3-ASR-0.6B-4bit" => return Ok(ModelVariant::Qwen3Asr06B4Bit),
-        "Qwen3-ASR-0.6B-8bit" => return Ok(ModelVariant::Qwen3Asr06B8Bit),
-        "Qwen3-ASR-0.6B-bf16" => return Ok(ModelVariant::Qwen3Asr06BBf16),
-        "Qwen3-ASR-1.7B" => return Ok(ModelVariant::Qwen3Asr17B),
-        "Qwen3-ASR-1.7B-4bit" => return Ok(ModelVariant::Qwen3Asr17B4Bit),
-        "Qwen3-ASR-1.7B-8bit" => return Ok(ModelVariant::Qwen3Asr17B8Bit),
-        "Qwen3-ASR-1.7B-bf16" => return Ok(ModelVariant::Qwen3Asr17BBf16),
-        "Qwen3-0.6B-4bit" => return Ok(ModelVariant::Qwen306B4Bit),
-        "Voxtral-Mini-4B-Realtime-2602" => return Ok(ModelVariant::VoxtralMini4BRealtime2602),
-        _ => {}
-    }
-
-    // Fallback: normalize and try pattern matching
-    let normalized = s.to_lowercase().replace("-", "_").replace(".", "");
-
-    // Qwen3-ASR models (check before TTS to avoid conflicts)
-    if normalized.contains("qwen3") && normalized.contains("asr") {
-        let is_06b = normalized.contains("06b");
-        let is_17b = normalized.contains("17b");
-        let target_variant = if is_06b {
-            if normalized.contains("4bit") {
-                ModelVariant::Qwen3Asr06B4Bit
-            } else if normalized.contains("8bit") {
-                ModelVariant::Qwen3Asr06B8Bit
-            } else if normalized.contains("bf16") {
-                ModelVariant::Qwen3Asr06BBf16
-            } else {
-                ModelVariant::Qwen3Asr06B
-            }
-        } else if is_17b {
-            if normalized.contains("4bit") {
-                ModelVariant::Qwen3Asr17B4Bit
-            } else if normalized.contains("8bit") {
-                ModelVariant::Qwen3Asr17B8Bit
-            } else if normalized.contains("bf16") {
-                ModelVariant::Qwen3Asr17BBf16
-            } else {
-                ModelVariant::Qwen3Asr17B
-            }
-        } else {
-            return Err(ApiError::bad_request(format!("Unknown ASR variant: {}", s)));
-        };
-        return Ok(target_variant);
-    }
-
-    if normalized.contains("06b") && normalized.contains("base") {
-        if normalized.contains("4bit") {
-            return Ok(ModelVariant::Qwen3Tts12Hz06BBase4Bit);
-        } else if normalized.contains("8bit") {
-            return Ok(ModelVariant::Qwen3Tts12Hz06BBase8Bit);
-        } else if normalized.contains("bf16") {
-            return Ok(ModelVariant::Qwen3Tts12Hz06BBaseBf16);
-        }
-        return Ok(ModelVariant::Qwen3Tts12Hz06BBase);
-    }
-    if normalized.contains("06b") && normalized.contains("custom") {
-        if normalized.contains("4bit") {
-            return Ok(ModelVariant::Qwen3Tts12Hz06BCustomVoice4Bit);
-        } else if normalized.contains("8bit") {
-            return Ok(ModelVariant::Qwen3Tts12Hz06BCustomVoice8Bit);
-        } else if normalized.contains("bf16") {
-            return Ok(ModelVariant::Qwen3Tts12Hz06BCustomVoiceBf16);
-        }
-        return Ok(ModelVariant::Qwen3Tts12Hz06BCustomVoice);
-    }
-    if normalized.contains("17b")
-        && normalized.contains("base")
-        && !normalized.contains("custom")
-        && !normalized.contains("voice")
-    {
-        return Ok(ModelVariant::Qwen3Tts12Hz17BBase);
-    }
-    if normalized.contains("17b") && normalized.contains("customvoice") {
-        return Ok(ModelVariant::Qwen3Tts12Hz17BCustomVoice);
-    }
-    if normalized.contains("17b") && normalized.contains("voicedesign") {
-        if normalized.contains("4bit") {
-            return Ok(ModelVariant::Qwen3Tts12Hz17BVoiceDesign4Bit);
-        } else if normalized.contains("8bit") {
-            return Ok(ModelVariant::Qwen3Tts12Hz17BVoiceDesign8Bit);
-        } else if normalized.contains("bf16") {
-            return Ok(ModelVariant::Qwen3Tts12Hz17BVoiceDesignBf16);
-        }
-        return Ok(ModelVariant::Qwen3Tts12Hz17BVoiceDesign);
-    }
-    if normalized.contains("tokenizer") {
-        return Ok(ModelVariant::Qwen3TtsTokenizer12Hz);
-    }
-    if normalized.contains("lfm2") && normalized.contains("audio") {
-        return Ok(ModelVariant::Lfm2Audio15B);
-    }
-    if normalized.contains("qwen3")
-        && normalized.contains("06b")
-        && normalized.contains("4bit")
-        && !normalized.contains("tts")
-        && !normalized.contains("asr")
-    {
-        return Ok(ModelVariant::Qwen306B4Bit);
-    }
-    if normalized.contains("voxtral") {
-        return Ok(ModelVariant::VoxtralMini4BRealtime2602);
-    }
-
-    Err(ApiError::bad_request(format!(
-        "Unknown model variant: {}. Valid variants: Qwen3-TTS-12Hz-0.6B-Base, Qwen3-TTS-12Hz-0.6B-CustomVoice, Qwen3-TTS-12Hz-1.7B-Base, Qwen3-TTS-12Hz-1.7B-CustomVoice, Qwen3-TTS-12Hz-1.7B-VoiceDesign, Qwen3-TTS-Tokenizer-12Hz, LFM2-Audio-1.5B, Qwen3-ASR-0.6B, Qwen3-ASR-1.7B, Qwen3-0.6B-4bit, Voxtral-Mini-4B-Realtime-2602",
-        s
-    )))
+    parse_model_variant(s).map_err(|err| ApiError::bad_request(err.to_string()))
 }

@@ -17,6 +17,7 @@ use crate::error::ApiError;
 use crate::state::AppState;
 use izwi_core::audio::AudioFormat;
 use izwi_core::inference::{AudioChunk, GenerationConfig, GenerationRequest};
+use izwi_core::parse_tts_model_variant as parse_tts_variant_id;
 
 /// TTS generation request
 #[derive(Debug, Deserialize)]
@@ -286,30 +287,6 @@ fn parse_format(s: &str) -> Result<AudioFormat, ApiError> {
 }
 
 fn parse_tts_model_variant(model_id: &str) -> Result<izwi_core::ModelVariant, ApiError> {
-    use izwi_core::ModelVariant;
-
-    let variant = match model_id {
-        "Qwen3-TTS-12Hz-0.6B-Base" => ModelVariant::Qwen3Tts12Hz06BBase,
-        "Qwen3-TTS-12Hz-0.6B-Base-4bit" => ModelVariant::Qwen3Tts12Hz06BBase4Bit,
-        "Qwen3-TTS-12Hz-0.6B-Base-8bit" => ModelVariant::Qwen3Tts12Hz06BBase8Bit,
-        "Qwen3-TTS-12Hz-0.6B-Base-bf16" => ModelVariant::Qwen3Tts12Hz06BBaseBf16,
-        "Qwen3-TTS-12Hz-0.6B-CustomVoice" => ModelVariant::Qwen3Tts12Hz06BCustomVoice,
-        "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit" => ModelVariant::Qwen3Tts12Hz06BCustomVoice4Bit,
-        "Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit" => ModelVariant::Qwen3Tts12Hz06BCustomVoice8Bit,
-        "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16" => ModelVariant::Qwen3Tts12Hz06BCustomVoiceBf16,
-        "Qwen3-TTS-12Hz-1.7B-Base" => ModelVariant::Qwen3Tts12Hz17BBase,
-        "Qwen3-TTS-12Hz-1.7B-CustomVoice" => ModelVariant::Qwen3Tts12Hz17BCustomVoice,
-        "Qwen3-TTS-12Hz-1.7B-VoiceDesign" => ModelVariant::Qwen3Tts12Hz17BVoiceDesign,
-        "Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit" => ModelVariant::Qwen3Tts12Hz17BVoiceDesign4Bit,
-        "Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit" => ModelVariant::Qwen3Tts12Hz17BVoiceDesign8Bit,
-        "Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16" => ModelVariant::Qwen3Tts12Hz17BVoiceDesignBf16,
-        _ => {
-            return Err(ApiError::bad_request(format!(
-                "Unsupported TTS model_id: {}",
-                model_id
-            )))
-        }
-    };
-
-    Ok(variant)
+    parse_tts_variant_id(model_id)
+        .map_err(|err| ApiError::bad_request(format!("Unsupported TTS model_id: {}", err)))
 }

@@ -1,0 +1,227 @@
+//! Runtime request/response types.
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub struct AsrTranscription {
+    pub text: String,
+    pub language: Option<String>,
+    pub duration_secs: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatGeneration {
+    pub text: String,
+    pub tokens_generated: usize,
+    pub generation_time_ms: f64,
+}
+
+/// Configuration for audio generation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationConfig {
+    /// Temperature for sampling (0.0 = deterministic, 1.0 = more random)
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
+
+    /// Top-p (nucleus) sampling threshold
+    #[serde(default = "default_top_p")]
+    pub top_p: f32,
+
+    /// Top-k sampling (0 = disabled)
+    #[serde(default)]
+    pub top_k: usize,
+
+    /// Repetition penalty to avoid loops
+    #[serde(default = "default_repetition_penalty")]
+    pub repetition_penalty: f32,
+
+    /// Maximum number of audio tokens to generate.
+    /// `0` means "auto" (use the model's maximum context budget).
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: usize,
+
+    /// Enable streaming output
+    #[serde(default = "default_streaming")]
+    pub streaming: bool,
+
+    /// Speaker/voice identifier (for voice cloning)
+    #[serde(default)]
+    pub speaker: Option<String>,
+
+    /// Speed factor (1.0 = normal)
+    #[serde(default = "default_speed")]
+    pub speed: f32,
+}
+
+fn default_temperature() -> f32 {
+    0.7
+}
+fn default_top_p() -> f32 {
+    0.9
+}
+fn default_repetition_penalty() -> f32 {
+    1.1
+}
+fn default_max_tokens() -> usize {
+    0
+}
+fn default_streaming() -> bool {
+    true
+}
+fn default_speed() -> f32 {
+    1.0
+}
+
+impl Default for GenerationConfig {
+    fn default() -> Self {
+        Self {
+            temperature: default_temperature(),
+            top_p: default_top_p(),
+            top_k: 0,
+            repetition_penalty: default_repetition_penalty(),
+            max_tokens: default_max_tokens(),
+            streaming: default_streaming(),
+            speaker: None,
+            speed: default_speed(),
+        }
+    }
+}
+
+/// Request for TTS generation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationRequest {
+    /// Unique request ID
+    #[serde(default = "generate_request_id")]
+    pub id: String,
+
+    /// Text to synthesize
+    pub text: String,
+
+    /// Generation configuration
+    #[serde(default)]
+    pub config: GenerationConfig,
+
+    /// Reference audio for voice cloning (base64 encoded)
+    #[serde(default)]
+    pub reference_audio: Option<String>,
+
+    /// Reference text/transcript for voice cloning
+    #[serde(default)]
+    pub reference_text: Option<String>,
+
+    /// Voice description for voice design models
+    #[serde(default)]
+    pub voice_description: Option<String>,
+}
+
+fn generate_request_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
+impl GenerationRequest {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            id: generate_request_id(),
+            text: text.into(),
+            config: GenerationConfig::default(),
+            reference_audio: None,
+            reference_text: None,
+            voice_description: None,
+        }
+    }
+
+    pub fn with_config(mut self, config: GenerationConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    pub fn with_speaker(mut self, speaker: impl Into<String>) -> Self {
+        self.config.speaker = Some(speaker.into());
+        self
+    }
+}
+
+/// A chunk of generated audio
+#[derive(Debug, Clone)]
+pub struct AudioChunk {
+    /// Request ID this chunk belongs to
+    pub request_id: String,
+
+    /// Chunk sequence number
+    pub sequence: usize,
+
+    /// Audio samples (f32, mono)
+    pub samples: Vec<f32>,
+
+    /// Whether this is the final chunk
+    pub is_final: bool,
+
+    /// Generation statistics
+    pub stats: Option<ChunkStats>,
+}
+
+impl AudioChunk {
+    pub fn new(request_id: String, sequence: usize, samples: Vec<f32>) -> Self {
+        Self {
+            request_id,
+            sequence,
+            samples,
+            is_final: false,
+            stats: None,
+        }
+    }
+
+    pub fn final_chunk(request_id: String, sequence: usize, samples: Vec<f32>) -> Self {
+        Self {
+            request_id,
+            sequence,
+            samples,
+            is_final: true,
+            stats: None,
+        }
+    }
+
+    /// Duration in seconds
+    pub fn duration_secs(&self, sample_rate: u32) -> f32 {
+        self.samples.len() as f32 / sample_rate as f32
+    }
+}
+
+/// Statistics for a generated chunk
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkStats {
+    /// Time to generate this chunk (ms)
+    pub generation_time_ms: f32,
+    /// Tokens generated for this chunk
+    pub tokens_generated: usize,
+    /// Real-time factor (< 1.0 means faster than real-time)
+    pub rtf: f32,
+}
+
+/// Complete generation result
+#[derive(Debug, Clone)]
+pub struct GenerationResult {
+    pub request_id: String,
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub total_tokens: usize,
+    pub total_time_ms: f32,
+}
+
+impl GenerationResult {
+    /// Duration in seconds
+    pub fn duration_secs(&self) -> f32 {
+        self.samples.len() as f32 / self.sample_rate as f32
+    }
+
+    /// Real-time factor
+    pub fn rtf(&self) -> f32 {
+        let duration = self.duration_secs();
+        if duration > 0.0 {
+            (self.total_time_ms / 1000.0) / duration
+        } else {
+            0.0
+        }
+    }
+}

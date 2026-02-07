@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use crate::error::ApiError;
 use crate::state::AppState;
 use izwi_core::models::qwen3_chat::ChatMessage;
-use izwi_core::ModelVariant;
+use izwi_core::{parse_chat_model_variant, ModelVariant};
 
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionRequest {
@@ -65,12 +65,7 @@ fn max_new_tokens(value: Option<usize>) -> usize {
 }
 
 fn parse_chat_model(model_id: Option<&str>) -> Result<ModelVariant, ApiError> {
-    match model_id.unwrap_or("Qwen3-0.6B-4bit") {
-        "Qwen3-0.6B-4bit" => Ok(ModelVariant::Qwen306B4Bit),
-        other => Err(ApiError::bad_request(format!(
-            "Unsupported chat model: {other}. Supported: Qwen3-0.6B-4bit"
-        ))),
-    }
+    parse_chat_model_variant(model_id).map_err(|err| ApiError::bad_request(err.to_string()))
 }
 
 pub async fn complete(

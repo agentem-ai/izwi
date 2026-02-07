@@ -24,12 +24,17 @@
 //! ```
 
 pub mod audio;
+pub mod backends;
+pub mod catalog;
+pub mod codecs;
 pub mod config;
 pub mod engine;
 pub mod error;
+pub mod families;
 pub mod inference;
 pub mod model;
 pub mod models;
+pub mod runtime;
 pub mod tokenizer;
 
 // Re-export main types from the new engine module
@@ -43,5 +48,18 @@ pub use engine::{
 pub use config::EngineConfig;
 pub use error::{Error, Result};
 pub use inference::{AudioChunk, GenerationConfig, InferenceEngine};
-pub use model::{DownloadProgress, ModelInfo, ModelManager, ModelVariant};
-pub use models::{DeviceProfile, DeviceSelector, ModelRegistry};
+
+// Canonical runtime-facing re-exports
+pub use runtime::{
+    AsrTranscription, ChatGeneration, ChunkStats, GenerationRequest, GenerationResult,
+};
+
+// Catalog/model metadata re-exports
+pub use catalog::{
+    parse_chat_model_variant, parse_model_variant, parse_tts_model_variant,
+    resolve_asr_model_variant, DownloadProgress, ModelInfo, ModelManager, ModelStatus,
+    ModelVariant,
+};
+
+// Native family/device registry re-exports
+pub use families::{DeviceProfile, DeviceSelector, ModelRegistry};
