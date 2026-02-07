@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Bot, Send, Square, RotateCcw, User, Loader2 } from "lucide-react";
+import {
+  Bot,
+  Send,
+  Square,
+  RotateCcw,
+  User,
+  Loader2,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react";
 import clsx from "clsx";
 import { api, ChatMessage } from "../api";
 
@@ -15,11 +24,59 @@ const DEFAULT_SYSTEM_PROMPT: ChatMessage = {
     "You are a helpful assistant. Keep internal reasoning concise. If you use <think>, always close it with </think> and then provide a final answer.",
 };
 
+interface ParsedAssistantContent {
+  thinking: string;
+  answer: string;
+  hasThink: boolean;
+  hasIncompleteThink: boolean;
+}
+
+function parseAssistantContent(content: string): ParsedAssistantContent {
+  const openTag = "<think>";
+  const closeTag = "</think>";
+
+  const thinkingParts: string[] = [];
+  const answerParts: string[] = [];
+  let cursor = 0;
+  let hasIncompleteThink = false;
+
+  while (true) {
+    const openIdx = content.indexOf(openTag, cursor);
+    if (openIdx === -1) {
+      answerParts.push(content.slice(cursor));
+      break;
+    }
+
+    answerParts.push(content.slice(cursor, openIdx));
+    const thinkStart = openIdx + openTag.length;
+    const closeIdx = content.indexOf(closeTag, thinkStart);
+
+    if (closeIdx === -1) {
+      thinkingParts.push(content.slice(thinkStart));
+      hasIncompleteThink = true;
+      break;
+    }
+
+    thinkingParts.push(content.slice(thinkStart, closeIdx));
+    cursor = closeIdx + closeTag.length;
+  }
+
+  return {
+    thinking: thinkingParts.join("\n\n").trim(),
+    answer: answerParts.join("").trim(),
+    hasThink: thinkingParts.length > 0,
+    hasIncompleteThink,
+  };
+}
+
 export function ChatPlayground({
   selectedModel,
   onModelRequired,
 }: ChatPlaygroundProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [expandedThoughts, setExpandedThoughts] = useState<
+    Record<string, boolean>
+  >({});
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +116,7 @@ export function ChatPlayground({
   const clearChat = () => {
     stopStreaming();
     setMessages([]);
+    setExpandedThoughts({});
     setError(null);
     setStats(null);
   };
@@ -184,10 +242,27 @@ export function ChatPlayground({
             const isUser = message.role === "user";
             const isLastAssistant =
               !isUser && idx === visibleMessages.length - 1 && isStreaming;
+            const parsed = isUser
+              ? null
+              : parseAssistantContent(message.content || "");
+            const messageKey = `${idx}-${message.role}`;
+            const isThoughtExpanded = !!expandedThoughts[messageKey];
+            const showStreamingThinking =
+              !isUser &&
+              !!parsed &&
+              isLastAssistant &&
+              parsed.thinking.length > 0 &&
+              (parsed.hasIncompleteThink || parsed.answer.length === 0);
+            const showAnswerOnly =
+              !isUser &&
+              !!parsed &&
+              parsed.answer.length > 0 &&
+              parsed.hasThink &&
+              !showStreamingThinking;
 
             return (
               <motion.div
-                key={`${message.role}-${idx}`}
+                key={messageKey}
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 className={clsx("flex gap-3", isUser && "justify-end")}
@@ -206,11 +281,74 @@ export function ChatPlayground({
                       : "bg-[#1a1a1a] border border-[#2a2a2a] text-gray-200",
                   )}
                 >
-                  {message.content}
-                  {isLastAssistant && (
-                    <span className="inline-flex items-center ml-1">
-                      <Loader2 className="w-3 h-3 animate-spin text-gray-400" />
-                    </span>
+                  {isUser ? (
+                    message.content
+                  ) : (
+                    <>
+                      {showStreamingThinking && parsed && (
+                        <div className="mb-2 rounded border border-[#2f2f2f] bg-[#151515] px-2.5 py-2 text-xs text-gray-500">
+                          <div className="mb-1.5 flex items-center gap-1.5 uppercase tracking-wide text-[10px] text-gray-600">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            Thinking
+                          </div>
+                          <div className="whitespace-pre-wrap text-gray-500">
+                            {parsed.thinking}
+                          </div>
+                        </div>
+                      )}
+
+                      {parsed && parsed.answer.length > 0 ? (
+                        <div className="text-gray-200">{parsed.answer}</div>
+                      ) : parsed && parsed.hasThink ? (
+                        <div className="text-gray-500 italic">
+                          {isLastAssistant
+                            ? "Thinking..."
+                            : "No final answer was generated."}
+                        </div>
+                      ) : (
+                        <div className="text-gray-200">{message.content}</div>
+                      )}
+
+                      {parsed && parsed.hasThink && !showStreamingThinking && (
+                        <div className="mt-2">
+                          <button
+                            onClick={() =>
+                              setExpandedThoughts((prev) => ({
+                                ...prev,
+                                [messageKey]: !prev[messageKey],
+                              }))
+                            }
+                            className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+                          >
+                            {isThoughtExpanded ? (
+                              <ChevronDown className="w-3 h-3" />
+                            ) : (
+                              <ChevronRight className="w-3 h-3" />
+                            )}
+                            {isThoughtExpanded
+                              ? "Hide thinking"
+                              : "Show thinking"}
+                          </button>
+                        </div>
+                      )}
+
+                      {parsed &&
+                        parsed.hasThink &&
+                        !showStreamingThinking &&
+                        isThoughtExpanded && (
+                          <div className="mt-2 rounded border border-[#2f2f2f] bg-[#151515] px-2.5 py-2 text-xs text-gray-500 whitespace-pre-wrap">
+                            {parsed.thinking}
+                          </div>
+                        )}
+
+                      {isLastAssistant &&
+                        ((parsed && parsed.answer.length > 0) ||
+                          !showAnswerOnly) && (
+                          <span className="inline-flex items-center ml-1">
+                            <Loader2 className="w-3 h-3 animate-spin text-gray-400" />
+                          </span>
+                        )}
+                    </>
                   )}
                 </div>
 
