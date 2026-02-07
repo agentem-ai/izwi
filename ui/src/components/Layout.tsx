@@ -33,6 +33,20 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   {
+    id: "chat",
+    label: "Chat",
+    description: "Text-to-text conversation",
+    icon: MessageSquare,
+    path: "/chat",
+  },
+  {
+    id: "voice",
+    label: "Voice",
+    description: "Realtime voice assistant",
+    icon: AudioLines,
+    path: "/voice",
+  },
+  {
     id: "text-to-speech",
     label: "Text to Speech",
     description: "Generate speech from text",
@@ -59,20 +73,6 @@ const NAV_ITEMS: NavItem[] = [
     description: "Speech-to-text conversion",
     icon: FileText,
     path: "/transcription",
-  },
-  {
-    id: "chat",
-    label: "Chat",
-    description: "Text-to-text conversation",
-    icon: MessageSquare,
-    path: "/chat",
-  },
-  {
-    id: "voice",
-    label: "Voice",
-    description: "Realtime voice assistant",
-    icon: AudioLines,
-    path: "/voice",
   },
 ];
 
