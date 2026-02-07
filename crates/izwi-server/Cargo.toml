@@ -10,8 +10,6 @@ name = "izwi"
 path = "src/main.rs"
 
 [dependencies]
-izwi-core = { path = "../izwi-core" }
-
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 futures = { workspace = true }
@@ -35,3 +33,9 @@ bytes = { workspace = true }
 base64 = { workspace = true }
 
 config = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+izwi-core = { path = "../izwi-core", features = ["metal", "accelerate"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+izwi-core = { path = "../izwi-core" }

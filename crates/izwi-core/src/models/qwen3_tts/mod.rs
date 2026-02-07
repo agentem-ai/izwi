@@ -17,8 +17,8 @@ pub use tokenizer::{SpeakerReference, TtsSpecialTokens, TtsTokenizer};
 
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
-use std::collections::HashSet;
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
@@ -39,7 +39,7 @@ pub struct TtsGenerationParams {
     pub top_k: usize,
     /// Repetition penalty for previously sampled semantic tokens.
     pub repetition_penalty: f32,
-    /// Maximum generated codec frames.
+    /// Maximum generated codec frames. `0` means auto (model maximum).
     pub max_frames: usize,
 }
 
@@ -51,7 +51,7 @@ impl Default for TtsGenerationParams {
             top_p: 1.0,
             top_k: 50,
             repetition_penalty: 1.05,
-            max_frames: 512,
+            max_frames: 0,
         }
     }
 }
@@ -64,7 +64,7 @@ impl TtsGenerationParams {
             top_p: cfg.top_p.clamp(0.0, 1.0),
             top_k: if cfg.top_k == 0 { 50 } else { cfg.top_k },
             repetition_penalty: cfg.repetition_penalty.max(1.0),
-            max_frames: cfg.max_tokens.clamp(16, 8192),
+            max_frames: cfg.max_tokens,
         }
     }
 }
@@ -231,25 +231,19 @@ impl Qwen3TtsModel {
         }
 
         // Build input sequence with reference tokens
-        let input_ids =
-            self.tokenizer
-                .build_voice_clone_sequence(
-                    text,
-                    reference.text.as_str(),
-                    &ref_codec_tokens,
-                    language,
-                    false,
-                )?;
+        let input_ids = self.tokenizer.build_voice_clone_sequence(
+            text,
+            reference.text.as_str(),
+            &ref_codec_tokens,
+            language,
+            false,
+        )?;
 
-        // Guardrail for the legacy path so failed EOS sampling cannot produce
-        // minute-long audio for short text.
-        let text_ids = self.tokenizer.encode_text(text, language)?;
-        let legacy_max_frames = (text_ids.len().max(1) * 8 + 48).clamp(80usize, 512usize);
         let params = TtsGenerationParams::default();
 
         // Generate codec tokens
         let codec_tokens =
-            self.generate_codec_tokens_legacy(&input_ids, legacy_max_frames, &params)?;
+            self.generate_codec_tokens_legacy(&input_ids, params.max_frames, &params)?;
 
         // Decode to audio
         self.codec_to_audio(&codec_tokens)
@@ -287,7 +281,22 @@ impl Qwen3TtsModel {
         let mut all_code_groups: Vec<Vec<u32>> =
             vec![Vec::new(); self.config.talker_config.num_code_groups];
         let mut pos = input_ids.len();
-        let max_length = max_length.clamp(16, 1024);
+        let context_budget = self
+            .config
+            .talker_config
+            .max_position_embeddings
+            .saturating_sub(input_ids.len() + 1);
+        if context_budget == 0 {
+            return Err(Error::InferenceError(
+                "Input is too long for model context; no room left for audio generation"
+                    .to_string(),
+            ));
+        }
+        let max_length = if max_length == 0 {
+            context_budget
+        } else {
+            max_length.max(1).min(context_budget)
+        };
         let min_tokens_before_eos = 8usize;
         let mut rng = SimpleRng::new();
         let mut semantic_history: Vec<u32> = Vec::new();
@@ -337,9 +346,8 @@ impl Qwen3TtsModel {
                     break;
                 }
                 let group_token = argmax(&group_logits.i((0, 0))?)?;
-                let combined_token = text_vocab_size
-                    + group_token
-                    + (group_idx as u32 * acoustic_vocab_size);
+                let combined_token =
+                    text_vocab_size + group_token + (group_idx as u32 * acoustic_vocab_size);
                 all_code_groups[group_idx].push(combined_token);
             }
 
@@ -397,12 +405,22 @@ impl Qwen3TtsModel {
         let mut all_code_groups: Vec<Vec<u32>> =
             vec![Vec::new(); self.config.talker_config.num_code_groups];
         let min_tokens_before_eos = 8usize;
-        // Keep generation bounded if EOS is not sampled.
-        let heuristic_max_frames = (text_ids.len().max(1) * 8 + 48).clamp(80usize, 512usize);
-        let max_frames = params
-            .max_frames
-            .clamp(16usize, 8192usize)
-            .min(heuristic_max_frames.max(16));
+        let context_budget = self
+            .config
+            .talker_config
+            .max_position_embeddings
+            .saturating_sub(prefill_len + 1);
+        if context_budget == 0 {
+            return Err(Error::InferenceError(
+                "Input is too long for model context; no room left for audio generation"
+                    .to_string(),
+            ));
+        }
+        let max_frames = if params.max_frames == 0 {
+            context_budget
+        } else {
+            params.max_frames.max(1).min(context_budget)
+        };
         let (trailing_text_hidden, trailing_text_len, tts_pad_embed) =
             self.build_trailing_text_embeddings(text_ids, max_frames)?;
         let mut offset = prefill_len;

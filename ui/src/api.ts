@@ -82,6 +82,8 @@ export interface TTSRequest {
   voice_description?: string;
   reference_audio?: string;
   reference_text?: string;
+  // 0 means auto (use model maximum context budget)
+  max_tokens?: number;
   format?: "wav" | "raw_f32" | "raw_i16";
   temperature?: number;
   speed?: number;

@@ -371,6 +371,7 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
           text: assistantText,
           model_id: selectedTtsModel,
           speaker: selectedSpeaker,
+          max_tokens: 0,
           format: "wav",
         });
 

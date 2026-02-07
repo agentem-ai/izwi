@@ -65,6 +65,7 @@ export function VoiceClonePlayground({
 
       const blob = await api.generateTTS({
         text: text.trim(),
+        max_tokens: 0,
         reference_audio: voiceCloneAudio,
         reference_text: voiceCloneTranscript,
       });
@@ -221,14 +222,7 @@ export function VoiceClonePlayground({
               className="textarea text-sm"
             />
             <div className="absolute bottom-2 right-2">
-              <span
-                className={clsx(
-                  "text-xs",
-                  text.length > 500 ? "text-red-400" : "text-gray-600",
-                )}
-              >
-                {text.length}
-              </span>
+              <span className="text-xs text-gray-600">{text.length}</span>
             </div>
           </div>
 

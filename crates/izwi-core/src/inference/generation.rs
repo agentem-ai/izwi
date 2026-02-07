@@ -22,7 +22,8 @@ pub struct GenerationConfig {
     #[serde(default = "default_repetition_penalty")]
     pub repetition_penalty: f32,
 
-    /// Maximum number of audio tokens to generate
+    /// Maximum number of audio tokens to generate.
+    /// `0` means "auto" (use the model's maximum context budget).
     #[serde(default = "default_max_tokens")]
     pub max_tokens: usize,
 
@@ -49,7 +50,7 @@ fn default_repetition_penalty() -> f32 {
     1.1
 }
 fn default_max_tokens() -> usize {
-    2048
+    0
 }
 fn default_streaming() -> bool {
     true

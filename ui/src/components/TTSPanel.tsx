@@ -49,6 +49,7 @@ export function TTSPanel({ selectedModel, onModelRequired }: TTSPanelProps) {
 
       const blob = await api.generateTTS({
         text: text.trim(),
+        max_tokens: 0,
         speaker: speaker || undefined,
         temperature,
         speed,
