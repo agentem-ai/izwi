@@ -8,6 +8,7 @@ use candle_core::{DType, Device, IndexOp, Tensor, D};
 use candle_nn::{ops, Embedding, Linear, Module, RmsNorm, VarBuilder};
 
 use crate::error::{Error, Result};
+use crate::models::mlx_compat;
 use crate::models::qwen3_tts::config::CodePredictorConfig;
 
 /// KV Cache for the code predictor
@@ -74,7 +75,7 @@ impl CodePredictor {
         let num_codec_embeddings = num_code_groups.min(15);
         let mut codec_embeddings = Vec::with_capacity(num_codec_embeddings);
         for idx in 0..num_codec_embeddings {
-            let embed = candle_nn::embedding(
+            let embed = mlx_compat::load_embedding(
                 cfg.vocab_size,
                 codec_embed_dim,
                 vb.pp(format!("model.codec_embedding.{idx}")),
@@ -83,7 +84,7 @@ impl CodePredictor {
         }
 
         let small_to_mtp_projection = if codec_embed_dim != cfg.hidden_size {
-            Some(candle_nn::linear(
+            Some(mlx_compat::load_linear(
                 codec_embed_dim,
                 cfg.hidden_size,
                 vb.pp("small_to_mtp_projection"),
@@ -104,7 +105,7 @@ impl CodePredictor {
         let num_lm_heads = num_code_groups.min(15);
         let mut lm_heads = Vec::with_capacity(num_lm_heads);
         for idx in 0..num_lm_heads {
-            let head = candle_nn::linear_no_bias(
+            let head = mlx_compat::load_linear_no_bias(
                 cfg.hidden_size,
                 cfg.vocab_size,
                 vb.pp(format!("lm_head.{idx}")),
@@ -326,22 +327,22 @@ impl Attention {
     fn load(cfg: &CodePredictorConfig, vb: VarBuilder) -> Result<Self> {
         let head_dim = cfg.head_dim();
 
-        let q_proj = candle_nn::linear_no_bias(
+        let q_proj = mlx_compat::load_linear_no_bias(
             cfg.hidden_size,
             cfg.num_attention_heads * head_dim,
             vb.pp("q_proj"),
         )?;
-        let k_proj = candle_nn::linear_no_bias(
+        let k_proj = mlx_compat::load_linear_no_bias(
             cfg.hidden_size,
             cfg.num_key_value_heads * head_dim,
             vb.pp("k_proj"),
         )?;
-        let v_proj = candle_nn::linear_no_bias(
+        let v_proj = mlx_compat::load_linear_no_bias(
             cfg.hidden_size,
             cfg.num_key_value_heads * head_dim,
             vb.pp("v_proj"),
         )?;
-        let o_proj = candle_nn::linear_no_bias(
+        let o_proj = mlx_compat::load_linear_no_bias(
             cfg.num_attention_heads * head_dim,
             cfg.hidden_size,
             vb.pp("o_proj"),
@@ -487,12 +488,21 @@ struct Mlp {
 
 impl Mlp {
     fn load(cfg: &CodePredictorConfig, vb: VarBuilder) -> Result<Self> {
-        let gate_proj =
-            candle_nn::linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("gate_proj"))?;
-        let up_proj =
-            candle_nn::linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("up_proj"))?;
-        let down_proj =
-            candle_nn::linear_no_bias(cfg.intermediate_size, cfg.hidden_size, vb.pp("down_proj"))?;
+        let gate_proj = mlx_compat::load_linear_no_bias(
+            cfg.hidden_size,
+            cfg.intermediate_size,
+            vb.pp("gate_proj"),
+        )?;
+        let up_proj = mlx_compat::load_linear_no_bias(
+            cfg.hidden_size,
+            cfg.intermediate_size,
+            vb.pp("up_proj"),
+        )?;
+        let down_proj = mlx_compat::load_linear_no_bias(
+            cfg.intermediate_size,
+            cfg.hidden_size,
+            vb.pp("down_proj"),
+        )?;
 
         Ok(Self {
             gate_proj,

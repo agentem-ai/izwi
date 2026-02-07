@@ -110,7 +110,11 @@ impl Qwen3AsrModel {
             let weights_path = model_dir.join("model.safetensors");
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], dtype, &device.device)? }
         };
-        let vb = vb.pp("thinker");
+        let vb = if vb.contains_tensor("thinker.audio_tower.conv2d1.weight") {
+            vb.pp("thinker")
+        } else {
+            vb
+        };
 
         let audio_cfg = config.thinker_config.audio_config.clone();
         let audio_tower = AudioTower::load(audio_cfg, vb.pp("audio_tower"))?;

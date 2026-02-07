@@ -5,6 +5,7 @@ use candle_nn::ops;
 use candle_nn::{layer_norm, Conv2d, Conv2dConfig, LayerNorm, Linear, VarBuilder};
 
 use crate::error::Result;
+use crate::models::mlx_compat;
 use crate::models::qwen3_asr::config::AudioConfig;
 
 /// Compute output length after feature extraction/downsampling.
@@ -101,10 +102,10 @@ struct AudioAttention {
 impl AudioAttention {
     fn load(cfg: &AudioConfig, vb: VarBuilder) -> Result<Self> {
         let head_dim = cfg.d_model / cfg.encoder_attention_heads;
-        let q_proj = candle_nn::linear(cfg.d_model, cfg.d_model, vb.pp("q_proj"))?;
-        let k_proj = candle_nn::linear(cfg.d_model, cfg.d_model, vb.pp("k_proj"))?;
-        let v_proj = candle_nn::linear(cfg.d_model, cfg.d_model, vb.pp("v_proj"))?;
-        let out_proj = candle_nn::linear(cfg.d_model, cfg.d_model, vb.pp("out_proj"))?;
+        let q_proj = mlx_compat::load_linear(cfg.d_model, cfg.d_model, vb.pp("q_proj"))?;
+        let k_proj = mlx_compat::load_linear(cfg.d_model, cfg.d_model, vb.pp("k_proj"))?;
+        let v_proj = mlx_compat::load_linear(cfg.d_model, cfg.d_model, vb.pp("v_proj"))?;
+        let out_proj = mlx_compat::load_linear(cfg.d_model, cfg.d_model, vb.pp("out_proj"))?;
         Ok(Self {
             q_proj,
             k_proj,
@@ -175,8 +176,8 @@ impl AudioEncoderLayer {
         let self_attn_layer_norm = layer_norm(cfg.d_model, 1e-5, vb.pp("self_attn_layer_norm"))?;
         let self_attn = AudioAttention::load(cfg, vb.pp("self_attn"))?;
         let final_layer_norm = layer_norm(cfg.d_model, 1e-5, vb.pp("final_layer_norm"))?;
-        let fc1 = candle_nn::linear(cfg.d_model, cfg.encoder_ffn_dim, vb.pp("fc1"))?;
-        let fc2 = candle_nn::linear(cfg.encoder_ffn_dim, cfg.d_model, vb.pp("fc2"))?;
+        let fc1 = mlx_compat::load_linear(cfg.d_model, cfg.encoder_ffn_dim, vb.pp("fc1"))?;
+        let fc2 = mlx_compat::load_linear(cfg.encoder_ffn_dim, cfg.d_model, vb.pp("fc2"))?;
         Ok(Self {
             self_attn_layer_norm,
             self_attn,
@@ -223,15 +224,15 @@ impl AudioTower {
         };
 
         let conv2d1 =
-            candle_nn::conv2d(1, cfg.downsample_hidden_size, 3, conv_cfg, vb.pp("conv2d1"))?;
-        let conv2d2 = candle_nn::conv2d(
+            mlx_compat::load_conv2d(1, cfg.downsample_hidden_size, 3, conv_cfg, vb.pp("conv2d1"))?;
+        let conv2d2 = mlx_compat::load_conv2d(
             cfg.downsample_hidden_size,
             cfg.downsample_hidden_size,
             3,
             conv_cfg,
             vb.pp("conv2d2"),
         )?;
-        let conv2d3 = candle_nn::conv2d(
+        let conv2d3 = mlx_compat::load_conv2d(
             cfg.downsample_hidden_size,
             cfg.downsample_hidden_size,
             3,
@@ -239,7 +240,7 @@ impl AudioTower {
             vb.pp("conv2d3"),
         )?;
 
-        let conv_out = candle_nn::linear_no_bias(
+        let conv_out = mlx_compat::load_linear_no_bias(
             cfg.downsample_hidden_size * (cfg.num_mel_bins / 8),
             cfg.d_model,
             vb.pp("conv_out"),
@@ -254,8 +255,8 @@ impl AudioTower {
         }
 
         let ln_post = layer_norm(cfg.d_model, 1e-5, vb.pp("ln_post"))?;
-        let proj1 = candle_nn::linear(cfg.d_model, cfg.d_model, vb.pp("proj1"))?;
-        let proj2 = candle_nn::linear(cfg.d_model, cfg.output_dim, vb.pp("proj2"))?;
+        let proj1 = mlx_compat::load_linear(cfg.d_model, cfg.d_model, vb.pp("proj1"))?;
+        let proj2 = mlx_compat::load_linear(cfg.d_model, cfg.output_dim, vb.pp("proj2"))?;
         let pos_embed = SinusoidalPositionEmbedding::new(1500, cfg.d_model, vb.device())?;
 
         Ok(Self {
