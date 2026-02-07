@@ -9,7 +9,7 @@ use std::path::Path;
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use serde::Deserialize;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::audio::{MelConfig, MelSpectrogram};
 use crate::error::{Error, Result};
@@ -197,18 +197,27 @@ impl Qwen3AsrModel {
         // Long repetitive generations are almost always degenerate for ASR.
         // Keep this bounded to reduce latency and prevent runaway gibberish.
         let max_tokens = 256usize;
+        let mut ignored_leading_stops = 0usize;
         for _ in 0..max_tokens {
             // Get logits for the last position only
             let logits = embeds.i((0, embeds.dim(1)? - 1))?; // [vocab_size]
             let next = argmax(&logits)?;
 
-            if next == self.specials.im_end
+            let is_stop = next == self.specials.im_end
                 || next == self.specials.eos
-                || self.specials.eos_alt == Some(next)
-            {
+                || self.specials.eos_alt == Some(next);
+
+            // Some checkpoints occasionally emit a leading boundary token before
+            // real text starts; consume a small number to avoid empty transcripts.
+            let ignore_leading_stop = is_stop && generated.is_empty() && ignored_leading_stops < 2;
+            if ignore_leading_stop {
+                ignored_leading_stops += 1;
+                debug!("Ignoring leading ASR stop token id={}", next);
+            } else if is_stop {
                 break;
+            } else {
+                generated.push(next);
             }
-            generated.push(next);
 
             // Forward pass for next token with updated position
             let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
@@ -337,7 +346,7 @@ impl Qwen3AsrModel {
             return Ok(String::new());
         }
 
-        let mut text = trimmed;
+        let mut text = trimmed.clone();
 
         // Qwen3-ASR commonly emits: "language English<asr_text>..."
         // Split on the last tag in case intermediate tags are present.
@@ -368,7 +377,29 @@ impl Qwen3AsrModel {
         text = text.replace("<|im_end|>", "");
         text = collapse_whitespace(text.trim());
         text = strip_runaway_repetition(&text);
-        Ok(text.trim().to_string())
+        let parsed = text.trim().to_string();
+        if !parsed.is_empty() {
+            return Ok(parsed);
+        }
+
+        // Fallback: if parsing strips everything but raw decode had content,
+        // preserve recoverable text rather than returning an empty transcript.
+        let mut fallback = trimmed
+            .replace("<|im_end|>", "")
+            .replace("<asr_text>", "")
+            .trim()
+            .to_string();
+        if fallback.to_lowercase().starts_with("language ") {
+            let mut parts = fallback.split_whitespace();
+            let _ = parts.next(); // "language"
+            let _ = parts.next(); // language name
+            fallback = parts.collect::<Vec<_>>().join(" ");
+        }
+        fallback = collapse_whitespace(fallback.trim());
+        if fallback == "<non_speech>" || fallback.contains("No speech detected") {
+            return Ok(String::new());
+        }
+        Ok(strip_runaway_repetition(fallback.trim()).trim().to_string())
     }
 
     fn forward_with_audio(
