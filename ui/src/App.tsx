@@ -8,6 +8,7 @@ import {
   VoiceDesignPage,
   TranscriptionPage,
   ChatPage,
+  VoicePage,
   MyModelsPage,
 } from "./pages";
 
@@ -319,6 +320,16 @@ function App() {
             element={<TranscriptionPage {...pageProps} />}
           />
           <Route path="/chat" element={<ChatPage {...pageProps} />} />
+          <Route
+            path="/voice"
+            element={
+              <VoicePage
+                models={models}
+                loading={loading}
+                onError={setError}
+              />
+            }
+          />
           <Route
             path="/my-models"
             element={

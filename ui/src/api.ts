@@ -77,6 +77,7 @@ export interface ChatStreamCallbacks {
 
 export interface TTSRequest {
   text: string;
+  model_id?: string;
   speaker?: string;
   voice_description?: string;
   reference_audio?: string;

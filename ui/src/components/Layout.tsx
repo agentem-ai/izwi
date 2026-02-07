@@ -7,6 +7,7 @@ import {
   Wand2,
   FileText,
   MessageSquare,
+  AudioLines,
   Box,
   Github,
   Waves,
@@ -65,6 +66,13 @@ const NAV_ITEMS: NavItem[] = [
     description: "Text-to-text conversation",
     icon: MessageSquare,
     path: "/chat",
+  },
+  {
+    id: "voice",
+    label: "Voice",
+    description: "Realtime voice assistant",
+    icon: AudioLines,
+    path: "/voice",
   },
 ];
 

@@ -4,3 +4,4 @@ export { VoiceDesignPage } from "./VoiceDesignPage";
 export { TranscriptionPage } from "./TranscriptionPage";
 export { MyModelsPage } from "./MyModelsPage";
 export { ChatPage } from "./ChatPage";
+export { VoicePage } from "./VoicePage";
