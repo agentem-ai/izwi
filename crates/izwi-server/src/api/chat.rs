@@ -61,7 +61,7 @@ struct ChatStreamEvent {
 }
 
 fn max_new_tokens(value: Option<usize>) -> usize {
-    value.unwrap_or(512).clamp(1, 2048)
+    value.unwrap_or(1536).clamp(1, 4096)
 }
 
 fn parse_chat_model(model_id: Option<&str>) -> Result<ModelVariant, ApiError> {

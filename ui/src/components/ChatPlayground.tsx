@@ -11,7 +11,8 @@ interface ChatPlaygroundProps {
 
 const DEFAULT_SYSTEM_PROMPT: ChatMessage = {
   role: "system",
-  content: "You are a helpful assistant.",
+  content:
+    "You are a helpful assistant. Keep internal reasoning concise. If you use <think>, always close it with </think> and then provide a final answer.",
 };
 
 export function ChatPlayground({
@@ -91,7 +92,6 @@ export function ChatPlayground({
       {
         model_id: selectedModel,
         messages: requestMessages,
-        max_tokens: 512,
       },
       {
         onDelta: (delta) => {
