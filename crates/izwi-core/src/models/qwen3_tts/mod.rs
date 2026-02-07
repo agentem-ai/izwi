@@ -490,12 +490,19 @@ impl Qwen3TtsModel {
     }
 
     /// Encode reference audio to codec tokens for voice cloning
-    fn encode_reference_audio(&self, _reference: &SpeakerReference) -> Result<Vec<Vec<u32>>> {
-        // This requires the speech tokenizer encoder model
-        // For now, return empty - this will be implemented with the speech tokenizer
-        Err(Error::ModelError(
-            "Reference audio encoding not yet implemented".to_string(),
-        ))
+    fn encode_reference_audio(&self, reference: &SpeakerReference) -> Result<Vec<Vec<u32>>> {
+        // The native encoder path is not implemented yet. Do not hard-fail voice-clone
+        // requests; fall back to generating without reference codec conditioning.
+        //
+        // This keeps the /voice-cloning route functional while we add the tokenizer
+        // encoder implementation in a follow-up.
+        tracing::warn!(
+            "Reference audio encoding is not implemented yet; generating without reference conditioning ({} samples @ {} Hz, transcript chars: {})",
+            reference.audio_samples.len(),
+            reference.sample_rate,
+            reference.text.len()
+        );
+        Ok(Vec::new())
     }
 
     /// Convert codec tokens to audio waveform

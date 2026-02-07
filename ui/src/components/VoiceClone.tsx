@@ -8,6 +8,78 @@ interface VoiceCloneProps {
   onClear: () => void;
 }
 
+function downmixToMono(audioBuffer: AudioBuffer): Float32Array {
+  const frameCount = audioBuffer.length;
+  const channelCount = audioBuffer.numberOfChannels;
+  const mono = new Float32Array(frameCount);
+
+  if (channelCount === 1) {
+    mono.set(audioBuffer.getChannelData(0));
+    return mono;
+  }
+
+  for (let channel = 0; channel < channelCount; channel += 1) {
+    const data = audioBuffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i += 1) {
+      mono[i] += data[i] / channelCount;
+    }
+  }
+
+  return mono;
+}
+
+function encodeWavPcm16(samples: Float32Array, sampleRate: number): ArrayBuffer {
+  const bytesPerSample = 2;
+  const dataSize = samples.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  const writeString = (offset: number, value: string) => {
+    for (let i = 0; i < value.length; i += 1) {
+      view.setUint8(offset + i, value.charCodeAt(i));
+    }
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * bytesPerSample, true);
+  view.setUint16(32, bytesPerSample, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[i]));
+    const intSample =
+      sample < 0 ? Math.round(sample * 0x8000) : Math.round(sample * 0x7fff);
+    view.setInt16(offset, intSample, true);
+    offset += bytesPerSample;
+  }
+
+  return buffer;
+}
+
+async function normalizeToWavBlob(inputBlob: Blob): Promise<Blob> {
+  const arrayBuffer = await inputBlob.arrayBuffer();
+  const audioContext = new AudioContext();
+
+  try {
+    const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+    const monoSamples = downmixToMono(decoded);
+    const wavBuffer = encodeWavPcm16(monoSamples, decoded.sampleRate);
+    return new Blob([wavBuffer], { type: "audio/wav" });
+  } finally {
+    void audioContext.close();
+  }
+}
+
 export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
   const [mode, setMode] = useState<"upload" | "record" | null>(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -22,6 +94,27 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const isConfirmingRef = useRef(false);
+
+  const prepareAudioBlob = useCallback(
+    async (inputBlob: Blob, inputMode: "upload" | "record") => {
+      try {
+        const wavBlob = await normalizeToWavBlob(inputBlob);
+        if (audioUrl) {
+          URL.revokeObjectURL(audioUrl);
+        }
+        setAudioBlob(wavBlob);
+        setAudioUrl(URL.createObjectURL(wavBlob));
+        setMode(inputMode);
+        setError(null);
+      } catch (err) {
+        console.error("[VoiceClone] Failed to normalize audio to WAV:", err);
+        setError(
+          "Could not process this audio format. Please upload/record a standard audio file.",
+        );
+      }
+    },
+    [audioUrl],
+  );
 
   // Auto-confirm voice cloning when both audio and transcript are available
   const autoConfirm = useCallback(() => {
@@ -114,11 +207,7 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
       return;
     }
 
-    setError(null);
-    setAudioBlob(file);
-    const url = URL.createObjectURL(file);
-    setAudioUrl(url);
-    setMode("upload");
+    void prepareAudioBlob(file, "upload");
   };
 
   const startRecording = async () => {
@@ -160,9 +249,7 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
 
       mediaRecorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: actualMimeType });
-        setAudioBlob(blob);
-        const url = URL.createObjectURL(blob);
-        setAudioUrl(url);
+        void prepareAudioBlob(blob, "record");
         stream.getTracks().forEach((track) => track.stop());
       };
 

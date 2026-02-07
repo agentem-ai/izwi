@@ -219,8 +219,18 @@ pub fn decode_audio_base64(audio_b64: &str, _sample_rate: u32) -> Result<Vec<f32
     use base64::Engine;
     use std::io::Cursor;
 
+    let payload = if audio_b64.starts_with("data:") {
+        audio_b64
+            .split_once(',')
+            .map(|(_, b64)| b64)
+            .unwrap_or(audio_b64)
+    } else {
+        audio_b64
+    };
+    let normalized: String = payload.chars().filter(|c| !c.is_whitespace()).collect();
+
     let wav_bytes = base64::engine::general_purpose::STANDARD
-        .decode(audio_b64)
+        .decode(normalized.as_bytes())
         .map_err(|e| Error::InferenceError(format!("Failed to decode base64 audio: {}", e)))?;
 
     let cursor = Cursor::new(wav_bytes);

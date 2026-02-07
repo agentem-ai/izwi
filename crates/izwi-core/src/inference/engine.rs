@@ -497,8 +497,15 @@ fn rand_u32() -> u32 {
 
 fn base64_decode(data: &str) -> Result<Vec<u8>> {
     use base64::Engine;
+    let payload = if data.starts_with("data:") {
+        data.split_once(',').map(|(_, b64)| b64).unwrap_or(data)
+    } else {
+        data
+    };
+
+    let normalized: String = payload.chars().filter(|c| !c.is_whitespace()).collect();
     base64::engine::general_purpose::STANDARD
-        .decode(data)
+        .decode(normalized.as_bytes())
         .map_err(|e| Error::InferenceError(format!("Base64 decode error: {}", e)))
 }
 
