@@ -225,21 +225,55 @@ impl Qwen3TtsModel {
         // Encode reference audio to codec tokens
         // This requires the speech tokenizer encoder
         let ref_codec_tokens = self.encode_reference_audio(reference)?;
+        let has_reference_tokens = ref_codec_tokens.iter().any(|group| !group.is_empty());
+
+        // Until the native reference encoder is implemented, avoid the legacy
+        // voice-clone generation branch. It tends to over-generate and produce
+        // robotic output when no conditioning tokens are available.
+        if !has_reference_tokens {
+            let params = TtsGenerationParams::default();
+            let text_ids = self.tokenizer.encode_text(text, language)?;
+            let language_id = language
+                .map(|l| self.tokenizer.get_language_id(l))
+                .unwrap_or_else(|| self.tokenizer.get_language_id("english"));
+            let fallback_speaker_id = self.fallback_speaker_id();
+            tracing::warn!(
+                "Voice cloning reference conditioning unavailable; falling back to unconditioned base generation (speaker_id: {}, language_id: {})",
+                fallback_speaker_id,
+                language_id
+            );
+            let codec_tokens = self.generate_codec_tokens_custom_voice(
+                &text_ids,
+                fallback_speaker_id,
+                language_id,
+                &params,
+            )?;
+            return self.codec_to_audio(&codec_tokens);
+        }
 
         // Build input sequence with reference tokens
         let input_ids =
             self.tokenizer
                 .build_voice_clone_sequence(text, &ref_codec_tokens, language, false)?;
 
+        // Guardrail for the legacy path so failed EOS sampling cannot produce
+        // minute-long audio for short text.
+        let text_ids = self.tokenizer.encode_text(text, language)?;
+        let legacy_max_frames = (text_ids.len().max(1) * 4 + 24).clamp(48usize, 256usize);
+
         // Generate codec tokens
-        let codec_tokens = self.generate_codec_tokens_legacy(&input_ids)?;
+        let codec_tokens = self.generate_codec_tokens_legacy(&input_ids, legacy_max_frames)?;
 
         // Decode to audio
         self.codec_to_audio(&codec_tokens)
     }
 
     /// Legacy codec generation path used by not-yet-updated flows (e.g. voice cloning).
-    fn generate_codec_tokens_legacy(&self, input_ids: &[u32]) -> Result<Vec<Vec<u32>>> {
+    fn generate_codec_tokens_legacy(
+        &self,
+        input_ids: &[u32],
+        max_length: usize,
+    ) -> Result<Vec<Vec<u32>>> {
         let mut talker_cache = TalkerCache::new(self.talker.num_layers());
         let mut predictor_cache = CodePredictorCache::new(self.code_predictor.num_layers());
         let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
@@ -261,7 +295,7 @@ impl Qwen3TtsModel {
         let mut all_code_groups: Vec<Vec<u32>> =
             vec![Vec::new(); self.config.talker_config.num_code_groups];
         let mut pos = input_ids.len();
-        let max_length = 2048; // Maximum audio length in tokens
+        let max_length = max_length.clamp(16, 1024);
         let min_tokens_before_eos = 8usize;
 
         for _step in 0..max_length {
@@ -317,6 +351,28 @@ impl Qwen3TtsModel {
         }
 
         Ok(all_code_groups)
+    }
+
+    fn fallback_speaker_id(&self) -> u32 {
+        const PREFERRED: &[&str] = &[
+            "Vivian",
+            "Serena",
+            "Ryan",
+            "Aiden",
+            "Dylan",
+            "Eric",
+            "Sohee",
+            "Ono_anna",
+            "Uncle_fu",
+        ];
+
+        for candidate in PREFERRED {
+            if let Some(id) = self.tokenizer.get_speaker_id(candidate) {
+                return id;
+            }
+        }
+        // Base checkpoints ship empty `spk_id`; codec PAD is the safest neutral fallback.
+        self.specials.codec_pad_id
     }
 
     /// Official-style CustomVoice generation path:
@@ -496,8 +552,8 @@ impl Qwen3TtsModel {
         //
         // This keeps the /voice-cloning route functional while we add the tokenizer
         // encoder implementation in a follow-up.
-        tracing::warn!(
-            "Reference audio encoding is not implemented yet; generating without reference conditioning ({} samples @ {} Hz, transcript chars: {})",
+        tracing::debug!(
+            "Reference audio encoder is not implemented yet ({} samples @ {} Hz, transcript chars: {})",
             reference.audio_samples.len(),
             reference.sample_rate,
             reference.text.len()
