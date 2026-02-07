@@ -15,6 +15,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { ModelInfo } from "../api";
+import { withQwen3Prefix } from "../utils/modelDisplay";
 import clsx from "clsx";
 
 interface MyModelsPageProps {
@@ -436,7 +437,7 @@ export function MyModelsPage({
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-xl font-semibold text-white">My Models</h1>
+          <h1 className="text-xl font-semibold text-white">Models</h1>
           <p className="text-sm text-gray-500 mt-1">
             Manage your downloaded models
           </p>
@@ -613,6 +614,7 @@ export function MyModelsPage({
           {filteredModels.map((model) => {
             const details = MODEL_DETAILS[model.variant];
             if (!details) return null;
+            const displayName = withQwen3Prefix(details.shortName, model.variant);
 
             const isDownloading = model.status === "downloading";
             const isLoading = model.status === "loading";
@@ -646,7 +648,7 @@ export function MyModelsPage({
                   <div className="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
                     <div className="flex items-center gap-2 min-w-0">
                       <h3 className="text-sm font-medium text-white truncate">
-                        {details.shortName}
+                        {displayName}
                       </h3>
                       <span
                         className={clsx(
