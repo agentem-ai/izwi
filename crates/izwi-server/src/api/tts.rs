@@ -55,6 +55,10 @@ pub struct TTSRequest {
     /// Speed factor
     #[serde(default)]
     pub speed: Option<f32>,
+
+    /// Maximum audio tokens to generate. 0 means auto (model maximum).
+    #[serde(default)]
+    pub max_tokens: Option<usize>,
 }
 
 fn default_format() -> String {
@@ -110,6 +114,9 @@ pub async fn generate(
         }
         if let Some(s) = req.speed {
             gen_config.speed = s;
+        }
+        if let Some(max_tokens) = req.max_tokens {
+            gen_config.max_tokens = max_tokens;
         }
         gen_config.speaker = req.speaker;
 
@@ -211,6 +218,9 @@ pub async fn generate_stream(
     }
     if let Some(s) = req.speed {
         gen_config.speed = s;
+    }
+    if let Some(max_tokens) = req.max_tokens {
+        gen_config.max_tokens = max_tokens;
     }
     gen_config.speaker = req.speaker;
 

@@ -751,19 +751,19 @@ fn load_weights<'a>(
 
 /// GELU activation function
 fn gelu(x: &Tensor) -> Result<Tensor> {
-    let coeff = 0.044715f64;
-    let sqrt_2_over_pi = (2.0f64 / std::f64::consts::PI).sqrt();
+    let coeff = 0.044715f32;
+    let sqrt_2_over_pi = (2.0f32 / std::f32::consts::PI).sqrt();
     let dtype = x.dtype();
-    let x_f64 = x.to_dtype(candle_core::DType::F64)?;
-    let x3 = x_f64.powf(3.0)?;
+    let x_f32 = x.to_dtype(candle_core::DType::F32)?;
+    let x3 = x_f32.powf(3.0)?;
     let coeff_t = Tensor::from_vec(vec![coeff], (1,), x.device())?;
     let x3 = x3.broadcast_mul(&coeff_t)?;
     let sqrt_t = Tensor::from_vec(vec![sqrt_2_over_pi], (1,), x.device())?;
-    let inner = (&x_f64 + x3)?.broadcast_mul(&sqrt_t)?;
+    let inner = (&x_f32 + x3)?.broadcast_mul(&sqrt_t)?;
     let tanh = inner.tanh()?;
-    let one = Tensor::from_vec(vec![1.0f64], (1,), x.device())?;
-    let half = Tensor::from_vec(vec![0.5f64], (1,), x.device())?;
-    let out = x_f64.broadcast_mul(&one.broadcast_add(&tanh)?)?;
+    let one = Tensor::from_vec(vec![1.0f32], (1,), x.device())?;
+    let half = Tensor::from_vec(vec![0.5f32], (1,), x.device())?;
+    let out = x_f32.broadcast_mul(&one.broadcast_add(&tanh)?)?;
     let out = out.broadcast_mul(&half)?;
     out.to_dtype(dtype)
         .map_err(|e| Error::InferenceError(e.to_string()))

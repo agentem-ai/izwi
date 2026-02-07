@@ -249,7 +249,8 @@ impl MimiConv1d {
         if input_len == 0 {
             return 0;
         }
-        let n_frames = ((input_len as f64 - self.effective_kernel as f64 + self.padding_total as f64)
+        let n_frames = ((input_len as f64 - self.effective_kernel as f64
+            + self.padding_total as f64)
             / self.stride as f64
             + 1.0)
             .ceil()
@@ -317,7 +318,12 @@ struct MimiResnetBlock {
 }
 
 impl MimiResnetBlock {
-    fn load(cfg: &EncoderConfig, dim: usize, dilations: (usize, usize), vb: VarBuilder) -> Result<Self> {
+    fn load(
+        cfg: &EncoderConfig,
+        dim: usize,
+        dilations: (usize, usize),
+        vb: VarBuilder,
+    ) -> Result<Self> {
         let hidden = dim / cfg.compress.max(1);
         let pad_mode = PadMode::from_str(&cfg.pad_mode);
         Ok(Self {
@@ -578,18 +584,18 @@ impl EncoderAttention {
         let bsz = x.dim(0)?;
         let seq_len = x.dim(1)?;
 
-        let mut q = self
-            .q_proj
-            .forward(x)?
-            .reshape((bsz, seq_len, self.num_heads, self.head_dim))?;
-        let mut k = self
-            .k_proj
-            .forward(x)?
-            .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
-        let v = self
-            .v_proj
-            .forward(x)?
-            .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
+        let mut q =
+            self.q_proj
+                .forward(x)?
+                .reshape((bsz, seq_len, self.num_heads, self.head_dim))?;
+        let mut k =
+            self.k_proj
+                .forward(x)?
+                .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
+        let v =
+            self.v_proj
+                .forward(x)?
+                .reshape((bsz, seq_len, self.num_kv_heads, self.head_dim))?;
 
         q = self.apply_rope(q)?;
         k = self.apply_rope(k)?;
@@ -1268,7 +1274,8 @@ impl EncoderSplitResidualVectorQuantizer {
     }
 
     fn encode(&self, embeddings: &Tensor, num_quantizers: usize) -> Result<Vec<Vec<u32>>> {
-        if num_quantizers < self.num_semantic_quantizers || num_quantizers > self.max_num_quantizers {
+        if num_quantizers < self.num_semantic_quantizers || num_quantizers > self.max_num_quantizers
+        {
             return Err(Error::InferenceError(format!(
                 "Invalid quantizer count {} (valid range: {}..={})",
                 num_quantizers, self.num_semantic_quantizers, self.max_num_quantizers
@@ -1279,10 +1286,9 @@ impl EncoderSplitResidualVectorQuantizer {
             .semantic
             .encode(embeddings, self.num_semantic_quantizers)?;
         if num_quantizers > self.num_semantic_quantizers {
-            let acoustic = self.acoustic.encode(
-                embeddings,
-                num_quantizers - self.num_semantic_quantizers,
-            )?;
+            let acoustic = self
+                .acoustic
+                .encode(embeddings, num_quantizers - self.num_semantic_quantizers)?;
             codes.extend(acoustic);
         }
         Ok(codes)
@@ -1304,7 +1310,9 @@ impl SpeechTokenizerEncoder {
         let encoder_transformer = EncoderTransformer::load(&config, vb.clone())?;
 
         let downsample = if (config.encodec_frame_rate - config.frame_rate).abs() > f64::EPSILON {
-            let ratio = (config.encodec_frame_rate / config.frame_rate).round().max(1.0) as usize;
+            let ratio = (config.encodec_frame_rate / config.frame_rate)
+                .round()
+                .max(1.0) as usize;
             Some(MimiConv1d::load(
                 config.hidden_size,
                 config.hidden_size,
@@ -1748,7 +1756,11 @@ impl SpeechTokenizerDecoder {
 
         // Clamp to audio range and flatten to mono sample vector.
         let audio = audio.clamp(-1.0f32, 1.0f32)?;
-        audio.squeeze(0)?.squeeze(0)?.to_vec1::<f32>().map_err(Error::from)
+        audio
+            .squeeze(0)?
+            .squeeze(0)?
+            .to_vec1::<f32>()
+            .map_err(Error::from)
     }
 }
 

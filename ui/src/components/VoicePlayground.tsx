@@ -88,6 +88,7 @@ export function VoicePlayground({
 
       const request = {
         text: text.trim(),
+        max_tokens: 0,
         speaker: useVoiceClone ? undefined : speaker,
         reference_audio: useVoiceClone
           ? voiceCloneAudio || undefined
@@ -216,14 +217,7 @@ export function VoicePlayground({
             className="textarea text-sm"
           />
           <div className="absolute bottom-2 right-2">
-            <span
-              className={clsx(
-                "text-xs",
-                text.length > 500 ? "text-red-400" : "text-gray-600",
-              )}
-            >
-              {text.length}
-            </span>
+            <span className="text-xs text-gray-600">{text.length}</span>
           </div>
         </div>
 

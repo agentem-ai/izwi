@@ -56,7 +56,16 @@ impl InferenceEngine {
     /// Create a new inference engine
     pub fn new(config: EngineConfig) -> Result<Self> {
         let model_manager = Arc::new(ModelManager::new(config.clone())?);
-        let device = DeviceSelector::detect()?;
+        let device = if cfg!(target_os = "macos") {
+            let preference = if config.use_metal {
+                Some("metal")
+            } else {
+                Some("cpu")
+            };
+            DeviceSelector::detect_with_preference(preference)?
+        } else {
+            DeviceSelector::detect()?
+        };
         let model_registry = Arc::new(ModelRegistry::new(
             config.models_dir.clone(),
             device.clone(),
