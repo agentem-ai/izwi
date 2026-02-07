@@ -33,16 +33,23 @@ function App() {
   // Use ref to track polling state and active downloads
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const activeDownloadsRef = useRef<Set<string>>(new Set());
+  const activeModelLoadsRef = useRef<Set<string>>(new Set());
   const eventSourcesRef = useRef<Record<string, EventSource>>({});
   const initializedRef = useRef(false);
 
   const loadModels = useCallback(async () => {
     try {
       const response = await api.listModels();
-      setModels(response.models);
+      const mergedModels = response.models.map((model) =>
+        activeModelLoadsRef.current.has(model.variant)
+          ? { ...model, status: "loading" as const }
+          : model,
+      );
+
+      setModels(mergedModels);
 
       // Auto-select first ready model
-      const readyModel = response.models.find((m) => m.status === "ready");
+      const readyModel = mergedModels.find((m) => m.status === "ready");
       if (readyModel && !selectedModel) {
         setSelectedModel(readyModel.variant);
       }
@@ -101,7 +108,7 @@ function App() {
       }
 
       const eventSource = new EventSource(
-        `${api.baseUrl}/models/${variant}/download/progress`,
+        `${api.baseUrl}/admin/models/${variant}/download/progress`,
       );
       eventSourcesRef.current[variant] = eventSource;
 
@@ -228,6 +235,12 @@ function App() {
   };
 
   const handleLoad = async (variant: string) => {
+    if (activeModelLoadsRef.current.has(variant)) {
+      return;
+    }
+
+    activeModelLoadsRef.current.add(variant);
+
     try {
       setModels((prev) =>
         prev.map((m) =>
@@ -236,12 +249,13 @@ function App() {
       );
 
       await api.loadModel(variant);
-      // Refresh models after load completes
-      await loadModels();
       setSelectedModel(variant);
     } catch (err) {
       console.error("Load failed:", err);
       setError("Failed to load model. Please try again.");
+    } finally {
+      activeModelLoadsRef.current.delete(variant);
+      // Refresh models after load completes or fails
       await loadModels();
     }
   };

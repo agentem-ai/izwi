@@ -1,6 +1,6 @@
 # Izwi Audio Inference Architecture
 
-**Version:** 0.2.0  
+**Version:** 0.3.0  
 **Last Updated:** February 2026
 
 ## Overview
@@ -11,12 +11,12 @@ This repository now uses a runtime-centric structure that mirrors patterns used 
 - A **backend routing layer** (`backends/`) that decides execution backend per model.
 - A **model family namespace** (`families/`) for native architecture implementations.
 - A **codec namespace** (`codecs/`) for audio encode/decode surfaces.
-- Backward-compatible facades for existing imports (`inference/`, `model/`, `models/`).
+- A strict canonical module surface with deprecated compatibility shims removed.
 
 This keeps current behavior intact while giving a clean foundation for native MLX execution, new model families, and additional codecs.
 
 ## Design Goals
-1. Preserve all current API behavior and runtime outputs.
+1. Keep runtime functionality while aggressively removing deprecated structure.
 2. Reduce coupling between routing/orchestration and model-specific implementation details.
 3. Centralize model capability metadata and parsing logic.
 4. Make backend expansion (especially MLX) an additive change.
@@ -44,7 +44,6 @@ crates/izwi-core/src/
 │   └── mod.rs                 # family namespace wrappers over native models
 ├── codecs/
 │   └── mod.rs                 # codec namespace wrappers over audio module
-├── inference/                 # compatibility facade to runtime
 ├── model/                     # existing model manager/download implementation
 ├── models/                    # existing native family implementations
 └── engine/                    # existing vLLM-style experimental engine core
@@ -80,13 +79,26 @@ crates/izwi-core/src/
 
 This avoids duplicated parsing logic in each API endpoint.
 
-## Compatibility Guarantees
-The refactor is non-breaking by design:
+## API Surface
 
-- `crate::inference::*` remains available via compatibility re-exports.
-- Existing `InferenceEngine` type name is preserved.
-- Existing `model` and `models` modules remain intact.
-- API endpoint paths and request/response formats remain unchanged.
+### OpenAI-Compatible Runtime Endpoints
+- `POST /v1/audio/speech`
+- `POST /v1/audio/transcriptions`
+- `POST /v1/chat/completions`
+- `GET /v1/models`
+- `GET /v1/models/:model`
+
+### Admin Endpoints (UI/Local Ops)
+- `GET /v1/admin/models`
+- `GET /v1/admin/models/:variant`
+- `POST /v1/admin/models/:variant/download`
+- `GET /v1/admin/models/:variant/download/progress`
+- `POST /v1/admin/models/:variant/download/cancel`
+- `POST /v1/admin/models/:variant/load`
+- `POST /v1/admin/models/:variant/unload`
+- `DELETE /v1/admin/models/:variant`
+
+The previous `/api/v1/tts/*`, `/api/v1/asr/*`, and shimmed compatibility paths were removed.
 
 ## Extension Points
 
@@ -113,8 +125,8 @@ The refactor is non-breaking by design:
 - **Separated orchestration and execution concerns** (runtime vs backend/family).
 - **Centralized model registry/catalog responsibilities**.
 - **Pluggable backend routing path** for hardware/runtime specialization.
-- **Compatibility layer strategy** to avoid migration breaks while evolving internals.
+- **Clean contract strategy** where canonical paths are explicit and deprecated layers are removed.
 
 ## Validation Status
 - Workspace compiles successfully (`cargo check --workspace`).
-- Existing behavior paths are preserved through compatibility facades.
+- Runtime and tests pass without legacy `inference` compatibility shims.

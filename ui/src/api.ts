@@ -1,4 +1,4 @@
-const API_BASE = "/api/v1";
+const API_BASE = "/v1";
 
 // ============================================================================
 // Types
@@ -77,29 +77,27 @@ export interface ChatStreamCallbacks {
 
 export interface TTSRequest {
   text: string;
-  model_id?: string;
+  model_id: string;
   speaker?: string;
   voice_description?: string;
   reference_audio?: string;
   reference_text?: string;
-  // 0 means auto (use model maximum context budget)
   max_tokens?: number;
   format?: "wav" | "raw_f32" | "raw_i16";
   temperature?: number;
   speed?: number;
 }
 
-export interface TTSResponse {
-  request_id: string;
-  audio: string;
-  format: string;
-  sample_rate: number;
-  duration_secs: number;
-  stats: {
-    tokens_generated: number;
-    generation_time_ms: number;
-    rtf: number;
-  };
+export interface TTSGenerationStats {
+  generation_time_ms: number;
+  audio_duration_secs: number;
+  rtf: number;
+  tokens_generated: number;
+}
+
+export interface TTSGenerateResult {
+  audioBlob: Blob;
+  stats: TTSGenerationStats | null;
 }
 
 // ============================================================================
@@ -133,7 +131,6 @@ export interface ASRTranscribeResponse {
   };
 }
 
-// Streaming transcription event types
 export type ASRStreamEvent =
   | { event: "start"; audio_duration_secs: number | null }
   | { event: "partial"; text: string; is_final: boolean }
@@ -158,23 +155,41 @@ export interface ASRStreamCallbacks {
   onDone?: () => void;
 }
 
-export interface TTSGenerationStats {
-  generation_time_ms: number;
-  audio_duration_secs: number;
-  rtf: number;
-  tokens_generated: number;
-}
-
-export interface TTSGenerateResult {
-  audioBlob: Blob;
-  stats: TTSGenerationStats | null;
-}
-
 export interface ASRStatusResponse {
   running: boolean;
   status: string;
   device: string | null;
   cached_models: string[];
+}
+
+interface OpenAiChatCompletion {
+  id: string;
+  model: string;
+  choices: Array<{
+    index: number;
+    message: {
+      role: "assistant" | "system" | "user";
+      content: string;
+    };
+    finish_reason: string;
+  }>;
+  usage?: {
+    completion_tokens?: number;
+  };
+  izwi_generation_time_ms?: number;
+}
+
+interface OpenAiChatChunk {
+  id: string;
+  model: string;
+  choices: Array<{
+    index: number;
+    delta: {
+      role?: "assistant" | "system" | "user";
+      content?: string;
+    };
+    finish_reason: string | null;
+  }>;
 }
 
 class ApiClient {
@@ -203,31 +218,53 @@ class ApiClient {
     return response.json();
   }
 
+  // ========================================================================
+  // Admin Model Management
+  // ========================================================================
+
   async listModels(): Promise<ModelsResponse> {
-    return this.request("/models");
+    return this.request("/admin/models");
   }
 
   async getModelInfo(variant: string): Promise<ModelInfo> {
-    return this.request(`/models/${variant}`);
+    return this.request(`/admin/models/${variant}`);
   }
 
   async downloadModel(
     variant: string,
   ): Promise<{ status: string; message: string }> {
-    return this.request(`/models/${variant}/download`, { method: "POST" });
+    return this.request(`/admin/models/${variant}/download`, { method: "POST" });
   }
 
   async loadModel(
     variant: string,
   ): Promise<{ status: string; message: string }> {
-    return this.request(`/models/${variant}/load`, { method: "POST" });
+    return this.request(`/admin/models/${variant}/load`, { method: "POST" });
   }
 
   async unloadModel(
     variant: string,
   ): Promise<{ status: string; message: string }> {
-    return this.request(`/models/${variant}/unload`, { method: "POST" });
+    return this.request(`/admin/models/${variant}/unload`, { method: "POST" });
   }
+
+  async deleteModel(
+    variant: string,
+  ): Promise<{ status: string; message: string }> {
+    return this.request(`/admin/models/${variant}`, { method: "DELETE" });
+  }
+
+  async cancelDownload(
+    variant: string,
+  ): Promise<{ status: string; message: string }> {
+    return this.request(`/admin/models/${variant}/download/cancel`, {
+      method: "POST",
+    });
+  }
+
+  // ========================================================================
+  // OpenAI-compatible TTS API
+  // ========================================================================
 
   async generateTTS(request: TTSRequest): Promise<Blob> {
     const result = await this.generateTTSWithStats(request);
@@ -235,12 +272,23 @@ class ApiClient {
   }
 
   async generateTTSWithStats(request: TTSRequest): Promise<TTSGenerateResult> {
-    const response = await fetch(`${this.baseUrl}/tts/generate`, {
+    const response = await fetch(`${this.baseUrl}/audio/speech`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ ...request, format: "wav" }),
+      body: JSON.stringify({
+        model: request.model_id,
+        input: request.text,
+        voice: request.speaker,
+        instructions: request.voice_description,
+        reference_audio: request.reference_audio,
+        reference_text: request.reference_text,
+        max_tokens: request.max_tokens,
+        temperature: request.temperature,
+        speed: request.speed,
+        response_format: "wav",
+      }),
     });
 
     if (!response.ok) {
@@ -250,7 +298,6 @@ class ApiClient {
       throw new Error(error.error?.message || "TTS generation failed");
     }
 
-    // Extract timing stats from headers
     const generationTimeMs = response.headers.get("X-Generation-Time-Ms");
     const audioDurationSecs = response.headers.get("X-Audio-Duration-Secs");
     const rtf = response.headers.get("X-RTF");
@@ -267,17 +314,28 @@ class ApiClient {
         : null;
 
     const audioBlob = await response.blob();
-
     return { audioBlob, stats };
   }
 
   async generateTTSStream(request: TTSRequest): Promise<Response> {
-    const response = await fetch(`${this.baseUrl}/tts/stream`, {
+    const response = await fetch(`${this.baseUrl}/audio/speech`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(request),
+      body: JSON.stringify({
+        model: request.model_id,
+        input: request.text,
+        voice: request.speaker,
+        instructions: request.voice_description,
+        reference_audio: request.reference_audio,
+        reference_text: request.reference_text,
+        max_tokens: request.max_tokens,
+        temperature: request.temperature,
+        speed: request.speed,
+        response_format: "wav",
+        stream: true,
+      }),
     });
 
     if (!response.ok) {
@@ -290,114 +348,61 @@ class ApiClient {
     return response;
   }
 
+  // ========================================================================
+  // OpenAI-compatible ASR API
+  // ========================================================================
+
   async asrStatus(): Promise<ASRStatusResponse> {
-    return this.request("/asr/status");
+    // Legacy method retained for UI compatibility.
+    return {
+      running: false,
+      status: "unknown",
+      device: null,
+      cached_models: [],
+    };
   }
 
   async asrTranscribe(
     request: ASRTranscribeRequest,
   ): Promise<ASRTranscribeResponse> {
-    return this.request("/asr/transcribe", {
+    const response = await fetch(`${this.baseUrl}/audio/transcriptions`, {
       method: "POST",
-      body: JSON.stringify(request),
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        audio_base64: request.audio_base64,
+        model: request.model_id,
+        language: request.language,
+        response_format: "verbose_json",
+      }),
     });
-  }
 
-  async chatCompletions(
-    request: ChatCompletionRequest,
-  ): Promise<ChatCompletionResponse> {
-    return this.request("/chat/completions", {
-      method: "POST",
-      body: JSON.stringify(request),
-    });
-  }
+    if (!response.ok) {
+      const error = await response
+        .json()
+        .catch(() => ({ error: { message: "Transcription failed" } }));
+      throw new Error(error.error?.message || "Transcription failed");
+    }
 
-  chatCompletionsStream(
-    request: ChatCompletionRequest,
-    callbacks: ChatStreamCallbacks,
-  ): AbortController {
-    const abortController = new AbortController();
+    const payload = await response.json();
+    const transcription = payload.text ?? "";
 
-    const startStream = async () => {
-      try {
-        const response = await fetch(`${this.baseUrl}/chat/completions/stream`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(request),
-          signal: abortController.signal,
-        });
-
-        if (!response.ok) {
-          const error = await response
-            .json()
-            .catch(() => ({ error: { message: "Chat streaming failed" } }));
-          callbacks.onError?.(error.error?.message || "Chat streaming failed");
-          return;
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) {
-          callbacks.onError?.("No response body");
-          return;
-        }
-
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-
-          for (const line of lines) {
-            if (!line.startsWith("data:")) continue;
-            const data = line.slice(5).trim();
-            if (!data) continue;
-
-            try {
-              const event = JSON.parse(data) as ChatStreamEvent;
-              switch (event.event) {
-                case "start":
-                  callbacks.onStart?.(event.model_id);
-                  break;
-                case "delta":
-                  callbacks.onDelta?.(event.delta);
-                  break;
-                case "done":
-                  callbacks.onDone?.(event.message, event.stats);
-                  return;
-                case "error":
-                  callbacks.onError?.(event.error);
-                  return;
-              }
-            } catch {
-              // Skip malformed SSE payloads.
+    return {
+      transcription,
+      language: payload.language ?? null,
+      stats:
+        typeof payload.processing_time_ms === "number"
+          ? {
+              processing_time_ms: payload.processing_time_ms,
+              audio_duration_secs:
+                typeof payload.duration === "number" ? payload.duration : null,
+              rtf: typeof payload.rtf === "number" ? payload.rtf : null,
             }
-          }
-        }
-      } catch (error) {
-        if ((error as Error).name !== "AbortError") {
-          callbacks.onError?.(
-            error instanceof Error ? error.message : "Chat stream error",
-          );
-        }
-      }
+          : undefined,
     };
-
-    startStream();
-    return abortController;
   }
 
-  /**
-   * Stream transcription with SSE - sends partial results as text is decoded.
-   * Returns an AbortController that can be used to cancel the stream.
-   */
   asrTranscribeStream(
     request: ASRTranscribeRequest,
     callbacks: ASRStreamCallbacks,
@@ -406,12 +411,18 @@ class ApiClient {
 
     const startStream = async () => {
       try {
-        const response = await fetch(`${this.baseUrl}/asr/transcribe/stream`, {
+        const response = await fetch(`${this.baseUrl}/audio/transcriptions`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify(request),
+          body: JSON.stringify({
+            audio_base64: request.audio_base64,
+            model: request.model_id,
+            language: request.language,
+            response_format: "json",
+            stream: true,
+          }),
           signal: abortController.signal,
         });
 
@@ -442,42 +453,39 @@ class ApiClient {
 
           buffer += decoder.decode(value, { stream: true });
 
-          // Parse SSE events from buffer
           const lines = buffer.split("\n");
-          buffer = lines.pop() || ""; // Keep incomplete line in buffer
+          buffer = lines.pop() || "";
 
           for (const line of lines) {
-            if (line.startsWith("data:")) {
-              const data = line.slice(5).trim();
-              if (data) {
-                try {
-                  const event = JSON.parse(data) as ASRStreamEvent;
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (!data) continue;
 
-                  switch (event.event) {
-                    case "start":
-                      callbacks.onStart?.(event.audio_duration_secs);
-                      break;
-                    case "partial":
-                      callbacks.onPartial?.(event.text);
-                      break;
-                    case "final":
-                      callbacks.onFinal?.(
-                        event.text,
-                        event.language,
-                        event.audio_duration_secs,
-                      );
-                      break;
-                    case "error":
-                      callbacks.onError?.(event.error);
-                      break;
-                    case "done":
-                      callbacks.onDone?.();
-                      return;
-                  }
-                } catch {
-                  // Skip malformed JSON
-                }
+            try {
+              const event = JSON.parse(data) as ASRStreamEvent;
+              switch (event.event) {
+                case "start":
+                  callbacks.onStart?.(event.audio_duration_secs);
+                  break;
+                case "partial":
+                  callbacks.onPartial?.(event.text);
+                  break;
+                case "final":
+                  callbacks.onFinal?.(
+                    event.text,
+                    event.language,
+                    event.audio_duration_secs,
+                  );
+                  break;
+                case "error":
+                  callbacks.onError?.(event.error);
+                  break;
+                case "done":
+                  callbacks.onDone?.();
+                  return;
               }
+            } catch {
+              // Skip malformed payloads.
             }
           }
         }
@@ -497,50 +505,153 @@ class ApiClient {
     return abortController;
   }
 
-  // ==========================================================================
-  // Unified TTS API
-  // ==========================================================================
+  // ========================================================================
+  // OpenAI-compatible Chat API
+  // ========================================================================
 
-  /**
-   * Unified TTS endpoint that works with any TTS model.
-   * Automatically routes to the correct backend based on input.
-   */
+  async chatCompletions(
+    request: ChatCompletionRequest,
+  ): Promise<ChatCompletionResponse> {
+    const response = await this.request<OpenAiChatCompletion>(
+      "/chat/completions",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          model: request.model_id ?? "Qwen3-0.6B-4bit",
+          messages: request.messages,
+          max_tokens: request.max_tokens,
+          stream: false,
+        }),
+      },
+    );
+
+    const firstChoice = response.choices[0];
+    if (!firstChoice) {
+      throw new Error("Missing assistant response");
+    }
+
+    return {
+      model_id: response.model,
+      message: {
+        role: firstChoice.message.role,
+        content: firstChoice.message.content,
+      },
+      stats: {
+        tokens_generated: response.usage?.completion_tokens ?? 0,
+        generation_time_ms: response.izwi_generation_time_ms ?? 0,
+      },
+    };
+  }
+
+  chatCompletionsStream(
+    request: ChatCompletionRequest,
+    callbacks: ChatStreamCallbacks,
+  ): AbortController {
+    const abortController = new AbortController();
+
+    const startStream = async () => {
+      try {
+        const response = await fetch(`${this.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: request.model_id ?? "Qwen3-0.6B-4bit",
+            messages: request.messages,
+            max_tokens: request.max_tokens,
+            stream: true,
+          }),
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) {
+          const error = await response
+            .json()
+            .catch(() => ({ error: { message: "Chat streaming failed" } }));
+          callbacks.onError?.(error.error?.message || "Chat streaming failed");
+          return;
+        }
+
+        callbacks.onStart?.(request.model_id ?? "Qwen3-0.6B-4bit");
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          callbacks.onError?.("No response body");
+          return;
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let fullText = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (!data) continue;
+
+            if (data === "[DONE]") {
+              callbacks.onDone?.(fullText, {
+                tokens_generated: Math.max(1, Math.floor(fullText.length / 4)),
+                generation_time_ms: 0,
+              });
+              return;
+            }
+
+            try {
+              const payload = JSON.parse(data) as OpenAiChatChunk;
+              const choice = payload.choices?.[0];
+              const delta = choice?.delta?.content;
+              if (delta) {
+                fullText += delta;
+                callbacks.onDelta?.(delta);
+              }
+            } catch {
+              // Skip malformed SSE payloads.
+            }
+          }
+        }
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") {
+          callbacks.onError?.(
+            error instanceof Error ? error.message : "Chat stream error",
+          );
+        }
+      }
+    };
+
+    startStream();
+    return abortController;
+  }
+
+  // ========================================================================
+  // Convenience aliases
+  // ========================================================================
+
   async synthesize(request: TTSRequest): Promise<Blob> {
     return this.generateTTS(request);
   }
 
-  // ==========================================================================
-  // Unified STT API
-  // ==========================================================================
-
-  /**
-   * Unified STT endpoint that works with any ASR model.
-   * Automatically routes to the correct backend based on model.
-   */
   async transcribe(request: STTRequest): Promise<STTResponse> {
-    return this.asrTranscribe({
+    const result = await this.asrTranscribe({
       audio_base64: request.audio_base64,
       model_id: request.model_id,
       language: request.language,
     });
-  }
 
-  // ==========================================================================
-  // Delete Model
-  // ==========================================================================
-
-  async deleteModel(
-    variant: string,
-  ): Promise<{ status: string; message: string }> {
-    return this.request(`/models/${variant}`, { method: "DELETE" });
-  }
-
-  async cancelDownload(
-    variant: string,
-  ): Promise<{ status: string; message: string }> {
-    return this.request(`/models/${variant}/download/cancel`, {
-      method: "POST",
-    });
+    return {
+      transcription: result.transcription,
+      language: result.language,
+    };
   }
 }
 

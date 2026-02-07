@@ -41,7 +41,13 @@ impl IntoResponse for ApiError {
         let body = Json(json!({
             "error": {
                 "message": self.message,
-                "code": self.status.as_u16()
+                "type": match self.status {
+                    StatusCode::BAD_REQUEST => "invalid_request_error",
+                    StatusCode::NOT_FOUND => "not_found_error",
+                    _ => "server_error",
+                },
+                "param": null,
+                "code": self.status.as_str()
             }
         }));
         (self.status, body).into_response()

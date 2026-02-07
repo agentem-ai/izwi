@@ -58,7 +58,7 @@ impl Default for TtsGenerationParams {
 
 impl TtsGenerationParams {
     /// Convert external generation config to TTS sampling params.
-    pub fn from_generation_config(cfg: &crate::inference::GenerationConfig) -> Self {
+    pub fn from_generation_config(cfg: &crate::runtime::GenerationConfig) -> Self {
         Self {
             temperature: cfg.temperature.max(0.0),
             top_p: cfg.top_p.clamp(0.0, 1.0),
@@ -246,6 +246,25 @@ impl Qwen3TtsModel {
             self.generate_codec_tokens_legacy(&input_ids, params.max_frames, &params)?;
 
         // Decode to audio
+        self.codec_to_audio(&codec_tokens)
+    }
+
+    /// Generate speech without requiring a preset speaker table.
+    ///
+    /// This path is used for base checkpoints that do not ship `spk_id`
+    /// mappings in config, while still supporting plain text synthesis.
+    pub fn generate_with_text_params(
+        &self,
+        text: &str,
+        language: Option<&str>,
+        _instruct: Option<&str>,
+        params: &TtsGenerationParams,
+    ) -> Result<Vec<f32>> {
+        let input_ids = self
+            .tokenizer
+            .build_input_sequence(text, None, language, false)?;
+        let codec_tokens =
+            self.generate_codec_tokens_legacy(&input_ids, params.max_frames, params)?;
         self.codec_to_audio(&codec_tokens)
     }
 

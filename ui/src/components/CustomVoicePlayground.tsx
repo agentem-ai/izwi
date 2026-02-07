@@ -62,6 +62,7 @@ export function CustomVoicePlayground({
 
       const result = await api.generateTTSWithStats({
         text: text.trim(),
+        model_id: selectedModel,
         max_tokens: 0,
         speaker: speaker,
         voice_description: instruct.trim() || undefined,
