@@ -255,8 +255,16 @@ impl ModelDownloader {
             let has_config = path.join("config.json").exists();
             let has_vocab = path.join("vocab.json").exists();
             let has_chat_template = path.join("chat_template.json").exists();
-            let has_model = path.join("model.safetensors").exists()
-                || path.join("model-00001-of-00002.safetensors").exists();
+            // mlx-community quantized models use model.safetensors + model.safetensors.index.json
+            // Original models: 0.6B has single file, 1.7B has sharded weights
+            let has_model = if variant.is_quantized() {
+                path.join("model.safetensors").exists()
+                    && path.join("model.safetensors.index.json").exists()
+            } else if matches!(variant, ModelVariant::Qwen3Asr06B) {
+                path.join("model.safetensors").exists()
+            } else {
+                path.join("model-00001-of-00002.safetensors").exists()
+            };
             return has_config && has_vocab && has_chat_template && has_model;
         }
 
@@ -607,8 +615,12 @@ impl ModelDownloader {
                 "tokenizer_config.json".to_string(),
                 "vocab.json".to_string(),
             ];
-            // 0.6B has single model file, 1.7B has sharded weights
-            if matches!(variant, ModelVariant::Qwen3Asr06B) {
+            // mlx-community quantized models use model.safetensors + model.safetensors.index.json
+            // Original models: 0.6B has single file, 1.7B has sharded weights
+            if variant.is_quantized() {
+                files.push("model.safetensors".to_string());
+                files.push("model.safetensors.index.json".to_string());
+            } else if matches!(variant, ModelVariant::Qwen3Asr06B) {
                 files.push("model.safetensors".to_string());
             } else {
                 files.extend([
@@ -661,8 +673,12 @@ impl ModelDownloader {
                 "merges.txt".to_string(),
                 "preprocessor_config.json".to_string(),
             ]);
-            // All Qwen3-TTS models (0.6B and 1.7B) use single model.safetensors file
+            // All Qwen3-TTS models use single model.safetensors file
             files.push("model.safetensors".to_string());
+            // mlx-community quantized TTS models also have model.safetensors.index.json
+            if variant.is_quantized() {
+                files.push("model.safetensors.index.json".to_string());
+            }
             // Speech tokenizer files (audio codec for decoding)
             files.extend([
                 "speech_tokenizer/config.json".to_string(),

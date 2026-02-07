@@ -46,46 +46,127 @@ const MODEL_DETAILS: Record<
     size: string;
   }
 > = {
+  // TTS 0.6B Base models
   "Qwen3-TTS-12Hz-0.6B-Base": {
     shortName: "0.6B Base",
     fullName: "Qwen3-TTS 12Hz 0.6B Base",
     description: "Voice cloning with reference audio samples",
     category: "tts",
     capabilities: ["Voice Cloning"],
-    size: "1.2 GB",
+    size: "2.3 GB",
   },
+  "Qwen3-TTS-12Hz-0.6B-Base-4bit": {
+    shortName: "0.6B Base 4-bit",
+    fullName: "Qwen3-TTS 12Hz 0.6B Base (MLX 4-bit)",
+    description:
+      "Quantized base model for lower VRAM without losing cloning support",
+    category: "tts",
+    capabilities: ["Voice Cloning", "4-bit"],
+    size: "1.6 GB",
+  },
+  "Qwen3-TTS-12Hz-0.6B-Base-8bit": {
+    shortName: "0.6B Base 8-bit",
+    fullName: "Qwen3-TTS 12Hz 0.6B Base (MLX 8-bit)",
+    description:
+      "8-bit MLX weights for better quality while staying memory friendly",
+    category: "tts",
+    capabilities: ["Voice Cloning", "8-bit"],
+    size: "1.9 GB",
+  },
+  "Qwen3-TTS-12Hz-0.6B-Base-bf16": {
+    shortName: "0.6B Base BF16",
+    fullName: "Qwen3-TTS 12Hz 0.6B Base (MLX bf16)",
+    description: "BF16 MLX weights for highest fidelity base voices",
+    category: "tts",
+    capabilities: ["Voice Cloning", "BF16"],
+    size: "2.3 GB",
+  },
+  // TTS 0.6B CustomVoice models
   "Qwen3-TTS-12Hz-0.6B-CustomVoice": {
     shortName: "0.6B CustomVoice",
     fullName: "Qwen3-TTS 12Hz 0.6B CustomVoice",
     description: "Pre-trained with 9 built-in voice profiles",
     category: "tts",
     capabilities: ["Text to Speech"],
-    size: "1.2 GB",
+    size: "2.3 GB",
   },
+  "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit": {
+    shortName: "0.6B Custom 4-bit",
+    fullName: "Qwen3-TTS 12Hz 0.6B CustomVoice (MLX 4-bit)",
+    description: "Quantized CustomVoice for laptops with tight memory",
+    category: "tts",
+    capabilities: ["Text to Speech", "4-bit"],
+    size: "1.6 GB",
+  },
+  "Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit": {
+    shortName: "0.6B Custom 8-bit",
+    fullName: "Qwen3-TTS 12Hz 0.6B CustomVoice (MLX 8-bit)",
+    description:
+      "Balanced 8-bit CustomVoice for better quality with reduced VRAM",
+    category: "tts",
+    capabilities: ["Text to Speech", "8-bit"],
+    size: "1.8 GB",
+  },
+  "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16": {
+    shortName: "0.6B Custom BF16",
+    fullName: "Qwen3-TTS 12Hz 0.6B CustomVoice (MLX bf16)",
+    description: "BF16 precision for premium CustomVoice rendering",
+    category: "tts",
+    capabilities: ["Text to Speech", "BF16"],
+    size: "2.3 GB",
+  },
+  // TTS 1.7B Base models
   "Qwen3-TTS-12Hz-1.7B-Base": {
     shortName: "1.7B Base",
     fullName: "Qwen3-TTS 12Hz 1.7B Base",
     description: "Higher quality voice cloning capabilities",
     category: "tts",
     capabilities: ["Voice Cloning"],
-    size: "3.4 GB",
+    size: "4.2 GB",
   },
+  // TTS 1.7B CustomVoice
   "Qwen3-TTS-12Hz-1.7B-CustomVoice": {
     shortName: "1.7B CustomVoice",
     fullName: "Qwen3-TTS 12Hz 1.7B CustomVoice",
     description: "Premium quality with 9 built-in voices",
     category: "tts",
     capabilities: ["Text to Speech"],
-    size: "3.4 GB",
+    size: "4.2 GB",
   },
+  // TTS 1.7B VoiceDesign models
   "Qwen3-TTS-12Hz-1.7B-VoiceDesign": {
     shortName: "1.7B VoiceDesign",
     fullName: "Qwen3-TTS 12Hz 1.7B VoiceDesign",
     description: "Generate voices from text descriptions",
     category: "tts",
     capabilities: ["Voice Design"],
-    size: "3.4 GB",
+    size: "4.2 GB",
   },
+  "Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit": {
+    shortName: "1.7B Design 4-bit",
+    fullName: "Qwen3-TTS 12Hz 1.7B VoiceDesign (MLX 4-bit)",
+    description: "Quantized VoiceDesign for creative voices on 16GB devices",
+    category: "tts",
+    capabilities: ["Voice Design", "4-bit"],
+    size: "2.2 GB",
+  },
+  "Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit": {
+    shortName: "1.7B Design 8-bit",
+    fullName: "Qwen3-TTS 12Hz 1.7B VoiceDesign (MLX 8-bit)",
+    description: "8-bit VoiceDesign balancing VRAM usage and quality",
+    category: "tts",
+    capabilities: ["Voice Design", "8-bit"],
+    size: "2.9 GB",
+  },
+  "Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16": {
+    shortName: "1.7B Design BF16",
+    fullName: "Qwen3-TTS 12Hz 1.7B VoiceDesign (MLX bf16)",
+    description: "BF16 VoiceDesign with best timbre quality",
+    category: "tts",
+    capabilities: ["Voice Design", "BF16"],
+    size: "4.2 GB",
+  },
+  // LFM2 Audio
   "LFM2-Audio-1.5B": {
     shortName: "LFM2 Audio 1.5B",
     fullName: "LFM2-Audio 1.5B by Liquid AI",
@@ -94,29 +175,80 @@ const MODEL_DETAILS: Record<
     capabilities: ["TTS", "ASR", "Audio Chat"],
     size: "3.0 GB",
   },
+  // ASR 0.6B models
   "Qwen3-ASR-0.6B": {
     shortName: "ASR 0.6B",
     fullName: "Qwen3-ASR 0.6B",
     description: "Fast speech-to-text, 52 languages",
     category: "asr",
     capabilities: ["Transcription"],
-    size: "1.9 GB",
+    size: "1.8 GB",
   },
+  "Qwen3-ASR-0.6B-4bit": {
+    shortName: "ASR 0.6B 4-bit",
+    fullName: "Qwen3-ASR 0.6B (MLX 4-bit)",
+    description: "Lightweight ASR for real-time transcription on smaller GPUs",
+    category: "asr",
+    capabilities: ["Transcription", "4-bit"],
+    size: "0.7 GB",
+  },
+  "Qwen3-ASR-0.6B-8bit": {
+    shortName: "ASR 0.6B 8-bit",
+    fullName: "Qwen3-ASR 0.6B (MLX 8-bit)",
+    description: "8-bit ASR with higher accuracy and modest footprint",
+    category: "asr",
+    capabilities: ["Transcription", "8-bit"],
+    size: "0.9 GB",
+  },
+  "Qwen3-ASR-0.6B-bf16": {
+    shortName: "ASR 0.6B BF16",
+    fullName: "Qwen3-ASR 0.6B (MLX bf16)",
+    description: "BF16 precision ASR for top accuracy",
+    category: "asr",
+    capabilities: ["Transcription", "BF16"],
+    size: "1.5 GB",
+  },
+  // ASR 1.7B models
   "Qwen3-ASR-1.7B": {
     shortName: "ASR 1.7B",
     fullName: "Qwen3-ASR 1.7B",
     description: "High-quality speech-to-text, 52 languages",
     category: "asr",
     capabilities: ["Transcription"],
-    size: "4.7 GB",
+    size: "4.4 GB",
   },
+  "Qwen3-ASR-1.7B-4bit": {
+    shortName: "ASR 1.7B 4-bit",
+    fullName: "Qwen3-ASR 1.7B (MLX 4-bit)",
+    description: "Quantized 1.7B ASR for RTX 4090 / M3 workloads",
+    category: "asr",
+    capabilities: ["Transcription", "4-bit"],
+    size: "1.5 GB",
+  },
+  "Qwen3-ASR-1.7B-8bit": {
+    shortName: "ASR 1.7B 8-bit",
+    fullName: "Qwen3-ASR 1.7B (MLX 8-bit)",
+    description: "8-bit ASR for high fidelity transcripts on Apple Silicon",
+    category: "asr",
+    capabilities: ["Transcription", "8-bit"],
+    size: "2.3 GB",
+  },
+  "Qwen3-ASR-1.7B-bf16": {
+    shortName: "ASR 1.7B BF16",
+    fullName: "Qwen3-ASR 1.7B (MLX bf16)",
+    description: "BF16 ASR providing maximum quality and accuracy",
+    category: "asr",
+    capabilities: ["Transcription", "BF16"],
+    size: "3.8 GB",
+  },
+  // Voxtral
   "Voxtral-Mini-4B-Realtime-2602": {
     shortName: "Voxtral 4B",
     fullName: "Voxtral Mini 4B Realtime",
     description: "Realtime streaming ASR from Mistral AI",
     category: "asr",
     capabilities: ["Transcription", "Realtime"],
-    size: "~8 GB",
+    size: "8.0 GB",
   },
 };
 

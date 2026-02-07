@@ -9,9 +9,27 @@ pub enum ModelVariant {
     /// 0.6B parameter base model
     #[serde(rename = "Qwen3-TTS-12Hz-0.6B-Base")]
     Qwen3Tts12Hz06BBase,
+    /// 0.6B parameter base model (MLX 4-bit)
+    #[serde(rename = "Qwen3-TTS-12Hz-0.6B-Base-4bit")]
+    Qwen3Tts12Hz06BBase4Bit,
+    /// 0.6B parameter base model (MLX 8-bit)
+    #[serde(rename = "Qwen3-TTS-12Hz-0.6B-Base-8bit")]
+    Qwen3Tts12Hz06BBase8Bit,
+    /// 0.6B parameter base model (MLX bf16)
+    #[serde(rename = "Qwen3-TTS-12Hz-0.6B-Base-bf16")]
+    Qwen3Tts12Hz06BBaseBf16,
     /// 0.6B parameter custom voice model
     #[serde(rename = "Qwen3-TTS-12Hz-0.6B-CustomVoice")]
     Qwen3Tts12Hz06BCustomVoice,
+    /// 0.6B parameter custom voice model (MLX 4-bit)
+    #[serde(rename = "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit")]
+    Qwen3Tts12Hz06BCustomVoice4Bit,
+    /// 0.6B parameter custom voice model (MLX 8-bit)
+    #[serde(rename = "Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")]
+    Qwen3Tts12Hz06BCustomVoice8Bit,
+    /// 0.6B parameter custom voice model (MLX bf16)
+    #[serde(rename = "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16")]
+    Qwen3Tts12Hz06BCustomVoiceBf16,
     /// 1.7B parameter base model
     #[serde(rename = "Qwen3-TTS-12Hz-1.7B-Base")]
     Qwen3Tts12Hz17BBase,
@@ -21,6 +39,15 @@ pub enum ModelVariant {
     /// 1.7B parameter voice design model
     #[serde(rename = "Qwen3-TTS-12Hz-1.7B-VoiceDesign")]
     Qwen3Tts12Hz17BVoiceDesign,
+    /// 1.7B parameter voice design model (MLX 4-bit)
+    #[serde(rename = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit")]
+    Qwen3Tts12Hz17BVoiceDesign4Bit,
+    /// 1.7B parameter voice design model (MLX 8-bit)
+    #[serde(rename = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit")]
+    Qwen3Tts12Hz17BVoiceDesign8Bit,
+    /// 1.7B parameter voice design model (MLX bf16)
+    #[serde(rename = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16")]
+    Qwen3Tts12Hz17BVoiceDesignBf16,
     /// Tokenizer for 12Hz codec
     #[serde(rename = "Qwen3-TTS-Tokenizer-12Hz")]
     Qwen3TtsTokenizer12Hz,
@@ -30,9 +57,27 @@ pub enum ModelVariant {
     /// Qwen3-ASR 0.6B model
     #[serde(rename = "Qwen3-ASR-0.6B")]
     Qwen3Asr06B,
+    /// Qwen3-ASR 0.6B model (MLX 4-bit)
+    #[serde(rename = "Qwen3-ASR-0.6B-4bit")]
+    Qwen3Asr06B4Bit,
+    /// Qwen3-ASR 0.6B model (MLX 8-bit)
+    #[serde(rename = "Qwen3-ASR-0.6B-8bit")]
+    Qwen3Asr06B8Bit,
+    /// Qwen3-ASR 0.6B model (MLX bf16)
+    #[serde(rename = "Qwen3-ASR-0.6B-bf16")]
+    Qwen3Asr06BBf16,
     /// Qwen3-ASR 1.7B model
     #[serde(rename = "Qwen3-ASR-1.7B")]
     Qwen3Asr17B,
+    /// Qwen3-ASR 1.7B model (MLX 4-bit)
+    #[serde(rename = "Qwen3-ASR-1.7B-4bit")]
+    Qwen3Asr17B4Bit,
+    /// Qwen3-ASR 1.7B model (MLX 8-bit)
+    #[serde(rename = "Qwen3-ASR-1.7B-8bit")]
+    Qwen3Asr17B8Bit,
+    /// Qwen3-ASR 1.7B model (MLX bf16)
+    #[serde(rename = "Qwen3-ASR-1.7B-bf16")]
+    Qwen3Asr17BBf16,
     /// Qwen3-ForcedAligner 0.6B model
     #[serde(rename = "Qwen3-ForcedAligner-0.6B")]
     Qwen3ForcedAligner06B,
@@ -46,14 +91,41 @@ impl ModelVariant {
     pub fn repo_id(&self) -> &'static str {
         match self {
             Self::Qwen3Tts12Hz06BBase => "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            Self::Qwen3Tts12Hz06BBase4Bit => "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit",
+            Self::Qwen3Tts12Hz06BBase8Bit => "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit",
+            Self::Qwen3Tts12Hz06BBaseBf16 => "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
             Self::Qwen3Tts12Hz06BCustomVoice => "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+            Self::Qwen3Tts12Hz06BCustomVoice4Bit => {
+                "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit"
+            }
+            Self::Qwen3Tts12Hz06BCustomVoice8Bit => {
+                "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit"
+            }
+            Self::Qwen3Tts12Hz06BCustomVoiceBf16 => {
+                "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+            }
             Self::Qwen3Tts12Hz17BBase => "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
             Self::Qwen3Tts12Hz17BCustomVoice => "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
             Self::Qwen3Tts12Hz17BVoiceDesign => "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+            Self::Qwen3Tts12Hz17BVoiceDesign4Bit => {
+                "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit"
+            }
+            Self::Qwen3Tts12Hz17BVoiceDesign8Bit => {
+                "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit"
+            }
+            Self::Qwen3Tts12Hz17BVoiceDesignBf16 => {
+                "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16"
+            }
             Self::Qwen3TtsTokenizer12Hz => "Qwen/Qwen3-TTS-Tokenizer-12Hz",
             Self::Lfm2Audio15B => "LiquidAI/LFM2-Audio-1.5B",
             Self::Qwen3Asr06B => "Qwen/Qwen3-ASR-0.6B",
+            Self::Qwen3Asr06B4Bit => "mlx-community/Qwen3-ASR-0.6B-4bit",
+            Self::Qwen3Asr06B8Bit => "mlx-community/Qwen3-ASR-0.6B-8bit",
+            Self::Qwen3Asr06BBf16 => "mlx-community/Qwen3-ASR-0.6B-bf16",
             Self::Qwen3Asr17B => "Qwen/Qwen3-ASR-1.7B",
+            Self::Qwen3Asr17B4Bit => "mlx-community/Qwen3-ASR-1.7B-4bit",
+            Self::Qwen3Asr17B8Bit => "mlx-community/Qwen3-ASR-1.7B-8bit",
+            Self::Qwen3Asr17BBf16 => "mlx-community/Qwen3-ASR-1.7B-bf16",
             Self::Qwen3ForcedAligner06B => "Qwen/Qwen3-ForcedAligner-0.6B",
             Self::VoxtralMini4BRealtime2602 => "mistralai/Voxtral-Mini-4B-Realtime-2602",
         }
@@ -63,14 +135,29 @@ impl ModelVariant {
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Qwen3Tts12Hz06BBase => "Qwen3-TTS 0.6B Base",
+            Self::Qwen3Tts12Hz06BBase4Bit => "Qwen3-TTS 0.6B Base 4-bit",
+            Self::Qwen3Tts12Hz06BBase8Bit => "Qwen3-TTS 0.6B Base 8-bit",
+            Self::Qwen3Tts12Hz06BBaseBf16 => "Qwen3-TTS 0.6B Base bf16",
             Self::Qwen3Tts12Hz06BCustomVoice => "Qwen3-TTS 0.6B CustomVoice",
+            Self::Qwen3Tts12Hz06BCustomVoice4Bit => "Qwen3-TTS 0.6B CustomVoice 4-bit",
+            Self::Qwen3Tts12Hz06BCustomVoice8Bit => "Qwen3-TTS 0.6B CustomVoice 8-bit",
+            Self::Qwen3Tts12Hz06BCustomVoiceBf16 => "Qwen3-TTS 0.6B CustomVoice bf16",
             Self::Qwen3Tts12Hz17BBase => "Qwen3-TTS 1.7B Base",
             Self::Qwen3Tts12Hz17BCustomVoice => "Qwen3-TTS 1.7B CustomVoice",
             Self::Qwen3Tts12Hz17BVoiceDesign => "Qwen3-TTS 1.7B VoiceDesign",
+            Self::Qwen3Tts12Hz17BVoiceDesign4Bit => "Qwen3-TTS 1.7B VoiceDesign 4-bit",
+            Self::Qwen3Tts12Hz17BVoiceDesign8Bit => "Qwen3-TTS 1.7B VoiceDesign 8-bit",
+            Self::Qwen3Tts12Hz17BVoiceDesignBf16 => "Qwen3-TTS 1.7B VoiceDesign bf16",
             Self::Qwen3TtsTokenizer12Hz => "Qwen3-TTS Tokenizer 12Hz",
             Self::Lfm2Audio15B => "LFM2-Audio 1.5B",
             Self::Qwen3Asr06B => "Qwen3-ASR 0.6B",
+            Self::Qwen3Asr06B4Bit => "Qwen3-ASR 0.6B 4-bit",
+            Self::Qwen3Asr06B8Bit => "Qwen3-ASR 0.6B 8-bit",
+            Self::Qwen3Asr06BBf16 => "Qwen3-ASR 0.6B bf16",
             Self::Qwen3Asr17B => "Qwen3-ASR 1.7B",
+            Self::Qwen3Asr17B4Bit => "Qwen3-ASR 1.7B 4-bit",
+            Self::Qwen3Asr17B8Bit => "Qwen3-ASR 1.7B 8-bit",
+            Self::Qwen3Asr17BBf16 => "Qwen3-ASR 1.7B bf16",
             Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner 0.6B",
             Self::VoxtralMini4BRealtime2602 => "Voxtral Mini 4B Realtime",
         }
@@ -80,14 +167,29 @@ impl ModelVariant {
     pub fn dir_name(&self) -> &'static str {
         match self {
             Self::Qwen3Tts12Hz06BBase => "Qwen3-TTS-12Hz-0.6B-Base",
+            Self::Qwen3Tts12Hz06BBase4Bit => "Qwen3-TTS-12Hz-0.6B-Base-4bit",
+            Self::Qwen3Tts12Hz06BBase8Bit => "Qwen3-TTS-12Hz-0.6B-Base-8bit",
+            Self::Qwen3Tts12Hz06BBaseBf16 => "Qwen3-TTS-12Hz-0.6B-Base-bf16",
             Self::Qwen3Tts12Hz06BCustomVoice => "Qwen3-TTS-12Hz-0.6B-CustomVoice",
+            Self::Qwen3Tts12Hz06BCustomVoice4Bit => "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
+            Self::Qwen3Tts12Hz06BCustomVoice8Bit => "Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit",
+            Self::Qwen3Tts12Hz06BCustomVoiceBf16 => "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",
             Self::Qwen3Tts12Hz17BBase => "Qwen3-TTS-12Hz-1.7B-Base",
             Self::Qwen3Tts12Hz17BCustomVoice => "Qwen3-TTS-12Hz-1.7B-CustomVoice",
             Self::Qwen3Tts12Hz17BVoiceDesign => "Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+            Self::Qwen3Tts12Hz17BVoiceDesign4Bit => "Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit",
+            Self::Qwen3Tts12Hz17BVoiceDesign8Bit => "Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit",
+            Self::Qwen3Tts12Hz17BVoiceDesignBf16 => "Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
             Self::Qwen3TtsTokenizer12Hz => "Qwen3-TTS-Tokenizer-12Hz",
             Self::Lfm2Audio15B => "LFM2-Audio-1.5B",
             Self::Qwen3Asr06B => "Qwen3-ASR-0.6B",
+            Self::Qwen3Asr06B4Bit => "Qwen3-ASR-0.6B-4bit",
+            Self::Qwen3Asr06B8Bit => "Qwen3-ASR-0.6B-8bit",
+            Self::Qwen3Asr06BBf16 => "Qwen3-ASR-0.6B-bf16",
             Self::Qwen3Asr17B => "Qwen3-ASR-1.7B",
+            Self::Qwen3Asr17B4Bit => "Qwen3-ASR-1.7B-4bit",
+            Self::Qwen3Asr17B8Bit => "Qwen3-ASR-1.7B-8bit",
+            Self::Qwen3Asr17BBf16 => "Qwen3-ASR-1.7B-bf16",
             Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner-0.6B",
             Self::VoxtralMini4BRealtime2602 => "Voxtral-Mini-4B-Realtime-2602",
         }
@@ -96,31 +198,62 @@ impl ModelVariant {
     /// Estimated model size in bytes
     pub fn estimated_size(&self) -> u64 {
         match self {
-            Self::Qwen3Tts12Hz06BBase => 1_200_000_000, // ~1.2GB
-            Self::Qwen3Tts12Hz06BCustomVoice => 1_200_000_000,
-            Self::Qwen3Tts12Hz17BBase => 3_400_000_000, // ~3.4GB
-            Self::Qwen3Tts12Hz17BCustomVoice => 3_400_000_000,
-            Self::Qwen3Tts12Hz17BVoiceDesign => 3_400_000_000,
-            Self::Qwen3TtsTokenizer12Hz => 500_000_000, // ~500MB
-            Self::Lfm2Audio15B => 3_000_000_000,        // ~3GB
-            Self::Qwen3Asr06B => 1_900_000_000,         // ~1.9GB
-            Self::Qwen3Asr17B => 4_700_000_000,         // ~4.7GB
-            Self::Qwen3ForcedAligner06B => 1_850_000_000, // ~1.85GB
-            Self::VoxtralMini4BRealtime2602 => 8_000_000_000, // ~8GB
+            Self::Qwen3Tts12Hz06BBase => 2_516_106_051, // ~2.34 GB
+            Self::Qwen3Tts12Hz06BBase4Bit => 1_711_328_624, // ~1.59 GB
+            Self::Qwen3Tts12Hz06BBase8Bit => 1_991_299_138, // ~1.85 GB
+            Self::Qwen3Tts12Hz06BBaseBf16 => 2_516_143_009, // ~2.34 GB
+            Self::Qwen3Tts12Hz06BCustomVoice => 2_498_388_392, // ~2.33 GB
+            Self::Qwen3Tts12Hz06BCustomVoice4Bit => 1_693_604_738, // ~1.58 GB
+            Self::Qwen3Tts12Hz06BCustomVoice8Bit => 1_973_575_388, // ~1.84 GB
+            Self::Qwen3Tts12Hz06BCustomVoiceBf16 => 2_498_419_405, // ~2.33 GB
+            Self::Qwen3Tts12Hz17BBase => 4_544_229_700, // ~4.23 GB
+            Self::Qwen3Tts12Hz17BCustomVoice => 4_520_218_951, // ~4.21 GB
+            Self::Qwen3Tts12Hz17BVoiceDesign => 4_520_163_832, // ~4.21 GB
+            Self::Qwen3Tts12Hz17BVoiceDesign4Bit => 2_312_058_795, // ~2.15 GB
+            Self::Qwen3Tts12Hz17BVoiceDesign8Bit => 3_080_140_867, // ~2.87 GB
+            Self::Qwen3Tts12Hz17BVoiceDesignBf16 => 4_520_194_992, // ~4.21 GB
+            Self::Qwen3TtsTokenizer12Hz => 682_300_739, // ~0.64 GB
+            Self::Lfm2Audio15B => 3_000_000_000,        // ~2.79 GB (est)
+            Self::Qwen3Asr06B => 1_880_619_678,         // ~1.75 GB
+            Self::Qwen3Asr06B4Bit => 712_781_279,       // ~0.66 GB
+            Self::Qwen3Asr06B8Bit => 1_010_773_761,     // ~0.94 GB
+            Self::Qwen3Asr06BBf16 => 1_569_438_434,     // ~1.46 GB
+            Self::Qwen3Asr17B => 4_703_114_308,         // ~4.38 GB
+            Self::Qwen3Asr17B4Bit => 1_607_633_106,     // ~1.50 GB
+            Self::Qwen3Asr17B8Bit => 2_467_859_030,     // ~2.30 GB
+            Self::Qwen3Asr17BBf16 => 4_080_710_353,     // ~3.80 GB
+            Self::Qwen3ForcedAligner06B => 1_840_072_459, // ~1.71 GB
+            Self::VoxtralMini4BRealtime2602 => 8_000_000_000, // ~7.45 GB (est)
         }
     }
 
     /// Memory required for inference
     pub fn memory_required_gb(&self) -> f32 {
         match self {
-            Self::Qwen3Tts12Hz06BBase | Self::Qwen3Tts12Hz06BCustomVoice => 2.5,
+            Self::Qwen3Tts12Hz06BBase
+            | Self::Qwen3Tts12Hz06BBase4Bit
+            | Self::Qwen3Tts12Hz06BBase8Bit
+            | Self::Qwen3Tts12Hz06BBaseBf16
+            | Self::Qwen3Tts12Hz06BCustomVoice
+            | Self::Qwen3Tts12Hz06BCustomVoice4Bit
+            | Self::Qwen3Tts12Hz06BCustomVoice8Bit
+            | Self::Qwen3Tts12Hz06BCustomVoiceBf16 => 2.5,
             Self::Qwen3Tts12Hz17BBase
             | Self::Qwen3Tts12Hz17BCustomVoice
-            | Self::Qwen3Tts12Hz17BVoiceDesign => 6.0,
+            | Self::Qwen3Tts12Hz17BVoiceDesign
+            | Self::Qwen3Tts12Hz17BVoiceDesign4Bit
+            | Self::Qwen3Tts12Hz17BVoiceDesign8Bit
+            | Self::Qwen3Tts12Hz17BVoiceDesignBf16 => 6.0,
             Self::Qwen3TtsTokenizer12Hz => 1.0,
             Self::Lfm2Audio15B => 6.0,
-            Self::Qwen3Asr06B => 2.5,
-            Self::Qwen3Asr17B => 6.0,
+            Self::Qwen3Asr06B
+            | Self::Qwen3Asr06B4Bit
+            | Self::Qwen3Asr06B8Bit
+            | Self::Qwen3Asr06BBf16 => 2.5,
+            Self::Qwen3Asr17B
+            | Self::Qwen3Asr17B4Bit
+            | Self::Qwen3Asr17B8Bit
+            | Self::Qwen3Asr17BBf16 => 6.0,
             Self::Qwen3ForcedAligner06B => 2.5,
             Self::VoxtralMini4BRealtime2602 => 16.0,
         }
@@ -138,7 +271,17 @@ impl ModelVariant {
 
     /// Whether this is a Qwen3-ASR model
     pub fn is_asr(&self) -> bool {
-        matches!(self, Self::Qwen3Asr06B | Self::Qwen3Asr17B)
+        matches!(
+            self,
+            Self::Qwen3Asr06B
+                | Self::Qwen3Asr06B4Bit
+                | Self::Qwen3Asr06B8Bit
+                | Self::Qwen3Asr06BBf16
+                | Self::Qwen3Asr17B
+                | Self::Qwen3Asr17B4Bit
+                | Self::Qwen3Asr17B8Bit
+                | Self::Qwen3Asr17BBf16
+        )
     }
 
     /// Whether this is a forced aligner model
@@ -149,10 +292,19 @@ impl ModelVariant {
         matches!(
             self,
             Self::Qwen3Tts12Hz06BBase
+                | Self::Qwen3Tts12Hz06BBase4Bit
+                | Self::Qwen3Tts12Hz06BBase8Bit
+                | Self::Qwen3Tts12Hz06BBaseBf16
                 | Self::Qwen3Tts12Hz06BCustomVoice
+                | Self::Qwen3Tts12Hz06BCustomVoice4Bit
+                | Self::Qwen3Tts12Hz06BCustomVoice8Bit
+                | Self::Qwen3Tts12Hz06BCustomVoiceBf16
                 | Self::Qwen3Tts12Hz17BBase
                 | Self::Qwen3Tts12Hz17BCustomVoice
                 | Self::Qwen3Tts12Hz17BVoiceDesign
+                | Self::Qwen3Tts12Hz17BVoiceDesign4Bit
+                | Self::Qwen3Tts12Hz17BVoiceDesign8Bit
+                | Self::Qwen3Tts12Hz17BVoiceDesignBf16
         )
     }
 
@@ -161,18 +313,55 @@ impl ModelVariant {
         matches!(self, Self::VoxtralMini4BRealtime2602)
     }
 
+    /// Whether this is a quantized mlx-community model (uses GGUF format)
+    pub fn is_quantized(&self) -> bool {
+        matches!(
+            self,
+            Self::Qwen3Tts12Hz06BBase4Bit
+                | Self::Qwen3Tts12Hz06BBase8Bit
+                | Self::Qwen3Tts12Hz06BBaseBf16
+                | Self::Qwen3Tts12Hz06BCustomVoice4Bit
+                | Self::Qwen3Tts12Hz06BCustomVoice8Bit
+                | Self::Qwen3Tts12Hz06BCustomVoiceBf16
+                | Self::Qwen3Tts12Hz17BVoiceDesign4Bit
+                | Self::Qwen3Tts12Hz17BVoiceDesign8Bit
+                | Self::Qwen3Tts12Hz17BVoiceDesignBf16
+                | Self::Qwen3Asr06B4Bit
+                | Self::Qwen3Asr06B8Bit
+                | Self::Qwen3Asr06BBf16
+                | Self::Qwen3Asr17B4Bit
+                | Self::Qwen3Asr17B8Bit
+                | Self::Qwen3Asr17BBf16
+        )
+    }
+
     /// Get all available variants
     pub fn all() -> &'static [ModelVariant] {
         &[
             Self::Qwen3Tts12Hz06BBase,
+            Self::Qwen3Tts12Hz06BBase4Bit,
+            Self::Qwen3Tts12Hz06BBase8Bit,
+            Self::Qwen3Tts12Hz06BBaseBf16,
             Self::Qwen3Tts12Hz06BCustomVoice,
+            Self::Qwen3Tts12Hz06BCustomVoice4Bit,
+            Self::Qwen3Tts12Hz06BCustomVoice8Bit,
+            Self::Qwen3Tts12Hz06BCustomVoiceBf16,
             Self::Qwen3Tts12Hz17BBase,
             Self::Qwen3Tts12Hz17BCustomVoice,
             Self::Qwen3Tts12Hz17BVoiceDesign,
+            Self::Qwen3Tts12Hz17BVoiceDesign4Bit,
+            Self::Qwen3Tts12Hz17BVoiceDesign8Bit,
+            Self::Qwen3Tts12Hz17BVoiceDesignBf16,
             Self::Qwen3TtsTokenizer12Hz,
             Self::Lfm2Audio15B,
             Self::Qwen3Asr06B,
+            Self::Qwen3Asr06B4Bit,
+            Self::Qwen3Asr06B8Bit,
+            Self::Qwen3Asr06BBf16,
             Self::Qwen3Asr17B,
+            Self::Qwen3Asr17B4Bit,
+            Self::Qwen3Asr17B8Bit,
+            Self::Qwen3Asr17BBf16,
             Self::Qwen3ForcedAligner06B,
             Self::VoxtralMini4BRealtime2602,
         ]
