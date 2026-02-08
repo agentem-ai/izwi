@@ -1,0 +1,13 @@
+pub mod serve;
+pub mod models;
+pub mod pull;
+pub mod rm;
+pub mod list;
+pub mod tts;
+pub mod transcribe;
+pub mod chat;
+pub mod bench;
+pub mod status;
+pub mod version;
+pub mod config;
+pub mod completions;
