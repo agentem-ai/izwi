@@ -10,7 +10,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { api, TTSGenerationStats } from "../api";
-import { SPEAKERS, SAMPLE_TEXTS } from "../types";
+import { SPEAKERS } from "../types";
 import { GenerationStats } from "./GenerationStats";
 import clsx from "clsx";
 
@@ -115,14 +115,11 @@ export function CustomVoicePlayground({
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-gradient-to-br from-blue-500/20 to-cyan-500/20 border border-blue-500/20">
-            <Volume2 className="w-5 h-5 text-blue-400" />
+          <div className="p-2 rounded bg-[#1a1a1a] border border-[#2a2a2a]">
+            <Volume2 className="w-5 h-5 text-gray-400" />
           </div>
           <div>
             <h2 className="text-sm font-medium text-white">Text to Speech</h2>
-            <p className="text-xs text-gray-400 mt-0.5">
-              Generate speech with built-in voice profiles
-            </p>
           </div>
         </div>
 
@@ -208,19 +205,6 @@ export function CustomVoicePlayground({
           <div className="absolute bottom-2 right-2">
             <span className="text-xs text-gray-600">{text.length}</span>
           </div>
-        </div>
-
-        {/* Sample texts */}
-        <div className="flex flex-wrap gap-2">
-          {SAMPLE_TEXTS.english.map((sample, i) => (
-            <button
-              key={i}
-              onClick={() => setText(sample)}
-              className="text-xs px-2 py-1 rounded bg-[#1a1a1a] hover:bg-[#1f1f1f] text-gray-500 hover:text-gray-300 border border-[#2a2a2a]"
-            >
-              Sample {i + 1}
-            </button>
-          ))}
         </div>
 
         {/* Instruct toggle */}

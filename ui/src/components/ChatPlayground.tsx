@@ -134,7 +134,10 @@ export function ChatPlayground({
     setStats(null);
 
     const userMessage: ChatMessage = { role: "user", content: text };
-    const assistantPlaceholder: ChatMessage = { role: "assistant", content: "" };
+    const assistantPlaceholder: ChatMessage = {
+      role: "assistant",
+      content: "",
+    };
 
     const historyWithSystem =
       messages.length > 0 && messages[0].role === "system"
@@ -196,20 +199,20 @@ export function ChatPlayground({
     <div className="card p-4 flex flex-col h-[calc(100vh-12rem)] min-h-[560px]">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-gradient-to-br from-cyan-500/20 to-blue-500/20 border border-cyan-500/20">
-            <Bot className="w-5 h-5 text-cyan-400" />
+          <div className="p-2 rounded bg-[#1a1a1a] border border-[#2a2a2a]">
+            <Bot className="w-5 h-5 text-gray-400" />
           </div>
           <div>
             <h2 className="text-sm font-medium text-white">Chat</h2>
-            <p className="text-xs text-gray-400 mt-0.5">
-              Text conversation with Qwen3
-            </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
           {isStreaming && (
-            <button onClick={stopStreaming} className="btn btn-secondary text-xs">
+            <button
+              onClick={stopStreaming}
+              className="btn btn-secondary text-xs"
+            >
               <Square className="w-3.5 h-3.5" />
               Stop
             </button>

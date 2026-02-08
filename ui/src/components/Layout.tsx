@@ -103,8 +103,7 @@ export function Layout({
               <Waves className="w-4 h-4 text-black" />
             </div>
             <div>
-              <h1 className="text-sm font-semibold text-white">Izwi Audio</h1>
-              <p className="text-xs text-gray-500">Audio Toolkit</p>
+              <h1 className="text-sm font-semibold text-white">Izwi</h1>
             </div>
           </div>
           <button
@@ -144,8 +143,7 @@ export function Layout({
               <Waves className="w-5 h-5 text-black" />
             </div>
             <div>
-              <h1 className="text-base font-semibold text-white">Izwi Audio</h1>
-              <p className="text-xs text-gray-500">Audio Toolkit</p>
+              <h1 className="text-base font-semibold text-white">Izwi</h1>
             </div>
           </div>
         </div>

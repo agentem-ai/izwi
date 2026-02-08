@@ -8,10 +8,9 @@ import {
   ChevronDown,
   Loader2,
   Globe,
-  Sparkles,
 } from "lucide-react";
 import { api } from "../api";
-import { LANGUAGES, VOICE_DESIGN_PRESETS, SAMPLE_TEXTS } from "../types";
+import { LANGUAGES, VOICE_DESIGN_PRESETS } from "../types";
 import clsx from "clsx";
 
 interface VoiceDesignPlaygroundProps {
@@ -117,14 +116,11 @@ export function VoiceDesignPlayground({
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-gradient-to-br from-purple-500/20 to-pink-500/20 border border-purple-500/20">
-            <Wand2 className="w-5 h-5 text-purple-400" />
+          <div className="p-2 rounded bg-[#1a1a1a] border border-[#2a2a2a]">
+            <Wand2 className="w-5 h-5 text-gray-400" />
           </div>
           <div>
             <h2 className="text-sm font-medium text-white">Voice Design</h2>
-            <p className="text-xs text-gray-400 mt-0.5">
-              Create unique voices from text descriptions
-            </p>
           </div>
         </div>
 
@@ -186,10 +182,9 @@ export function VoiceDesignPlayground({
             </label>
             <button
               onClick={() => setShowPresets(!showPresets)}
-              className="flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+              className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
             >
-              <Sparkles className="w-3 h-3" />
-              Presets
+              {showPresets ? "Hide" : "Show"} presets
             </button>
           </div>
 
@@ -252,19 +247,6 @@ export function VoiceDesignPlayground({
             <div className="absolute bottom-2 right-2">
               <span className="text-xs text-gray-600">{text.length}</span>
             </div>
-          </div>
-
-          {/* Sample texts */}
-          <div className="flex flex-wrap gap-2 mt-2">
-            {SAMPLE_TEXTS.english.slice(0, 2).map((sample, i) => (
-              <button
-                key={i}
-                onClick={() => setText(sample)}
-                className="text-xs px-2 py-1 rounded bg-[#1a1a1a] hover:bg-[#1f1f1f] text-gray-500 hover:text-gray-300 border border-[#2a2a2a]"
-              >
-                Sample {i + 1}
-              </button>
-            ))}
           </div>
         </div>
 

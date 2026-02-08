@@ -57,9 +57,6 @@ export function VoiceDesignPage({
     <div className="max-w-6xl mx-auto">
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-white">Voice Design</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Create unique voices from text descriptions
-        </p>
       </div>
 
       <div className="grid lg:grid-cols-[320px,1fr] gap-4 lg:gap-6">
@@ -67,9 +64,6 @@ export function VoiceDesignPage({
         <div className="card p-3 lg:p-4">
           <div className="mb-3">
             <h2 className="text-sm font-medium text-white">Models</h2>
-            <p className="text-xs text-gray-500 mt-0.5">
-              VoiceDesign compatible
-            </p>
           </div>
 
           {loading ? (

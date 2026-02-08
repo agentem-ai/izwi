@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Mic, MicOff, Volume2, Loader2, PhoneOff, AudioLines } from "lucide-react";
+import {
+  Mic,
+  MicOff,
+  Volume2,
+  Loader2,
+  PhoneOff,
+  AudioLines,
+} from "lucide-react";
 import clsx from "clsx";
 
 import { api, ChatMessage, ModelInfo } from "../api";
@@ -139,7 +146,11 @@ async function transcodeToWav(
       const targetLength = Math.ceil(
         (monoBuffer.length * targetSampleRate) / monoBuffer.sampleRate,
       );
-      const offline = new OfflineAudioContext(1, targetLength, targetSampleRate);
+      const offline = new OfflineAudioContext(
+        1,
+        targetLength,
+        targetSampleRate,
+      );
       const source = offline.createBufferSource();
       source.buffer = monoBuffer;
       source.connect(offline.destination);
@@ -161,7 +172,9 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
   const [audioLevel, setAudioLevel] = useState(0);
 
   const [selectedAsrModel, setSelectedAsrModel] = useState<string | null>(null);
-  const [selectedTextModel, setSelectedTextModel] = useState<string | null>(null);
+  const [selectedTextModel, setSelectedTextModel] = useState<string | null>(
+    null,
+  );
   const [selectedTtsModel, setSelectedTtsModel] = useState<string | null>(null);
   const [selectedSpeaker, setSelectedSpeaker] = useState("Serena");
 
@@ -211,7 +224,8 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
   const ttsModels = useMemo(
     () =>
       availableModels.filter(
-        (m) => m.variant.includes("Qwen3-TTS") && !m.variant.includes("Tokenizer"),
+        (m) =>
+          m.variant.includes("Qwen3-TTS") && !m.variant.includes("Tokenizer"),
       ),
     [availableModels],
   );
@@ -229,7 +243,10 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
   }, [transcript, runtimeStatus]);
 
   useEffect(() => {
-    if (!selectedAsrModel || !asrModels.some((m) => m.variant === selectedAsrModel)) {
+    if (
+      !selectedAsrModel ||
+      !asrModels.some((m) => m.variant === selectedAsrModel)
+    ) {
       setSelectedAsrModel(asrModels[0]?.variant ?? null);
     }
   }, [asrModels, selectedAsrModel]);
@@ -244,7 +261,10 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
   }, [textModels, selectedTextModel]);
 
   useEffect(() => {
-    if (!selectedTtsModel || !ttsModels.some((m) => m.variant === selectedTtsModel)) {
+    if (
+      !selectedTtsModel ||
+      !ttsModels.some((m) => m.variant === selectedTtsModel)
+    ) {
       setSelectedTtsModel(ttsModels[0]?.variant ?? null);
     }
   }, [ttsModels, selectedTtsModel]);
@@ -300,25 +320,30 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
     return () => stopSession();
   }, [stopSession]);
 
-  const addTranscript = useCallback((role: "user" | "assistant", text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
+  const addTranscript = useCallback(
+    (role: "user" | "assistant", text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
 
-    setTranscript((prev) => [
-      ...prev,
-      {
-        id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        role,
-        text: trimmed,
-        timestamp: Date.now(),
-      },
-    ]);
-  }, []);
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          role,
+          text: trimmed,
+          timestamp: Date.now(),
+        },
+      ]);
+    },
+    [],
+  );
 
   const processUtterance = useCallback(
     async (audioBlob: Blob) => {
       if (!selectedAsrModel || !selectedTextModel || !selectedTtsModel) {
-        setError("Select ASR, text, and TTS models before starting voice mode.");
+        setError(
+          "Select ASR, text, and TTS models before starting voice mode.",
+        );
         setRuntimeStatus("listening");
         processingRef.current = false;
         return;
@@ -358,7 +383,8 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
         });
 
         const rawAssistant = chat.message.content || "";
-        const assistantText = parseFinalAnswer(rawAssistant) || rawAssistant.trim();
+        const assistantText =
+          parseFinalAnswer(rawAssistant) || rawAssistant.trim();
         addTranscript("assistant", assistantText);
 
         setConversation((prev) => [
@@ -386,7 +412,8 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
         setRuntimeStatus("assistant_speaking");
         await audio.play();
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Voice turn failed";
+        const message =
+          err instanceof Error ? err.message : "Voice turn failed";
         setError(message);
         onError?.(message);
         if (isSessionActiveRef.current) {
@@ -411,7 +438,8 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
 
   const startSession = useCallback(async () => {
     if (!selectedAsrModel || !selectedTextModel || !selectedTtsModel) {
-      const message = "Select ASR, text, and TTS models before starting voice mode.";
+      const message =
+        "Select ASR, text, and TTS models before starting voice mode.";
       setError(message);
       onError?.(message);
       return;
@@ -460,12 +488,17 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
       };
 
       recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: recorder?.mimeType || "audio/webm" });
+        const blob = new Blob(chunksRef.current, {
+          type: recorder?.mimeType || "audio/webm",
+        });
         chunksRef.current = [];
 
         if (blob.size < 1200) {
           processingRef.current = false;
-          if (isSessionActiveRef.current && runtimeStatusRef.current !== "assistant_speaking") {
+          if (
+            isSessionActiveRef.current &&
+            runtimeStatusRef.current !== "assistant_speaking"
+          ) {
             setRuntimeStatus("listening");
           }
           return;
@@ -485,7 +518,8 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
       vadTimerRef.current = window.setInterval(() => {
         const analyserNode = analyserRef.current;
         const recorderNode = mediaRecorderRef.current;
-        if (!analyserNode || !recorderNode || !isSessionActiveRef.current) return;
+        if (!analyserNode || !recorderNode || !isSessionActiveRef.current)
+          return;
 
         const data = new Uint8Array(analyserNode.fftSize);
         analyserNode.getByteTimeDomainData(data);
@@ -521,8 +555,13 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
 
         if (isRecording) {
           silenceMsRef.current += VAD_INTERVAL;
-          const speechDuration = speechStartRef.current ? now - speechStartRef.current : 0;
-          if (speechDuration >= minSpeechMs && silenceMsRef.current >= silenceDurationMs) {
+          const speechDuration = speechStartRef.current
+            ? now - speechStartRef.current
+            : 0;
+          if (
+            speechDuration >= minSpeechMs &&
+            silenceMsRef.current >= silenceDurationMs
+          ) {
             processingRef.current = true;
             setRuntimeStatus("processing");
             recorderNode.stop();
@@ -569,7 +608,10 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
     assistant_speaking: "Assistant speaking",
   }[runtimeStatus];
 
-  const vadPercent = Math.min(100, Math.round((audioLevel / Math.max(vadThreshold, 0.001)) * 40));
+  const vadPercent = Math.min(
+    100,
+    Math.round((audioLevel / Math.max(vadThreshold, 0.001)) * 40),
+  );
 
   if (loading) {
     return (
@@ -590,9 +632,6 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
     <div className="max-w-6xl mx-auto">
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-white">Voice</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Real-time assistant pipeline: ASR ↔ LLM ↔ TTS with VAD and barge-in
-        </p>
       </div>
 
       <div className="grid lg:grid-cols-[360px,1fr] gap-4 lg:gap-6">
@@ -683,7 +722,9 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
                 max={1800}
                 step={50}
                 value={silenceDurationMs}
-                onChange={(e) => setSilenceDurationMs(parseInt(e.target.value, 10))}
+                onChange={(e) =>
+                  setSilenceDurationMs(parseInt(e.target.value, 10))
+                }
                 className="w-full mt-1"
               />
             </div>
@@ -711,7 +752,9 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
               runtimeStatus === "idle" ? "btn-primary" : "btn-danger",
             )}
             disabled={
-              asrModels.length === 0 || textModels.length === 0 || ttsModels.length === 0
+              asrModels.length === 0 ||
+              textModels.length === 0 ||
+              ttsModels.length === 0
             }
           >
             {runtimeStatus === "idle" ? (
@@ -727,7 +770,9 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
             )}
           </button>
 
-          {(asrModels.length === 0 || textModels.length === 0 || ttsModels.length === 0) && (
+          {(asrModels.length === 0 ||
+            textModels.length === 0 ||
+            ttsModels.length === 0) && (
             <p className="text-xs text-amber-400">
               Download required ASR/Text/TTS models first in My Models.
             </p>
@@ -737,14 +782,20 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
         <div className="card p-4 flex flex-col min-h-[620px]">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
-              <span className="text-sm text-white font-medium">Session Status</span>
+              <span className="text-sm text-white font-medium">
+                Session Status
+              </span>
               <span
                 className={clsx(
                   "text-xs px-2 py-1 rounded",
-                  runtimeStatus === "listening" && "bg-emerald-500/20 text-emerald-300",
-                  runtimeStatus === "user_speaking" && "bg-blue-500/20 text-blue-300",
-                  runtimeStatus === "processing" && "bg-amber-500/20 text-amber-300",
-                  runtimeStatus === "assistant_speaking" && "bg-cyan-500/20 text-cyan-300",
+                  runtimeStatus === "listening" &&
+                    "bg-emerald-500/20 text-emerald-300",
+                  runtimeStatus === "user_speaking" &&
+                    "bg-blue-500/20 text-blue-300",
+                  runtimeStatus === "processing" &&
+                    "bg-amber-500/20 text-amber-300",
+                  runtimeStatus === "assistant_speaking" &&
+                    "bg-cyan-500/20 text-cyan-300",
                   runtimeStatus === "idle" && "bg-gray-600/30 text-gray-300",
                 )}
               >
@@ -772,7 +823,9 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
               <div
                 className={clsx(
                   "h-full transition-all duration-75",
-                  runtimeStatus === "assistant_speaking" ? "bg-cyan-400" : "bg-emerald-400",
+                  runtimeStatus === "assistant_speaking"
+                    ? "bg-cyan-400"
+                    : "bg-emerald-400",
                 )}
                 style={{ width: `${vadPercent}%` }}
               />
@@ -798,7 +851,10 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
                 return (
                   <div
                     key={entry.id}
-                    className={clsx("flex", isUser ? "justify-end" : "justify-start")}
+                    className={clsx(
+                      "flex",
+                      isUser ? "justify-end" : "justify-start",
+                    )}
                   >
                     <div
                       className={clsx(

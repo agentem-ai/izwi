@@ -227,14 +227,11 @@ export function TranscriptionPlayground({
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/20">
-            <FileText className="w-5 h-5 text-emerald-400" />
+          <div className="p-2 rounded bg-[#1a1a1a] border border-[#2a2a2a]">
+            <FileText className="w-5 h-5 text-gray-400" />
           </div>
           <div>
             <h2 className="text-sm font-medium text-white">Transcription</h2>
-            <p className="text-xs text-gray-400 mt-0.5">
-              Convert speech to text with Qwen3-ASR
-            </p>
           </div>
         </div>
 

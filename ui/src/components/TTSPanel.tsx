@@ -220,26 +220,6 @@ export function TTSPanel({ selectedModel, onModelRequired }: TTSPanelProps) {
           <audio ref={audioRef} src={audioUrl} controls className="w-full" />
         </div>
       )}
-
-      {/* Sample Texts */}
-      <div className="mt-6 pt-6 border-t border-gray-800">
-        <h3 className="text-sm font-medium text-gray-400 mb-3">Sample Texts</h3>
-        <div className="space-y-2">
-          {[
-            "Hello! Welcome to Izwi, a text-to-speech engine powered by Qwen3-TTS.",
-            "The quick brown fox jumps over the lazy dog.",
-            "In a world where technology evolves rapidly, the ability to generate natural-sounding speech has become increasingly important.",
-          ].map((sample, i) => (
-            <button
-              key={i}
-              onClick={() => setText(sample)}
-              className="w-full text-left p-3 bg-gray-800/30 hover:bg-gray-800/60 rounded-lg text-sm text-gray-300 transition-colors"
-            >
-              {sample}
-            </button>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }

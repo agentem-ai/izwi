@@ -30,12 +30,6 @@ const SPEAKERS = [
   { id: "Uncle_fu", name: "Uncle Fu" },
 ];
 
-const SAMPLE_TEXTS = [
-  "Hello! Welcome to Izwi, a text-to-speech engine powered by Qwen3-TTS.",
-  "The quick brown fox jumps over the lazy dog.",
-  "In a world where technology evolves rapidly, the ability to generate natural-sounding speech has become increasingly important.",
-];
-
 export function VoicePlayground({
   selectedModel,
   onModelRequired,
@@ -151,12 +145,7 @@ export function VoicePlayground({
     <div className="card p-4">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-sm font-medium text-white">Voice Playground</h2>
-          <p className="text-xs text-gray-600 mt-0.5">
-            Generate speech from text
-          </p>
-        </div>
+        <h2 className="text-sm font-medium text-white">Voice</h2>
 
         {/* Speaker selector */}
         <div className="relative">
@@ -220,19 +209,6 @@ export function VoicePlayground({
           <div className="absolute bottom-2 right-2">
             <span className="text-xs text-gray-600">{text.length}</span>
           </div>
-        </div>
-
-        {/* Sample texts */}
-        <div className="flex flex-wrap gap-2">
-          {SAMPLE_TEXTS.map((sample, i) => (
-            <button
-              key={i}
-              onClick={() => setText(sample)}
-              className="text-xs px-2 py-1 rounded bg-[#1a1a1a] hover:bg-[#1f1f1f] text-gray-500 hover:text-gray-300 border border-[#2a2a2a]"
-            >
-              Sample {i + 1}
-            </button>
-          ))}
         </div>
 
         {/* Voice Cloning Section (for Base models) */}
