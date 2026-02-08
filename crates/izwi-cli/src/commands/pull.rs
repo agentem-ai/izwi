@@ -3,16 +3,38 @@ use crate::http;
 use crate::style::Theme;
 use crate::utils;
 use console::style;
+use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 struct ModelState {
     variant: String,
     status: String,
     local_path: Option<PathBuf>,
+    download_progress: Option<f32>,
+    error_message: Option<String>,
 }
+
+#[derive(Debug, Deserialize)]
+struct DownloadResponse {
+    status: String,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProgressEvent {
+    percent: f32,
+    status: String,
+    current_file: String,
+    files_completed: usize,
+    files_total: usize,
+}
+
+const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const DOWNLOAD_WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 pub async fn execute(
     model: String,
@@ -80,24 +102,16 @@ pub async fn execute(
         });
     }
 
-    theme.step(2, 3, "Downloading model files...");
-
-    // Show progress (simplified - would stream from progress endpoint)
-    let pb = ProgressBar::new(100);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% {msg}")
-            .unwrap()
-            .progress_chars("#>-"),
-    );
-
-    for i in 0..100 {
-        pb.set_position(i);
-        pb.set_message(format!("Downloading..."));
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    if let Ok(download_response) = response.json::<DownloadResponse>().await {
+        match download_response.status.as_str() {
+            "started" => theme.info(&download_response.message),
+            "downloading" => theme.info("Download already in progress. Waiting for completion."),
+            _ => {}
+        }
     }
 
-    pb.finish_with_message("Download complete");
+    theme.step(2, 3, "Downloading model files...");
+    wait_for_download_completion(server, &model).await?;
 
     theme.step(3, 3, "Finalizing...");
 
@@ -114,4 +128,178 @@ pub async fn execute(
     );
 
     Ok(())
+}
+
+async fn wait_for_download_completion(server: &str, model: &str) -> Result<()> {
+    if wait_for_download_stream(server, model).await? {
+        return Ok(());
+    }
+
+    wait_for_download_poll(server, model).await
+}
+
+async fn wait_for_download_stream(server: &str, model: &str) -> Result<bool> {
+    let client = http::client(None)?;
+    let response = client
+        .get(format!(
+            "{}/v1/admin/models/{}/download/progress",
+            server, model
+        ))
+        .send()
+        .await
+        .map_err(|e| CliError::ConnectionError(e.to_string()))?;
+
+    if !response.status().is_success() {
+        return Ok(false);
+    }
+
+    let pb = ProgressBar::new(1000);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {percent}% {msg}")
+            .map_err(|e| CliError::Other(e.to_string()))?
+            .progress_chars("#>-"),
+    );
+    pb.set_message("Waiting for progress events...");
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                pb.abandon_with_message("Live stream interrupted");
+                return Ok(false);
+            }
+        };
+
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(newline) = buffer.find('\n') {
+            let mut line = buffer[..newline].to_string();
+            buffer.drain(..=newline);
+
+            if line.ends_with('\r') {
+                line.pop();
+            }
+
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+
+            let data = data.trim();
+            if data.is_empty() {
+                continue;
+            }
+
+            let event = match serde_json::from_str::<ProgressEvent>(data) {
+                Ok(event) => event,
+                Err(_) => continue,
+            };
+
+            let percent = event.percent.clamp(0.0, 100.0);
+            pb.set_position((percent * 10.0).round() as u64);
+            pb.set_message(format!(
+                "{:.1}% {} ({}/{})",
+                percent, event.current_file, event.files_completed, event.files_total
+            ));
+
+            if event.status == "completed" {
+                pb.finish_with_message("Download complete");
+                return Ok(true);
+            }
+        }
+    }
+
+    pb.finish_and_clear();
+    Ok(false)
+}
+
+async fn wait_for_download_poll(server: &str, model: &str) -> Result<()> {
+    let client = http::client(Some(Duration::from_secs(30)))?;
+    let started = std::time::Instant::now();
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} [{elapsed_precise}] {msg}")
+            .map_err(|e| CliError::Other(e.to_string()))?,
+    );
+    pb.enable_steady_tick(Duration::from_millis(120));
+
+    let mut seen_active_status = false;
+
+    loop {
+        if started.elapsed() >= DOWNLOAD_WAIT_TIMEOUT {
+            pb.abandon_with_message("Download timed out");
+            return Err(CliError::Other(format!(
+                "Timed out waiting for '{}' to finish downloading after {} seconds",
+                model,
+                DOWNLOAD_WAIT_TIMEOUT.as_secs()
+            )));
+        }
+
+        let response = client
+            .get(format!("{}/v1/admin/models/{}", server, model))
+            .send()
+            .await;
+
+        let response = match response {
+            Ok(response) => response,
+            Err(err) => {
+                pb.set_message(format!("Waiting for server status... ({})", err));
+                tokio::time::sleep(DOWNLOAD_POLL_INTERVAL).await;
+                continue;
+            }
+        };
+
+        if response.status().as_u16() == 404 {
+            pb.abandon_with_message("Model not found");
+            return Err(CliError::ModelNotFound(model.to_string()));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let text = response.text().await.unwrap_or_default();
+            pb.abandon_with_message("Download failed");
+            return Err(CliError::ApiError {
+                status,
+                message: text,
+            });
+        }
+
+        let state: ModelState = response.json().await?;
+
+        if matches!(state.status.as_str(), "downloading" | "loading") {
+            seen_active_status = true;
+        }
+
+        if matches!(state.status.as_str(), "downloaded" | "ready") {
+            pb.finish_with_message("Download complete");
+            return Ok(());
+        }
+
+        if state.status == "error" {
+            pb.abandon_with_message("Download failed");
+            return Err(CliError::Other(
+                state
+                    .error_message
+                    .unwrap_or_else(|| "Model download failed".to_string()),
+            ));
+        }
+
+        if seen_active_status && state.status == "not_downloaded" {
+            pb.abandon_with_message("Download interrupted");
+            return Err(CliError::Other(format!(
+                "Download for '{}' was interrupted before completion",
+                model
+            )));
+        }
+
+        let progress = state
+            .download_progress
+            .map(|p| format!("{:.1}%", p))
+            .unwrap_or_else(|| "-".to_string());
+        pb.set_message(format!("status={} progress={}", state.status, progress));
+        tokio::time::sleep(DOWNLOAD_POLL_INTERVAL).await;
+    }
 }
