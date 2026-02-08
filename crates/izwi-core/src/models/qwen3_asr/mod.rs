@@ -72,8 +72,17 @@ impl Qwen3AsrModel {
         };
         let mel = MelSpectrogram::new(mel_cfg)?;
 
-        // ASR decoding quality is sensitive to precision; prefer fp32 for stability.
-        let dtype = DType::F32;
+        // Quantized checkpoints are trained/evaluated in bf16 and can degrade
+        // badly when forced through fp32 dequant paths.
+        // However, BF16 matmul coverage is incomplete across backends in Candle,
+        // so we respect the device's preferred dtype selection.
+        let is_quantized = config.quantization.is_some() || config.quantization_config.is_some();
+        let dtype = if is_quantized {
+            parse_asr_dtype(config.thinker_config.dtype.as_deref())
+                .unwrap_or_else(|| device.select_dtype(Some("bfloat16")))
+        } else {
+            DType::F32
+        };
 
         // Check for sharded weights (1.7B model) vs single file (0.6B model)
         let index_path = model_dir.join("model.safetensors.index.json");
@@ -193,31 +202,60 @@ impl Qwen3AsrModel {
         let mut pos = base_pos;
 
         let mut generated: Vec<u32> = Vec::new();
+        let stop_tokens = collect_stop_token_ids(&self.specials);
+        let never_emit_tokens = collect_never_emit_token_ids(&self.specials);
 
         // Long repetitive generations are almost always degenerate for ASR.
         // Keep this bounded to reduce latency and prevent runaway gibberish.
         let max_tokens = 256usize;
-        let mut ignored_leading_stops = 0usize;
-        for _ in 0..max_tokens {
+        // Quantized checkpoints may predict stop at step 0. If that happens, force
+        // a short non-stop prefix instead of allowing an empty transcript.
+        let forced_prefix_len_after_leading_stop = 3usize;
+        let mut forced_min_new_tokens = 0usize;
+        for step in 0..max_tokens {
             // Get logits for the last position only
             let logits = embeds.i((0, embeds.dim(1)? - 1))?; // [vocab_size]
-            let next = argmax(&logits)?;
+            let greedy_next = argmax(&logits)?;
 
-            let is_stop = next == self.specials.im_end
-                || next == self.specials.eos
-                || self.specials.eos_alt == Some(next);
-
-            // Some checkpoints occasionally emit a leading boundary token before
-            // real text starts; consume a small number to avoid empty transcripts.
-            let ignore_leading_stop = is_stop && generated.is_empty() && ignored_leading_stops < 2;
-            if ignore_leading_stop {
-                ignored_leading_stops += 1;
-                debug!("Ignoring leading ASR stop token id={}", next);
-            } else if is_stop {
-                break;
-            } else {
-                generated.push(next);
+            if step == 0 && stop_tokens.contains(&greedy_next) {
+                forced_min_new_tokens = forced_prefix_len_after_leading_stop;
             }
+
+            let should_suppress_stop = generated.len() < forced_min_new_tokens;
+            let mut excluded_ids = never_emit_tokens.clone();
+            if should_suppress_stop {
+                excluded_ids.extend_from_slice(&stop_tokens);
+            }
+            sort_dedup_u32(&mut excluded_ids);
+
+            let greedy_is_excluded = excluded_ids.contains(&greedy_next);
+
+            // Leading-stop masking: if greedy points to a stop token before we've
+            // emitted enough tokens, or points at known control-noise tokens,
+            // pick the best allowed token instead.
+            let next = if greedy_is_excluded {
+                if let Some(masked_next) = argmax_excluding(&logits, &excluded_ids)? {
+                    debug!(
+                        "Suppressing ASR token id={} at step {} -> {} (forced_min_new_tokens={}, suppressed_stop={})",
+                        greedy_next,
+                        step,
+                        masked_next,
+                        forced_min_new_tokens,
+                        should_suppress_stop
+                    );
+                    masked_next
+                } else {
+                    debug!("All ASR logits were filtered by early stop suppression");
+                    break;
+                }
+            } else {
+                greedy_next
+            };
+
+            if stop_tokens.contains(&next) {
+                break;
+            }
+            generated.push(next);
 
             // Forward pass for next token with updated position
             let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
@@ -239,8 +277,22 @@ impl Qwen3AsrModel {
         }
 
         let text = self.tokenizer.decode_text(&generated)?;
-        let parsed = self.parse_output(&text)?;
-        Ok(parsed)
+        let parsed = self.parse_output(&text, language)?;
+        if parsed.is_empty() || looks_like_language_none_loop(&parsed) {
+            let preview_ids: Vec<u32> = generated.iter().take(16).copied().collect();
+            debug!(
+                "ASR decode produced empty/degenerate parsed output after {} tokens (preview ids={:?}, raw='{}', parsed='{}')",
+                generated.len(),
+                preview_ids,
+                text,
+                parsed
+            );
+        }
+        Ok(if looks_like_language_none_loop(&parsed) {
+            String::new()
+        } else {
+            parsed
+        })
     }
 
     /// Forced alignment: align reference text with audio timestamps.
@@ -336,70 +388,52 @@ impl Qwen3AsrModel {
         self.parse_alignment(&alignment_text, audio.len() as u32 / 16)
     }
 
-    fn parse_output(&self, raw_output: &str) -> Result<String> {
-        let trimmed = collapse_whitespace(raw_output.trim());
-        if trimmed.is_empty() {
+    fn parse_output(&self, raw_output: &str, language: Option<&str>) -> Result<String> {
+        let mut raw = collapse_whitespace(raw_output.trim());
+        if raw.is_empty() {
             return Ok(String::new());
         }
 
-        if trimmed.contains("No speech detected") {
+        raw = strip_known_generation_artifacts(&raw);
+        raw = collapse_whitespace(raw.trim());
+        if raw.is_empty() || raw == "<non_speech>" || raw.contains("No speech detected") {
             return Ok(String::new());
         }
 
-        let mut text = trimmed.clone();
-
-        // Qwen3-ASR commonly emits: "language English<asr_text>..."
-        // Split on the last tag in case intermediate tags are present.
-        if let Some((_, tail)) = text.rsplit_once("<asr_text>") {
-            text = tail.to_string();
-        }
-
-        // Backward compatibility with older output styles.
-        if let Some(idx) = text.find("Transcription:") {
-            text = text[idx + "Transcription:".len()..].to_string();
-        }
-
-        if text.to_lowercase().starts_with("language ") {
-            if let Some(newline_idx) = text.find('\n') {
-                text = text[newline_idx + 1..].to_string();
-            } else {
-                let mut parts = text.splitn(3, ' ');
-                let _ = parts.next(); // "language"
-                let _ = parts.next(); // language name
-                text = parts.next().unwrap_or_default().to_string();
+        // Upstream contract: when a language is forced, generation should be
+        // text-only because we append "language X<asr_text>" to the prompt.
+        if forced_language_name(language).is_some() {
+            let mut text = strip_runaway_repetition(raw.trim());
+            text = collapse_whitespace(text.trim());
+            if looks_like_language_none_loop(&text) {
+                return Ok(String::new());
             }
+            return Ok(text);
         }
 
-        if text == "<non_speech>" {
-            return Ok(String::new());
+        // Default contract: "language X<asr_text>transcript".
+        if let Some((meta, tail)) = raw.split_once("<asr_text>") {
+            let mut text = strip_known_generation_artifacts(tail.trim());
+            text = strip_runaway_repetition(text.trim());
+            text = collapse_whitespace(text.trim());
+            if meta.to_ascii_lowercase().contains("language none") && text.is_empty() {
+                return Ok(String::new());
+            }
+            if text == "<non_speech>" || looks_like_language_none_loop(&text) {
+                return Ok(String::new());
+            }
+            return Ok(text);
         }
 
-        text = text.replace("<|im_end|>", "");
+        // Fallback for malformed outputs without <asr_text>.
+        let mut text = strip_runaway_repetition(raw.trim());
+        text = trim_leading_language_header(&text);
+        text = strip_language_none_prefixes(text.trim());
         text = collapse_whitespace(text.trim());
-        text = strip_runaway_repetition(&text);
-        let parsed = text.trim().to_string();
-        if !parsed.is_empty() {
-            return Ok(parsed);
-        }
-
-        // Fallback: if parsing strips everything but raw decode had content,
-        // preserve recoverable text rather than returning an empty transcript.
-        let mut fallback = trimmed
-            .replace("<|im_end|>", "")
-            .replace("<asr_text>", "")
-            .trim()
-            .to_string();
-        if fallback.to_lowercase().starts_with("language ") {
-            let mut parts = fallback.split_whitespace();
-            let _ = parts.next(); // "language"
-            let _ = parts.next(); // language name
-            fallback = parts.collect::<Vec<_>>().join(" ");
-        }
-        fallback = collapse_whitespace(fallback.trim());
-        if fallback == "<non_speech>" || fallback.contains("No speech detected") {
+        if text == "<non_speech>" || looks_like_language_none_loop(&text) {
             return Ok(String::new());
         }
-        Ok(strip_runaway_repetition(fallback.trim()).trim().to_string())
+        Ok(text)
     }
 
     fn forward_with_audio(
@@ -460,8 +494,18 @@ impl Qwen3AsrModel {
     }
 
     fn build_prompt(&self, audio_len: usize, language: Option<&str>) -> Result<PromptTokens> {
-        // ASR generation prompt with explicit transcription trigger.
+        // Match upstream Qwen3-ASR prompt contract:
+        // <|im_start|>system\n<|im_end|>\n
+        // <|im_start|>user\n<|audio_start|><|audio_pad|>*N<|audio_end|><|im_end|>\n
+        // <|im_start|>assistant\n
+        // If language is explicitly forced, append: "language {Lang}<asr_text>".
+        let forced_language = forced_language_name(language);
         let mut ids = Vec::new();
+        ids.push(self.specials.im_start);
+        ids.extend(self.tokenizer.encode_text("system\n")?);
+        ids.push(self.specials.im_end);
+        ids.extend(self.tokenizer.encode_text("\n")?);
+
         ids.push(self.specials.im_start);
         ids.extend(self.tokenizer.encode_text("user\n")?);
         ids.push(self.specials.audio_start);
@@ -470,22 +514,19 @@ impl Qwen3AsrModel {
         ids.extend(std::iter::repeat_n(self.specials.audio_token, audio_len));
 
         ids.push(self.specials.audio_end);
-        if let Some(lang) = language {
-            let lang = normalized_language_name(lang);
-            ids.extend(
-                self.tokenizer
-                    .encode_text(&format!("Transcribe the audio into {lang}."))?,
-            );
-        }
         ids.push(self.specials.im_end);
         ids.extend(self.tokenizer.encode_text("\n")?);
         ids.push(self.specials.im_start);
         ids.extend(self.tokenizer.encode_text("assistant\n")?);
-        let forced_lang = normalized_language_name(language.unwrap_or("Auto"));
-        ids.extend(
-            self.tokenizer
-                .encode_text(&format!(" language {forced_lang}<asr_text>"))?,
-        );
+        if let Some(lang) = forced_language {
+            ids.extend(self.tokenizer.encode_text("language ")?);
+            ids.extend(self.tokenizer.encode_text(&lang)?);
+            if let Some(asr_text) = self.specials.asr_text {
+                ids.push(asr_text);
+            } else {
+                ids.extend(self.tokenizer.encode_text("<asr_text>")?);
+            }
+        }
 
         Ok(PromptTokens {
             ids,
@@ -590,6 +631,15 @@ struct PromptTokens {
     audio_pad_len: usize,
 }
 
+fn parse_asr_dtype(dtype: Option<&str>) -> Option<DType> {
+    match dtype.map(|d| d.trim().to_ascii_lowercase()) {
+        Some(d) if d == "bfloat16" || d == "bf16" => Some(DType::BF16),
+        Some(d) if d == "float16" || d == "f16" || d == "fp16" => Some(DType::F16),
+        Some(d) if d == "float32" || d == "f32" || d == "fp32" => Some(DType::F32),
+        _ => None,
+    }
+}
+
 fn normalized_language_name(language: &str) -> String {
     let lang = language.trim();
     if lang.eq_ignore_ascii_case("auto") {
@@ -612,6 +662,14 @@ fn normalized_language_name(language: &str) -> String {
         }
     }
     out
+}
+
+fn forced_language_name(language: Option<&str>) -> Option<String> {
+    let lang = language?.trim();
+    if lang.is_empty() || lang.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    Some(normalized_language_name(lang))
 }
 
 fn build_mrope_positions(
@@ -700,6 +758,91 @@ fn strip_runaway_repetition(text: &str) -> String {
     out.join(" ")
 }
 
+fn strip_known_generation_artifacts(text: &str) -> String {
+    text.replace("<|fim_prefix|>", " ")
+        .replace("<|fim_middle|>", " ")
+        .replace("<|fim_suffix|>", " ")
+        .replace("<|fim_pad|>", " ")
+        .replace("<|im_end|>", " ")
+}
+
+fn strip_language_none_prefixes(text: &str) -> String {
+    let mut out = text.trim().to_string();
+    // Handle concatenated artifacts like "Nonelanguage".
+    out = out.replace("Nonelanguage", "None language");
+    for _ in 0..8 {
+        let lower = out.to_lowercase();
+        if lower.starts_with("language none") {
+            let mut cut = "language none".len();
+            while cut < out.len() {
+                let ch = out.as_bytes()[cut] as char;
+                if ch.is_whitespace() || ch == ':' || ch == ',' || ch == '.' || ch == ';' {
+                    cut += 1;
+                } else {
+                    break;
+                }
+            }
+            out = out[cut..].trim().to_string();
+            continue;
+        }
+        break;
+    }
+    out
+}
+
+fn trim_leading_language_header(text: &str) -> String {
+    let trimmed = text.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !lower.starts_with("language ") {
+        return trimmed.to_string();
+    }
+    if let Some(newline_idx) = trimmed.find('\n') {
+        return trimmed[newline_idx + 1..].trim().to_string();
+    }
+
+    let mut parts = trimmed.splitn(3, ' ');
+    let _ = parts.next(); // "language"
+    let _ = parts.next(); // language value
+    parts.next().unwrap_or_default().trim().to_string()
+}
+
+fn looks_like_language_none_loop(text: &str) -> bool {
+    let cleaned = strip_known_generation_artifacts(text);
+    let cleaned = cleaned.replace("Nonelanguage", "None language");
+    let mut normalized = String::with_capacity(cleaned.len());
+    for ch in cleaned.chars() {
+        if ch.is_ascii_alphabetic() || ch.is_ascii_whitespace() {
+            normalized.push(ch.to_ascii_lowercase());
+        } else {
+            normalized.push(' ');
+        }
+    }
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    !words.is_empty() && words.iter().all(|w| *w == "language" || *w == "none")
+}
+
+fn collect_never_emit_token_ids(specials: &SpecialTokenIds) -> Vec<u32> {
+    let mut ids = Vec::new();
+    if let Some(id) = specials.fim_prefix {
+        ids.push(id);
+    }
+    if let Some(id) = specials.fim_middle {
+        ids.push(id);
+    }
+    if let Some(id) = specials.fim_suffix {
+        ids.push(id);
+    }
+    if let Some(id) = specials.fim_pad {
+        ids.push(id);
+    }
+    ids
+}
+
+fn sort_dedup_u32(ids: &mut Vec<u32>) {
+    ids.sort_unstable();
+    ids.dedup();
+}
+
 fn resample(audio: &[f32], src_rate: u32, dst_rate: u32) -> Result<Vec<f32>> {
     if src_rate == dst_rate {
         return Ok(audio.to_vec());
@@ -731,4 +874,123 @@ fn argmax(logits: &Tensor) -> Result<u32> {
         }
     }
     Ok(max_idx as u32)
+}
+
+fn argmax_excluding(logits: &Tensor, excluded_ids: &[u32]) -> Result<Option<u32>> {
+    let logits = logits.to_dtype(DType::F32)?;
+    let values = logits.to_vec1::<f32>()?;
+    let mut max_idx = None;
+    let mut max_val = f32::NEG_INFINITY;
+    for (idx, &val) in values.iter().enumerate() {
+        if excluded_ids.contains(&(idx as u32)) {
+            continue;
+        }
+        if val > max_val {
+            max_val = val;
+            max_idx = Some(idx as u32);
+        }
+    }
+    Ok(max_idx)
+}
+
+fn collect_stop_token_ids(specials: &SpecialTokenIds) -> Vec<u32> {
+    let mut stop_ids = vec![specials.im_end, specials.eos];
+    if let Some(alt) = specials.eos_alt {
+        if alt != specials.im_end && alt != specials.eos {
+            stop_ids.push(alt);
+        }
+    }
+    stop_ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candle_core::{DType, Device, Tensor};
+
+    #[test]
+    fn argmax_excluding_selects_best_non_stop() {
+        let logits = Tensor::from_vec(vec![0.1f32, 5.0, 3.0], 3, &Device::Cpu).unwrap();
+        let token = argmax_excluding(&logits, &[1]).unwrap();
+        assert_eq!(token, Some(2));
+    }
+
+    #[test]
+    fn argmax_excluding_returns_none_if_all_ids_blocked() {
+        let logits = Tensor::from_vec(vec![0.1f32, 5.0, 3.0], 3, &Device::Cpu)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap();
+        let token = argmax_excluding(&logits, &[0, 1, 2]).unwrap();
+        assert_eq!(token, None);
+    }
+
+    #[test]
+    fn collect_stop_token_ids_deduplicates_alt_eos() {
+        let specials = SpecialTokenIds {
+            im_start: 1,
+            im_end: 2,
+            audio_start: 3,
+            audio_end: 4,
+            audio_token: 5,
+            asr_text: Some(7),
+            fim_prefix: Some(8),
+            fim_middle: Some(9),
+            fim_suffix: Some(10),
+            fim_pad: Some(11),
+            eos: 6,
+            eos_alt: Some(6),
+            pad: 0,
+        };
+        let stop_ids = collect_stop_token_ids(&specials);
+        assert_eq!(stop_ids, vec![2, 6]);
+    }
+
+    #[test]
+    fn language_none_loop_detection() {
+        assert!(looks_like_language_none_loop(
+            "<|fim_middle|>language Nonelanguage Nonelanguage None"
+        ));
+        assert!(!looks_like_language_none_loop("hello world"));
+    }
+
+    #[test]
+    fn sort_dedup_u32_works() {
+        let mut ids = vec![3, 1, 3, 2, 2];
+        sort_dedup_u32(&mut ids);
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn forced_language_name_ignores_auto_and_empty() {
+        assert_eq!(forced_language_name(None), None);
+        assert_eq!(forced_language_name(Some("")), None);
+        assert_eq!(forced_language_name(Some("Auto")), None);
+        assert_eq!(
+            forced_language_name(Some("english")),
+            Some("English".to_string())
+        );
+    }
+
+    #[test]
+    fn trim_leading_language_header_works() {
+        assert_eq!(
+            trim_leading_language_header("language English hello world"),
+            "hello world"
+        );
+        assert_eq!(
+            trim_leading_language_header("language Chinese\n你好世界"),
+            "你好世界"
+        );
+        assert_eq!(trim_leading_language_header("plain text"), "plain text");
+    }
+
+    #[test]
+    fn parse_asr_dtype_handles_common_aliases() {
+        assert_eq!(parse_asr_dtype(Some("bf16")), Some(DType::BF16));
+        assert_eq!(parse_asr_dtype(Some("bfloat16")), Some(DType::BF16));
+        assert_eq!(parse_asr_dtype(Some("fp16")), Some(DType::F16));
+        assert_eq!(parse_asr_dtype(Some("float32")), Some(DType::F32));
+        assert_eq!(parse_asr_dtype(Some("unknown")), None);
+    }
 }

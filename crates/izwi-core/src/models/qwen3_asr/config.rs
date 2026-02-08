@@ -8,6 +8,10 @@ use crate::models::qwen3::Qwen3Config;
 pub struct Qwen3AsrConfig {
     #[serde(default)]
     pub model_type: Option<String>,
+    #[serde(default)]
+    pub quantization: Option<serde_json::Value>,
+    #[serde(default)]
+    pub quantization_config: Option<serde_json::Value>,
     pub thinker_config: ThinkerConfig,
     #[serde(default)]
     pub support_languages: Vec<String>,

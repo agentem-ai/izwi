@@ -16,6 +16,11 @@ pub struct SpecialTokenIds {
     pub audio_start: u32,
     pub audio_end: u32,
     pub audio_token: u32,
+    pub asr_text: Option<u32>,
+    pub fim_prefix: Option<u32>,
+    pub fim_middle: Option<u32>,
+    pub fim_suffix: Option<u32>,
+    pub fim_pad: Option<u32>,
     pub eos: u32,
     pub eos_alt: Option<u32>,
     pub pad: u32,
@@ -74,6 +79,11 @@ impl AsrTokenizer {
         let audio_token = id_for("<|audio_pad|>").ok_or_else(|| {
             Error::TokenizationError("Missing <|audio_pad|> token id".to_string())
         })?;
+        let asr_text = id_for("<asr_text>");
+        let fim_prefix = id_for("<|fim_prefix|>");
+        let fim_middle = id_for("<|fim_middle|>");
+        let fim_suffix = id_for("<|fim_suffix|>");
+        let fim_pad = id_for("<|fim_pad|>");
 
         let eos = config
             .eos_token
@@ -96,6 +106,11 @@ impl AsrTokenizer {
                 audio_start,
                 audio_end,
                 audio_token,
+                asr_text,
+                fim_prefix,
+                fim_middle,
+                fim_suffix,
+                fim_pad,
                 eos,
                 eos_alt,
                 pad,
