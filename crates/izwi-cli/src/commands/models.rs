@@ -1,8 +1,9 @@
 use crate::error::{CliError, Result};
 use crate::http;
 use crate::style::Theme;
+use crate::utils;
 use crate::{ModelCommands, OutputFormat};
-use comfy_table::Table;
+use comfy_table::{Cell, CellAlignment, Color, Table};
 use console::style;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -68,6 +69,10 @@ async fn list_models(
 
     let payload: AdminModelsResponse = response.json().await?;
     let mut models = payload.models;
+    for model in &mut models {
+        reconcile_local_state(model);
+    }
+
     if local {
         models.retain(|m| m.status != "not_downloaded");
     }
@@ -117,22 +122,34 @@ fn print_models_table(models: &[AdminModelInfo], detailed: bool) {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "-".to_string());
             table.add_row(vec![
-                style(&model.variant).cyan().to_string(),
-                status_color(&model.status),
-                size,
-                progress,
-                local_path,
+                Cell::new(&model.variant).fg(Color::Cyan),
+                status_cell(&model.status),
+                Cell::new(size).set_alignment(CellAlignment::Right),
+                Cell::new(progress).set_alignment(CellAlignment::Right),
+                Cell::new(local_path),
             ]);
         } else {
             table.add_row(vec![
-                style(&model.variant).cyan().to_string(),
-                status_color(&model.status),
-                size,
+                Cell::new(&model.variant).fg(Color::Cyan),
+                status_cell(&model.status),
+                Cell::new(size).set_alignment(CellAlignment::Right),
             ]);
         }
     }
 
     println!("{}", table);
+}
+
+fn status_cell(status: &str) -> Cell {
+    let color = match status {
+        "ready" | "downloaded" => Color::Green,
+        "downloading" => Color::Yellow,
+        "loading" => Color::Blue,
+        "not_downloaded" => Color::DarkGrey,
+        "error" => Color::Red,
+        _ => Color::DarkGrey,
+    };
+    Cell::new(status).fg(color)
 }
 
 fn status_color(status: &str) -> String {
@@ -174,6 +191,8 @@ async fn show_model_info(
     }
 
     let info: AdminModelInfo = response.json().await?;
+    let mut info = info;
+    reconcile_local_state(&mut info);
 
     if json || matches!(format, OutputFormat::Json) {
         println!("{}", serde_json::to_string_pretty(&info)?);
@@ -248,6 +267,8 @@ async fn load_model(server: &str, model: &str, wait: bool) -> Result<()> {
             }
 
             let info: AdminModelInfo = resp.json().await?;
+            let mut info = info;
+            reconcile_local_state(&mut info);
             if info.status == "ready" {
                 theme.step(3, 3, "Model is ready");
                 return Ok(());
@@ -335,6 +356,8 @@ async fn show_download_progress(server: &str, model: Option<&str>) -> Result<()>
     }
 
     let info: AdminModelInfo = response.json().await?;
+    let mut info = info;
+    reconcile_local_state(&mut info);
     println!("{}: {}", style("Variant").bold(), info.variant);
     println!("{}: {}", style("Status").bold(), status_color(&info.status));
     println!(
@@ -346,4 +369,21 @@ async fn show_download_progress(server: &str, model: Option<&str>) -> Result<()>
     );
 
     Ok(())
+}
+
+fn reconcile_local_state(model: &mut AdminModelInfo) {
+    if model.status != "not_downloaded" || model.local_path.is_some() {
+        return;
+    }
+
+    if let Some(path) = utils::model_dir_if_present(&model.variant) {
+        model.status = "downloaded".to_string();
+        if model.size_bytes.is_none() {
+            model.size_bytes = utils::directory_size_bytes(&path);
+        }
+        model.local_path = Some(path);
+        if model.download_progress.is_none() {
+            model.download_progress = Some(100.0);
+        }
+    }
 }
