@@ -1,7 +1,8 @@
 use crate::error::Result;
 use crate::http;
 use crate::style::Theme;
-use comfy_table::Table;
+use crate::utils;
+use comfy_table::{Cell, CellAlignment, Color, Table};
 use console::style;
 
 pub async fn execute(
@@ -82,25 +83,41 @@ async fn show_status(server: &str, detailed: bool) -> Result<()> {
                         .get("variant")
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown");
-                    let status = model
+                    let mut status = model
                         .get("status")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let size = model
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let mut size = model
                         .get("size_bytes")
                         .and_then(|v| v.as_u64())
                         .map(|s| humansize::format_size(s, humansize::BINARY))
                         .unwrap_or_else(|| "-".to_string());
 
-                    let status_color = match status {
-                        "ready" => style(status).green().to_string(),
-                        "downloading" => style(status).yellow().to_string(),
-                        "loading" => style(status).blue().to_string(),
-                        "error" => style(status).red().to_string(),
-                        _ => style(status).dim().to_string(),
+                    if status == "not_downloaded" {
+                        if let Some(path) = utils::model_dir_if_present(id) {
+                            status = "downloaded".to_string();
+                            if size == "-" {
+                                if let Some(bytes) = utils::directory_size_bytes(&path) {
+                                    size = humansize::format_size(bytes, humansize::BINARY);
+                                }
+                            }
+                        }
+                    }
+
+                    let status_cell = match status.as_str() {
+                        "ready" | "downloaded" => Cell::new(&status).fg(Color::Green),
+                        "downloading" => Cell::new(&status).fg(Color::Yellow),
+                        "loading" => Cell::new(&status).fg(Color::Blue),
+                        "error" => Cell::new(&status).fg(Color::Red),
+                        _ => Cell::new(&status).fg(Color::DarkGrey),
                     };
 
-                    table.add_row(vec![style(id).cyan().to_string(), status_color, size]);
+                    table.add_row(vec![
+                        Cell::new(id).fg(Color::Cyan),
+                        status_cell,
+                        Cell::new(size).set_alignment(CellAlignment::Right),
+                    ]);
                 }
 
                 println!("{}", table);

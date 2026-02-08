@@ -605,7 +605,9 @@ impl Qwen3TtsModel {
 
         let mut tts_overlay_ids = vec![self.specials.tts_pad_token_id; prefix_len - 2];
         tts_overlay_ids.push(self.specials.tts_bos_token_id);
-        let tts_overlay = self.talker.get_projected_text_embeddings(&tts_overlay_ids)?;
+        let tts_overlay = self
+            .talker
+            .get_projected_text_embeddings(&tts_overlay_ids)?;
         let codec_hidden = tts_overlay.broadcast_add(&codec_without_last)?;
 
         let mut hidden = Tensor::cat(&[&role_prefix, &codec_hidden], 1)?;

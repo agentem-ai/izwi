@@ -1,8 +1,18 @@
 use crate::error::{CliError, Result};
 use crate::http;
 use crate::style::Theme;
+use crate::utils;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
+use serde::Deserialize;
+use std::path::PathBuf;
+
+#[derive(Debug, Deserialize)]
+struct ModelState {
+    variant: String,
+    status: String,
+    local_path: Option<PathBuf>,
+}
 
 pub async fn execute(
     model: String,
@@ -21,17 +31,31 @@ pub async fn execute(
 
         if let Ok(r) = resp {
             if r.status().as_u16() == 200 {
-                theme.info(&format!("Model '{}' already exists", model));
-                if !yes {
-                    let confirm = dialoguer::Confirm::new()
-                        .with_prompt("Re-download?")
-                        .default(false)
-                        .interact()
-                        .map_err(|e| CliError::Other(e.to_string()))?;
+                if let Ok(state) = r.json::<ModelState>().await {
+                    let has_local_files = state
+                        .local_path
+                        .as_ref()
+                        .filter(|path| path.is_dir())
+                        .is_some()
+                        || utils::model_dir_if_present(&state.variant).is_some();
 
-                    if !confirm {
-                        println!("Cancelled.");
-                        return Ok(());
+                    if state.status != "not_downloaded" || has_local_files {
+                        theme.info(&format!(
+                            "Model '{}' is currently '{}'",
+                            model, state.status
+                        ));
+                        if !yes {
+                            let confirm = dialoguer::Confirm::new()
+                                .with_prompt("Re-download?")
+                                .default(false)
+                                .interact()
+                                .map_err(|e| CliError::Other(e.to_string()))?;
+
+                            if !confirm {
+                                println!("Cancelled.");
+                                return Ok(());
+                            }
+                        }
                     }
                 }
             }

@@ -1,7 +1,8 @@
 use crate::error::{CliError, Result};
 use crate::http;
+use crate::utils;
 use crate::OutputFormat;
-use comfy_table::Table;
+use comfy_table::{Cell, CellAlignment, Color, Table};
 use console::style;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -44,6 +45,10 @@ pub async fn execute(
 
     let payload: AdminModelsResponse = response.json().await?;
     let mut models = payload.models;
+    for model in &mut models {
+        reconcile_local_state(model);
+    }
+
     if local {
         models.retain(|m| m.status != "not_downloaded");
     }
@@ -75,15 +80,6 @@ fn print_models_table(models: &[ModelRecord], detailed: bool) {
     }
 
     for model in models {
-        let status_colored = match model.status.as_str() {
-            "ready" => style(&model.status).green().to_string(),
-            "downloaded" => style(&model.status).green().to_string(),
-            "downloading" => style(&model.status).yellow().to_string(),
-            "loading" => style(&model.status).blue().to_string(),
-            "error" => style(&model.status).red().to_string(),
-            _ => style(&model.status).dim().to_string(),
-        };
-
         let size = model
             .size_bytes
             .map(|s| humansize::format_size(s, humansize::BINARY))
@@ -100,17 +96,17 @@ fn print_models_table(models: &[ModelRecord], detailed: bool) {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "-".to_string());
             table.add_row(vec![
-                style(&model.variant).cyan().to_string(),
-                status_colored,
-                size,
-                progress,
-                path,
+                Cell::new(&model.variant).fg(Color::Cyan),
+                status_cell(&model.status),
+                Cell::new(size).set_alignment(CellAlignment::Right),
+                Cell::new(progress).set_alignment(CellAlignment::Right),
+                Cell::new(path),
             ]);
         } else {
             table.add_row(vec![
-                style(&model.variant).cyan().to_string(),
-                status_colored,
-                size,
+                Cell::new(&model.variant).fg(Color::Cyan),
+                status_cell(&model.status),
+                Cell::new(size).set_alignment(CellAlignment::Right),
             ]);
         }
     }
@@ -122,4 +118,33 @@ fn print_models_table(models: &[ModelRecord], detailed: bool) {
         style("Tip").yellow().bold(),
         style("izwi pull <model>").cyan()
     );
+}
+
+fn status_cell(status: &str) -> Cell {
+    let color = match status {
+        "ready" | "downloaded" => Color::Green,
+        "downloading" => Color::Yellow,
+        "loading" => Color::Blue,
+        "error" => Color::Red,
+        "not_downloaded" => Color::DarkGrey,
+        _ => Color::DarkGrey,
+    };
+    Cell::new(status).fg(color)
+}
+
+fn reconcile_local_state(model: &mut ModelRecord) {
+    if model.status != "not_downloaded" || model.local_path.is_some() {
+        return;
+    }
+
+    if let Some(path) = utils::model_dir_if_present(&model.variant) {
+        model.status = "downloaded".to_string();
+        if model.size_bytes.is_none() {
+            model.size_bytes = utils::directory_size_bytes(&path);
+        }
+        model.local_path = Some(path);
+        if model.download_progress.is_none() {
+            model.download_progress = Some(100.0);
+        }
+    }
 }

@@ -97,12 +97,12 @@ impl InferenceEngine {
                                 .await?
                         };
 
-                    let fallback_text = fallback_model.transcribe(&samples, sample_rate, language)?;
+                    let fallback_text =
+                        fallback_model.transcribe(&samples, sample_rate, language)?;
                     if !fallback_text.trim().is_empty() {
                         warn!(
                             "ASR fallback recovered empty quantized output: {} -> {}",
-                            variant,
-                            fallback_variant
+                            variant, fallback_variant
                         );
                         text = fallback_text;
                     }
