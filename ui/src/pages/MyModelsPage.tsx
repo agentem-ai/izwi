@@ -306,14 +306,14 @@ function getStatusLabel(status: ModelInfo["status"]): string {
 function getStatusColor(status: ModelInfo["status"]): string {
   switch (status) {
     case "ready":
-      return "bg-green-500";
+      return "bg-white";
     case "downloaded":
-      return "bg-blue-500";
+      return "bg-gray-300";
     case "downloading":
     case "loading":
-      return "bg-yellow-500";
+      return "bg-gray-400";
     case "error":
-      return "bg-red-500";
+      return "bg-gray-600";
     default:
       return "bg-gray-500";
   }
@@ -464,7 +464,7 @@ export function MyModelsPage({
               />
             </button>
           )}
-          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#161616] border border-[#2a2a2a]">
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#141414] border border-[#262626]">
             <HardDrive className="w-4 h-4 text-gray-500" />
             <div className="text-sm">
               <span className="text-white font-medium">
@@ -502,7 +502,7 @@ export function MyModelsPage({
             "flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm transition-colors",
             showFilters
               ? "bg-[#1a1a1a] border-[#404040] text-white"
-              : "bg-[#161616] border-[#2a2a2a] text-gray-400 hover:text-white",
+              : "bg-[#141414] border-[#262626] text-gray-400 hover:text-white",
           )}
         >
           <Filter className="w-4 h-4" />
@@ -528,7 +528,7 @@ export function MyModelsPage({
             exit={{ opacity: 0, height: 0 }}
             className="overflow-hidden mb-6"
           >
-            <div className="p-4 rounded-lg bg-[#161616] border border-[#2a2a2a]">
+            <div className="p-4 rounded-lg bg-[#141414] border border-[#262626]">
               <div className="flex flex-wrap gap-6">
                 {/* Status filter */}
                 <div>
@@ -630,7 +630,7 @@ export function MyModelsPage({
             return (
               <div
                 key={model.variant}
-                className="p-3 rounded-lg bg-[#161616] border border-[#2a2a2a] hover:border-[#3a3a3a] transition-colors"
+                className="p-3 rounded-lg bg-[#141414] border border-[#262626] hover:border-[#333333] transition-colors"
               >
                 <div className="flex items-center gap-3">
                   {/* Status indicator */}
@@ -725,14 +725,14 @@ export function MyModelsPage({
                           <div className="flex items-center gap-1">
                             <button
                               onClick={() => handleDelete(model.variant)}
-                              className="p-1.5 rounded bg-red-500 text-white hover:bg-red-600 transition-colors"
+                              className="p-1.5 rounded bg-white text-black hover:bg-gray-200 transition-colors"
                               title="Confirm delete"
                             >
                               <Check className="w-3.5 h-3.5" />
                             </button>
                             <button
                               onClick={() => setConfirmDelete(null)}
-                              className="p-1.5 rounded bg-[#2a2a2a] text-gray-400 hover:text-white transition-colors"
+                              className="p-1.5 rounded bg-[#262626] text-gray-400 hover:text-white transition-colors"
                               title="Cancel"
                             >
                               <X className="w-3.5 h-3.5" />
@@ -741,7 +741,7 @@ export function MyModelsPage({
                         ) : (
                           <button
                             onClick={() => setConfirmDelete(model.variant)}
-                            className="p-1.5 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                            className="p-1.5 rounded text-gray-500 hover:text-white hover:bg-[#262626] transition-colors"
                             title="Delete model"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -754,7 +754,7 @@ export function MyModelsPage({
                       <>
                         <button
                           onClick={() => onUnload(model.variant)}
-                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#1f1f1f] border border-[#2a2a2a] text-white text-xs font-medium hover:bg-[#2a2a2a] transition-colors"
+                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#1f1f1f] border border-[#262626] text-white text-xs font-medium hover:bg-[#262626] transition-colors"
                         >
                           <Square className="w-3.5 h-3.5" />
                           <span className="hidden sm:inline">Unload</span>
@@ -763,14 +763,14 @@ export function MyModelsPage({
                           <div className="flex items-center gap-1">
                             <button
                               onClick={() => handleDelete(model.variant)}
-                              className="p-1.5 rounded bg-red-500 text-white hover:bg-red-600 transition-colors"
+                              className="p-1.5 rounded bg-white text-black hover:bg-gray-200 transition-colors"
                               title="Confirm delete"
                             >
                               <Check className="w-3.5 h-3.5" />
                             </button>
                             <button
                               onClick={() => setConfirmDelete(null)}
-                              className="p-1.5 rounded bg-[#2a2a2a] text-gray-400 hover:text-white transition-colors"
+                              className="p-1.5 rounded bg-[#262626] text-gray-400 hover:text-white transition-colors"
                               title="Cancel"
                             >
                               <X className="w-3.5 h-3.5" />
@@ -779,7 +779,7 @@ export function MyModelsPage({
                         ) : (
                           <button
                             onClick={() => setConfirmDelete(model.variant)}
-                            className="p-1.5 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                            className="p-1.5 rounded text-gray-500 hover:text-white hover:bg-[#262626] transition-colors"
                             title="Delete model"
                           >
                             <Trash2 className="w-3.5 h-3.5" />

@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 body {
-  @apply bg-[#0d0d0d] text-gray-100 antialiased;
+  @apply bg-[#0a0a0a] text-gray-100 antialiased;
   min-height: 100vh;
 }
 
@@ -27,9 +27,10 @@ body {
   background: rgba(255, 255, 255, 0.25);
 }
 
-/* Card */
+/* Card - subtle lift with shadow */
 .card {
-  @apply bg-[#161616] border border-[#2a2a2a] rounded-lg;
+  @apply bg-[#141414] border border-[#262626] rounded-lg;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 /* Button styles */
@@ -43,7 +44,7 @@ body {
 }
 
 .btn-secondary {
-  @apply bg-[#1f1f1f] hover:bg-[#2a2a2a] text-white border border-[#2a2a2a];
+  @apply bg-[#1f1f1f] hover:bg-[#262626] text-gray-200 border border-[#333333];
 }
 
 .btn-ghost {
@@ -51,22 +52,22 @@ body {
 }
 
 .btn-danger {
-  @apply bg-transparent hover:bg-red-950 text-red-400 border border-red-900/50;
+  @apply bg-transparent hover:bg-[#1f1f1f] text-gray-400 hover:text-white border border-[#333333];
 }
 
-/* Input styles */
+/* Input styles - slightly elevated from cards */
 .input {
-  @apply w-full bg-[#161616] border border-[#2a2a2a] rounded-md px-3 py-2;
-  @apply text-white placeholder-gray-600;
-  @apply focus:outline-none focus:border-[#404040];
-  @apply transition-colors duration-150;
+  @apply w-full bg-[#1a1a1a] border border-[#333333] rounded-md px-3 py-2;
+  @apply text-white placeholder-gray-500;
+  @apply focus:outline-none focus:border-gray-500 focus:ring-1 focus:ring-gray-500/20;
+  @apply transition-all duration-150;
 }
 
 .textarea {
-  @apply w-full bg-[#161616] border border-[#2a2a2a] rounded-md px-3 py-3;
-  @apply text-white placeholder-gray-600 resize-none;
-  @apply focus:outline-none focus:border-[#404040];
-  @apply transition-colors duration-150;
+  @apply w-full bg-[#1a1a1a] border border-[#333333] rounded-md px-3 py-3;
+  @apply text-white placeholder-gray-500 resize-none;
+  @apply focus:outline-none focus:border-gray-500 focus:ring-1 focus:ring-gray-500/20;
+  @apply transition-all duration-150;
 }
 
 
@@ -80,25 +81,25 @@ body {
   @apply transition-all duration-300 ease-out;
 }
 
-/* Status indicator */
+/* Status indicator - monochrome with different fills */
 .status-dot {
   @apply w-1.5 h-1.5 rounded-full;
 }
 
 .status-dot-ready {
-  @apply bg-green-500;
+  @apply bg-white;
 }
 
 .status-dot-downloading {
-  @apply bg-blue-500 animate-pulse;
+  @apply bg-gray-400 animate-pulse;
 }
 
 .status-dot-loading {
-  @apply bg-blue-500 animate-pulse;
+  @apply bg-gray-400 animate-pulse;
 }
 
 .status-dot-error {
-  @apply bg-red-500;
+  @apply bg-gray-600;
 }
 
 /* Custom audio player - dark theme styling */

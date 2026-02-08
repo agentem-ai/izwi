@@ -96,7 +96,7 @@ export function Layout({
   return (
     <div className="min-h-screen flex bg-[#0d0d0d]">
       {/* Mobile header */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-[#0d0d0d] border-b border-[#2a2a2a]">
+      <div className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-[#0a0a0a] border-b border-[#262626]">
         <div className="flex items-center justify-between p-4">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
@@ -131,13 +131,13 @@ export function Layout({
       {/* Sidebar */}
       <aside
         className={clsx(
-          "w-64 border-r border-[#2a2a2a] flex flex-col fixed h-full z-50 bg-[#0d0d0d] transition-transform duration-300",
+          "w-64 border-r border-[#262626] flex flex-col fixed h-full z-50 bg-[#0a0a0a] transition-transform duration-300",
           "lg:translate-x-0",
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
         {/* Logo - hidden on mobile since it's in the header */}
-        <div className="hidden lg:block p-4 border-b border-[#2a2a2a]">
+        <div className="hidden lg:block p-4 border-b border-[#262626]">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 bg-white rounded-lg flex items-center justify-center">
               <Waves className="w-5 h-5 text-black" />
@@ -157,9 +157,9 @@ export function Layout({
                 to={item.path}
                 className={({ isActive }) =>
                   clsx(
-                    "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors group",
+                    "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all group",
                     isActive
-                      ? "bg-[#1a1a1a] border border-[#2a2a2a]"
+                      ? "bg-[#1a1a1a] border border-[#333333]"
                       : "hover:bg-[#161616] border border-transparent",
                   )
                 }
@@ -168,10 +168,10 @@ export function Layout({
                   <>
                     <div
                       className={clsx(
-                        "p-2 rounded-lg transition-colors",
+                        "p-2 rounded-lg transition-all",
                         isActive
                           ? "bg-white text-black"
-                          : "bg-[#1f1f1f] text-gray-400 group-hover:text-gray-300",
+                          : "bg-[#1f1f1f] text-gray-400 group-hover:text-gray-300 group-hover:bg-[#262626]",
                       )}
                     >
                       <item.icon className="w-4 h-4" />
@@ -198,16 +198,16 @@ export function Layout({
           </div>
 
           {/* Bottom navigation section */}
-          <div className="mt-auto pt-3 space-y-1 border-t border-[#2a2a2a]">
+          <div className="mt-auto pt-3 space-y-1 border-t border-[#262626]">
             {BOTTOM_NAV_ITEMS.map((item) => (
               <NavLink
                 key={item.id}
                 to={item.path}
                 className={({ isActive }) =>
                   clsx(
-                    "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors group",
+                    "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all group",
                     isActive
-                      ? "bg-[#1a1a1a] border border-[#2a2a2a]"
+                      ? "bg-[#1a1a1a] border border-[#333333]"
                       : "hover:bg-[#161616] border border-transparent",
                   )
                 }
@@ -216,10 +216,10 @@ export function Layout({
                   <>
                     <div
                       className={clsx(
-                        "p-2 rounded-lg transition-colors",
+                        "p-2 rounded-lg transition-all",
                         isActive
                           ? "bg-white text-black"
-                          : "bg-[#1f1f1f] text-gray-400 group-hover:text-gray-300",
+                          : "bg-[#1f1f1f] text-gray-400 group-hover:text-gray-300 group-hover:bg-[#262626]",
                       )}
                     >
                       <item.icon className="w-4 h-4" />
@@ -247,12 +247,12 @@ export function Layout({
         </nav>
 
         {/* Footer */}
-        <div className="p-4 border-t border-[#2a2a2a]">
+        <div className="p-4 border-t border-[#262626]">
           <div className="flex items-center justify-between">
             <div className="text-xs text-gray-500">
               {readyModelsCount > 0 ? (
                 <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-white" />
                   {readyModelsCount} model{readyModelsCount !== 1 ? "s" : ""}{" "}
                   loaded
                 </span>
@@ -283,12 +283,12 @@ export function Layout({
               exit={{ opacity: 0, y: -10 }}
               className="fixed top-4 left-1/2 -translate-x-1/2 z-50"
             >
-              <div className="flex items-center gap-3 px-4 py-2.5 rounded bg-[#1a1a1a] border border-red-900/50">
-                <AlertCircle className="w-4 h-4 text-red-400" />
-                <span className="text-sm text-red-200">{error}</span>
+              <div className="flex items-center gap-3 px-4 py-2.5 rounded bg-[#1a1a1a] border border-[#333333]">
+                <AlertCircle className="w-4 h-4 text-gray-400" />
+                <span className="text-sm text-gray-300">{error}</span>
                 <button
                   onClick={onErrorDismiss}
-                  className="p-1 rounded hover:bg-[#2a2a2a] transition-colors"
+                  className="p-1 rounded hover:bg-[#262626] transition-colors"
                 >
                   <X className="w-3.5 h-3.5 text-gray-500" />
                 </button>
