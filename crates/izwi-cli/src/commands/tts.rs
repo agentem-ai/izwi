@@ -1,9 +1,9 @@
 use crate::error::{CliError, Result};
+use crate::http;
 use crate::style::Theme;
 use crate::AudioFormat;
-use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 
 pub struct TtsArgs {
@@ -19,24 +19,36 @@ pub struct TtsArgs {
 }
 
 pub async fn execute(args: TtsArgs, server: &str, theme: &Theme) -> Result<()> {
+    let TtsArgs {
+        text,
+        model,
+        speaker,
+        output,
+        format,
+        speed,
+        temperature,
+        stream,
+        play,
+    } = args;
+
     // Read text from stdin if "-"
-    let text = if args.text == "-" {
+    let text = if text == "-" {
         let mut buffer = String::new();
         std::io::stdin()
             .read_to_string(&mut buffer)
             .map_err(|e| CliError::Io(e))?;
         buffer
     } else {
-        args.text
+        text
     };
 
     if text.trim().is_empty() {
         return Err(CliError::InvalidInput("Text cannot be empty".to_string()));
     }
 
-    theme.step(1, 2, &format!("Generating speech with '{}'...", args.model));
+    theme.step(1, 2, &format!("Generating speech with '{}'...", model));
 
-    let format_str = match args.format {
+    let format_str = match format {
         AudioFormat::Wav => "wav",
         AudioFormat::Mp3 => "mp3",
         AudioFormat::Ogg => "ogg",
@@ -45,22 +57,20 @@ pub async fn execute(args: TtsArgs, server: &str, theme: &Theme) -> Result<()> {
     };
 
     let request_body = serde_json::json!({
-        "model": args.model,
+        "model": model,
         "input": text,
-        "voice": args.speaker,
-        "speed": args.speed,
-        "temperature": args.temperature,
+        "voice": speaker,
+        "speed": speed,
+        "temperature": temperature,
         "response_format": format_str,
+        "stream": stream,
     });
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .map_err(|e| CliError::Other(e.to_string()))?;
+    let client = http::client(Some(std::time::Duration::from_secs(300)))?;
 
     let start_time = std::time::Instant::now();
 
-    if args.stream {
+    if stream {
         // Streaming mode
         let pb = ProgressBar::new_spinner();
         pb.set_style(
@@ -93,7 +103,7 @@ pub async fn execute(args: TtsArgs, server: &str, theme: &Theme) -> Result<()> {
             .await
             .map_err(|e| CliError::Other(e.to_string()))?;
 
-        handle_output(audio_data, args.output, args.play, theme).await?;
+        handle_output(audio_data, output.clone(), format.clone(), play, theme).await?;
     } else {
         // Non-streaming mode
         let pb = ProgressBar::new(100);
@@ -130,7 +140,7 @@ pub async fn execute(args: TtsArgs, server: &str, theme: &Theme) -> Result<()> {
 
         pb.finish_with_message("Complete");
 
-        handle_output(audio_data, args.output, args.play, theme).await?;
+        handle_output(audio_data, output, format, play, theme).await?;
     }
 
     let duration = start_time.elapsed();
@@ -142,6 +152,7 @@ pub async fn execute(args: TtsArgs, server: &str, theme: &Theme) -> Result<()> {
 async fn handle_output(
     audio_data: bytes::Bytes,
     output: Option<PathBuf>,
+    format: AudioFormat,
     _play: bool,
     theme: &Theme,
 ) -> Result<()> {
@@ -150,7 +161,14 @@ async fn handle_output(
         None => {
             // Generate default filename
             let timestamp = chrono::Utc::now().timestamp();
-            PathBuf::from(format!("izwi_output_{}.wav", timestamp))
+            let extension = match format {
+                AudioFormat::Wav => "wav",
+                AudioFormat::Mp3 => "mp3",
+                AudioFormat::Ogg => "ogg",
+                AudioFormat::Flac => "flac",
+                AudioFormat::Aac => "aac",
+            };
+            PathBuf::from(format!("izwi_output_{}.{}", timestamp, extension))
         }
     };
 

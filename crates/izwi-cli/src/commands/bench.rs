@@ -1,7 +1,9 @@
 use crate::error::{CliError, Result};
+use crate::http;
 use crate::style::Theme;
 use crate::BenchCommands;
-use base64;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use indicatif::{ProgressBar, ProgressStyle};
 
 pub async fn execute(command: BenchCommands, server: &str, theme: &Theme) -> Result<()> {
@@ -33,6 +35,12 @@ async fn bench_tts(
     warmup: bool,
     theme: &Theme,
 ) -> Result<()> {
+    if iterations == 0 {
+        return Err(CliError::InvalidInput(
+            "Iterations must be greater than 0".to_string(),
+        ));
+    }
+
     theme.step(1, 3, &format!("Benchmarking TTS with '{}'", model));
 
     if warmup {
@@ -91,10 +99,16 @@ async fn bench_asr(
     warmup: bool,
     theme: &Theme,
 ) -> Result<()> {
+    if iterations == 0 {
+        return Err(CliError::InvalidInput(
+            "Iterations must be greater than 0".to_string(),
+        ));
+    }
+
     theme.step(1, 3, &format!("Benchmarking ASR with '{}'", model));
 
     // Use sample audio if no file provided
-    let audio_file = file.unwrap_or_else(|| std::path::PathBuf::from("test.wav"));
+    let audio_file = file.unwrap_or_else(|| std::path::PathBuf::from("data/test.wav"));
 
     if !audio_file.exists() {
         return Err(CliError::InvalidInput(format!(
@@ -144,20 +158,67 @@ async fn bench_throughput(
     concurrent: u32,
     theme: &Theme,
 ) -> Result<()> {
+    if duration == 0 {
+        return Err(CliError::InvalidInput(
+            "Duration must be greater than 0 seconds".to_string(),
+        ));
+    }
+    if concurrent == 0 {
+        return Err(CliError::InvalidInput(
+            "Concurrent requests must be greater than 0".to_string(),
+        ));
+    }
+
     theme.step(
         1,
         1,
         &format!("Throughput test: {}s, {} concurrent", duration, concurrent),
     );
 
-    println!("Running throughput benchmark...");
-    theme.info("Throughput benchmarking would run concurrent requests here");
+    println!("Running throughput benchmark against /v1/health...");
+    let client = http::client(Some(std::time::Duration::from_secs(5)))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(duration);
+
+    let mut workers = Vec::new();
+    for _ in 0..concurrent {
+        let client = client.clone();
+        let server = server.to_string();
+        workers.push(tokio::spawn(async move {
+            let mut success = 0u64;
+            let mut failed = 0u64;
+            while std::time::Instant::now() < deadline {
+                match client.get(format!("{}/v1/health", server)).send().await {
+                    Ok(resp) if resp.status().is_success() => success += 1,
+                    _ => failed += 1,
+                }
+            }
+            (success, failed)
+        }));
+    }
+
+    let mut success = 0u64;
+    let mut failed = 0u64;
+    for worker in workers {
+        let (ok, err) = worker
+            .await
+            .map_err(|e| CliError::Other(format!("Benchmark worker failed: {}", e)))?;
+        success += ok;
+        failed += err;
+    }
+
+    let total = success + failed;
+    let rps = total as f64 / duration as f64;
+    println!("\n{}", console::style("Results:").bold().underlined());
+    println!("  Successful: {:.0}", success);
+    println!("  Failed:     {:.0}", failed);
+    println!("  Total:      {:.0}", total);
+    println!("  Throughput: {:.2} req/s", rps);
 
     Ok(())
 }
 
 async fn run_tts_request(server: &str, model: &str, text: &str) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http::client(Some(std::time::Duration::from_secs(300)))?;
     let request_body = serde_json::json!({
         "model": model,
         "input": text,
@@ -186,12 +247,12 @@ async fn run_tts_request(server: &str, model: &str, text: &str) -> Result<()> {
 
 async fn run_asr_request(server: &str, model: &str, file: &std::path::PathBuf) -> Result<()> {
     let audio_data = tokio::fs::read(file).await.map_err(|e| CliError::Io(e))?;
-    let audio_base64 = base64::encode(&audio_data);
+    let audio_base64 = STANDARD.encode(&audio_data);
 
-    let client = reqwest::Client::new();
+    let client = http::client(Some(std::time::Duration::from_secs(300)))?;
     let request_body = serde_json::json!({
         "model": model,
-        "file": format!("data:audio/wav;base64,{}", audio_base64),
+        "audio_base64": audio_base64,
     });
 
     let response = client
@@ -214,8 +275,12 @@ async fn run_asr_request(server: &str, model: &str, file: &std::path::PathBuf) -
 }
 
 fn percentile(data: &[f64], p: f64) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
+
     let mut sorted = data.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.total_cmp(b));
     let index = (p * (sorted.len() - 1) as f64) as usize;
     sorted[index]
 }

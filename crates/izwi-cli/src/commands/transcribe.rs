@@ -1,6 +1,8 @@
 use crate::error::{CliError, Result};
+use crate::http;
 use crate::TranscriptFormat;
-use base64;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use std::path::PathBuf;
 
 pub struct TranscribeArgs {
@@ -13,34 +15,50 @@ pub struct TranscribeArgs {
 }
 
 pub async fn execute(args: TranscribeArgs, server: &str) -> Result<()> {
+    let TranscribeArgs {
+        file,
+        model,
+        language,
+        format,
+        output,
+        word_timestamps,
+    } = args;
+
     // Verify file exists
-    if !args.file.exists() {
+    if !file.exists() {
         return Err(CliError::InvalidInput(format!(
             "File not found: {}",
-            args.file.display()
+            file.display()
         )));
     }
 
     // Read audio file
-    let audio_data = tokio::fs::read(&args.file)
-        .await
-        .map_err(|e| CliError::Io(e))?;
-    let audio_base64 = base64::encode(&audio_data);
+    let audio_data = tokio::fs::read(&file).await.map_err(CliError::Io)?;
+    let audio_base64 = STANDARD.encode(&audio_data);
 
-    let format_str = match args.format {
+    let format_str = match format {
         TranscriptFormat::Text => "text",
         TranscriptFormat::Json => "json",
-        TranscriptFormat::Srt => "srt",
-        TranscriptFormat::Vtt => "vtt",
+        TranscriptFormat::VerboseJson => "verbose_json",
     };
 
-    let request_body = serde_json::json!({
-        "model": args.model,
-        "file": format!("data:audio/wav;base64,{}", audio_base64),
+    let mut request_body = serde_json::json!({
+        "model": model,
+        "audio_base64": audio_base64,
         "response_format": format_str,
     });
 
-    let client = reqwest::Client::new();
+    if let Some(language) = language {
+        request_body["language"] = serde_json::Value::String(language);
+    }
+
+    if word_timestamps {
+        eprintln!(
+            "Warning: word-level timestamps are not yet supported by the server and will be ignored."
+        );
+    }
+
+    let client = http::client(Some(std::time::Duration::from_secs(300)))?;
     let response = client
         .post(format!("{}/v1/audio/transcriptions", server))
         .json(&request_body)
@@ -63,7 +81,7 @@ pub async fn execute(args: TranscribeArgs, server: &str) -> Result<()> {
         .map_err(|e| CliError::Other(e.to_string()))?;
 
     // Output result
-    if let Some(output_path) = args.output {
+    if let Some(output_path) = output {
         tokio::fs::write(&output_path, result)
             .await
             .map_err(|e| CliError::Io(e))?;
