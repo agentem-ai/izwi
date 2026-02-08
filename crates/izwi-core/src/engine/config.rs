@@ -72,6 +72,26 @@ pub struct EngineCoreConfig {
     /// Enable request preemption when KV cache is full
     #[serde(default = "default_enable_preemption")]
     pub enable_preemption: bool,
+
+    /// Enable adaptive scheduling heuristics driven by runtime latency feedback.
+    #[serde(default = "default_enable_adaptive_batching")]
+    pub enable_adaptive_batching: bool,
+
+    /// Minimum token budget per scheduler step when adaptive batching is enabled.
+    #[serde(default = "default_min_tokens_per_step")]
+    pub min_tokens_per_step: usize,
+
+    /// Target time-to-first-token for adaptive scheduling.
+    #[serde(default = "default_target_ttft_ms")]
+    pub target_ttft_ms: f64,
+
+    /// Target time-per-output-token for adaptive scheduling.
+    #[serde(default = "default_target_decode_tpot_ms")]
+    pub target_decode_tpot_ms: f64,
+
+    /// Waiting-time interval used for priority aging in adaptive scheduling.
+    #[serde(default = "default_priority_aging_ms")]
+    pub priority_aging_ms: u64,
 }
 
 fn default_models_dir() -> PathBuf {
@@ -123,6 +143,21 @@ fn default_num_threads() -> usize {
 fn default_enable_preemption() -> bool {
     true
 }
+fn default_enable_adaptive_batching() -> bool {
+    true
+}
+fn default_min_tokens_per_step() -> usize {
+    128
+}
+fn default_target_ttft_ms() -> f64 {
+    250.0
+}
+fn default_target_decode_tpot_ms() -> f64 {
+    40.0
+}
+fn default_priority_aging_ms() -> u64 {
+    1_000
+}
 
 impl Default for EngineCoreConfig {
     fn default() -> Self {
@@ -143,6 +178,11 @@ impl Default for EngineCoreConfig {
             use_metal: default_use_metal(),
             num_threads: default_num_threads(),
             enable_preemption: default_enable_preemption(),
+            enable_adaptive_batching: default_enable_adaptive_batching(),
+            min_tokens_per_step: default_min_tokens_per_step(),
+            target_ttft_ms: default_target_ttft_ms(),
+            target_decode_tpot_ms: default_target_decode_tpot_ms(),
+            priority_aging_ms: default_priority_aging_ms(),
         }
     }
 }

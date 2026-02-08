@@ -38,9 +38,10 @@ pub mod tokenizer;
 
 // Re-export main types from the new engine module
 pub use engine::{
-    Engine, EngineCore, EngineCoreConfig, EngineCoreRequest, EngineMetrics, EngineOutput,
-    GenerationParams, KVCacheManager, ModelExecutor, OutputProcessor, RequestProcessor,
-    RequestStatus, Scheduler, SchedulerConfig, SchedulingPolicy, StreamingOutput,
+    CacheResidency, Engine, EngineCore, EngineCoreConfig, EngineCoreRequest, EngineMetrics,
+    EngineOutput, GenerationParams, KVCacheManager, ModelExecutor, OutputProcessor,
+    PinnedBlockHandle, RequestProcessor, RequestStatus, Scheduler, SchedulerConfig,
+    SchedulingPolicy, StreamingOutput,
 };
 
 // Legacy re-exports for backward compatibility

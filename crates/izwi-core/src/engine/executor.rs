@@ -103,12 +103,46 @@ impl ExecutorOutput {
 /// Note: Actual TTS/ASR inference is now handled directly by InferenceEngine.
 /// This trait is kept for compatibility and potential future use.
 pub trait ModelExecutor: Send + Sync {
-    /// Execute forward pass for scheduled requests.
-    fn execute(
+    /// Execute prefill pass for newly admitted or in-progress prefill requests.
+    fn execute_prefill(
         &self,
         requests: &[&EngineCoreRequest],
         scheduled: &[ScheduledRequest],
     ) -> Result<Vec<ExecutorOutput>>;
+
+    /// Execute decode pass for running requests.
+    fn execute_decode(
+        &self,
+        requests: &[&EngineCoreRequest],
+        scheduled: &[ScheduledRequest],
+    ) -> Result<Vec<ExecutorOutput>>;
+
+    /// Execute forward pass for scheduled requests.
+    /// Compatibility helper that executes decode and prefill paths.
+    fn execute(
+        &self,
+        requests: &[&EngineCoreRequest],
+        scheduled: &[ScheduledRequest],
+    ) -> Result<Vec<ExecutorOutput>> {
+        let mut decode = Vec::new();
+        let mut prefill = Vec::new();
+        for req in scheduled {
+            if req.is_prefill {
+                prefill.push(req.clone());
+            } else {
+                decode.push(req.clone());
+            }
+        }
+
+        let mut outputs = Vec::new();
+        if !decode.is_empty() {
+            outputs.extend(self.execute_decode(requests, &decode)?);
+        }
+        if !prefill.is_empty() {
+            outputs.extend(self.execute_prefill(requests, &prefill)?);
+        }
+        Ok(outputs)
+    }
 
     /// Check if the executor is ready.
     fn is_ready(&self) -> bool;
@@ -139,6 +173,34 @@ impl NativeExecutor {
 }
 
 impl ModelExecutor for NativeExecutor {
+    fn execute_prefill(
+        &self,
+        _requests: &[&EngineCoreRequest],
+        _scheduled: &[ScheduledRequest],
+    ) -> Result<Vec<ExecutorOutput>> {
+        if !self.initialized {
+            return Err(Error::InferenceError("Executor not initialized".into()));
+        }
+
+        Err(Error::InferenceError(
+            "Use InferenceEngine for native TTS/ASR execution".into(),
+        ))
+    }
+
+    fn execute_decode(
+        &self,
+        _requests: &[&EngineCoreRequest],
+        _scheduled: &[ScheduledRequest],
+    ) -> Result<Vec<ExecutorOutput>> {
+        if !self.initialized {
+            return Err(Error::InferenceError("Executor not initialized".into()));
+        }
+
+        Err(Error::InferenceError(
+            "Use InferenceEngine for native TTS/ASR execution".into(),
+        ))
+    }
+
     fn execute(
         &self,
         _requests: &[&EngineCoreRequest],
@@ -193,6 +255,26 @@ impl UnifiedExecutor {
     ) -> Result<Vec<ExecutorOutput>> {
         let executor = self.inner.read().await;
         executor.execute(requests, scheduled)
+    }
+
+    /// Execute prefill requests.
+    pub async fn execute_prefill(
+        &self,
+        requests: &[&EngineCoreRequest],
+        scheduled: &[ScheduledRequest],
+    ) -> Result<Vec<ExecutorOutput>> {
+        let executor = self.inner.read().await;
+        executor.execute_prefill(requests, scheduled)
+    }
+
+    /// Execute decode requests.
+    pub async fn execute_decode(
+        &self,
+        requests: &[&EngineCoreRequest],
+        scheduled: &[ScheduledRequest],
+    ) -> Result<Vec<ExecutorOutput>> {
+        let executor = self.inner.read().await;
+        executor.execute_decode(requests, scheduled)
     }
 
     /// Check if ready.

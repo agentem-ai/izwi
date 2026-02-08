@@ -38,7 +38,9 @@ mod types;
 pub use config::EngineCoreConfig;
 pub use core::EngineCore;
 pub use executor::{ExecutorOutput, ModelExecutor, WorkerConfig};
-pub use kv_cache::{BlockAllocator, KVCacheConfig as KVConfig, KVCacheManager};
+pub use kv_cache::{
+    BlockAllocator, CacheResidency, KVCacheConfig as KVConfig, KVCacheManager, PinnedBlockHandle,
+};
 pub use metrics::{BenchmarkResult, MetricsCollector, MetricsSnapshot};
 pub use output::{OutputProcessor, StreamingOutput};
 pub use request::{EngineCoreRequest, RequestProcessor, RequestStatus};

@@ -6,7 +6,7 @@
 //! - KV cache management
 //! - Output processing
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use tracing::{debug, info};
 
@@ -16,7 +16,7 @@ use super::kv_cache::{KVCacheConfig, KVCacheManager};
 use super::output::OutputProcessor;
 use super::request::{EngineCoreRequest, RequestStatus};
 use super::scheduler::{Scheduler, SchedulerConfig};
-use super::types::{EngineOutput, RequestId, SequenceId};
+use super::types::{EngineOutput, RequestId};
 use crate::error::{Error, Result};
 
 /// The engine core - manages the inference loop.
@@ -35,8 +35,6 @@ pub struct EngineCore {
     requests: HashMap<RequestId, EngineCoreRequest>,
     /// Request start times (for timing)
     request_start_times: HashMap<RequestId, Instant>,
-    /// Sequence ID counter
-    next_sequence_id: SequenceId,
     /// Whether the engine has been initialized
     initialized: bool,
 }
@@ -77,7 +75,6 @@ impl EngineCore {
             output_processor,
             requests: HashMap::new(),
             request_start_times: HashMap::new(),
-            next_sequence_id: 0,
             initialized: false,
         })
     }
@@ -148,28 +145,58 @@ impl EngineCore {
             schedule_result.decode_requests.len()
         );
 
-        // Collect requests for execution
-        let all_scheduled: Vec<_> = schedule_result
-            .prefill_requests
-            .iter()
-            .chain(schedule_result.decode_requests.iter())
-            .collect();
+        let prefill_scheduled = schedule_result.prefill_requests.clone();
+        let decode_scheduled = schedule_result.decode_requests.clone();
 
-        let request_refs: Vec<&EngineCoreRequest> = all_scheduled
+        let prefill_request_refs: Vec<&EngineCoreRequest> = prefill_scheduled
+            .iter()
+            .filter_map(|s| self.requests.get(&s.request_id))
+            .collect();
+        let decode_request_refs: Vec<&EngineCoreRequest> = decode_scheduled
             .iter()
             .filter_map(|s| self.requests.get(&s.request_id))
             .collect();
 
-        if request_refs.is_empty() {
+        if prefill_request_refs.is_empty() && decode_request_refs.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Phase 2: Execute
-        let scheduled_refs: Vec<_> = all_scheduled.iter().map(|s| (*s).clone()).collect();
-        let executor_outputs = self
-            .executor
-            .execute(&request_refs, &scheduled_refs)
-            .await?;
+        // Phase 2: Execute prefill/decode paths concurrently.
+        let decode_exec = async {
+            if decode_request_refs.is_empty() || decode_scheduled.is_empty() {
+                return Ok((Vec::new(), std::time::Duration::ZERO));
+            }
+            let started = Instant::now();
+            let outputs = self
+                .executor
+                .execute_decode(&decode_request_refs, &decode_scheduled)
+                .await?;
+            Ok::<_, Error>((outputs, started.elapsed()))
+        };
+        let prefill_exec = async {
+            if prefill_request_refs.is_empty() || prefill_scheduled.is_empty() {
+                return Ok((Vec::new(), std::time::Duration::ZERO));
+            }
+            let started = Instant::now();
+            let outputs = self
+                .executor
+                .execute_prefill(&prefill_request_refs, &prefill_scheduled)
+                .await?;
+            Ok::<_, Error>((outputs, started.elapsed()))
+        };
+
+        let (decode_result, prefill_result) = tokio::join!(decode_exec, prefill_exec);
+        let (mut decode_outputs, decode_elapsed) = decode_result?;
+        let (mut prefill_outputs, prefill_elapsed) = prefill_result?;
+
+        let decode_step_ms = decode_elapsed.as_secs_f64() * 1000.0;
+        let prefill_step_ms = prefill_elapsed.as_secs_f64() * 1000.0;
+        let decode_ids: HashSet<RequestId> = decode_scheduled
+            .iter()
+            .map(|s| s.request_id.clone())
+            .collect();
+        decode_outputs.append(&mut prefill_outputs);
+        let executor_outputs = decode_outputs;
 
         // Phase 3: Process outputs
         let mut outputs = Vec::new();
@@ -185,11 +212,21 @@ impl EngineCore {
                 .unwrap_or_default();
 
             // Get sequence ID from scheduler
-            let sequence_id = self
-                .scheduler
-                .get_running_info(&request_id)
-                .map(|(_, _)| self.next_sequence_id)
-                .unwrap_or(0);
+            let sequence_id = self.scheduler.get_sequence_id(&request_id).unwrap_or(0);
+
+            let step_time_ms = if decode_ids.contains(&request_id) {
+                decode_step_ms
+            } else {
+                prefill_step_ms
+            };
+
+            self.scheduler.update_after_step(
+                &request_id,
+                exec_output.tokens_processed,
+                exec_output.tokens_generated,
+                Vec::new(),
+                step_time_ms,
+            );
 
             // Process output
             let engine_output =
@@ -203,14 +240,6 @@ impl EngineCore {
                 self.requests.remove(&request_id);
                 self.request_start_times.remove(&request_id);
                 debug!("Finished request {}", request_id);
-            } else {
-                // Update for next step
-                self.scheduler.update_after_step(
-                    &request_id,
-                    exec_output.tokens_processed,
-                    exec_output.tokens_generated,
-                    Vec::new(),
-                );
             }
 
             outputs.push(engine_output);

@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::time::Instant;
 use tracing::debug;
 
@@ -45,6 +46,16 @@ pub struct SchedulerConfig {
     pub enable_preemption: bool,
     /// Enable VAD-triggered preemption (for audio interruption handling)
     pub enable_vad_preemption: bool,
+    /// Enable adaptive, latency-aware batching heuristics.
+    pub enable_adaptive_batching: bool,
+    /// Minimum token budget for adaptive scheduling.
+    pub min_tokens_per_step: usize,
+    /// Target time-to-first-token.
+    pub target_ttft_ms: f64,
+    /// Target decode time per output token.
+    pub target_decode_tpot_ms: f64,
+    /// Wait time interval used for priority aging.
+    pub priority_aging_ms: u64,
 }
 
 /// Preemption reason - why a request was preempted.
@@ -81,6 +92,11 @@ impl Default for SchedulerConfig {
             chunked_prefill_threshold: 256,
             enable_preemption: true,
             enable_vad_preemption: true,
+            enable_adaptive_batching: true,
+            min_tokens_per_step: 128,
+            target_ttft_ms: 250.0,
+            target_decode_tpot_ms: 40.0,
+            priority_aging_ms: 1_000,
         }
     }
 }
@@ -95,6 +111,11 @@ impl From<&EngineCoreConfig> for SchedulerConfig {
             chunked_prefill_threshold: config.chunked_prefill_threshold,
             enable_preemption: config.enable_preemption,
             enable_vad_preemption: true, // Default to enabled for audio apps
+            enable_adaptive_batching: config.enable_adaptive_batching,
+            min_tokens_per_step: config.min_tokens_per_step,
+            target_ttft_ms: config.target_ttft_ms,
+            target_decode_tpot_ms: config.target_decode_tpot_ms,
+            priority_aging_ms: config.priority_aging_ms,
         }
     }
 }
@@ -192,6 +213,41 @@ pub struct ScheduledRequest {
     pub num_computed_tokens: usize,
 }
 
+/// Runtime telemetry used by adaptive scheduling.
+#[derive(Debug, Clone)]
+pub struct SchedulerTelemetry {
+    /// Exponential moving average of time-to-first-token.
+    pub avg_ttft_ms: f64,
+    /// Exponential moving average of decode time per generated token.
+    pub avg_decode_tpot_ms: f64,
+    /// Exponential moving average of waiting queue age.
+    pub avg_queue_age_ms: f64,
+    /// Current adaptive token budget.
+    pub dynamic_tokens_per_step: usize,
+}
+
+impl SchedulerTelemetry {
+    fn new(default_budget: usize) -> Self {
+        Self {
+            avg_ttft_ms: 0.0,
+            avg_decode_tpot_ms: 0.0,
+            avg_queue_age_ms: 0.0,
+            dynamic_tokens_per_step: default_budget.max(1),
+        }
+    }
+
+    fn update_ewma(current: &mut f64, sample: f64, alpha: f64) {
+        if sample <= 0.0 {
+            return;
+        }
+        if *current <= 0.0 {
+            *current = sample;
+        } else {
+            *current = (*current * (1.0 - alpha)) + (sample * alpha);
+        }
+    }
+}
+
 /// Request scheduler.
 pub struct Scheduler {
     config: SchedulerConfig,
@@ -205,6 +261,8 @@ pub struct Scheduler {
     requests: HashMap<RequestId, RequestMetadata>,
     /// Next sequence ID
     next_sequence_id: SequenceId,
+    /// Adaptive scheduling telemetry.
+    telemetry: SchedulerTelemetry,
 }
 
 /// Metadata for a request in the scheduler.
@@ -216,6 +274,7 @@ struct RequestMetadata {
     arrival_time: Instant,
     total_prompt_tokens: usize,
     max_tokens: usize,
+    prompt_prefix_hash: Option<u64>,
 }
 
 /// State for a running request.
@@ -233,11 +292,14 @@ struct RunningRequest {
     prefill_complete: bool,
     /// Priority of this request
     priority: Priority,
+    /// Whether this request has produced its first output token.
+    first_token_emitted: bool,
 }
 
 impl Scheduler {
     /// Create a new scheduler.
     pub fn new(config: SchedulerConfig) -> Self {
+        let telemetry = SchedulerTelemetry::new(config.max_tokens_per_step);
         Self {
             config,
             waiting_fcfs: VecDeque::new(),
@@ -245,6 +307,7 @@ impl Scheduler {
             running: HashMap::new(),
             requests: HashMap::new(),
             next_sequence_id: 0,
+            telemetry,
         }
     }
 
@@ -260,6 +323,7 @@ impl Scheduler {
             arrival_time: Instant::now(),
             total_prompt_tokens: request.num_prompt_tokens(),
             max_tokens: request.params.max_tokens,
+            prompt_prefix_hash: Self::compute_prompt_prefix_hash(&request.prompt_tokens),
         };
 
         self.requests.insert(request.id.clone(), metadata);
@@ -288,41 +352,81 @@ impl Scheduler {
     /// Schedule requests for the next step.
     pub fn schedule(&mut self, kv_cache: &mut KVCacheManager) -> ScheduleResult {
         let mut result = ScheduleResult::empty();
-        let mut remaining_budget = self.config.max_tokens_per_step;
         let mut remaining_batch = self.config.max_batch_size;
+        self.refresh_queue_age_sample();
+        self.update_dynamic_budget();
 
-        // Phase 1: Schedule decode requests (already running)
-        // First collect candidates to avoid borrow checker issues
-        let block_size = 16; // Default block size
-        let decode_candidates: Vec<_> = self
+        let total_budget = self.current_token_budget();
+        let mut decode_budget = total_budget;
+        let mut reserved_prefill_budget = 0;
+        if self.config.enable_adaptive_batching && total_budget > 0 {
+            let prefill_share = if self.telemetry.avg_ttft_ms > self.config.target_ttft_ms {
+                0.55
+            } else if self.telemetry.avg_ttft_ms > self.config.target_ttft_ms * 0.8 {
+                0.40
+            } else {
+                0.25
+            };
+            reserved_prefill_budget = ((total_budget as f64) * prefill_share) as usize;
+            reserved_prefill_budget = reserved_prefill_budget.clamp(1, total_budget);
+            decode_budget = total_budget.saturating_sub(reserved_prefill_budget);
+        }
+        let mut remaining_decode_budget = decode_budget;
+
+        // Phase 1: schedule decode requests (already running prefill-complete requests).
+        let mut decode_candidates: Vec<_> = self
             .running
             .iter()
             .filter(|(_, r)| r.prefill_complete)
-            .map(|(id, r)| {
-                let num_tokens = 1;
-                let total_tokens = r.num_tokens_processed + num_tokens;
-                let blocks_needed = (total_tokens + block_size - 1) / block_size;
+            .filter_map(|(id, r)| {
+                let metadata = self.requests.get(id)?;
+                let remaining_decode_tokens =
+                    metadata.max_tokens.saturating_sub(r.num_tokens_generated);
+                if remaining_decode_tokens == 0 {
+                    return None;
+                }
+
+                let total_tokens = r.num_tokens_processed + 1;
+                let blocks_needed = kv_cache.blocks_for_tokens(total_tokens);
                 let additional_blocks = if blocks_needed > r.block_ids.len() {
                     blocks_needed - r.block_ids.len()
                 } else {
                     0
                 };
-                (
+                Some((
                     id.clone(),
                     r.sequence_id,
                     r.priority,
                     r.block_ids.clone(),
                     r.num_tokens_processed,
                     additional_blocks,
-                )
+                    remaining_decode_tokens,
+                    r.num_tokens_generated,
+                ))
             })
             .collect();
 
-        // Now process decode candidates with potential preemption
-        for (request_id, sequence_id, priority, block_ids, num_computed, additional_blocks) in
-            decode_candidates
+        if self.config.enable_adaptive_batching {
+            // Favor requests close to completion to reduce tail latency, then priority.
+            decode_candidates.sort_by(|a, b| {
+                a.6.cmp(&b.6)
+                    .then_with(|| b.2.cmp(&a.2))
+                    .then_with(|| a.7.cmp(&b.7))
+            });
+        }
+
+        for (
+            request_id,
+            sequence_id,
+            priority,
+            mut block_ids,
+            num_computed,
+            additional_blocks,
+            _remaining_decode_tokens,
+            _generated_tokens,
+        ) in decode_candidates
         {
-            if remaining_batch == 0 || remaining_budget == 0 {
+            if remaining_batch == 0 || remaining_decode_budget == 0 {
                 break;
             }
 
@@ -352,6 +456,23 @@ impl Scheduler {
                 }
             }
 
+            // Shared-prefix blocks must be detached before appending decode tokens.
+            if !block_ids.is_empty() && kv_cache.ensure_writable_last_block(&request_id).is_none() {
+                if self.config.enable_preemption {
+                    let preempted = self.try_preempt_for_blocks(1, priority, kv_cache);
+                    if !preempted.is_empty() {
+                        result.preempted_requests.extend(preempted);
+                    }
+                }
+                if kv_cache.ensure_writable_last_block(&request_id).is_none() {
+                    continue;
+                }
+            }
+
+            if let Some(updated_blocks) = kv_cache.get_block_table(&request_id) {
+                block_ids = updated_blocks.to_vec();
+            }
+
             result.decode_requests.push(ScheduledRequest {
                 request_id: request_id.clone(),
                 sequence_id,
@@ -361,19 +482,20 @@ impl Scheduler {
                 num_computed_tokens: num_computed,
             });
 
-            remaining_budget = remaining_budget.saturating_sub(num_tokens);
+            remaining_decode_budget = remaining_decode_budget.saturating_sub(num_tokens);
             remaining_batch -= 1;
             result.total_tokens += num_tokens;
         }
 
-        // Phase 2: Schedule prefill requests (from waiting queue)
-        while remaining_batch > 0 && remaining_budget > 0 {
-            let next_request_id = match self.config.policy {
-                SchedulingPolicy::FCFS => self.waiting_fcfs.front().cloned(),
-                SchedulingPolicy::Priority => {
-                    self.waiting_priority.peek().map(|r| r.request_id.clone())
-                }
-            };
+        // Phase 2: schedule prefill requests.
+        let mut remaining_prefill_budget = if self.config.enable_adaptive_batching {
+            reserved_prefill_budget.saturating_add(remaining_decode_budget)
+        } else {
+            remaining_decode_budget
+        };
+
+        while remaining_batch > 0 && remaining_prefill_budget > 0 {
+            let next_request_id = self.select_next_waiting_request();
 
             let request_id = match next_request_id {
                 Some(id) => id,
@@ -383,14 +505,14 @@ impl Scheduler {
             let metadata = match self.requests.get(&request_id) {
                 Some(m) => m.clone(),
                 None => {
-                    self.pop_from_waiting();
+                    self.remove_from_waiting(&request_id);
                     continue;
                 }
             };
 
             // Check if already running (shouldn't happen, but safety check)
             if self.running.contains_key(&request_id) {
-                self.pop_from_waiting();
+                self.remove_from_waiting(&request_id);
                 continue;
             }
 
@@ -405,10 +527,13 @@ impl Scheduler {
             }
 
             // Limit by remaining budget
-            num_tokens = num_tokens.min(remaining_budget);
+            num_tokens = num_tokens.min(remaining_prefill_budget);
+            if num_tokens == 0 {
+                break;
+            }
 
             // Allocate KV cache blocks
-            let blocks_needed = self.blocks_needed_for_tokens(num_tokens);
+            let blocks_needed = kv_cache.blocks_for_tokens(num_tokens);
             if !kv_cache.can_allocate(blocks_needed) {
                 // Can't fit this request, try preemption or skip
                 if self.config.enable_preemption {
@@ -433,7 +558,16 @@ impl Scheduler {
                 }
             }
 
-            let block_ids = kv_cache.allocate(&request_id, blocks_needed);
+            let block_ids = kv_cache.allocate_with_prefix(
+                &request_id,
+                blocks_needed,
+                metadata.prompt_prefix_hash,
+            );
+            if block_ids.len() < blocks_needed {
+                debug!("Failed to allocate required blocks for {}", request_id);
+                kv_cache.free(&request_id);
+                break;
+            }
             result.blocks_allocated += block_ids.len();
 
             // Create running state
@@ -445,6 +579,7 @@ impl Scheduler {
                 block_ids: block_ids.clone(),
                 prefill_complete: num_tokens >= metadata.total_prompt_tokens,
                 priority: metadata.priority,
+                first_token_emitted: false,
             };
 
             result.prefill_requests.push(ScheduledRequest {
@@ -456,10 +591,10 @@ impl Scheduler {
                 num_computed_tokens: 0,
             });
 
-            self.running.insert(request_id, running);
-            self.pop_from_waiting();
+            self.running.insert(request_id.clone(), running);
+            self.remove_from_waiting(&request_id);
 
-            remaining_budget = remaining_budget.saturating_sub(num_tokens);
+            remaining_prefill_budget = remaining_prefill_budget.saturating_sub(num_tokens);
             remaining_batch -= 1;
             result.total_tokens += num_tokens;
         }
@@ -474,6 +609,7 @@ impl Scheduler {
         tokens_processed: usize,
         tokens_generated: usize,
         new_block_ids: Vec<BlockId>,
+        step_time_ms: f64,
     ) {
         if let Some(running) = self.running.get_mut(request_id) {
             running.num_tokens_processed += tokens_processed;
@@ -485,8 +621,24 @@ impl Scheduler {
                 if running.num_tokens_processed >= metadata.total_prompt_tokens {
                     running.prefill_complete = true;
                 }
+
+                if !running.first_token_emitted && tokens_generated > 0 {
+                    running.first_token_emitted = true;
+                    let ttft_ms = metadata.arrival_time.elapsed().as_secs_f64() * 1000.0;
+                    SchedulerTelemetry::update_ewma(&mut self.telemetry.avg_ttft_ms, ttft_ms, 0.20);
+                }
+            }
+
+            if tokens_generated > 0 && step_time_ms > 0.0 {
+                let tpot_ms = step_time_ms / tokens_generated as f64;
+                SchedulerTelemetry::update_ewma(
+                    &mut self.telemetry.avg_decode_tpot_ms,
+                    tpot_ms,
+                    0.15,
+                );
             }
         }
+        self.update_dynamic_budget();
     }
 
     /// Mark a request as finished and remove it.
@@ -562,23 +714,132 @@ impl Scheduler {
             .map(|r| (r.num_tokens_processed, r.num_tokens_generated))
     }
 
+    /// Get sequence ID for a request.
+    pub fn get_sequence_id(&self, request_id: &RequestId) -> Option<SequenceId> {
+        self.requests.get(request_id).map(|m| m.sequence_id)
+    }
+
+    /// Adaptive scheduler telemetry.
+    pub fn telemetry(&self) -> SchedulerTelemetry {
+        self.telemetry.clone()
+    }
+
     // Helper methods
 
-    fn pop_from_waiting(&mut self) {
-        match self.config.policy {
-            SchedulingPolicy::FCFS => {
-                self.waiting_fcfs.pop_front();
-            }
-            SchedulingPolicy::Priority => {
-                self.waiting_priority.pop();
-            }
+    fn select_next_waiting_request(&self) -> Option<RequestId> {
+        if !self.config.enable_adaptive_batching {
+            return match self.config.policy {
+                SchedulingPolicy::FCFS => self.waiting_fcfs.front().cloned(),
+                SchedulingPolicy::Priority => {
+                    self.waiting_priority.peek().map(|r| r.request_id.clone())
+                }
+            };
+        }
+
+        let candidates: Vec<RequestId> = match self.config.policy {
+            SchedulingPolicy::FCFS => self.waiting_fcfs.iter().cloned().collect(),
+            SchedulingPolicy::Priority => self
+                .waiting_priority
+                .iter()
+                .map(|r| r.request_id.clone())
+                .collect(),
+        };
+
+        candidates.into_iter().max_by(|a, b| {
+            let score_a = self.adaptive_waiting_score(a);
+            let score_b = self.adaptive_waiting_score(b);
+            score_a
+                .partial_cmp(&score_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    }
+
+    fn remove_from_waiting(&mut self, request_id: &RequestId) {
+        self.waiting_fcfs.retain(|id| id != request_id);
+        self.waiting_priority
+            .retain(|r| &r.request_id != request_id);
+    }
+
+    fn adaptive_waiting_score(&self, request_id: &RequestId) -> f64 {
+        let Some(metadata) = self.requests.get(request_id) else {
+            return 0.0;
+        };
+        let base_priority = metadata.priority as i32 as f64;
+        let age_ms = metadata.arrival_time.elapsed().as_millis() as f64;
+        let age_boost = age_ms / self.config.priority_aging_ms.max(1) as f64;
+        let prompt_bonus = 1.0
+            / (1.0
+                + (metadata.total_prompt_tokens as f64
+                    / self.config.chunked_prefill_threshold.max(1) as f64));
+        base_priority + age_boost + (prompt_bonus * 0.2)
+    }
+
+    fn refresh_queue_age_sample(&mut self) {
+        let (sum_ms, count) = self
+            .requests
+            .values()
+            .fold((0.0, 0usize), |(sum, n), metadata| {
+                if self.running.contains_key(&metadata.request_id) {
+                    (sum, n)
+                } else {
+                    (
+                        sum + metadata.arrival_time.elapsed().as_secs_f64() * 1000.0,
+                        n + 1,
+                    )
+                }
+            });
+        if count > 0 {
+            let avg = sum_ms / count as f64;
+            SchedulerTelemetry::update_ewma(&mut self.telemetry.avg_queue_age_ms, avg, 0.2);
         }
     }
 
-    fn blocks_needed_for_tokens(&self, num_tokens: usize) -> usize {
-        // Using default block size of 16
-        let block_size = 16;
-        (num_tokens + block_size - 1) / block_size
+    fn current_token_budget(&self) -> usize {
+        let max_tokens = self.config.max_tokens_per_step.max(1);
+        let min_tokens = self.config.min_tokens_per_step.min(max_tokens);
+        if self.config.enable_adaptive_batching {
+            self.telemetry
+                .dynamic_tokens_per_step
+                .clamp(min_tokens, max_tokens)
+        } else {
+            max_tokens
+        }
+    }
+
+    fn update_dynamic_budget(&mut self) {
+        let max_tokens = self.config.max_tokens_per_step.max(1);
+        let min_tokens = self.config.min_tokens_per_step.min(max_tokens);
+        if !self.config.enable_adaptive_batching {
+            self.telemetry.dynamic_tokens_per_step = max_tokens;
+            return;
+        }
+
+        let current = self.telemetry.dynamic_tokens_per_step;
+        let step = (max_tokens / 10).max(1);
+        let mut target = current;
+
+        if self.telemetry.avg_ttft_ms > self.config.target_ttft_ms * 1.15 {
+            target = (current + step).min(max_tokens);
+        } else if self.telemetry.avg_decode_tpot_ms > self.config.target_decode_tpot_ms * 1.20 {
+            target = current.saturating_sub(step).max(min_tokens);
+        } else if current < max_tokens {
+            target = (current + (step / 2).max(1)).min(max_tokens);
+        }
+
+        self.telemetry.dynamic_tokens_per_step = target;
+    }
+
+    fn compute_prompt_prefix_hash(tokens: &[u32]) -> Option<u64> {
+        if tokens.is_empty() {
+            return None;
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let prefix_len = tokens.len().min(128);
+        prefix_len.hash(&mut hasher);
+        for token in tokens.iter().take(prefix_len) {
+            token.hash(&mut hasher);
+        }
+        Some(hasher.finish())
     }
 
     /// Try to preempt running requests to free up the required number of blocks.
@@ -671,6 +932,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn test_scheduler_creation() {
@@ -678,5 +940,48 @@ mod tests {
         let scheduler = Scheduler::new(config);
         assert_eq!(scheduler.waiting_count(), 0);
         assert_eq!(scheduler.running_count(), 0);
+    }
+
+    #[test]
+    fn test_adaptive_aging_can_promote_old_request() {
+        let config = SchedulerConfig {
+            max_batch_size: 1,
+            max_tokens_per_step: 32,
+            policy: SchedulingPolicy::Priority,
+            enable_adaptive_batching: true,
+            priority_aging_ms: 100,
+            ..Default::default()
+        };
+        let mut scheduler = Scheduler::new(config);
+        let mut kv_cache = KVCacheManager::new(super::super::kv_cache::KVCacheConfig {
+            max_blocks: 128,
+            block_size: 16,
+            ..Default::default()
+        });
+
+        let old_id = "old-low".to_string();
+        let fresh_id = "fresh-high".to_string();
+        let old = EngineCoreRequest::tts("old request").with_priority(Priority::Low);
+        let fresh = EngineCoreRequest::tts("new request").with_priority(Priority::High);
+
+        let mut old = EngineCoreRequest {
+            id: old_id.clone(),
+            ..old
+        };
+        old.arrival_time = Instant::now() - Duration::from_secs(3);
+        let fresh = EngineCoreRequest {
+            id: fresh_id.clone(),
+            ..fresh
+        };
+
+        scheduler.add_request(&old);
+        scheduler.add_request(&fresh);
+        if let Some(meta) = scheduler.requests.get_mut(&old_id) {
+            meta.arrival_time = Instant::now() - Duration::from_secs(3);
+        }
+
+        let scheduled = scheduler.schedule(&mut kv_cache);
+        assert_eq!(scheduled.prefill_requests.len(), 1);
+        assert_eq!(scheduled.prefill_requests[0].request_id, old_id);
     }
 }
