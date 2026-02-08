@@ -81,6 +81,23 @@ impl InferenceEngine {
         }
 
         if variant.is_tts() {
+            // Avoid reloading large TTS checkpoints for every request.
+            // The OpenAI-compatible /v1/audio/speech endpoint calls `load_model`
+            // per request, so this fast path is critical for latency.
+            {
+                let loaded_path = self.loaded_model_path.read().await;
+                let tts_model = self.tts_model.read().await;
+                if tts_model.is_some()
+                    && loaded_path
+                        .as_ref()
+                        .map(|p| p == &model_path)
+                        .unwrap_or(false)
+                {
+                    self.model_manager.mark_loaded(variant).await;
+                    return Ok(());
+                }
+            }
+
             info!("Loading native TTS model from {:?}", model_path);
             let tts_model = Qwen3TtsModel::load(&model_path, self.device.clone())?;
 

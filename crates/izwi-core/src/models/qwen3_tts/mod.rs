@@ -51,7 +51,7 @@ impl Default for TtsGenerationParams {
             top_p: 1.0,
             top_k: 50,
             repetition_penalty: 1.05,
-            max_frames: 0,
+            max_frames: 512,
         }
     }
 }
@@ -64,7 +64,12 @@ impl TtsGenerationParams {
             top_p: cfg.top_p.clamp(0.0, 1.0),
             top_k: if cfg.top_k == 0 { 50 } else { cfg.top_k },
             repetition_penalty: cfg.repetition_penalty.max(1.0),
-            max_frames: cfg.max_tokens,
+            max_frames: if cfg.max_tokens == 0 {
+                // Keep unconstrained requests within a practical latency envelope.
+                512
+            } else {
+                cfg.max_tokens.clamp(16, 8192)
+            },
         }
     }
 }
@@ -162,13 +167,13 @@ impl Qwen3TtsModel {
         text: &str,
         speaker: &str,
         language: Option<&str>,
-        _instruct: Option<&str>,
+        instruct: Option<&str>,
     ) -> Result<Vec<f32>> {
         self.generate_with_speaker_params(
             text,
             speaker,
             language,
-            _instruct,
+            instruct,
             &TtsGenerationParams::default(),
         )
     }
@@ -179,12 +184,12 @@ impl Qwen3TtsModel {
         text: &str,
         speaker: &str,
         language: Option<&str>,
-        _instruct: Option<&str>,
+        instruct: Option<&str>,
         params: &TtsGenerationParams,
     ) -> Result<Vec<f32>> {
         info!("Generating speech with speaker: {}", speaker);
 
-        let text_ids = self.tokenizer.encode_text(text, language)?;
+        let prompt_ids = self.encode_assistant_prompt_ids(text)?;
         let speaker_id = self.tokenizer.get_speaker_id(speaker).ok_or_else(|| {
             Error::InvalidInput(format!(
                 "Unknown speaker '{speaker}'. Available speakers: {}",
@@ -196,19 +201,24 @@ impl Qwen3TtsModel {
                     .join(", ")
             ))
         })?;
-        let language_id = language
-            .map(|l| self.tokenizer.get_language_id(l))
-            .unwrap_or_else(|| self.tokenizer.get_language_id("english"));
+        let language_id = self.resolve_language_id(language);
+        let instruct_ids = self.encode_instruction_ids(instruct)?;
 
         debug!(
-            "Text token length: {}, speaker_id: {}, language_id: {}",
-            text_ids.len(),
+            "Prompt token length: {}, speaker_id: {}, language_id: {:?}, has_instruction: {}",
+            prompt_ids.len(),
             speaker_id,
-            language_id
+            language_id,
+            instruct_ids.is_some()
         );
 
-        let codec_tokens =
-            self.generate_codec_tokens_custom_voice(&text_ids, speaker_id, language_id, params)?;
+        let codec_tokens = self.generate_codec_tokens_conditioned(
+            &prompt_ids,
+            Some(speaker_id),
+            language_id,
+            instruct_ids.as_deref(),
+            params,
+        )?;
 
         // Decode to audio using speech tokenizer
         self.codec_to_audio(&codec_tokens)
@@ -257,15 +267,53 @@ impl Qwen3TtsModel {
         &self,
         text: &str,
         language: Option<&str>,
-        _instruct: Option<&str>,
+        instruct: Option<&str>,
         params: &TtsGenerationParams,
     ) -> Result<Vec<f32>> {
+        // VoiceDesign checkpoints do not expose preset speaker IDs. For stability,
+        // keep this path on legacy decoding and inject instruction text directly
+        // into the prompt so style conditioning is still applied.
+        let prompt_text = if let Some(ins) = instruct.map(str::trim).filter(|s| !s.is_empty()) {
+            format!("Voice design instruction: {ins}\nTarget text: {text}")
+        } else {
+            text.to_string()
+        };
         let input_ids = self
             .tokenizer
-            .build_input_sequence(text, None, language, false)?;
+            .build_input_sequence(&prompt_text, None, language, false)?;
         let codec_tokens =
             self.generate_codec_tokens_legacy(&input_ids, params.max_frames, params)?;
         self.codec_to_audio(&codec_tokens)
+    }
+
+    fn resolve_language_id(&self, language: Option<&str>) -> Option<u32> {
+        let normalized = language.map(str::trim).filter(|s| !s.is_empty());
+        match normalized {
+            Some(lang) if lang.eq_ignore_ascii_case("auto") => None,
+            Some(lang) => Some(self.tokenizer.get_language_id(lang)),
+            None => None,
+        }
+    }
+
+    fn encode_instruction_ids(&self, instruct: Option<&str>) -> Result<Option<Vec<u32>>> {
+        let Some(text) = instruct.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(None);
+        };
+        // Align instruction prompt shape with upstream VoiceDesign/CustomVoice API.
+        let prompt = format!("<|im_start|>user\n{text}<|im_end|>\n");
+        let ids = self.tokenizer.encode_text(&prompt, None)?;
+        if ids.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(ids))
+        }
+    }
+
+    fn encode_assistant_prompt_ids(&self, text: &str) -> Result<Vec<u32>> {
+        // Mirror upstream prompting:
+        // <|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n
+        let prompt = format!("<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n");
+        self.tokenizer.encode_text(&prompt, None)
     }
 
     /// Legacy codec generation path used by not-yet-updated flows (e.g. voice cloning).
@@ -398,11 +446,12 @@ impl Qwen3TtsModel {
 
     /// Official-style CustomVoice generation path:
     /// prefill with fused role/codec/text embeddings, then per-frame semantic+acoustic+trailing-text fusion.
-    fn generate_codec_tokens_custom_voice(
+    fn generate_codec_tokens_conditioned(
         &self,
-        text_ids: &[u32],
-        speaker_id: u32,
-        language_id: u32,
+        prompt_ids: &[u32],
+        speaker_id: Option<u32>,
+        language_id: Option<u32>,
+        instruct_ids: Option<&[u32]>,
         params: &TtsGenerationParams,
     ) -> Result<Vec<Vec<u32>>> {
         let mut talker_cache = TalkerCache::new(self.talker.num_layers());
@@ -414,8 +463,12 @@ impl Qwen3TtsModel {
         // Official suppression keeps semantic IDs [0, vocab-1024) and EOS.
         let semantic_vocab_size = talker_codec_vocab_size.saturating_sub(1024);
 
-        let prefill_embeds =
-            self.build_custom_voice_prefill_embeddings(text_ids, speaker_id, language_id)?;
+        let prefill_embeds = self.build_conditioned_prefill_embeddings(
+            prompt_ids,
+            speaker_id,
+            language_id,
+            instruct_ids,
+        )?;
         let prefill_len = prefill_embeds.dim(1)?;
         let (mut last_hidden, mut last_logits) =
             self.talker
@@ -441,7 +494,7 @@ impl Qwen3TtsModel {
             params.max_frames.max(1).min(context_budget)
         };
         let (trailing_text_hidden, trailing_text_len, tts_pad_embed) =
-            self.build_trailing_text_embeddings(text_ids, max_frames)?;
+            self.build_trailing_text_embeddings_from_prompt(prompt_ids, max_frames)?;
         let mut offset = prefill_len;
         let mut rng = SimpleRng::new();
         let mut semantic_history: Vec<u32> = Vec::new();
@@ -506,11 +559,12 @@ impl Qwen3TtsModel {
         Ok(all_code_groups)
     }
 
-    fn build_custom_voice_prefill_embeddings(
+    fn build_conditioned_prefill_embeddings(
         &self,
-        text_ids: &[u32],
-        speaker_id: u32,
-        language_id: u32,
+        prompt_ids: &[u32],
+        speaker_id: Option<u32>,
+        language_id: Option<u32>,
+        instruct_ids: Option<&[u32]>,
     ) -> Result<Tensor> {
         let role_prefix = self.talker.get_projected_text_embeddings(&[
             self.specials.im_start_token_id,
@@ -518,32 +572,62 @@ impl Qwen3TtsModel {
             NEWLINE_TOKEN_ID,
         ])?;
 
-        let codec_prefix = self.talker.get_codec_embedding_batch(&[
-            self.specials.codec_think_id,
-            self.specials.codec_think_bos_id,
-            language_id,
-            self.specials.codec_think_eos_id,
-            speaker_id,
-            self.specials.codec_pad_id,
-            self.specials.codec_bos_id,
-        ])?;
-        let codec_first6 = codec_prefix.i((.., ..6, ..))?;
+        let mut codec_prefix_ids = Vec::new();
+        if let Some(language_id) = language_id {
+            codec_prefix_ids.extend_from_slice(&[
+                self.specials.codec_think_id,
+                self.specials.codec_think_bos_id,
+                language_id,
+                self.specials.codec_think_eos_id,
+            ]);
+        } else {
+            codec_prefix_ids.extend_from_slice(&[
+                self.specials.codec_nothink_id,
+                self.specials.codec_think_bos_id,
+                self.specials.codec_think_eos_id,
+            ]);
+        }
+        if let Some(speaker_id) = speaker_id {
+            codec_prefix_ids.push(speaker_id);
+        }
+        codec_prefix_ids.push(self.specials.codec_pad_id);
+        codec_prefix_ids.push(self.specials.codec_bos_id);
 
-        let tts_overlay_ids = vec![self.specials.tts_pad_token_id; 5];
-        let mut tts_overlay_ids_with_bos = tts_overlay_ids;
-        tts_overlay_ids_with_bos.push(self.specials.tts_bos_token_id);
-        let tts_overlay = self
-            .talker
-            .get_projected_text_embeddings(&tts_overlay_ids_with_bos)?;
-        let codec_hidden = tts_overlay.broadcast_add(&codec_first6)?;
+        let prefix_len = codec_prefix_ids.len();
+        if prefix_len < 2 {
+            return Err(Error::InferenceError(
+                "Invalid codec prefix while building conditioned prefill".to_string(),
+            ));
+        }
+
+        let codec_prefix = self.talker.get_codec_embedding_batch(&codec_prefix_ids)?;
+        let codec_without_last = codec_prefix.i((.., ..prefix_len - 1, ..))?;
+
+        let mut tts_overlay_ids = vec![self.specials.tts_pad_token_id; prefix_len - 2];
+        tts_overlay_ids.push(self.specials.tts_bos_token_id);
+        let tts_overlay = self.talker.get_projected_text_embeddings(&tts_overlay_ids)?;
+        let codec_hidden = tts_overlay.broadcast_add(&codec_without_last)?;
 
         let mut hidden = Tensor::cat(&[&role_prefix, &codec_hidden], 1)?;
 
-        if let Some(&first_text_id) = text_ids.first() {
+        if let Some(instruct_ids) = instruct_ids {
+            if !instruct_ids.is_empty() {
+                let instruct_hidden = self.talker.get_projected_text_embeddings(instruct_ids)?;
+                hidden = Tensor::cat(&[&instruct_hidden, &hidden], 1)?;
+            }
+        }
+
+        let first_text_id = if prompt_ids.len() > 3 {
+            Some(prompt_ids[3])
+        } else {
+            prompt_ids.first().copied()
+        };
+
+        if let Some(first_text_id) = first_text_id {
             let first_text_proj = self
                 .talker
                 .get_projected_text_embeddings(&[first_text_id])?;
-            let codec_bos_embed = codec_prefix.i((.., 6..7, ..))?;
+            let codec_bos_embed = codec_prefix.i((.., prefix_len - 1..prefix_len, ..))?;
             let first_combined = first_text_proj.broadcast_add(&codec_bos_embed)?;
             hidden = Tensor::cat(&[&hidden, &first_combined], 1)?;
         }
@@ -551,16 +635,26 @@ impl Qwen3TtsModel {
         Ok(hidden)
     }
 
-    fn build_trailing_text_embeddings(
+    fn build_trailing_text_embeddings_from_prompt(
         &self,
-        text_ids: &[u32],
+        prompt_ids: &[u32],
         max_frames: usize,
     ) -> Result<(Tensor, usize, Tensor)> {
-        let trailing = if text_ids.len() > 1 {
-            let trailing_end = (1 + max_frames).min(text_ids.len());
+        // Upstream uses prompt layout:
+        // [role(3), first_text(1), trailing_text(...), trailer(5)]
+        let trailing_ids: &[u32] = if prompt_ids.len() > 9 {
+            &prompt_ids[4..prompt_ids.len() - 5]
+        } else if prompt_ids.len() > 4 {
+            &prompt_ids[4..]
+        } else {
+            &[]
+        };
+
+        let trailing = if !trailing_ids.is_empty() {
+            let trailing_end = max_frames.min(trailing_ids.len());
             let remaining = self
                 .talker
-                .get_projected_text_embeddings(&text_ids[1..trailing_end])?;
+                .get_projected_text_embeddings(&trailing_ids[..trailing_end])?;
             let eos_embed = self
                 .talker
                 .get_projected_special_embed(self.specials.tts_eos_token_id)?;
@@ -690,9 +784,13 @@ fn argmax_semantic(
         }
     }
 
-    max_idx
-        .map(|idx| idx as u32)
-        .ok_or_else(|| Error::InferenceError("No valid semantic token candidates".to_string()))
+    if let Some(idx) = max_idx {
+        Ok(idx as u32)
+    } else if allow_eos {
+        Ok(eos_token_id)
+    } else {
+        Ok(0)
+    }
 }
 
 fn sample_semantic(
@@ -759,7 +857,7 @@ fn sample_semantic(
         .filter_map(|(idx, &v)| if v.is_finite() { Some(idx) } else { None })
         .collect();
     if candidates.is_empty() {
-        return argmax_semantic(&logits, semantic_vocab_size, eos_token_id, allow_eos);
+        return Ok(if allow_eos { eos_token_id } else { 0 });
     }
 
     // Top-k filtering.
@@ -821,6 +919,7 @@ fn sample_semantic(
         .iter()
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))
         .map(|(idx, _)| *idx as u32)
+        .or_else(|| Some(if allow_eos { eos_token_id } else { 0 }))
         .ok_or_else(|| Error::InferenceError("Failed to sample semantic token".to_string()))
 }
 
