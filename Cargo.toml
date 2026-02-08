@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/izwi-core", "crates/izwi-server"]
+members = ["crates/izwi-core", "crates/izwi-server", "crates/izwi-cli"]
 
 [workspace.package]
 version = "0.1.0"

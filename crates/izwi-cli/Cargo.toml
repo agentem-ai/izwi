@@ -1,0 +1,86 @@
+[package]
+name = "izwi-cli"
+description = "World-class CLI for Izwi audio inference engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "izwi"
+path = "src/main.rs"
+
+[dependencies]
+# Core crate
+izwi-core = { path = "../izwi-core" }
+
+# CLI framework
+clap = { version = "4.5", features = [
+    "derive",
+    "env",
+    "cargo",
+    "wrap_help",
+    "unicode",
+] }
+clap_complete = { version = "4.5", features = ["unstable-dynamic"] }
+
+# Async runtime
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+
+# HTTP client for API calls
+reqwest = { workspace = true, features = ["json", "stream", "multipart"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+# Rich terminal UI
+console = "0.15"
+indicatif = { workspace = true }
+dialoguer = "0.11"
+comfy-table = "7.1"
+ansi_term = "0.12"
+term_size = "0.3"
+
+# Progress and streaming
+bytes = { workspace = true }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+
+# Configuration and paths
+dirs = { workspace = true }
+config = { workspace = true }
+shellexpand = "3.1"
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+miette = { version = "7.2", features = ["fancy"] }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Audio playback (optional, for preview)
+# rodio = { version = "0.19", optional = true }
+
+# Utilities
+base64 = "0.22"
+rustc_version_runtime = "0.3"
+uuid = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+url = "2.5"
+humantime = "2.1"
+humansize = "2.1"
+colored_json = "5.0"
+
+[features]
+default = []
+playback = [] # rodio
+
+[dev-dependencies]
+tokio-test = "0.4"
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.10"
