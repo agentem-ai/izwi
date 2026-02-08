@@ -748,7 +748,7 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
           <button
             onClick={toggleSession}
             className={clsx(
-              "btn w-full text-sm",
+              "btn w-full text-sm min-h-[44px]",
               runtimeStatus === "idle" ? "btn-primary" : "btn-danger",
             )}
             disabled={
@@ -779,7 +779,7 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
           )}
         </div>
 
-        <div className="card p-4 flex flex-col min-h-[620px]">
+        <div className="card p-4 flex flex-col min-h-[400px] sm:min-h-[500px] lg:min-h-[620px]">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <span className="text-sm text-white font-medium">
@@ -787,16 +787,7 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
               </span>
               <span
                 className={clsx(
-                  "text-xs px-2 py-1 rounded",
-                  runtimeStatus === "listening" &&
-                    "bg-emerald-500/20 text-emerald-300",
-                  runtimeStatus === "user_speaking" &&
-                    "bg-blue-500/20 text-blue-300",
-                  runtimeStatus === "processing" &&
-                    "bg-amber-500/20 text-amber-300",
-                  runtimeStatus === "assistant_speaking" &&
-                    "bg-cyan-500/20 text-cyan-300",
-                  runtimeStatus === "idle" && "bg-gray-600/30 text-gray-300",
+                  "text-xs px-2 py-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] text-gray-300",
                 )}
               >
                 {statusLabel}
@@ -805,13 +796,13 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
 
             <div className="flex items-center gap-2">
               {runtimeStatus === "assistant_speaking" ? (
-                <Volume2 className="w-4 h-4 text-cyan-300" />
+                <Volume2 className="w-4 h-4 text-gray-400" />
               ) : runtimeStatus === "user_speaking" ? (
-                <AudioLines className="w-4 h-4 text-blue-300" />
+                <AudioLines className="w-4 h-4 text-gray-400" />
               ) : runtimeStatus === "processing" ? (
-                <Loader2 className="w-4 h-4 text-amber-300 animate-spin" />
+                <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />
               ) : runtimeStatus === "listening" ? (
-                <Mic className="w-4 h-4 text-emerald-300" />
+                <Mic className="w-4 h-4 text-gray-400" />
               ) : (
                 <MicOff className="w-4 h-4 text-gray-500" />
               )}
@@ -821,12 +812,7 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
           <div className="mb-4">
             <div className="h-2 rounded bg-[#1b1b1b] border border-[#2a2a2a] overflow-hidden">
               <div
-                className={clsx(
-                  "h-full transition-all duration-75",
-                  runtimeStatus === "assistant_speaking"
-                    ? "bg-cyan-400"
-                    : "bg-emerald-400",
-                )}
+                className="h-full bg-white transition-all duration-75"
                 style={{ width: `${vadPercent}%` }}
               />
             </div>

@@ -149,7 +149,7 @@ export function CustomVoicePlayground({
                 initial={{ opacity: 0, y: -5 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -5 }}
-                className="absolute right-0 mt-1 w-64 max-h-80 overflow-y-auto p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
+                className="absolute right-0 mt-1 w-56 sm:w-64 max-h-80 overflow-y-auto p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
               >
                 {SPEAKERS.map((s) => (
                   <button
@@ -264,12 +264,12 @@ export function CustomVoicePlayground({
         </AnimatePresence>
 
         {/* Actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
           <button
             onClick={handleGenerate}
             disabled={generating || !selectedModel}
             className={clsx(
-              "btn flex-1",
+              "btn flex-1 min-h-[44px]",
               generating ? "btn-secondary" : "btn-primary",
             )}
           >
@@ -285,13 +285,22 @@ export function CustomVoicePlayground({
 
           {audioUrl && (
             <>
-              <button onClick={handleStop} className="btn btn-secondary">
+              <button
+                onClick={handleStop}
+                className="btn btn-secondary min-h-[44px] min-w-[44px]"
+              >
                 <Square className="w-4 h-4" />
               </button>
-              <button onClick={handleDownload} className="btn btn-secondary">
+              <button
+                onClick={handleDownload}
+                className="btn btn-secondary min-h-[44px] min-w-[44px]"
+              >
                 <Download className="w-4 h-4" />
               </button>
-              <button onClick={handleReset} className="btn btn-ghost">
+              <button
+                onClick={handleReset}
+                className="btn btn-ghost min-h-[44px] min-w-[44px]"
+              >
                 <RotateCcw className="w-4 h-4" />
               </button>
             </>

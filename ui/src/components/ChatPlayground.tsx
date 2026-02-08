@@ -196,7 +196,7 @@ export function ChatPlayground({
   };
 
   return (
-    <div className="card p-4 flex flex-col h-[calc(100vh-12rem)] min-h-[560px]">
+    <div className="card p-3 sm:p-4 flex flex-col h-[calc(100vh-10rem)] sm:h-[calc(100vh-12rem)] min-h-[400px] sm:min-h-[560px]">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded bg-[#1a1a1a] border border-[#2a2a2a]">
@@ -271,8 +271,8 @@ export function ChatPlayground({
                 className={clsx("flex gap-3", isUser && "justify-end")}
               >
                 {!isUser && (
-                  <div className="w-7 h-7 rounded-lg bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center flex-shrink-0">
-                    <Bot className="w-4 h-4 text-cyan-300" />
+                  <div className="w-7 h-7 rounded-lg bg-[#1a1a1a] border border-[#2a2a2a] flex items-center justify-center flex-shrink-0">
+                    <Bot className="w-4 h-4 text-gray-400" />
                   </div>
                 )}
 

@@ -614,7 +614,10 @@ export function MyModelsPage({
           {filteredModels.map((model) => {
             const details = MODEL_DETAILS[model.variant];
             if (!details) return null;
-            const displayName = withQwen3Prefix(details.shortName, model.variant);
+            const displayName = withQwen3Prefix(
+              details.shortName,
+              model.variant,
+            );
 
             const isDownloading = model.status === "downloading";
             const isLoading = model.status === "loading";
@@ -652,12 +655,12 @@ export function MyModelsPage({
                       </h3>
                       <span
                         className={clsx(
-                          "text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap",
+                          "text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap bg-[#1a1a1a] border border-[#2a2a2a]",
                           isReady
-                            ? "bg-green-500/20 text-green-400"
+                            ? "text-white"
                             : isDownloaded
-                              ? "bg-blue-500/20 text-blue-400"
-                              : "bg-gray-500/20 text-gray-500",
+                              ? "text-gray-300"
+                              : "text-gray-500",
                         )}
                       >
                         {getStatusLabel(model.status)}

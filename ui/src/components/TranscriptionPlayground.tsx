@@ -363,14 +363,14 @@ export function TranscriptionPlayground({
               <button
                 onClick={isRecording ? stopRecording : startRecording}
                 className={clsx(
-                  "p-4 rounded-full transition-all",
+                  "p-4 rounded-full transition-all min-h-[56px] min-w-[56px]",
                   isRecording
-                    ? "bg-red-500 hover:bg-red-600 animate-pulse"
+                    ? "bg-white hover:bg-gray-200 animate-pulse"
                     : "bg-[#1a1a1a] hover:bg-[#2a2a2a] border border-[#2a2a2a]",
                 )}
               >
                 {isRecording ? (
-                  <MicOff className="w-6 h-6 text-white" />
+                  <MicOff className="w-6 h-6 text-black" />
                 ) : (
                   <Mic className="w-6 h-6 text-gray-300" />
                 )}
@@ -386,7 +386,7 @@ export function TranscriptionPlayground({
             <div className="flex flex-col items-center gap-2">
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="p-4 rounded-full bg-[#1a1a1a] hover:bg-[#2a2a2a] border border-[#2a2a2a] transition-all"
+                className="p-4 rounded-full bg-[#1a1a1a] hover:bg-[#2a2a2a] border border-[#2a2a2a] transition-all min-h-[56px] min-w-[56px]"
               >
                 <Upload className="w-6 h-6 text-gray-300" />
               </button>
@@ -405,9 +405,9 @@ export function TranscriptionPlayground({
             <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="flex items-center justify-center gap-2 text-red-400 text-sm"
+              className="flex items-center justify-center gap-2 text-gray-400 text-sm"
             >
-              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+              <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
               Recording...
             </motion.div>
           )}

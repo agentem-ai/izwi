@@ -28,7 +28,10 @@ function downmixToMono(audioBuffer: AudioBuffer): Float32Array {
   return mono;
 }
 
-function encodeWavPcm16(samples: Float32Array, sampleRate: number): ArrayBuffer {
+function encodeWavPcm16(
+  samples: Float32Array,
+  sampleRate: number,
+): ArrayBuffer {
   const bytesPerSample = 2;
   const dataSize = samples.length * bytesPerSample;
   const buffer = new ArrayBuffer(44 + dataSize);
@@ -360,7 +363,7 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
           {/* Upload button */}
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="flex flex-col items-center gap-2 p-4 rounded-lg border border-[#2a2a2a] bg-[#161616] hover:bg-[#1a1a1a] transition-colors"
+            className="flex flex-col items-center gap-2 p-4 rounded-lg border border-[#2a2a2a] bg-[#161616] hover:bg-[#1a1a1a] transition-colors min-h-[80px]"
           >
             <Upload className="w-5 h-5 text-gray-400" />
             <span className="text-xs text-gray-400">Upload Audio</span>
@@ -377,16 +380,16 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
           <button
             onClick={isRecording ? stopRecording : startRecording}
             className={clsx(
-              "flex flex-col items-center gap-2 p-4 rounded-lg border transition-colors",
+              "flex flex-col items-center gap-2 p-4 rounded-lg border transition-colors min-h-[80px]",
               isRecording
-                ? "border-red-500/50 bg-red-950/20"
+                ? "border-white/50 bg-[#1a1a1a]"
                 : "border-[#2a2a2a] bg-[#161616] hover:bg-[#1a1a1a]",
             )}
           >
             {isRecording ? (
               <>
-                <Square className="w-5 h-5 text-red-400" />
-                <span className="text-xs text-red-400">Stop Recording</span>
+                <Square className="w-5 h-5 text-white" />
+                <span className="text-xs text-white">Stop Recording</span>
               </>
             ) : (
               <>
@@ -425,7 +428,7 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
           {/* Action buttons */}
           <div className="flex items-center gap-2">
             {isConfirmed ? (
-              <div className="flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded bg-green-950/50 border border-green-800/50 text-green-400 text-sm">
+              <div className="flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded bg-[#1a1a1a] border border-[#2a2a2a] text-gray-300 text-sm min-h-[44px]">
                 <Check className="w-4 h-4" />
                 Voice Ready
               </div>
@@ -433,13 +436,16 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
               <button
                 onClick={handleConfirm}
                 disabled={!transcript.trim()}
-                className="btn btn-primary flex-1 text-sm"
+                className="btn btn-primary flex-1 text-sm min-h-[44px]"
               >
                 <Check className="w-4 h-4" />
                 Use This Voice
               </button>
             )}
-            <button onClick={handleClear} className="btn btn-ghost text-sm">
+            <button
+              onClick={handleClear}
+              className="btn btn-ghost text-sm min-h-[44px] min-w-[44px]"
+            >
               <X className="w-3.5 h-3.5" />
               Clear
             </button>
