@@ -7,10 +7,7 @@ pub type Result<T> = std::result::Result<T, CliError>;
 #[derive(Debug)]
 pub enum CliError {
     /// API request failed
-    ApiError { 
-        status: u16, 
-        message: String 
-    },
+    ApiError { status: u16, message: String },
     /// Server connection failed
     ConnectionError(String),
     /// Model not found

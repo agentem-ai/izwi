@@ -1,20 +1,19 @@
 use crate::error::{CliError, Result};
+use crate::http;
 use crate::style::Theme;
 use console::style;
 
-pub async fn execute(
-    model: String,
-    yes: bool,
-    server: &str,
-    theme: &Theme,
-) -> Result<()> {
+pub async fn execute(model: String, yes: bool, server: &str, theme: &Theme) -> Result<()> {
     if !yes {
         println!(
             "This will permanently delete model '{}' and all its files.",
             style(&model).red()
         );
-        println!("{}", style("Warning: This action cannot be undone!").red().bold());
-        
+        println!(
+            "{}",
+            style("Warning: This action cannot be undone!").red().bold()
+        );
+
         let confirm = dialoguer::Confirm::new()
             .with_prompt("Are you sure?")
             .default(false)
@@ -27,7 +26,7 @@ pub async fn execute(
         }
     }
 
-    let client = reqwest::Client::new();
+    let client = http::client(Some(std::time::Duration::from_secs(30)))?;
     let response = client
         .delete(format!("{}/v1/admin/models/{}", server, model))
         .send()
@@ -41,7 +40,10 @@ pub async fn execute(
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
-        return Err(CliError::ApiError { status, message: text });
+        return Err(CliError::ApiError {
+            status,
+            message: text,
+        });
     }
 
     theme.success(&format!("Model '{}' removed successfully", model));

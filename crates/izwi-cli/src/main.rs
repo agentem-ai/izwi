@@ -8,6 +8,7 @@ use std::path::PathBuf;
 mod commands;
 mod config;
 mod error;
+mod http;
 mod style;
 mod utils;
 
@@ -42,12 +43,11 @@ pub struct Cli {
     pub command: Commands,
 
     /// Configuration file path
-    #[arg(short, long, global = true, value_name = "PATH")]
+    #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
     /// Server URL for API commands
     #[arg(
-        short,
         long,
         global = true,
         value_name = "URL",
@@ -56,19 +56,24 @@ pub struct Cli {
     pub server: String,
 
     /// Output format
-    #[arg(short, long, global = true, value_enum, default_value = "table")]
-    pub format: OutputFormat,
+    #[arg(
+        long = "output-format",
+        global = true,
+        value_enum,
+        default_value = "table"
+    )]
+    pub output_format: OutputFormat,
 
     /// Suppress all output except results
-    #[arg(short, long, global = true)]
+    #[arg(long, global = true)]
     pub quiet: bool,
 
     /// Enable verbose output
-    #[arg(short, long, global = true)]
+    #[arg(long, global = true)]
     pub verbose: bool,
 
     /// Disable colored output
-    #[arg(long, global = true, env = "NO_COLOR")]
+    #[arg(long, global = true)]
     pub no_color: bool,
 }
 
@@ -207,7 +212,7 @@ pub enum Commands {
         format: AudioFormat,
 
         /// Speech speed multiplier
-        #[arg(short, long, default_value = "1.0")]
+        #[arg(short = 'r', long, default_value = "1.0")]
         speed: f32,
 
         /// Temperature for sampling
@@ -489,10 +494,8 @@ pub enum TranscriptFormat {
     Text,
     /// JSON format with metadata
     Json,
-    /// SRT subtitle format
-    Srt,
-    /// VTT subtitle format
-    Vtt,
+    /// Verbose JSON format with timing metadata
+    VerboseJson,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -507,9 +510,10 @@ pub enum Shell {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let no_color = cli.no_color || std::env::var_os("NO_COLOR").is_some();
 
     // Initialize theme based on color preference
-    let theme = if cli.no_color {
+    let theme = if no_color {
         Theme::no_color()
     } else {
         Theme::default()
@@ -553,7 +557,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Models { command } => {
-            commands::models::execute(command, &cli.server, cli.format, cli.quiet).await?;
+            commands::models::execute(command, &cli.server, cli.output_format, cli.quiet).await?;
         }
 
         Commands::Pull { model, force, yes } => {
@@ -565,7 +569,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::List { local, detailed } => {
-            commands::list::execute(local, detailed, &cli.server, cli.format).await?;
+            commands::list::execute(local, detailed, &cli.server, cli.output_format).await?;
         }
 
         Commands::Tts {
@@ -649,7 +653,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Config { command } => {
-            commands::config::execute(command, &theme).await?;
+            commands::config::execute(command, cli.config.as_ref(), &theme).await?;
         }
 
         Commands::Completions { shell } => {

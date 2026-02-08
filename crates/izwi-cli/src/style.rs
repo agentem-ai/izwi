@@ -1,5 +1,4 @@
 use console::style;
-use std::fmt;
 
 pub const HELP_TEMPLATE: &str = r#"
 {before-help}{name} {version}

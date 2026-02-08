@@ -1,4 +1,5 @@
 use crate::error::{CliError, Result};
+use crate::http;
 use crate::style::Theme;
 use console::style;
 
@@ -10,20 +11,22 @@ pub struct ChatArgs {
 
 pub async fn execute(args: ChatArgs, server: &str, theme: &Theme) -> Result<()> {
     theme.print_banner();
-    
-    println!("{}", style(format!("Chat mode with '{}'", args.model)).bold());
+
+    println!(
+        "{}",
+        style(format!("Chat mode with '{}'", args.model)).bold()
+    );
     println!("Type your message and press Enter. Use /quit or /exit to quit.\n");
 
-    let system_msg = args.system.as_deref().unwrap_or(
-        "You are a helpful AI assistant with voice capabilities."
-    );
+    let system_msg = args
+        .system
+        .as_deref()
+        .unwrap_or("You are a helpful AI assistant with voice capabilities.");
 
-    let mut messages = vec![
-        serde_json::json!({
-            "role": "system",
-            "content": system_msg
-        })
-    ];
+    let mut messages = vec![serde_json::json!({
+        "role": "system",
+        "content": system_msg
+    })];
 
     loop {
         // Get user input
@@ -33,7 +36,7 @@ pub async fn execute(args: ChatArgs, server: &str, theme: &Theme) -> Result<()> 
             .map_err(|e| CliError::Other(e.to_string()))?;
 
         let input = input.trim();
-        
+
         if input.is_empty() {
             continue;
         }
@@ -69,13 +72,16 @@ pub async fn execute(args: ChatArgs, server: &str, theme: &Theme) -> Result<()> 
         }));
 
         // Send request to chat completions endpoint
-        let request_body = serde_json::json!({
+        let mut request_body = serde_json::json!({
             "model": args.model,
             "messages": messages,
             "stream": false,
         });
+        if let Some(voice) = &args.voice {
+            request_body["voice"] = serde_json::Value::String(voice.clone());
+        }
 
-        let client = reqwest::Client::new();
+        let client = http::client(Some(std::time::Duration::from_secs(300)))?;
         let response = client
             .post(format!("{}/v1/chat/completions", server))
             .json(&request_body)
@@ -86,11 +92,14 @@ pub async fn execute(args: ChatArgs, server: &str, theme: &Theme) -> Result<()> 
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let text = response.text().await.unwrap_or_default();
-            return Err(CliError::ApiError { status, message: text });
+            return Err(CliError::ApiError {
+                status,
+                message: text,
+            });
         }
 
         let result: serde_json::Value = response.json().await?;
-        
+
         // Extract assistant's response
         if let Some(choices) = result.get("choices").and_then(|c| c.as_array()) {
             if let Some(first) = choices.first() {
@@ -100,7 +109,7 @@ pub async fn execute(args: ChatArgs, server: &str, theme: &Theme) -> Result<()> 
                     .and_then(|c| c.as_str())
                 {
                     println!("{}: {}", style("Assistant").green().bold(), content);
-                    
+
                     // Add to message history
                     messages.push(serde_json::json!({
                         "role": "assistant",

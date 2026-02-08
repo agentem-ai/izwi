@@ -4,8 +4,12 @@ use crate::ConfigCommands;
 use console::style;
 use std::path::PathBuf;
 
-pub async fn execute(command: ConfigCommands, theme: &Theme) -> Result<()> {
-    let config_path = get_config_path()?;
+pub async fn execute(
+    command: ConfigCommands,
+    config_path_override: Option<&PathBuf>,
+    theme: &Theme,
+) -> Result<()> {
+    let config_path = get_config_path(config_path_override)?;
 
     match command {
         ConfigCommands::Show => show_config(&config_path, theme).await,
@@ -20,7 +24,11 @@ pub async fn execute(command: ConfigCommands, theme: &Theme) -> Result<()> {
     }
 }
 
-fn get_config_path() -> Result<PathBuf> {
+fn get_config_path(override_path: Option<&PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = override_path {
+        return Ok(path.clone());
+    }
+
     let config_dir = dirs::config_dir()
         .ok_or_else(|| CliError::ConfigError("Could not find config directory".to_string()))?;
     Ok(config_dir.join("izwi").join("config.toml"))
@@ -105,7 +113,7 @@ async fn set_config(path: &PathBuf, key: &str, value: &str, theme: &Theme) -> Re
     Ok(())
 }
 
-async fn get_config(path: &PathBuf, key: &str, theme: &Theme) -> Result<()> {
+async fn get_config(path: &PathBuf, key: &str, _theme: &Theme) -> Result<()> {
     if !path.exists() {
         println!("{} not set (using default)", key);
         return Ok(());

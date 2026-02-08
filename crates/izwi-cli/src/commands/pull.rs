@@ -1,4 +1,5 @@
 use crate::error::{CliError, Result};
+use crate::http;
 use crate::style::Theme;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -12,7 +13,7 @@ pub async fn execute(
 ) -> Result<()> {
     // Check if model already exists
     if !force {
-        let client = reqwest::Client::new();
+        let client = http::client(Some(std::time::Duration::from_secs(30)))?;
         let resp = client
             .get(format!("{}/v1/admin/models/{}", server, model))
             .send()
@@ -39,7 +40,7 @@ pub async fn execute(
 
     theme.step(1, 3, &format!("Starting download for '{}'...", model));
 
-    let client = reqwest::Client::new();
+    let client = http::client(Some(std::time::Duration::from_secs(30)))?;
     let response = client
         .post(format!("{}/v1/admin/models/{}/download", server, model))
         .send()
@@ -49,17 +50,22 @@ pub async fn execute(
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
-        return Err(CliError::ApiError { status, message: text });
+        return Err(CliError::ApiError {
+            status,
+            message: text,
+        });
     }
 
     theme.step(2, 3, "Downloading model files...");
 
     // Show progress (simplified - would stream from progress endpoint)
     let pb = ProgressBar::new(100);
-    pb.set_style(ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% {msg}")
-        .unwrap()
-        .progress_chars("#>-"));
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
 
     for i in 0..100 {
         pb.set_position(i);
@@ -74,8 +80,14 @@ pub async fn execute(
     theme.success(&format!("Model '{}' downloaded successfully!", model));
     println!();
     println!("Next steps:");
-    println!("  - Load the model: {}", style(format!("izwi models load {}", model)).cyan());
-    println!("  - Generate speech: {}", style(format!("izwi tts 'Hello' -m {}", model)).cyan());
+    println!(
+        "  - Load the model: {}",
+        style(format!("izwi models load {}", model)).cyan()
+    );
+    println!(
+        "  - Generate speech: {}",
+        style(format!("izwi tts 'Hello' -m {}", model)).cyan()
+    );
 
     Ok(())
 }

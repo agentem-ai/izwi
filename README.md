@@ -13,6 +13,34 @@ A high-performance, Rust-based text-to-speech inference engine optimized for Qwe
 - **REST API**: OpenAI-compatible endpoints for easy integration
 - **Voice Cloning**: Support for reference audio-based voice cloning (CustomVoice models)
 
+## Quick Start (Recommended: CLI)
+
+The `izwi` CLI is the easiest way to start testing and using this repository.
+
+```bash
+# Build CLI
+cargo build -p izwi-cli
+
+# Start server
+./target/debug/izwi serve
+```
+
+In a second terminal:
+
+```bash
+# Check status and local models
+./target/debug/izwi status
+./target/debug/izwi list --local
+
+# ASR smoke test
+./target/debug/izwi transcribe data/test.wav --model qwen3-asr-0.6b --format text
+
+# TTS smoke test
+./target/debug/izwi tts "hello from izwi cli" --model qwen3-tts-0.6b-base --output /tmp/hello.wav
+```
+
+CLI documentation: `crates/izwi-cli/README.md`
+
 ## Supported Models
 
 ### Text-to-Speech (TTS)
@@ -104,7 +132,7 @@ cd ..
 
 ```bash
 # Run the server
-./target/release/izwi
+./target/release/izwi-server
 ```
 
 The server will start at `http://localhost:8080`
@@ -119,7 +147,7 @@ Navigate to `http://localhost:8080` in your browser.
 
 **Terminal 1 - Rust Server:**
 ```bash
-cargo run
+cargo run -p izwi-server
 ```
 
 **Terminal 2 - UI Dev Server:**
@@ -135,45 +163,46 @@ The UI will be available at `http://localhost:5173` with hot reload.
 ### List Models
 
 ```bash
-GET /api/v1/models
+GET /v1/models
 ```
 
 ### Download Model
 
 ```bash
-POST /api/v1/models/{variant}/download
+POST /v1/admin/models/{variant}/download
 ```
 
 ### Load Model
 
 ```bash
-POST /api/v1/models/{variant}/load
+POST /v1/admin/models/{variant}/load
 ```
 
 ### Generate Speech
 
 ```bash
-POST /api/v1/tts/generate
+POST /v1/audio/speech
 Content-Type: application/json
 
 {
-  "text": "Hello, world!",
-  "speaker": "default",
+  "model": "qwen3-tts-0.6b-base",
+  "input": "Hello, world!",
+  "voice": "default",
   "temperature": 0.7,
   "speed": 1.0,
-  "format": "wav"
+  "response_format": "wav"
 }
 ```
 
 ### Transcribe Audio
 
 ```bash
-POST /api/v1/asr/transcribe
+POST /v1/audio/transcriptions
 Content-Type: application/json
 
 {
   "audio_base64": "<base64-encoded-audio>",
-  "model_id": "Qwen/Qwen3-ASR-0.6B",
+  "model": "qwen3-asr-0.6b",
   "language": "auto"
 }
 ```

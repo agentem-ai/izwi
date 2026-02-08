@@ -1,12 +1,10 @@
 use crate::Shell;
-use clap::Command;
+use clap::CommandFactory;
 use clap_complete::generate;
 use std::io;
 
 pub fn execute(shell: Shell) {
-    let mut cmd = Command::new("izwi")
-        .about("High-performance audio inference engine")
-        .version(env!("CARGO_PKG_VERSION"));
+    let mut cmd = crate::Cli::command();
 
     match shell {
         Shell::Bash => {
