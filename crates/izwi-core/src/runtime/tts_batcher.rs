@@ -148,24 +148,30 @@ fn process_batch_requests(
             continue;
         }
 
-        let speaker = item
+        let requested = item
             .config
             .speaker
             .as_deref()
             .unwrap_or_else(|| available_speakers[0].as_str());
-        if !available_speakers.iter().any(|s| s.as_str() == speaker) {
-            let speaker_list = available_speakers
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let err = Error::InvalidInput(format!(
-                "Unknown speaker '{speaker}'. Available speakers: {}",
-                speaker_list
-            ));
-            results[idx] = Some(Err(err));
-            continue;
-        }
+        let speaker = match available_speakers
+            .iter()
+            .find(|s| s.eq_ignore_ascii_case(requested))
+        {
+            Some(name) => name.as_str(),
+            None => {
+                let speaker_list = available_speakers
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let err = Error::InvalidInput(format!(
+                    "Unknown speaker '{requested}'. Available speakers: {}",
+                    speaker_list
+                ));
+                results[idx] = Some(Err(err));
+                continue;
+            }
+        };
 
         batch_indices.push(idx);
         batch_inputs.push(BatchedSpeakerRequest {
