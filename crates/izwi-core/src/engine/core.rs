@@ -12,12 +12,73 @@ use tracing::{debug, info};
 
 use super::config::EngineCoreConfig;
 use super::executor::{UnifiedExecutor, WorkerConfig};
-use super::kv_cache::{KVCacheConfig, KVCacheManager};
+use super::kv_cache::{KVCacheConfig, KVCacheManager, KVCacheStats};
+use super::metal_kv_cache::{MetalKVCacheConfig, MetalKVCacheManager};
 use super::output::OutputProcessor;
 use super::request::{EngineCoreRequest, RequestStatus};
 use super::scheduler::{Scheduler, SchedulerConfig};
 use super::types::{EngineOutput, RequestId};
 use crate::error::{Error, Result};
+use crate::models::DeviceSelector;
+
+enum KvCacheBackend {
+    Standard(KVCacheManager),
+    Metal(MetalKVCacheManager),
+}
+
+impl KvCacheBackend {
+    fn new(config: &EngineCoreConfig) -> Result<Self> {
+        let kv_config = KVCacheConfig {
+            num_layers: 24,
+            num_heads: 16,
+            head_dim: 64,
+            block_size: config.block_size,
+            max_blocks: config.max_blocks,
+            dtype_bytes: 2,
+        };
+
+        if config.use_metal {
+            if let Ok(profile) = DeviceSelector::detect_with_preference(Some("metal")) {
+                if profile.kind.is_metal() {
+                    let mut metal_config = MetalKVCacheConfig::default();
+                    metal_config.base_config = KVCacheConfig {
+                        dtype_bytes: 4,
+                        ..kv_config.clone()
+                    };
+                    let manager = MetalKVCacheManager::new(metal_config, profile)?;
+                    return Ok(Self::Metal(manager));
+                }
+            }
+        }
+
+        Ok(Self::Standard(KVCacheManager::new(kv_config)))
+    }
+
+    fn inner(&self) -> &KVCacheManager {
+        match self {
+            Self::Standard(manager) => manager,
+            Self::Metal(manager) => &manager.inner,
+        }
+    }
+
+    fn inner_mut(&mut self) -> &mut KVCacheManager {
+        match self {
+            Self::Standard(manager) => manager,
+            Self::Metal(manager) => &mut manager.inner,
+        }
+    }
+
+    fn maintenance(&mut self) -> Result<()> {
+        if let Self::Metal(manager) = self {
+            manager.maintenance()?;
+        }
+        Ok(())
+    }
+
+    fn stats(&self) -> KVCacheStats {
+        self.inner().stats()
+    }
+}
 
 /// The engine core - manages the inference loop.
 pub struct EngineCore {
@@ -26,7 +87,7 @@ pub struct EngineCore {
     /// Request scheduler
     scheduler: Scheduler,
     /// KV cache manager
-    kv_cache: KVCacheManager,
+    kv_cache: KvCacheBackend,
     /// Model executor
     executor: UnifiedExecutor,
     /// Output processor
@@ -49,15 +110,7 @@ impl EngineCore {
         let scheduler = Scheduler::new(scheduler_config);
 
         // Create KV cache manager
-        let kv_config = KVCacheConfig {
-            num_layers: 24,
-            num_heads: 16,
-            head_dim: 64,
-            block_size: config.block_size,
-            max_blocks: config.max_blocks,
-            dtype_bytes: 2,
-        };
-        let kv_cache = KVCacheManager::new(kv_config);
+        let kv_cache = KvCacheBackend::new(&config)?;
 
         // Create executor
         let worker_config = WorkerConfig::from(&config);
@@ -133,7 +186,8 @@ impl EngineCore {
         }
 
         // Phase 1: Schedule
-        let schedule_result = self.scheduler.schedule(&mut self.kv_cache);
+        self.kv_cache.maintenance()?;
+        let schedule_result = self.scheduler.schedule(self.kv_cache.inner_mut());
 
         if !schedule_result.has_work() {
             return Ok(Vec::new());
@@ -236,7 +290,7 @@ impl EngineCore {
             // Update scheduler state
             if exec_output.finished {
                 self.scheduler
-                    .finish_request(&request_id, &mut self.kv_cache);
+                    .finish_request(&request_id, self.kv_cache.inner_mut());
                 self.requests.remove(&request_id);
                 self.request_start_times.remove(&request_id);
                 debug!("Finished request {}", request_id);
@@ -265,7 +319,10 @@ impl EngineCore {
 
     /// Abort a request.
     pub fn abort_request(&mut self, request_id: &RequestId) -> bool {
-        if self.scheduler.abort_request(request_id, &mut self.kv_cache) {
+        if self
+            .scheduler
+            .abort_request(request_id, self.kv_cache.inner_mut())
+        {
             self.requests.remove(request_id);
             self.request_start_times.remove(request_id);
             debug!("Aborted request {}", request_id);

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::{debug, info};
 
 use crate::error::Result;
-use crate::models::metal_memory::{MetalMemoryPool, MetalMemoryPoolConfig};
+use crate::models::metal_memory::{metal_pool_for_device, MetalMemoryPool};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceKind {
@@ -162,10 +162,7 @@ impl DeviceSelector {
             .ok()?;
         if device.is_metal() {
             // Initialize memory pool for Metal
-            let pool_config = MetalMemoryPoolConfig::default();
-            let memory_pool = MetalMemoryPool::new(device.clone(), pool_config)
-                .map(Arc::new)
-                .ok();
+            let memory_pool = metal_pool_for_device(&device);
 
             if memory_pool.is_some() {
                 info!("Metal memory pool initialized");
