@@ -4,10 +4,11 @@
 //! multiple sequences in parallel, significantly improving throughput for
 //! concurrent requests.
 
-use candle_core::{DType, IndexOp, Tensor, D};
+use candle_core::{DType, IndexOp, Shape, Tensor, D};
 use tracing::debug;
 
 use crate::error::{Error, Result};
+use crate::models::metal_memory::{metal_pool_for_device, PooledTensor};
 
 /// Batched attention input for multiple sequences
 #[derive(Debug)]
@@ -140,11 +141,13 @@ pub struct AttentionBatchBuilder {
     hidden_size: usize,
     dtype: DType,
     device: candle_core::Device,
+    memory_pool: Option<std::sync::Arc<crate::models::metal_memory::MetalMemoryPool>>,
 }
 
 impl AttentionBatchBuilder {
     /// Create a new batch builder
     pub fn new(hidden_size: usize, dtype: DType, device: candle_core::Device) -> Self {
+        let memory_pool = metal_pool_for_device(&device);
         Self {
             queries: Vec::new(),
             keys: Vec::new(),
@@ -154,6 +157,7 @@ impl AttentionBatchBuilder {
             hidden_size,
             dtype,
             device,
+            memory_pool,
         }
     }
 
@@ -200,10 +204,26 @@ impl AttentionBatchBuilder {
         let hidden_size = self.hidden_size;
         let dtype = self.dtype;
         let device = self.device.clone();
+        let memory_pool = self.memory_pool.clone();
 
-        let padded_queries = Self::pad_tensors(queries, max_seq_len, hidden_size, dtype, &device)?;
-        let padded_keys = Self::pad_tensors(keys, max_seq_len, hidden_size, dtype, &device)?;
-        let padded_values = Self::pad_tensors(values, max_seq_len, hidden_size, dtype, &device)?;
+        let padded_queries = Self::pad_tensors(
+            queries,
+            max_seq_len,
+            hidden_size,
+            dtype,
+            &device,
+            memory_pool.clone(),
+        )?;
+        let padded_keys = Self::pad_tensors(
+            keys,
+            max_seq_len,
+            hidden_size,
+            dtype,
+            &device,
+            memory_pool.clone(),
+        )?;
+        let padded_values =
+            Self::pad_tensors(values, max_seq_len, hidden_size, dtype, &device, memory_pool)?;
 
         // Stack into batch tensors
         let queries = Tensor::stack(&padded_queries, 0).map_err(Error::from)?;
@@ -236,6 +256,7 @@ impl AttentionBatchBuilder {
         hidden_size: usize,
         dtype: DType,
         device: &candle_core::Device,
+        memory_pool: Option<std::sync::Arc<crate::models::metal_memory::MetalMemoryPool>>,
     ) -> Result<Vec<Tensor>> {
         tensors
             .into_iter()
@@ -244,9 +265,17 @@ impl AttentionBatchBuilder {
                 if current_len < target_len {
                     // Pad with zeros
                     let pad_len = target_len - current_len;
-                    let padding = Tensor::zeros((pad_len, hidden_size), dtype, device)
-                        .map_err(Error::from)?;
-                    Tensor::cat(&[t, padding], 0).map_err(Error::from)
+                    let shape = Shape::from(vec![pad_len, hidden_size]);
+                    let pooled = if let Some(pool) = memory_pool.clone() {
+                        let tensor = pool.acquire(&shape, dtype)?;
+                        PooledTensor::new(tensor, Some(pool))
+                    } else {
+                        let tensor = Tensor::zeros(shape, dtype, device).map_err(Error::from)?;
+                        PooledTensor::new(tensor, None)
+                    };
+                    let padded =
+                        Tensor::cat(&[&t, pooled.tensor()], 0).map_err(Error::from)?;
+                    Ok(padded)
                 } else {
                     Ok(t)
                 }

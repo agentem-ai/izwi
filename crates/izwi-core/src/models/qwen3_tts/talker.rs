@@ -8,6 +8,9 @@ use candle_core::{DType, Device, IndexOp, Tensor, D};
 use candle_nn::{ops, Embedding, Linear, Module, RmsNorm, VarBuilder};
 
 use crate::error::{Error, Result};
+use crate::models::batched_attention::{
+    batched_scaled_dot_product_attention, BatchedAttentionConfig, BatchedAttentionInput,
+};
 use crate::models::mlx_compat;
 use crate::models::qwen3_tts::config::TalkerConfig;
 
@@ -205,6 +208,7 @@ impl Attention {
     ) -> Result<Tensor> {
         let bsz = x.dim(0)?;
         let seq_len = x.dim(1)?;
+        let use_batched = cache.is_none() && start_pos == 0 && bsz > 1;
 
         // Project to Q, K, V
         let mut q =
@@ -239,11 +243,31 @@ impl Attention {
         let k = repeat_kv(&k, self.num_heads, self.num_kv_heads)?;
         let v = repeat_kv(&v, self.num_heads, self.num_kv_heads)?;
 
+        if use_batched {
+            let q = q.reshape((bsz, seq_len, self.num_heads * self.head_dim))?;
+            let k = k.reshape((bsz, seq_len, self.num_heads * self.head_dim))?;
+            let v = v.reshape((bsz, seq_len, self.num_heads * self.head_dim))?;
+            let attention_mask = if seq_len > 1 {
+                Some(causal_mask(seq_len, seq_len, start_pos, q.device(), q.dtype())?)
+            } else {
+                None
+            };
+            let input = BatchedAttentionInput {
+                queries: q,
+                keys: k,
+                values: v,
+                attention_mask,
+                seq_lengths: vec![seq_len; bsz],
+            };
+            let config = BatchedAttentionConfig::new(self.num_heads, self.head_dim);
+            let out = batched_scaled_dot_product_attention(&input, &config)?;
+            return self.o_proj.forward(&out).map_err(Error::from);
+        }
+
         // Transpose for attention
         let q = q.transpose(1, 2)?;
         let k = k.transpose(1, 2)?;
         let v = v.transpose(1, 2)?;
-
         let total_len = k.dim(2)?;
 
         // Reshape for batch matrix multiply

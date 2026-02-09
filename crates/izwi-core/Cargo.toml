@@ -47,10 +47,12 @@ accelerate = [
     "candle-transformers/accelerate",
 ]
 
-# Metal/MLX bindings for Apple Silicon
-[target.'cfg(target_os = "macos")'.dependencies]
-metal = "0.30"
-objc = "0.2"
+# Note: Direct Metal access via objc2-metal is available if needed.
+# Currently all Metal functionality is provided through Candle's abstraction.
+# To use objc2-metal directly in the future, add:
+# [target.'cfg(target_os = "macos")'.dependencies]
+# objc2-metal = "0.3"
+# objc2-foundation = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"

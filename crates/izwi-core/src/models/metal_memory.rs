@@ -10,7 +10,7 @@
 use candle_core::{DType, Device, Shape, Tensor};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
@@ -20,7 +20,7 @@ use crate::error::{Error, Result};
 pub struct MetalMemoryPoolConfig {
     /// Maximum memory pool size in bytes (default: 4GB)
     pub max_pool_size_bytes: usize,
-    /// Bucket size increments (powers of 2 are recommended)
+    /// Minimum alignment (in bytes) required for pooled allocations
     pub bucket_increment: usize,
     /// Minimum tensor size to pool (smaller tensors are allocated directly)
     pub min_pool_size: usize,
@@ -36,7 +36,7 @@ impl Default for MetalMemoryPoolConfig {
     fn default() -> Self {
         Self {
             max_pool_size_bytes: 4 * 1024 * 1024 * 1024, // 4GB
-            bucket_increment: 1024 * 1024,               // 1MB buckets
+            bucket_increment: 1,                         // No alignment requirement by default
             min_pool_size: 4096,                         // 4KB minimum
             max_pool_size: 256 * 1024 * 1024,            // 256MB maximum
             enable_pressure_monitoring: true,
@@ -62,7 +62,7 @@ struct PooledBuffer {
 pub struct MetalMemoryPool {
     config: MetalMemoryPoolConfig,
     device: Device,
-    /// Buckets of available buffers indexed by size class
+    /// Buckets of available buffers indexed by element count
     buckets: Mutex<HashMap<usize, Vec<PooledBuffer>>>,
     /// Current total memory usage
     current_usage: AtomicUsize,
@@ -112,40 +112,49 @@ impl MetalMemoryPool {
         })
     }
 
-    /// Get the size class for a given byte size
-    fn size_class(&self, size_bytes: usize) -> usize {
+    /// Determine the pool key for a given tensor size.
+    ///
+    /// Returns element count when poolable; otherwise None.
+    fn pool_key(&self, elem_count: usize, size_bytes: usize) -> Option<usize> {
         if size_bytes < self.config.min_pool_size {
-            return 0; // Don't pool very small tensors
+            return None; // Don't pool very small tensors
         }
         if size_bytes > self.config.max_pool_size {
-            return usize::MAX; // Don't pool very large tensors
+            return None; // Don't pool very large tensors
+        }
+        if self.config.bucket_increment > 1 && size_bytes % self.config.bucket_increment != 0 {
+            return None; // Enforce alignment if configured
         }
 
-        // Round up to nearest bucket increment
-        ((size_bytes + self.config.bucket_increment - 1) / self.config.bucket_increment)
-            * self.config.bucket_increment
+        Some(elem_count)
     }
 
     /// Acquire a tensor from the pool or allocate a new one
     ///
-    /// The returned tensor will have at least the requested shape and dtype.
-    /// The actual buffer may be larger for reuse purposes.
+    /// The returned tensor will have the requested shape and dtype.
+    /// Pooled tensors are reshaped when element counts match.
     pub fn acquire(&self, shape: &Shape, dtype: DType) -> Result<Tensor> {
         let element_size = dtype.size_in_bytes();
-        let requested_size = shape.elem_count() * element_size;
-        let size_class = self.size_class(requested_size);
+        let elem_count = shape.elem_count();
+        let requested_size = elem_count * element_size;
+        let pool_key = self.pool_key(elem_count, requested_size);
 
         // Don't pool if outside pooling range
-        if size_class == 0 || size_class == usize::MAX {
+        let pool_key = if let Some(pool_key) = pool_key {
+            pool_key
+        } else {
             self.misses.fetch_add(1, Ordering::Relaxed);
-            return Tensor::zeros(shape.clone(), dtype, &self.device).map_err(Error::from);
-        }
+            let tensor =
+                Tensor::zeros(shape.clone(), dtype, &self.device).map_err(Error::from)?;
+            self.checked_out.fetch_add(1, Ordering::Relaxed);
+            return Ok(tensor);
+        };
 
         // Try to get from pool
         {
             let mut buckets = self.buckets.lock().unwrap();
 
-            if let Some(buffers) = buckets.get_mut(&size_class) {
+            if let Some(buffers) = buckets.get_mut(&pool_key) {
                 // Find a buffer with compatible dtype
                 if let Some(idx) = buffers.iter().position(|buf| buf.tensor.dtype() == dtype) {
                     let mut buffer = buffers.remove(idx);
@@ -156,12 +165,19 @@ impl MetalMemoryPool {
                     self.hits.fetch_add(1, Ordering::Relaxed);
 
                     debug!(
-                        "Pool hit: size_class={}, use_count={}",
-                        size_class, buffer.use_count
+                        "Pool hit: elem_count={}, use_count={}",
+                        elem_count, buffer.use_count
                     );
 
-                    // Return the buffer's tensor
-                    return Ok(buffer.tensor);
+                    // Return the buffer's tensor, reshaped if needed
+                    if buffer.tensor.shape() == shape {
+                        return Ok(buffer.tensor);
+                    }
+
+                    return buffer
+                        .tensor
+                        .reshape(shape.clone())
+                        .map_err(Error::from);
                 }
             }
         }
@@ -169,19 +185,14 @@ impl MetalMemoryPool {
         // Pool miss - allocate new tensor
         self.misses.fetch_add(1, Ordering::Relaxed);
 
-        // Allocate with rounded-up size for future reuse
-        let alloc_shape = if requested_size < self.config.bucket_increment {
-            Shape::from(size_class / element_size)
-        } else {
-            shape.clone()
-        };
-
-        let tensor = Tensor::zeros(alloc_shape, dtype, &self.device).map_err(Error::from)?;
-        self.current_usage.fetch_add(size_class, Ordering::Relaxed);
+        let tensor = Tensor::zeros(shape.clone(), dtype, &self.device).map_err(Error::from)?;
+        self.current_usage
+            .fetch_add(requested_size, Ordering::Relaxed);
+        self.checked_out.fetch_add(1, Ordering::Relaxed);
 
         debug!(
-            "Pool miss: allocated size_class={}, current_usage={}MB",
-            size_class,
+            "Pool miss: allocated elem_count={}, current_usage={}MB",
+            elem_count,
             self.current_usage.load(Ordering::Relaxed) / (1024 * 1024)
         );
 
@@ -200,18 +211,36 @@ impl MetalMemoryPool {
             return;
         }
 
-        let size_bytes = tensor.dtype().size_in_bytes() * tensor.elem_count();
-        let size_class = self.size_class(size_bytes);
+        let elem_count = tensor.elem_count();
+        let size_bytes = tensor.dtype().size_in_bytes() * elem_count;
+        let pool_key = self.pool_key(elem_count, size_bytes);
 
         // Don't pool if outside pooling range
-        if size_class == 0 || size_class == usize::MAX {
+        let pool_key = if let Some(pool_key) = pool_key {
+            pool_key
+        } else {
+            self.checked_out
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    value.checked_sub(1)
+                })
+                .ok();
             return;
-        }
+        };
 
         // Check if we're under memory limit
         let current = self.current_usage.load(Ordering::Relaxed);
         if current > self.config.max_pool_size_bytes {
             debug!("Pool at capacity, dropping tensor");
+            self.current_usage
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    value.checked_sub(size_bytes)
+                })
+                .ok();
+            self.checked_out
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    value.checked_sub(1)
+                })
+                .ok();
             return;
         }
 
@@ -223,13 +252,17 @@ impl MetalMemoryPool {
         };
 
         let mut buckets = self.buckets.lock().unwrap();
-        buckets.entry(size_class).or_default().push(buffer);
-        self.checked_out.fetch_sub(1, Ordering::Relaxed);
+        buckets.entry(pool_key).or_default().push(buffer);
+        self.checked_out
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_sub(1)
+            })
+            .ok();
 
         debug!(
-            "Released tensor to pool: size_class={}, pool_size={}",
-            size_class,
-            buckets.get(&size_class).map(|v| v.len()).unwrap_or(0)
+            "Released tensor to pool: elem_count={}, pool_size={}",
+            elem_count,
+            buckets.get(&pool_key).map(|v| v.len()).unwrap_or(0)
         );
     }
 
@@ -409,6 +442,71 @@ impl Default for MetalPoolManager {
     }
 }
 
+static GLOBAL_POOL_MANAGER: OnceLock<MetalPoolManager> = OnceLock::new();
+
+impl MetalPoolManager {
+    /// Get the global Metal pool manager.
+    pub fn global() -> &'static MetalPoolManager {
+        GLOBAL_POOL_MANAGER.get_or_init(MetalPoolManager::new)
+    }
+}
+
+/// Fetch (or create) the shared Metal memory pool for a device.
+pub fn metal_pool_for_device(device: &Device) -> Option<Arc<MetalMemoryPool>> {
+    if device.is_metal() {
+        MetalPoolManager::global().get_pool(device).ok()
+    } else {
+        None
+    }
+}
+
+/// Tensor wrapper that returns pooled tensors on drop.
+pub struct PooledTensor {
+    tensor: Option<Tensor>,
+    pool: Option<Arc<MetalMemoryPool>>,
+}
+
+impl PooledTensor {
+    pub fn new(tensor: Tensor, pool: Option<Arc<MetalMemoryPool>>) -> Self {
+        Self {
+            tensor: Some(tensor),
+            pool,
+        }
+    }
+
+    pub fn tensor(&self) -> &Tensor {
+        self.tensor.as_ref().expect("PooledTensor missing tensor")
+    }
+
+    pub fn into_inner(mut self) -> Tensor {
+        self.pool = None;
+        self.tensor.take().expect("PooledTensor missing tensor")
+    }
+}
+
+impl Drop for PooledTensor {
+    fn drop(&mut self) {
+        if let (Some(pool), Some(tensor)) = (self.pool.take(), self.tensor.take()) {
+            pool.release(tensor);
+        }
+    }
+}
+
+#[cfg(test)]
+impl MetalMemoryPool {
+    fn new_for_tests(device: Device, config: MetalMemoryPoolConfig) -> Self {
+        Self {
+            config,
+            device,
+            buckets: Mutex::new(HashMap::new()),
+            current_usage: AtomicUsize::new(0),
+            hits: AtomicUsize::new(0),
+            misses: AtomicUsize::new(0),
+            checked_out: AtomicUsize::new(0),
+        }
+    }
+}
+
 /// Convenience function to get the size of a tensor in bytes
 pub fn tensor_size_bytes(tensor: &Tensor) -> usize {
     tensor.dtype().size_in_bytes() * tensor.elem_count()
@@ -425,22 +523,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_size_class_calculation() {
+    fn test_pool_key_calculation() {
         let config = MetalMemoryPoolConfig::default();
         let device = Device::Cpu; // Use CPU for testing
-        let pool = MetalMemoryPool::new(device, config).unwrap();
+        let pool = MetalMemoryPool::new_for_tests(device, config);
 
-        assert_eq!(pool.size_class(1024), 0); // Below minimum
-        assert_eq!(pool.size_class(4096), 1024 * 1024); // Minimum bucket
-        assert_eq!(pool.size_class(1024 * 1024), 1024 * 1024); // Exact bucket
-        assert_eq!(pool.size_class(1024 * 1024 + 1), 2 * 1024 * 1024); // Round up
+        let elem_count = 1024;
+        let size_bytes = elem_count * DType::F32.size_in_bytes();
+        assert_eq!(pool.pool_key(elem_count, 1024), None); // Below minimum
+        assert_eq!(pool.pool_key(elem_count, size_bytes), Some(elem_count));
     }
 
     #[test]
     fn test_pool_stats() {
         let config = MetalMemoryPoolConfig::default();
         let device = Device::Cpu;
-        let pool = MetalMemoryPool::new(device, config).unwrap();
+        let pool = MetalMemoryPool::new_for_tests(device, config);
 
         let stats = pool.stats();
         assert_eq!(stats.total_buffers, 0);
