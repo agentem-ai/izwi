@@ -634,6 +634,40 @@ impl KVCacheManager {
         &self.telemetry
     }
 
+    /// Get the current soft maximum block limit.
+    pub fn soft_max_blocks(&self) -> usize {
+        self.allocator.soft_max_blocks()
+    }
+
+    /// Set the soft maximum block limit.
+    pub fn set_soft_max_blocks(&mut self, limit: usize) {
+        self.allocator.set_soft_max_blocks(limit);
+        self.telemetry.soft_max_blocks = limit;
+    }
+
+    /// Get the number of shared prefixes.
+    pub fn shared_prefix_count(&self) -> usize {
+        self.shared_prefixes.len()
+    }
+
+    /// Compact shared prefixes by removing unused ones.
+    pub fn compact_shared_prefixes(&mut self) {
+        let before_count = self.shared_prefixes.len();
+
+        // Remove prefixes that are not actually shared (only 1 reference)
+        self.shared_prefixes
+            .retain(|hash, _blocks| self.prefix_ref_counts.get(hash).copied().unwrap_or(0) > 1);
+
+        let after_count = self.shared_prefixes.len();
+        if before_count != after_count {
+            tracing::debug!(
+                "Compacted shared prefixes: {} -> {}",
+                before_count,
+                after_count
+            );
+        }
+    }
+
     fn maybe_tune_soft_limit(&mut self) {
         let total_ops = self.telemetry.total_ops();
         let delta_ops = total_ops.saturating_sub(self.last_tuned_ops);

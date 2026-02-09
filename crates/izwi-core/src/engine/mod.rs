@@ -28,6 +28,7 @@ mod config;
 mod core;
 mod executor;
 mod kv_cache;
+mod metal_kv_cache;
 pub mod metrics;
 mod output;
 mod request;

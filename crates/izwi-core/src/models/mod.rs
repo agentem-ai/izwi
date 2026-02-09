@@ -1,7 +1,9 @@
 //! Native model implementations and registry.
 
+pub mod batched_attention;
 pub mod device;
 pub mod gguf_loader;
+pub mod metal_memory;
 pub mod mlx_compat;
 pub mod qwen3;
 pub mod qwen3_asr;
