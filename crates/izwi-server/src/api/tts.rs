@@ -34,6 +34,9 @@ pub struct SpeechRequest {
     /// OpenAI speed.
     #[serde(default)]
     pub speed: Option<f32>,
+    /// Optional language hint (e.g. "Auto", "English", "Chinese").
+    #[serde(default)]
+    pub language: Option<String>,
     /// Optional sampling temperature.
     #[serde(default)]
     pub temperature: Option<f32>,
@@ -93,6 +96,7 @@ pub async fn speech(
             id: uuid::Uuid::new_v4().to_string(),
             text: req.input.clone(),
             config: gen_config,
+            language: req.language.clone(),
             reference_audio: req.reference_audio.clone(),
             reference_text: req.reference_text.clone(),
             voice_description: req.instructions.clone(),
@@ -151,6 +155,7 @@ async fn stream_speech(state: AppState, req: SpeechRequest) -> Result<Response<B
         id: uuid::Uuid::new_v4().to_string(),
         text: req.input.clone(),
         config: gen_config,
+        language: req.language.clone(),
         reference_audio: req.reference_audio.clone(),
         reference_text: req.reference_text.clone(),
         voice_description: req.instructions.clone(),

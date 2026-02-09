@@ -62,6 +62,7 @@ export function VoiceDesignPlayground({
       const blob = await api.generateTTS({
         text: text.trim(),
         model_id: selectedModel,
+        language,
         max_tokens: 0,
         voice_description: voiceDescription.trim(),
       });

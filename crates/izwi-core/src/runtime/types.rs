@@ -102,6 +102,10 @@ pub struct GenerationRequest {
     #[serde(default)]
     pub config: GenerationConfig,
 
+    /// Optional language hint for multilingual TTS models.
+    #[serde(default)]
+    pub language: Option<String>,
+
     /// Reference audio for voice cloning (base64 encoded)
     #[serde(default)]
     pub reference_audio: Option<String>,
@@ -125,6 +129,7 @@ impl GenerationRequest {
             id: generate_request_id(),
             text: text.into(),
             config: GenerationConfig::default(),
+            language: None,
             reference_audio: None,
             reference_text: None,
             voice_description: None,

@@ -66,6 +66,7 @@ export function VoiceClonePlayground({
       const blob = await api.generateTTS({
         text: text.trim(),
         model_id: selectedModel,
+        language,
         max_tokens: 0,
         reference_audio: voiceCloneAudio,
         reference_text: voiceCloneTranscript,

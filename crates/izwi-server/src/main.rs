@@ -1,7 +1,7 @@
 //! Izwi TTS Server - HTTP API for Qwen3-TTS inference
 
 use tokio::signal;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod api;
@@ -38,8 +38,19 @@ async fn main() -> anyhow::Result<()> {
     let app = api::create_router(state.clone());
 
     // Start server
-    let addr = "0.0.0.0:8080";
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let host = std::env::var("IZWI_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let port = match std::env::var("IZWI_PORT") {
+        Ok(raw) => match raw.parse::<u16>() {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                warn!("Invalid IZWI_PORT='{}', falling back to 8080", raw);
+                8080
+            }
+        },
+        Err(_) => 8080,
+    };
+    let addr = format!("{host}:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("Server listening on http://{}", addr);
 
     // Clone state for shutdown handler

@@ -65,7 +65,6 @@ async fn run_batcher(
             }
         }
 
-        let start = Instant::now();
         let model = model.clone();
         let config = config.clone();
 
@@ -76,9 +75,7 @@ async fn run_batcher(
             senders.push(item.respond_to);
         }
 
-        let handle = tokio::task::spawn_blocking(move || {
-            process_batch_requests(requests, model, config, start.elapsed())
-        });
+        let handle = tokio::task::spawn_blocking(move || process_batch_requests(requests, model, config));
 
         match handle.await {
             Ok(results) => {
@@ -100,9 +97,8 @@ fn process_batch_requests(
     batch: Vec<GenerationRequest>,
     model: Arc<RwLock<Option<Qwen3TtsModel>>>,
     _config: EngineConfig,
-    elapsed: Duration,
 ) -> Vec<Result<GenerationResult>> {
-    let elapsed_ms = elapsed.as_secs_f32() * 1000.0;
+    let started = Instant::now();
 
     let rt = tokio::runtime::Handle::try_current();
     let model_guard = rt
@@ -133,14 +129,14 @@ fn process_batch_requests(
             let result = model
                 .generate_with_text_params(
                     &item.text,
-                    Some("Auto"),
+                    item.language.as_deref(),
                     item.voice_description.as_deref(),
                     &params,
                 )
                 .map(|samples| GenerationResult {
                     request_id: item.id.clone(),
                     total_tokens: samples.len() / 256,
-                    total_time_ms: elapsed_ms,
+                    total_time_ms: started.elapsed().as_secs_f32() * 1000.0,
                     sample_rate: 24000,
                     samples,
                 });
@@ -177,7 +173,7 @@ fn process_batch_requests(
         batch_inputs.push(BatchedSpeakerRequest {
             text: item.text.clone(),
             speaker: speaker.to_string(),
-            language: Some("Auto".to_string()),
+            language: item.language.clone(),
             instruct: item.voice_description.clone(),
             params,
         });
@@ -190,7 +186,7 @@ fn process_batch_requests(
                     results[idx] = Some(Ok(GenerationResult {
                         request_id: batch[idx].id.clone(),
                         total_tokens: samples.len() / 256,
-                        total_time_ms: elapsed_ms,
+                        total_time_ms: started.elapsed().as_secs_f32() * 1000.0,
                         sample_rate: 24000,
                         samples,
                     }));

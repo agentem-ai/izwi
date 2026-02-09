@@ -78,6 +78,7 @@ export interface ChatStreamCallbacks {
 export interface TTSRequest {
   text: string;
   model_id: string;
+  language?: string;
   speaker?: string;
   voice_description?: string;
   reference_audio?: string;
@@ -280,6 +281,7 @@ class ApiClient {
       body: JSON.stringify({
         model: request.model_id,
         input: request.text,
+        language: request.language,
         voice: request.speaker,
         instructions: request.voice_description,
         reference_audio: request.reference_audio,
@@ -326,6 +328,7 @@ class ApiClient {
       body: JSON.stringify({
         model: request.model_id,
         input: request.text,
+        language: request.language,
         voice: request.speaker,
         instructions: request.voice_description,
         reference_audio: request.reference_audio,

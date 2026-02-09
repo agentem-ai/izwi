@@ -504,20 +504,18 @@ impl Qwen3TtsModel {
             ));
         }
 
-        // Build input sequence with reference tokens
-        let input_ids = self.tokenizer.build_voice_clone_sequence(
-            text,
-            reference.text.as_str(),
-            &ref_codec_tokens,
-            language,
-            false,
-        )?;
-
         let params = TtsGenerationParams::default();
+        let prompt_ids = self.encode_assistant_prompt_ids(text)?;
+        let ref_prompt_ids = self.encode_reference_prompt_ids(reference.text.as_str())?;
+        let language_id = self.resolve_language_id(language);
 
-        // Generate codec tokens
-        let codec_tokens =
-            self.generate_codec_tokens_legacy(&input_ids, params.max_frames, &params)?;
+        let codec_tokens = self.generate_codec_tokens_voice_clone_conditioned(
+            &prompt_ids,
+            &ref_prompt_ids,
+            &ref_codec_tokens,
+            language_id,
+            &params,
+        )?;
 
         // Decode to audio
         self.codec_to_audio(&codec_tokens)
@@ -534,19 +532,17 @@ impl Qwen3TtsModel {
         instruct: Option<&str>,
         params: &TtsGenerationParams,
     ) -> Result<Vec<f32>> {
-        // VoiceDesign checkpoints do not expose preset speaker IDs. For stability,
-        // keep this path on legacy decoding and inject instruction text directly
-        // into the prompt so style conditioning is still applied.
-        let prompt_text = if let Some(ins) = instruct.map(str::trim).filter(|s| !s.is_empty()) {
-            format!("Voice design instruction: {ins}\nTarget text: {text}")
-        } else {
-            text.to_string()
-        };
-        let input_ids = self
-            .tokenizer
-            .build_input_sequence(&prompt_text, None, language, false)?;
-        let codec_tokens =
-            self.generate_codec_tokens_legacy(&input_ids, params.max_frames, params)?;
+        let prompt_ids = self.encode_assistant_prompt_ids(text)?;
+        let language_id = self.resolve_language_id(language);
+        let instruct_ids = self.encode_instruction_ids(instruct)?;
+
+        let codec_tokens = self.generate_codec_tokens_conditioned(
+            &prompt_ids,
+            None,
+            language_id,
+            instruct_ids.as_deref(),
+            params,
+        )?;
         self.codec_to_audio(&codec_tokens)
     }
 
@@ -577,6 +573,13 @@ impl Qwen3TtsModel {
         // Mirror upstream prompting:
         // <|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n
         let prompt = format!("<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n");
+        self.tokenizer.encode_text(&prompt, None)
+    }
+
+    fn encode_reference_prompt_ids(&self, reference_text: &str) -> Result<Vec<u32>> {
+        // Mirror upstream voice-clone reference prompt:
+        // <|im_start|>assistant\n{reference_text}<|im_end|>\n
+        let prompt = format!("<|im_start|>assistant\n{reference_text}<|im_end|>\n");
         self.tokenizer.encode_text(&prompt, None)
     }
 
@@ -718,15 +721,6 @@ impl Qwen3TtsModel {
         instruct_ids: Option<&[u32]>,
         params: &TtsGenerationParams,
     ) -> Result<Vec<Vec<u32>>> {
-        let mut talker_cache = TalkerCache::new(self.talker.num_layers());
-        let mut predictor_cache = CodePredictorCache::new(self.code_predictor.num_layers());
-        let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
-        let acoustic_vocab_size = self.tokenizer.codec_vocab_size() as u32;
-        // Talker logits are over full codec vocab (semantic + control).
-        let talker_codec_vocab_size = self.config.talker_config.vocab_size as u32;
-        // Official suppression keeps semantic IDs [0, vocab-1024) and EOS.
-        let semantic_vocab_size = talker_codec_vocab_size.saturating_sub(1024);
-
         let prefill_embeds = self.build_conditioned_prefill_embeddings(
             prompt_ids,
             speaker_id,
@@ -734,13 +728,6 @@ impl Qwen3TtsModel {
             instruct_ids,
         )?;
         let prefill_len = prefill_embeds.dim(1)?;
-        let (mut last_hidden, mut last_logits) =
-            self.talker
-                .prefill_with_embeds(&prefill_embeds, &mut talker_cache, None)?;
-
-        let mut all_code_groups: Vec<Vec<u32>> =
-            vec![Vec::new(); self.config.talker_config.num_code_groups];
-        let min_tokens_before_eos = 8usize;
         let context_budget = self
             .config
             .talker_config
@@ -752,13 +739,226 @@ impl Qwen3TtsModel {
                     .to_string(),
             ));
         }
+
         let max_frames = if params.max_frames == 0 {
             context_budget
         } else {
             params.max_frames.max(1).min(context_budget)
         };
-        let (trailing_text_hidden, trailing_text_len, tts_pad_embed) =
+        let (trailing_text_hidden, _trailing_text_len, tts_pad_embed) =
             self.build_trailing_text_embeddings_from_prompt(prompt_ids, max_frames)?;
+
+        self.generate_codec_tokens_from_prefill(
+            prefill_embeds,
+            trailing_text_hidden,
+            tts_pad_embed,
+            max_frames,
+            params,
+        )
+    }
+
+    fn generate_codec_tokens_voice_clone_conditioned(
+        &self,
+        prompt_ids: &[u32],
+        ref_prompt_ids: &[u32],
+        ref_codec_tokens: &[Vec<u32>],
+        language_id: Option<u32>,
+        params: &TtsGenerationParams,
+    ) -> Result<Vec<Vec<u32>>> {
+        let target_text_ids: Vec<u32> = if prompt_ids.len() > 8 {
+            prompt_ids[3..prompt_ids.len() - 5].to_vec()
+        } else {
+            Vec::new()
+        };
+        let reference_text_ids: Vec<u32> = if ref_prompt_ids.len() > 5 {
+            ref_prompt_ids[3..ref_prompt_ids.len() - 2].to_vec()
+        } else {
+            Vec::new()
+        };
+        if target_text_ids.is_empty() || reference_text_ids.is_empty() {
+            return Err(Error::InvalidInput(
+                "Voice cloning requires non-empty target/reference transcript tokens".to_string(),
+            ));
+        }
+
+        let base_prefill =
+            self.build_conditioned_prefill_embeddings(&[], None, language_id, None)?;
+        let tts_pad_embed = self
+            .talker
+            .get_projected_special_embed(self.specials.tts_pad_token_id)?;
+        let tts_eos_embed = self
+            .talker
+            .get_projected_special_embed(self.specials.tts_eos_token_id)?;
+        let (icl_embed, trailing_text_hidden) = self.build_voice_clone_icl_embeddings(
+            &target_text_ids,
+            &reference_text_ids,
+            ref_codec_tokens,
+            &tts_pad_embed,
+            &tts_eos_embed,
+            false,
+        )?;
+        let prefill_embeds = Tensor::cat(&[&base_prefill, &icl_embed], 1)?;
+
+        let prefill_len = prefill_embeds.dim(1)?;
+        let context_budget = self
+            .config
+            .talker_config
+            .max_position_embeddings
+            .saturating_sub(prefill_len + 1);
+        if context_budget == 0 {
+            return Err(Error::InferenceError(
+                "Voice-clone prompt exceeds model context window".to_string(),
+            ));
+        }
+        let max_frames = if params.max_frames == 0 {
+            context_budget
+        } else {
+            params.max_frames.max(1).min(context_budget)
+        };
+
+        self.generate_codec_tokens_from_prefill(
+            prefill_embeds,
+            trailing_text_hidden,
+            tts_pad_embed,
+            max_frames,
+            params,
+        )
+    }
+
+    fn build_voice_clone_icl_embeddings(
+        &self,
+        target_text_ids: &[u32],
+        reference_text_ids: &[u32],
+        ref_codec_tokens: &[Vec<u32>],
+        tts_pad_embed: &Tensor,
+        tts_eos_embed: &Tensor,
+        non_streaming_mode: bool,
+    ) -> Result<(Tensor, Tensor)> {
+        let mut all_text_ids = Vec::with_capacity(reference_text_ids.len() + target_text_ids.len());
+        all_text_ids.extend_from_slice(reference_text_ids);
+        all_text_ids.extend_from_slice(target_text_ids);
+        let text_embed = self.talker.get_projected_text_embeddings(&all_text_ids)?;
+        let text_embed = Tensor::cat(&[&text_embed, tts_eos_embed], 1)?;
+
+        let codec_embed = self.build_ref_codec_embeddings(ref_codec_tokens)?;
+
+        let text_lens = text_embed.dim(1)?;
+        let codec_lens = codec_embed.dim(1)?;
+        if codec_lens == 0 {
+            return Err(Error::ModelError(
+                "Reference codec conditioning is empty".to_string(),
+            ));
+        }
+
+        if non_streaming_mode {
+            let codec_pad_ids = vec![self.specials.codec_pad_id; text_lens];
+            let codec_pad_embed = self.talker.get_codec_embedding_batch(&codec_pad_ids)?;
+            let icl_input = text_embed.broadcast_add(&codec_pad_embed)?;
+            let icl_input = Tensor::cat(
+                &[&icl_input, &codec_embed.broadcast_add(tts_pad_embed)?],
+                1,
+            )?;
+            return Ok((icl_input, tts_pad_embed.clone()));
+        }
+
+        if text_lens > codec_lens {
+            let text_prefix = text_embed.i((.., ..codec_lens, ..))?;
+            let trailing = text_embed.i((.., codec_lens.., ..))?;
+            let icl_input = text_prefix.broadcast_add(&codec_embed)?;
+            Ok((icl_input, trailing))
+        } else {
+            let mut padded_parts: Vec<Tensor> = vec![text_embed];
+            for _ in 0..codec_lens.saturating_sub(text_lens) {
+                padded_parts.push(tts_pad_embed.clone());
+            }
+            let padded_refs: Vec<&Tensor> = padded_parts.iter().collect();
+            let padded_text = Tensor::cat(&padded_refs, 1)?;
+            let icl_input = padded_text.broadcast_add(&codec_embed)?;
+            Ok((icl_input, tts_pad_embed.clone()))
+        }
+    }
+
+    fn build_ref_codec_embeddings(&self, ref_codec_tokens: &[Vec<u32>]) -> Result<Tensor> {
+        let num_code_groups = self.config.talker_config.num_code_groups;
+        if ref_codec_tokens.len() < num_code_groups {
+            return Err(Error::InvalidInput(format!(
+                "Reference codec groups mismatch: got {}, expected at least {}",
+                ref_codec_tokens.len(),
+                num_code_groups
+            )));
+        }
+
+        let num_acoustic_groups = self.code_predictor.num_acoustic_groups();
+        let usable_groups = (1 + num_acoustic_groups).min(num_code_groups);
+        let mut frame_len = usize::MAX;
+        for group in ref_codec_tokens.iter().take(usable_groups) {
+            frame_len = frame_len.min(group.len());
+        }
+        if frame_len == usize::MAX || frame_len == 0 {
+            return Err(Error::ModelError(
+                "Reference codec conditioning has no usable frames".to_string(),
+            ));
+        }
+
+        let max_ref_frames = 320usize;
+        frame_len = frame_len.min(max_ref_frames);
+
+        let codec_vocab = self.tokenizer.codec_vocab_size() as u32;
+        let mut semantic_codes = Vec::with_capacity(frame_len);
+        let mut acoustic_embed_steps = Vec::with_capacity(frame_len);
+
+        for frame_idx in 0..frame_len {
+            semantic_codes.push(ref_codec_tokens[0][frame_idx] % codec_vocab);
+
+            let mut acoustic_codes = Vec::with_capacity(num_acoustic_groups);
+            for group_idx in 0..num_acoustic_groups {
+                let source_group = group_idx + 1;
+                let code = ref_codec_tokens
+                    .get(source_group)
+                    .and_then(|group| group.get(frame_idx))
+                    .copied()
+                    .unwrap_or(0)
+                    % codec_vocab;
+                acoustic_codes.push(code);
+            }
+            acoustic_embed_steps.push(self.code_predictor.get_acoustic_embeddings_sum(&acoustic_codes)?);
+        }
+
+        let semantic_embed = self.talker.get_codec_embedding_batch(&semantic_codes)?;
+        let acoustic_refs: Vec<&Tensor> = acoustic_embed_steps.iter().collect();
+        let acoustic_embed = Tensor::cat(&acoustic_refs, 1)?;
+        let codec_embed = semantic_embed.broadcast_add(&acoustic_embed)?;
+
+        let codec_bos = self
+            .talker
+            .get_codec_embedding_batch(&[self.specials.codec_bos_id])?;
+        Tensor::cat(&[&codec_bos, &codec_embed], 1).map_err(Error::from)
+    }
+
+    fn generate_codec_tokens_from_prefill(
+        &self,
+        prefill_embeds: Tensor,
+        trailing_text_hidden: Tensor,
+        tts_pad_embed: Tensor,
+        max_frames: usize,
+        params: &TtsGenerationParams,
+    ) -> Result<Vec<Vec<u32>>> {
+        let mut talker_cache = TalkerCache::new(self.talker.num_layers());
+        let mut predictor_cache = CodePredictorCache::new(self.code_predictor.num_layers());
+        let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
+        let acoustic_vocab_size = self.tokenizer.codec_vocab_size() as u32;
+        let talker_codec_vocab_size = self.config.talker_config.vocab_size as u32;
+        let semantic_vocab_size = talker_codec_vocab_size.saturating_sub(1024);
+
+        let prefill_len = prefill_embeds.dim(1)?;
+        let trailing_text_len = trailing_text_hidden.dim(1)?;
+        let (mut last_hidden, mut last_logits) =
+            self.talker
+                .prefill_with_embeds(&prefill_embeds, &mut talker_cache, None)?;
+
+        let mut all_code_groups: Vec<Vec<u32>> =
+            vec![Vec::new(); self.config.talker_config.num_code_groups];
+        let min_tokens_before_eos = 8usize;
         let mut offset = prefill_len;
         let mut rng = SimpleRng::new();
         let mut semantic_history: Vec<u32> = Vec::new();

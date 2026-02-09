@@ -27,6 +27,7 @@ impl InferenceEngine {
         let text = request.text.clone();
         let speaker = request.config.speaker.clone();
         let runtime_gen_config = request.config.clone();
+        let language = request.language.clone();
         let voice_description = request.voice_description.clone();
         let ref_audio = request.reference_audio.clone();
         let ref_text = request.reference_text.clone();
@@ -43,8 +44,19 @@ impl InferenceEngine {
                 .as_ref()
                 .ok_or_else(|| Error::InferenceError("No TTS model loaded".to_string()))?;
 
-            if ref_audio.is_some() && ref_text.is_some() {
-                let ref_audio = ref_audio.unwrap_or_default();
+            if ref_audio.is_some() || ref_text.is_some() {
+                let ref_audio = ref_audio.ok_or_else(|| {
+                    Error::InvalidInput(
+                        "reference_audio and reference_text must both be provided".to_string(),
+                    )
+                })?;
+                let ref_text = ref_text.unwrap_or_default();
+                if ref_text.trim().is_empty() {
+                    return Err(Error::InvalidInput(
+                        "reference_text cannot be empty for voice cloning".to_string(),
+                    ));
+                }
+
                 let ref_bytes = base64_decode(&ref_audio).map_err(|e| {
                     Error::InferenceError(format!("Failed to decode reference audio: {}", e))
                 })?;
@@ -59,11 +71,11 @@ impl InferenceEngine {
 
                 let speaker_ref = SpeakerReference {
                     audio_samples: ref_samples,
-                    text: ref_text.unwrap_or_default(),
+                    text: ref_text,
                     sample_rate,
                 };
 
-                model.generate_with_voice_clone(&text, &speaker_ref, Some("Auto"))
+                model.generate_with_voice_clone(&text, &speaker_ref, language.as_deref())
             } else {
                 let params = TtsGenerationParams::from_generation_config(&runtime_gen_config);
                 let available_speakers = model.available_speakers();
@@ -78,7 +90,7 @@ impl InferenceEngine {
                     }
                     model.generate_with_text_params(
                         &text,
-                        Some("Auto"),
+                        language.as_deref(),
                         voice_description.as_deref(),
                         &params,
                     )
@@ -88,7 +100,7 @@ impl InferenceEngine {
                     model.generate_with_speaker_params(
                         &text,
                         speaker_to_use,
-                        Some("Auto"),
+                        language.as_deref(),
                         voice_description.as_deref(),
                         &params,
                     )

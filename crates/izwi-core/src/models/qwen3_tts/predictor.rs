@@ -143,6 +143,11 @@ impl CodePredictor {
         self.num_code_groups
     }
 
+    /// Number of acoustic code groups predicted after the semantic codebook.
+    pub fn num_acoustic_groups(&self) -> usize {
+        self.codec_embeddings.len()
+    }
+
     /// Forward pass to predict all code groups from first codebook
     pub fn forward(
         &self,
