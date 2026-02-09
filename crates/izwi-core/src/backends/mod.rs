@@ -8,6 +8,7 @@ use crate::catalog::{InferenceBackendHint, ModelVariant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionBackend {
     CandleNative,
+    CandleMetal,
     MlxNative,
 }
 
@@ -19,56 +20,50 @@ pub struct BackendPlan {
 
 #[derive(Debug, Clone)]
 pub struct BackendRouter {
-    mlx_runtime_enabled: bool,
     default_backend: ExecutionBackend,
 }
 
 impl Default for BackendRouter {
     fn default() -> Self {
         Self {
-            mlx_runtime_enabled: false,
             default_backend: ExecutionBackend::CandleNative,
         }
     }
 }
 
 impl BackendRouter {
-    pub fn from_env() -> Self {
-        let enabled = std::env::var("IZWI_ENABLE_MLX_RUNTIME")
-            .ok()
-            .map(|raw| {
-                let normalized = raw.trim().to_ascii_lowercase();
-                matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
-            })
-            .unwrap_or(false);
-
+    pub fn from_env_with_default(default_backend: ExecutionBackend) -> Self {
         Self {
-            mlx_runtime_enabled: enabled,
-            ..Self::default()
+            default_backend,
         }
     }
 
+    pub fn from_env() -> Self {
+        Self::from_env_with_default(ExecutionBackend::CandleNative)
+    }
+
     pub fn select(&self, variant: ModelVariant) -> BackendPlan {
-        match (variant.backend_hint(), self.mlx_runtime_enabled) {
-            (InferenceBackendHint::MlxCandidate, true) => BackendPlan {
-                backend: ExecutionBackend::MlxNative,
-                reason: format!(
-                    "{} is an mlx-community artifact and MLX runtime is enabled",
-                    variant.dir_name()
-                ),
-            },
-            (InferenceBackendHint::MlxCandidate, false) => BackendPlan {
+        let default_desc = match self.default_backend {
+            ExecutionBackend::CandleMetal => "Metal backend",
+            ExecutionBackend::CandleNative => "native backend",
+            ExecutionBackend::MlxNative => "MLX runtime",
+        };
+
+        match variant.backend_hint() {
+            InferenceBackendHint::MlxCandidate => BackendPlan {
                 backend: self.default_backend,
                 reason: format!(
-                    "{} is MLX-compatible, but MLX runtime is disabled; using native backend",
-                    variant.dir_name()
+                    "{} is MLX-compatible; using {}",
+                    variant.dir_name(),
+                    default_desc
                 ),
             },
-            (InferenceBackendHint::CandleNative, _) => BackendPlan {
+            InferenceBackendHint::CandleNative => BackendPlan {
                 backend: self.default_backend,
                 reason: format!(
-                    "{} targets the native Candle execution path",
-                    variant.dir_name()
+                    "{} targets the native Candle execution path ({})",
+                    variant.dir_name(),
+                    default_desc
                 ),
             },
         }

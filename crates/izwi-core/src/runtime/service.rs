@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
 use crate::audio::{AudioCodec, AudioEncoder, StreamingConfig};
-use crate::backends::BackendRouter;
+use crate::backends::{BackendRouter, ExecutionBackend};
 use crate::config::EngineConfig;
 use crate::error::{Error, Result};
 use crate::model::download::DownloadProgress;
@@ -60,9 +60,15 @@ impl InferenceEngine {
             None
         };
 
+        let default_backend = if device.kind.is_metal() {
+            ExecutionBackend::CandleMetal
+        } else {
+            ExecutionBackend::CandleNative
+        };
+
         Ok(Self {
             config,
-            backend_router: BackendRouter::from_env(),
+            backend_router: BackendRouter::from_env_with_default(default_backend),
             model_manager,
             model_registry,
             tokenizer: RwLock::new(None),
