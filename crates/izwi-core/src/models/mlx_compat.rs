@@ -18,6 +18,95 @@ fn tensor2_f32(t: Tensor) -> Result<Vec<Vec<f32>>> {
     t.to_vec2::<f32>().map_err(Error::from)
 }
 
+fn transpose_2d(mut rows: Vec<Vec<f32>>) -> Result<Vec<Vec<f32>>> {
+    if rows.is_empty() {
+        return Err(Error::ModelLoadError(
+            "Empty 2D tensor for quantization parameters".to_string(),
+        ));
+    }
+    let cols = rows
+        .first()
+        .map(|r| r.len())
+        .ok_or_else(|| Error::ModelLoadError("Empty 2D tensor row".to_string()))?;
+    if cols == 0 {
+        return Err(Error::ModelLoadError(
+            "Empty 2D tensor for quantization parameters".to_string(),
+        ));
+    }
+    if rows.iter().any(|r| r.len() != cols) {
+        return Err(Error::ModelLoadError(
+            "Ragged 2D tensor for quantization parameters".to_string(),
+        ));
+    }
+    let mut out = vec![vec![0.0f32; rows.len()]; cols];
+    for (i, row) in rows.iter_mut().enumerate() {
+        for (j, v) in row.iter().enumerate() {
+            out[j][i] = *v;
+        }
+    }
+    Ok(out)
+}
+
+fn normalize_affine_params(
+    scales: Vec<Vec<f32>>,
+    biases: Option<Vec<Vec<f32>>>,
+    out_dim: usize,
+    in_dim: usize,
+) -> Result<(Vec<Vec<f32>>, Vec<Vec<f32>>, usize)> {
+    if scales.is_empty() {
+        return Err(Error::ModelLoadError(
+            "Empty quantization scales".to_string(),
+        ));
+    }
+
+    let (mut scales, mut biases, groups) = if scales.len() == out_dim {
+        let groups = scales
+            .first()
+            .map(|r| r.len())
+            .ok_or_else(|| Error::ModelLoadError("Empty quantization scales".to_string()))?;
+        (scales, biases, groups)
+    } else if scales.first().map(|r| r.len()) == Some(out_dim) {
+        let groups = scales.len();
+        let scales = transpose_2d(scales)?;
+        let biases = match biases {
+            Some(biases) => Some(transpose_2d(biases)?),
+            None => None,
+        };
+        (scales, biases, groups)
+    } else {
+        return Err(Error::ModelLoadError(format!(
+            "Quantization scales shape mismatch: expected out_dim={out_dim}, got rows={} cols={}",
+            scales.len(),
+            scales.first().map(|r| r.len()).unwrap_or(0)
+        )));
+    };
+
+    if groups == 0 || in_dim % groups != 0 {
+        return Err(Error::ModelLoadError(format!(
+            "Invalid quantization groups: in_dim={in_dim}, groups={groups}"
+        )));
+    }
+    if scales.iter().any(|r| r.len() != groups) {
+        return Err(Error::ModelLoadError(
+            "Ragged quantization scales".to_string(),
+        ));
+    }
+
+    let biases = match biases {
+        Some(biases) => {
+            if biases.len() != out_dim || biases.iter().any(|r| r.len() != groups) {
+                return Err(Error::ModelLoadError(format!(
+                    "Quantization biases shape mismatch: expected ({out_dim},{groups})"
+                )));
+            }
+            biases
+        }
+        None => vec![vec![0.0f32; groups]; out_dim],
+    };
+
+    Ok((scales, biases, groups))
+}
+
 fn quant_bits_from_packing(
     expected_in_dim: usize,
     packed_in_dim: usize,
@@ -50,11 +139,17 @@ fn quant_bits_from_packing(
 
 fn dequantize_affine_u32(
     packed: Vec<Vec<u32>>,
-    scales: &[Vec<f32>],
-    biases: &[Vec<f32>],
+    scales: Vec<Vec<f32>>,
+    biases: Option<Vec<Vec<f32>>>,
     out_dim: usize,
     in_dim: usize,
 ) -> Result<Vec<f32>> {
+    if packed.len() != out_dim {
+        return Err(Error::ModelLoadError(format!(
+            "Quantized weight rows mismatch: expected out_dim={out_dim}, packed_rows={}",
+            packed.len()
+        )));
+    }
     let packed_in = packed
         .first()
         .map(|r| r.len())
@@ -67,15 +162,7 @@ fn dequantize_affine_u32(
         (1u32 << bits) - 1
     };
 
-    let groups = scales
-        .first()
-        .map(|r| r.len())
-        .ok_or_else(|| Error::ModelLoadError("Empty quantization scales".to_string()))?;
-    if groups == 0 || in_dim % groups != 0 {
-        return Err(Error::ModelLoadError(format!(
-            "Invalid quantization groups: in_dim={in_dim}, groups={groups}"
-        )));
-    }
+    let (scales, biases, groups) = normalize_affine_params(scales, biases, out_dim, in_dim)?;
     let group_size = in_dim / groups;
 
     let mut out = vec![0f32; out_dim * in_dim];
@@ -99,11 +186,17 @@ fn dequantize_affine_u32(
 
 fn dequantize_affine_u8(
     packed: Vec<Vec<u8>>,
-    scales: &[Vec<f32>],
-    biases: &[Vec<f32>],
+    scales: Vec<Vec<f32>>,
+    biases: Option<Vec<Vec<f32>>>,
     out_dim: usize,
     in_dim: usize,
 ) -> Result<Vec<f32>> {
+    if packed.len() != out_dim {
+        return Err(Error::ModelLoadError(format!(
+            "Quantized weight rows mismatch: expected out_dim={out_dim}, packed_rows={}",
+            packed.len()
+        )));
+    }
     let packed_in = packed
         .first()
         .map(|r| r.len())
@@ -112,15 +205,7 @@ fn dequantize_affine_u8(
     let pack_factor = in_dim / packed_in;
     let mask = if bits == 8 { 0xFF } else { (1u32 << bits) - 1 };
 
-    let groups = scales
-        .first()
-        .map(|r| r.len())
-        .ok_or_else(|| Error::ModelLoadError("Empty quantization scales".to_string()))?;
-    if groups == 0 || in_dim % groups != 0 {
-        return Err(Error::ModelLoadError(format!(
-            "Invalid quantization groups: in_dim={in_dim}, groups={groups}"
-        )));
-    }
+    let (scales, biases, groups) = normalize_affine_params(scales, biases, out_dim, in_dim)?;
     let group_size = in_dim / groups;
 
     let mut out = vec![0f32; out_dim * in_dim];
@@ -143,7 +228,7 @@ fn dequantize_affine_u8(
 }
 
 pub fn has_mlx_affine_quantized_weight(vb: &VarBuilder) -> bool {
-    vb.contains_tensor("weight") && vb.contains_tensor("scales") && vb.contains_tensor("biases")
+    vb.contains_tensor("weight") && vb.contains_tensor("scales")
 }
 
 pub fn load_weight(vb: &VarBuilder, out_dim: usize, in_dim: usize) -> Result<Tensor> {
@@ -152,21 +237,20 @@ pub fn load_weight(vb: &VarBuilder, out_dim: usize, in_dim: usize) -> Result<Ten
     }
 
     let scales = tensor2_f32(vb.get_unchecked_dtype("scales", DType::F32)?)?;
-    let biases = tensor2_f32(vb.get_unchecked_dtype("biases", DType::F32)?)?;
-    if scales.len() != out_dim || biases.len() != out_dim {
-        return Err(Error::ModelLoadError(format!(
-            "Quantized tensor rows mismatch: expected out_dim={out_dim}, scales_rows={}, biases_rows={}",
-            scales.len(),
-            biases.len()
-        )));
-    }
+    let biases = if vb.contains_tensor("biases") {
+        Some(tensor2_f32(
+            vb.get_unchecked_dtype("biases", DType::F32)?,
+        )?)
+    } else {
+        None
+    };
 
     let weight = if let Ok(w_u32) = vb.get_unchecked_dtype("weight", DType::U32) {
         let packed = w_u32.to_vec2::<u32>()?;
-        dequantize_affine_u32(packed, &scales, &biases, out_dim, in_dim)?
+        dequantize_affine_u32(packed, scales, biases, out_dim, in_dim)?
     } else if let Ok(w_u8) = vb.get_unchecked_dtype("weight", DType::U8) {
         let packed = w_u8.to_vec2::<u8>()?;
-        dequantize_affine_u8(packed, &scales, &biases, out_dim, in_dim)?
+        dequantize_affine_u8(packed, scales, biases, out_dim, in_dim)?
     } else {
         return Err(Error::ModelLoadError(
             "MLX quantized tensor has unsupported packed dtype for `weight` (expected U32 or U8)"
@@ -248,7 +332,7 @@ mod tests {
         let packed = vec![vec![0x7654_3210]];
         let scales = vec![vec![0.1, 0.2]];
         let biases = vec![vec![-1.0, 0.5]];
-        let out = dequantize_affine_u32(packed, &scales, &biases, 1, 8).unwrap();
+        let out = dequantize_affine_u32(packed, scales, Some(biases), 1, 8).unwrap();
 
         let expected = vec![
             -1.0 + 0.0 * 0.1,
@@ -270,9 +354,42 @@ mod tests {
         let packed = vec![vec![1u8, 2, 3, 4]];
         let scales = vec![vec![0.5, 2.0]];
         let biases = vec![vec![0.0, -1.0]];
-        let out = dequantize_affine_u8(packed, &scales, &biases, 1, 4).unwrap();
+        let out = dequantize_affine_u8(packed, scales, Some(biases), 1, 4).unwrap();
 
         let expected = vec![0.5, 1.0, 5.0, 7.0];
+        for (a, b) in out.iter().zip(expected.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn dequantize_u32_affine_no_biases() {
+        let packed = vec![vec![0x7654_3210]];
+        let scales = vec![vec![0.1, 0.2]];
+        let out = dequantize_affine_u32(packed, scales, None, 1, 8).unwrap();
+
+        let expected = vec![
+            0.0 * 0.1,
+            1.0 * 0.1,
+            2.0 * 0.1,
+            3.0 * 0.1,
+            4.0 * 0.2,
+            5.0 * 0.2,
+            6.0 * 0.2,
+            7.0 * 0.2,
+        ];
+        for (a, b) in out.iter().zip(expected.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn dequantize_u8_affine_no_biases() {
+        let packed = vec![vec![1u8, 2, 3, 4]];
+        let scales = vec![vec![0.5, 2.0]];
+        let out = dequantize_affine_u8(packed, scales, None, 1, 4).unwrap();
+
+        let expected = vec![0.5, 1.0, 6.0, 8.0];
         for (a, b) in out.iter().zip(expected.iter()) {
             assert!((a - b).abs() < 1e-6);
         }
