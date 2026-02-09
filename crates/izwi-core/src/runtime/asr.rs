@@ -74,7 +74,7 @@ impl InferenceEngine {
         };
 
         let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
-        let mut text = model.transcribe(&samples, sample_rate, language)?;
+        let text = model.transcribe(&samples, sample_rate, language)?;
 
         Ok(AsrTranscription {
             text,

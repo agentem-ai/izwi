@@ -553,7 +553,7 @@ impl TalkerModel {
         &self,
         embeds: &Tensor,
         start_pos: usize,
-        mut cache: Option<&mut TalkerCache>,
+        cache: Option<&mut TalkerCache>,
         position_ids: Option<&Tensor>,
     ) -> Result<Tensor> {
         let (_hidden, logits) =

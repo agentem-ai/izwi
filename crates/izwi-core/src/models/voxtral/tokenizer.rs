@@ -96,7 +96,7 @@ impl VoxtralTokenizer {
     }
 
     /// Decode generated tokens to text
-    pub fn decode_text(&self, tokens: &[u32]) -> Result<String> {
+    pub fn decode_text(&self, _tokens: &[u32]) -> Result<String> {
         // For now, return placeholder - actual implementation would use
         // a proper SentencePiece or BPE decoder
         // This is simplified for the initial implementation

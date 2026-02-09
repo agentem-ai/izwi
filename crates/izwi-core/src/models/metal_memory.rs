@@ -11,7 +11,7 @@ use candle_core::{DType, Device, Shape, Tensor};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::error::{Error, Result};
 

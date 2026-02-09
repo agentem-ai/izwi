@@ -176,9 +176,9 @@ impl Qwen3Attention {
         start_pos: usize,
         position_ids: Option<&Tensor>,
     ) -> Result<Tensor> {
-        let bsz = x.dim(0)?;
+        let _bsz = x.dim(0)?;
         let seq_len = x.dim(1)?;
-        let heads = x.dim(2)?;
+        let _heads = x.dim(2)?;
         let half_dim = self.head_dim / 2;
 
         let (cos, sin) = if self.use_mrope {

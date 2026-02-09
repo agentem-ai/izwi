@@ -12,7 +12,7 @@ use candle_core::quantized::QTensor;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
@@ -161,7 +161,7 @@ impl GgufLoader {
 
     /// Detect quantization type by examining tensor dtypes.
     fn detect_quantization_from_tensors(&self) -> Option<String> {
-        use candle_core::quantized::GgmlDType;
+        
 
         let mut dtypes = std::collections::HashSet::new();
         for info in self.content.tensor_infos.values() {

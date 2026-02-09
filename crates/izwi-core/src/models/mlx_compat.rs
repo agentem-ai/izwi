@@ -59,7 +59,7 @@ fn normalize_affine_params(
         ));
     }
 
-    let (mut scales, mut biases, groups) = if scales.len() == out_dim {
+    let (scales, biases, groups) = if scales.len() == out_dim {
         let groups = scales
             .first()
             .map(|r| r.len())

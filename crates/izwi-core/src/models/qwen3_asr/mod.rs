@@ -273,7 +273,7 @@ impl Qwen3AsrModel {
 
         // Keep this bounded to reduce latency.
         let max_tokens = 256usize;
-        for step in 0..max_tokens {
+        for _step in 0..max_tokens {
             // Get logits for the last position only
             let logits = embeds.i((0, embeds.dim(1)? - 1))?; // [vocab_size]
             let next = argmax(&logits)?;

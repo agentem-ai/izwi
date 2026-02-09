@@ -3,7 +3,7 @@
 //! Handles both text tokenization (using Qwen tokenizer) and codec token processing
 //! for the multi-codebook RVQ speech representation.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::models::qwen3_tts::config::TalkerConfig;
 use crate::tokenizer::Tokenizer as BaseTokenizer;
 use std::collections::HashMap;
