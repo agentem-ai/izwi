@@ -18,7 +18,7 @@ pub use tokenizer::{SpeakerReference, TtsSpecialTokens, TtsTokenizer};
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
@@ -54,6 +54,16 @@ impl Default for TtsGenerationParams {
             max_frames: 512,
         }
     }
+}
+
+/// Batch input for CustomVoice (preset speaker) generation.
+#[derive(Debug, Clone)]
+pub struct BatchedSpeakerRequest {
+    pub text: String,
+    pub speaker: String,
+    pub language: Option<String>,
+    pub instruct: Option<String>,
+    pub params: TtsGenerationParams,
 }
 
 impl TtsGenerationParams {
@@ -222,6 +232,260 @@ impl Qwen3TtsModel {
 
         // Decode to audio using speech tokenizer
         self.codec_to_audio(&codec_tokens)
+    }
+
+    /// Generate speech for a batch of preset-speaker requests.
+    pub fn generate_with_speaker_params_batch(
+        &self,
+        requests: &[BatchedSpeakerRequest],
+    ) -> Result<Vec<Vec<f32>>> {
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        #[derive(Debug)]
+        struct PreparedRequest {
+            index: usize,
+            params: TtsGenerationParams,
+            prefill_embeds: Tensor,
+            prefill_len: usize,
+            trailing_text_hidden: Tensor,
+            trailing_text_len: usize,
+            tts_pad_embed: Tensor,
+            max_frames: usize,
+        }
+
+        let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
+        let acoustic_vocab_size = self.tokenizer.codec_vocab_size() as u32;
+        let talker_codec_vocab_size = self.config.talker_config.vocab_size as u32;
+        let semantic_vocab_size = talker_codec_vocab_size.saturating_sub(1024);
+
+        let mut prepared = Vec::with_capacity(requests.len());
+        for (idx, req) in requests.iter().enumerate() {
+            let prompt_ids = self.encode_assistant_prompt_ids(&req.text)?;
+            let speaker_id = self.tokenizer.get_speaker_id(&req.speaker).ok_or_else(|| {
+                Error::InvalidInput(format!(
+                    "Unknown speaker '{}'. Available speakers: {}",
+                    req.speaker,
+                    self.tokenizer
+                        .available_speakers()
+                        .into_iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })?;
+            let language_id = self.resolve_language_id(req.language.as_deref());
+            let instruct_ids = self.encode_instruction_ids(req.instruct.as_deref())?;
+
+            let prefill_embeds = self.build_conditioned_prefill_embeddings(
+                &prompt_ids,
+                Some(speaker_id),
+                language_id,
+                instruct_ids.as_deref(),
+            )?;
+            let prefill_len = prefill_embeds.dim(1)?;
+
+            let context_budget = self
+                .config
+                .talker_config
+                .max_position_embeddings
+                .saturating_sub(prefill_len + 1);
+            if context_budget == 0 {
+                return Err(Error::InferenceError(
+                    "Input is too long for model context; no room left for audio generation"
+                        .to_string(),
+                ));
+            }
+            let max_frames = if req.params.max_frames == 0 {
+                context_budget
+            } else {
+                req.params.max_frames.max(1).min(context_budget)
+            };
+
+            let (trailing_text_hidden, trailing_text_len, tts_pad_embed) =
+                self.build_trailing_text_embeddings_from_prompt(&prompt_ids, max_frames)?;
+
+            prepared.push(PreparedRequest {
+                index: idx,
+                params: req.params.clone(),
+                prefill_embeds,
+                prefill_len,
+                trailing_text_hidden,
+                trailing_text_len,
+                tts_pad_embed,
+                max_frames,
+            });
+        }
+
+        let mut groups: HashMap<usize, Vec<PreparedRequest>> = HashMap::new();
+        for item in prepared {
+            groups.entry(item.prefill_len).or_default().push(item);
+        }
+
+        let mut outputs: Vec<Option<Vec<f32>>> = vec![None; requests.len()];
+
+        for (_prefill_len, group) in groups {
+            let batch_size = group.len();
+            if batch_size == 0 {
+                continue;
+            }
+
+            let embeds: Vec<Tensor> = group
+                .iter()
+                .map(|req| req.prefill_embeds.clone())
+                .collect();
+            let batch_embeds = Tensor::cat(&embeds, 0)?;
+
+            let mut talker_cache = TalkerCache::new(self.talker.num_layers());
+            let (last_hidden_batch, last_logits_batch) =
+                self.talker
+                    .prefill_with_embeds(&batch_embeds, &mut talker_cache, None)?;
+
+            struct DecodeState {
+                index: usize,
+                params: TtsGenerationParams,
+                trailing_text_hidden: Tensor,
+                trailing_text_len: usize,
+                tts_pad_embed: Tensor,
+                max_frames: usize,
+                all_code_groups: Vec<Vec<u32>>,
+                semantic_history: Vec<u32>,
+                last_hidden: Tensor,
+                last_logits: Tensor,
+                predictor_cache: CodePredictorCache,
+                rng: SimpleRng,
+                finished: bool,
+            }
+
+            let mut states = Vec::with_capacity(batch_size);
+            for (batch_idx, req) in group.iter().enumerate() {
+                let last_hidden = last_hidden_batch.i(batch_idx)?.unsqueeze(0)?;
+                let last_logits = last_logits_batch.i(batch_idx)?.unsqueeze(0)?;
+                states.push(DecodeState {
+                    index: req.index,
+                    params: req.params.clone(),
+                    trailing_text_hidden: req.trailing_text_hidden.clone(),
+                    trailing_text_len: req.trailing_text_len,
+                    tts_pad_embed: req.tts_pad_embed.clone(),
+                    max_frames: req.max_frames,
+                    all_code_groups: vec![Vec::new(); self.config.talker_config.num_code_groups],
+                    semantic_history: Vec::new(),
+                    last_hidden,
+                    last_logits,
+                    predictor_cache: CodePredictorCache::new(self.code_predictor.num_layers()),
+                    rng: SimpleRng::new(),
+                    finished: false,
+                });
+            }
+
+            let mut offset = group[0].prefill_len;
+            let max_frames = states
+                .iter()
+                .map(|s| s.max_frames)
+                .max()
+                .unwrap_or(0);
+            let min_tokens_before_eos = 8usize;
+
+            for frame_idx in 0..max_frames {
+                let mut step_inputs = Vec::with_capacity(batch_size);
+                let mut any_active = false;
+
+                for state in states.iter_mut() {
+                    if state.finished || frame_idx >= state.max_frames {
+                        step_inputs.push(state.tts_pad_embed.clone());
+                        continue;
+                    }
+
+                    any_active = true;
+                    let allow_eos = state.all_code_groups[0].len() >= min_tokens_before_eos;
+                    let semantic_token = sample_semantic(
+                        &state.last_logits.i((0, 0))?,
+                        semantic_vocab_size,
+                        self.specials.codec_eos_token_id,
+                        allow_eos,
+                        &state.params,
+                        &state.semantic_history,
+                        &mut state.rng,
+                    )?;
+                    if allow_eos && semantic_token == self.specials.codec_eos_token_id {
+                        state.finished = true;
+                        step_inputs.push(state.tts_pad_embed.clone());
+                        continue;
+                    }
+
+                    state.semantic_history.push(semantic_token);
+                    if state.semantic_history.len() > 256 {
+                        let drain = state.semantic_history.len() - 256;
+                        state.semantic_history.drain(0..drain);
+                    }
+
+                    state.all_code_groups[0].push(text_vocab_size + semantic_token);
+
+                    let semantic_embed = self.talker.get_codec_embedding(semantic_token)?;
+                    let acoustic_codes = self.code_predictor.generate_acoustic_codes(
+                        &state.last_hidden,
+                        &semantic_embed,
+                        &mut state.predictor_cache,
+                    )?;
+                    let acoustic_embed_sum = self
+                        .code_predictor
+                        .get_acoustic_embeddings_sum(&acoustic_codes)?;
+                    for (acoustic_idx, &group_token) in acoustic_codes.iter().enumerate() {
+                        let group_idx = acoustic_idx + 1;
+                        if group_idx < state.all_code_groups.len() {
+                            let combined_token = text_vocab_size
+                                + group_token
+                                + (group_idx as u32 * acoustic_vocab_size);
+                            state.all_code_groups[group_idx].push(combined_token);
+                        }
+                    }
+
+                    let text_addition = if frame_idx < state.trailing_text_len {
+                        state
+                            .trailing_text_hidden
+                            .i((.., frame_idx..frame_idx + 1, ..))?
+                    } else {
+                        state.tts_pad_embed.clone()
+                    };
+
+                    let step_input = semantic_embed
+                        .broadcast_add(&acoustic_embed_sum)?
+                        .broadcast_add(&text_addition)?;
+                    step_inputs.push(step_input);
+                }
+
+                if !any_active {
+                    break;
+                }
+
+                let batch_input = Tensor::cat(&step_inputs, 0)?;
+                let (batch_hidden, batch_logits) =
+                    self.talker
+                        .generate_step_with_embed(&batch_input, &mut talker_cache, offset)?;
+
+                for (idx, state) in states.iter_mut().enumerate() {
+                    state.last_hidden = batch_hidden.i(idx)?.unsqueeze(0)?;
+                    state.last_logits = batch_logits.i(idx)?.unsqueeze(0)?;
+                }
+
+                offset += 1;
+            }
+
+            for state in states {
+                let samples = self.codec_to_audio(&state.all_code_groups)?;
+                outputs[state.index] = Some(samples);
+            }
+        }
+
+        Ok(outputs
+            .into_iter()
+            .map(|out| {
+                out.ok_or_else(|| {
+                    Error::InferenceError("Missing output for batched request".to_string())
+                })
+            })
+            .collect::<Result<Vec<_>>>()?)
     }
 
     /// Generate speech with voice cloning
