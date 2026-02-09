@@ -33,8 +33,42 @@ export function TranscriptionPlayground({
   const [copied, setCopied] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [processingStats, setProcessingStats] = useState<ASRStats | null>(null);
-  const [streamingEnabled, setStreamingEnabled] = useState(true);
+  const [streamingEnabled, setStreamingEnabled] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState("English");
+
+  const languageOptions = [
+    "English",
+    "Chinese",
+    "Cantonese",
+    "Arabic",
+    "German",
+    "French",
+    "Spanish",
+    "Portuguese",
+    "Indonesian",
+    "Italian",
+    "Korean",
+    "Russian",
+    "Thai",
+    "Vietnamese",
+    "Japanese",
+    "Turkish",
+    "Hindi",
+    "Malay",
+    "Dutch",
+    "Swedish",
+    "Danish",
+    "Finnish",
+    "Polish",
+    "Czech",
+    "Filipino",
+    "Persian",
+    "Greek",
+    "Romanian",
+    "Hungarian",
+    "Macedonian",
+  ];
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -111,6 +145,7 @@ export function TranscriptionPlayground({
           {
             audio_base64: audioBase64,
             model_id: selectedModel || undefined,
+            language: selectedLanguage,
           },
           {
             onStart: (duration) => {
@@ -152,6 +187,7 @@ export function TranscriptionPlayground({
         const response = await api.asrTranscribe({
           audio_base64: audioBase64,
           model_id: selectedModel || undefined,
+          language: selectedLanguage,
         });
 
         setTranscription(response.transcription);
@@ -236,6 +272,24 @@ export function TranscriptionPlayground({
         </div>
 
         <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-400" htmlFor="asr-language">
+              Language
+            </label>
+            <select
+              id="asr-language"
+              value={selectedLanguage}
+              onChange={(e) => setSelectedLanguage(e.target.value)}
+              className="text-xs bg-[#1a1a1a] border border-[#2a2a2a] text-gray-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              disabled={isProcessing}
+            >
+              {languageOptions.map((lang) => (
+                <option key={lang} value={lang}>
+                  {lang}
+                </option>
+              ))}
+            </select>
+          </div>
           {/* Streaming Toggle */}
           <label className="flex items-center gap-2 cursor-pointer">
             <input
