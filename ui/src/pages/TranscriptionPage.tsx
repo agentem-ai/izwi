@@ -41,14 +41,23 @@ export function TranscriptionPage({
   onError,
 }: TranscriptionPageProps) {
   const viewConfig = VIEW_CONFIGS["transcription"];
+  const allowedTranscriptionModels = new Set(["Qwen3-ASR-0.6B", "Qwen3-ASR-1.7B"]);
+  const isDisabledTranscriptionModel = (variant: string) =>
+    !allowedTranscriptionModels.has(variant);
 
   const relevantSelectedModel = (() => {
     if (!selectedModel) return null;
-    if (viewConfig.modelFilter(selectedModel)) {
+    if (
+      viewConfig.modelFilter(selectedModel) &&
+      !isDisabledTranscriptionModel(selectedModel)
+    ) {
       return selectedModel;
     }
     const readyModel = models.find(
-      (m) => m.status === "ready" && viewConfig.modelFilter(m.variant),
+      (m) =>
+        m.status === "ready" &&
+        viewConfig.modelFilter(m.variant) &&
+        !isDisabledTranscriptionModel(m.variant),
     );
     return readyModel?.variant || null;
   })();
@@ -87,6 +96,8 @@ export function TranscriptionPage({
               onSelect={onSelect}
               downloadProgress={downloadProgress}
               modelFilter={viewConfig.modelFilter}
+              isModelDisabled={isDisabledTranscriptionModel}
+              disabledModelLabel="UNAVAILABLE"
               emptyStateTitle={viewConfig.emptyStateTitle}
               emptyStateDescription={viewConfig.emptyStateDescription}
             />

@@ -55,6 +55,8 @@ interface ModelManagerProps {
     }
   >;
   modelFilter?: (variant: string) => boolean;
+  isModelDisabled?: (variant: string) => boolean;
+  disabledModelLabel?: string;
   emptyStateTitle?: string;
   emptyStateDescription?: string;
 }
@@ -292,6 +294,8 @@ export function ModelManager({
   onCancelDownload,
   downloadProgress,
   modelFilter,
+  isModelDisabled,
+  disabledModelLabel,
   emptyStateTitle,
   emptyStateDescription,
 }: ModelManagerProps) {
@@ -344,6 +348,7 @@ export function ModelManager({
         const isLoading = model.status === "loading";
         const isReady = model.status === "ready";
         const isDownloaded = model.status === "downloaded";
+        const isDisabled = isModelDisabled?.(model.variant) ?? false;
         const progressValue = downloadProgress[model.variant];
         const progress = progressValue?.percent ?? model.download_progress ?? 0;
 
@@ -352,6 +357,7 @@ export function ModelManager({
             key={model.variant}
             className={clsx(
               "border rounded-lg transition-colors",
+              isDisabled && "opacity-50",
               isSelected
                 ? "border-white/20 bg-[#1a1a1a]"
                 : "border-[#2a2a2a] bg-[#161616]",
@@ -360,10 +366,15 @@ export function ModelManager({
             {/* Main card */}
             <div
               className={clsx(
-                "p-3 cursor-pointer",
-                !isExpanded && "hover:bg-[#1a1a1a]",
+                "p-3",
+                isDisabled ? "cursor-not-allowed" : "cursor-pointer",
+                !isDisabled && !isExpanded && "hover:bg-[#1a1a1a]",
               )}
+              aria-disabled={isDisabled}
               onClick={() => {
+                if (isDisabled) {
+                  return;
+                }
                 if (isReady && !isSelected) {
                   onSelect(model.variant);
                 }
@@ -421,6 +432,11 @@ export function ModelManager({
                     <span className="text-sm font-medium text-white">
                       {displayName}
                     </span>
+                    {isDisabled && (
+                      <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/20 text-amber-300 rounded">
+                        {disabledModelLabel || "DISABLED"}
+                      </span>
+                    )}
                     {isSelected && (
                       <span className="text-[10px] px-1.5 py-0.5 bg-white/10 text-white rounded">
                         ACTIVE
@@ -511,6 +527,12 @@ export function ModelManager({
 
                     {/* Actions */}
                     <div className="flex items-center gap-2 pt-2">
+                      {isDisabled && (
+                        <div className="text-xs text-amber-300">
+                          This model is unavailable in this view.
+                        </div>
+                      )}
+
                       {isDownloading && onCancelDownload && (
                         <button
                           onClick={(e) => {
@@ -518,6 +540,7 @@ export function ModelManager({
                             onCancelDownload(model.variant);
                           }}
                           className="btn btn-danger text-sm flex-1"
+                          disabled={isDisabled}
                         >
                           <X className="w-4 h-4" />
                           Cancel Download
@@ -531,6 +554,7 @@ export function ModelManager({
                             onDownload(model.variant);
                           }}
                           className="btn btn-primary text-sm flex-1"
+                          disabled={isDisabled}
                         >
                           <Download className="w-4 h-4" />
                           Download
@@ -545,6 +569,7 @@ export function ModelManager({
                               onLoad(model.variant);
                             }}
                             className="btn btn-primary text-sm flex-1"
+                            disabled={isDisabled}
                           >
                             <Play className="w-4 h-4" />
                             Load
@@ -561,6 +586,7 @@ export function ModelManager({
                               }
                             }}
                             className="btn btn-danger text-sm"
+                            disabled={isDisabled}
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -575,6 +601,7 @@ export function ModelManager({
                               onUnload(model.variant);
                             }}
                             className="btn btn-secondary text-sm flex-1"
+                            disabled={isDisabled}
                           >
                             <Square className="w-4 h-4" />
                             Unload
@@ -591,6 +618,7 @@ export function ModelManager({
                               }
                             }}
                             className="btn btn-danger text-sm"
+                            disabled={isDisabled}
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
