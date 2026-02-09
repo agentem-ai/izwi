@@ -12,6 +12,15 @@ use crate::runtime::types::{AudioChunk, GenerationConfig, GenerationRequest, Gen
 impl InferenceEngine {
     /// Generate audio from text using the loaded native TTS model.
     pub async fn generate(&self, request: GenerationRequest) -> Result<GenerationResult> {
+        if self.config.max_batch_size > 1
+            && request.reference_audio.is_none()
+            && request.reference_text.is_none()
+        {
+            if let Some(batcher) = &self.tts_batcher {
+                return batcher.submit(request).await;
+            }
+        }
+
         let start_time = std::time::Instant::now();
 
         let tts_model = self.tts_model.clone();

@@ -13,6 +13,7 @@ use crate::model::download::DownloadProgress;
 use crate::model::{ModelInfo, ModelManager, ModelVariant};
 use crate::models::qwen3_tts::Qwen3TtsModel;
 use crate::models::{DeviceProfile, DeviceSelector, ModelRegistry};
+use crate::runtime::tts_batcher::TtsBatcher;
 use crate::tokenizer::Tokenizer;
 
 /// Main inference engine runtime.
@@ -26,6 +27,7 @@ pub struct InferenceEngine {
     #[allow(dead_code)]
     pub(crate) streaming_config: StreamingConfig,
     pub(crate) tts_model: Arc<RwLock<Option<Qwen3TtsModel>>>,
+    pub(crate) tts_batcher: Option<TtsBatcher>,
     pub(crate) loaded_model_path: RwLock<Option<PathBuf>>,
     pub(crate) device: DeviceProfile,
 }
@@ -51,6 +53,13 @@ impl InferenceEngine {
             device.clone(),
         ));
 
+        let tts_model = Arc::new(RwLock::new(None));
+        let tts_batcher = if config.max_batch_size > 1 {
+            Some(TtsBatcher::new(config.clone(), tts_model.clone()))
+        } else {
+            None
+        };
+
         Ok(Self {
             config,
             backend_router: BackendRouter::from_env(),
@@ -59,7 +68,8 @@ impl InferenceEngine {
             tokenizer: RwLock::new(None),
             codec: RwLock::new(AudioCodec::new()),
             streaming_config: StreamingConfig::default(),
-            tts_model: Arc::new(RwLock::new(None)),
+            tts_model,
+            tts_batcher,
             loaded_model_path: RwLock::new(None),
             device,
         })
