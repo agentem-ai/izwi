@@ -13,7 +13,7 @@ use tracing::{debug, info};
 
 use crate::audio::{MelConfig, MelSpectrogram};
 use crate::error::{Error, Result};
-use crate::models::device::DeviceProfile;
+use crate::models::device::{DeviceKind, DeviceProfile};
 use crate::models::qwen3::{Qwen3Cache, Qwen3Model};
 
 use audio::AudioTower;
@@ -36,7 +36,8 @@ struct PreprocessorConfig {
 
 pub struct Qwen3AsrModel {
     device: DeviceProfile,
-    dtype: DType,
+    audio_dtype: DType,
+    text_dtype: DType,
     tokenizer: AsrTokenizer,
     specials: SpecialTokenIds,
     audio_tower: AudioTower,
@@ -73,20 +74,37 @@ impl Qwen3AsrModel {
         let mel = MelSpectrogram::new(mel_cfg)?;
 
         // Quantized checkpoints are trained/evaluated in bf16 and can degrade
-        // badly when forced through fp32 dequant paths.
-        // However, BF16 matmul coverage is incomplete across backends in Candle,
-        // so we respect the device's preferred dtype selection.
+        // badly when forced through fp32 dequant paths. Audio conditioning is
+        // especially sensitive to precision, so keep the audio tower in F32
+        // for stability and select the text dtype with backend-aware rules.
         let is_quantized = config.quantization.is_some() || config.quantization_config.is_some();
-        let dtype = if is_quantized {
-            parse_asr_dtype(config.thinker_config.dtype.as_deref())
-                .unwrap_or_else(|| device.select_dtype(Some("bfloat16")))
+        let audio_dtype = DType::F32;
+        let text_dtype = if is_quantized {
+            let requested = parse_asr_dtype(config.thinker_config.dtype.as_deref())
+                .unwrap_or(DType::BF16);
+            let selected = match device.kind {
+                DeviceKind::Metal => DType::F32,
+                DeviceKind::Cpu => DType::F32,
+                DeviceKind::Cuda => {
+                    if requested == DType::BF16 && !device.capabilities.supports_bf16 {
+                        DType::F16
+                    } else {
+                        requested
+                    }
+                }
+            };
+            debug!(
+                "Qwen3-ASR quantized dtype selection: requested={:?}, selected={:?} on {:?}",
+                requested, selected, device.kind
+            );
+            selected
         } else {
             DType::F32
         };
 
         // Check for sharded weights (1.7B model) vs single file (0.6B model)
         let index_path = model_dir.join("model.safetensors.index.json");
-        let vb = if index_path.exists() {
+        let vb_text = if index_path.exists() {
             // Load sharded weights
             let index_data = std::fs::read_to_string(&index_path)?;
             let index: serde_json::Value = serde_json::from_str(&index_data)?;
@@ -113,28 +131,68 @@ impl Qwen3AsrModel {
                 "Loading sharded ASR model with {} shard files",
                 shard_paths.len()
             );
-            unsafe { VarBuilder::from_mmaped_safetensors(&shard_paths, dtype, &device.device)? }
+            unsafe {
+                VarBuilder::from_mmaped_safetensors(&shard_paths, text_dtype, &device.device)?
+            }
         } else {
             // Load single file
             let weights_path = model_dir.join("model.safetensors");
-            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], dtype, &device.device)? }
+            unsafe {
+                VarBuilder::from_mmaped_safetensors(&[weights_path], text_dtype, &device.device)?
+            }
         };
-        let vb = if vb.contains_tensor("thinker.audio_tower.conv2d1.weight") {
-            vb.pp("thinker")
+        let vb_audio = if index_path.exists() {
+            let index_data = std::fs::read_to_string(&index_path)?;
+            let index: serde_json::Value = serde_json::from_str(&index_data)?;
+            let weight_map = index
+                .get("weight_map")
+                .and_then(|m| m.as_object())
+                .ok_or_else(|| {
+                    Error::InvalidInput("Invalid model.safetensors.index.json format".to_string())
+                })?;
+
+            let mut shard_files: Vec<String> = weight_map
+                .values()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+            shard_files.sort();
+            shard_files.dedup();
+
+            let shard_paths: Vec<std::path::PathBuf> =
+                shard_files.iter().map(|f| model_dir.join(f)).collect();
+            unsafe {
+                VarBuilder::from_mmaped_safetensors(&shard_paths, audio_dtype, &device.device)?
+            }
         } else {
-            vb
+            let weights_path = model_dir.join("model.safetensors");
+            unsafe {
+                VarBuilder::from_mmaped_safetensors(&[weights_path], audio_dtype, &device.device)?
+            }
+        };
+
+        let has_thinker_prefix = vb_text.contains_tensor("thinker.audio_tower.conv2d1.weight");
+        let vb_text = if has_thinker_prefix {
+            vb_text.pp("thinker")
+        } else {
+            vb_text
+        };
+        let vb_audio = if has_thinker_prefix {
+            vb_audio.pp("thinker")
+        } else {
+            vb_audio
         };
 
         let audio_cfg = config.thinker_config.audio_config.clone();
-        let audio_tower = AudioTower::load(audio_cfg, vb.pp("audio_tower"))?;
+        let audio_tower = AudioTower::load(audio_cfg, vb_audio.pp("audio_tower"))?;
         let text_cfg = config.thinker_config.text_config.clone();
-        let text_model = Qwen3Model::load(text_cfg, vb)?;
+        let text_model = Qwen3Model::load(text_cfg, vb_text)?;
 
         info!("Loaded Qwen3-ASR model on {:?}", device.kind);
 
         Ok(Self {
             device,
-            dtype,
+            audio_dtype,
+            text_dtype,
             tokenizer,
             specials,
             audio_tower,
@@ -176,10 +234,14 @@ impl Qwen3AsrModel {
             .transpose(0, 1)? // [n_mels, frames]
             .unsqueeze(0)?
             .unsqueeze(0)? // [1, 1, n_mels, frames]
-            .to_dtype(self.dtype)?;
+            .to_dtype(self.audio_dtype)?;
 
         let feature_lens = vec![frames];
-        let audio_embeds = self.audio_tower.forward(&mel, Some(&feature_lens))?; // [1, t, hidden]
+        let mut audio_embeds =
+            self.audio_tower.forward(&mel, Some(&feature_lens))?; // [1, t, hidden]
+        if audio_embeds.dtype() != self.text_dtype {
+            audio_embeds = audio_embeds.to_dtype(self.text_dtype)?;
+        }
         let audio_len = audio_embeds.dim(1)?;
 
         let prompt = self.build_prompt(audio_len, language)?;
@@ -328,11 +390,14 @@ impl Qwen3AsrModel {
         let mel = Tensor::from_vec(flat, (frames, n_mels), &self.device.device)?
             .transpose(0, 1)?
             .unsqueeze(0)?
-            .unsqueeze(0)?; // [1, 1, n_mels, frames]
-                            // NOTE: Keeping mel as F32
+            .unsqueeze(0)? // [1, 1, n_mels, frames]
+            .to_dtype(self.audio_dtype)?;
 
         let feature_lens = vec![frames];
-        let audio_embeds = self.audio_tower.forward(&mel, Some(&feature_lens))?;
+        let mut audio_embeds = self.audio_tower.forward(&mel, Some(&feature_lens))?;
+        if audio_embeds.dtype() != self.text_dtype {
+            audio_embeds = audio_embeds.to_dtype(self.text_dtype)?;
+        }
         let audio_len = audio_embeds.dim(1)?;
 
         // Build alignment prompt with reference text
