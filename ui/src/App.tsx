@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { api, ModelInfo } from "./api";
 import { Layout } from "./components/Layout";
+import { VIEW_CONFIGS } from "./types";
 import {
   TextToSpeechPage,
   VoiceCloningPage,
@@ -242,9 +243,29 @@ function App() {
     activeModelLoadsRef.current.add(variant);
 
     try {
+      const isChatTarget = VIEW_CONFIGS.chat.modelFilter(variant);
+      const loadedChatModels = isChatTarget
+        ? models.filter(
+            (model) =>
+              model.status === "ready" &&
+              VIEW_CONFIGS.chat.modelFilter(model.variant) &&
+              model.variant !== variant,
+          )
+        : [];
+
+      for (const loadedModel of loadedChatModels) {
+        await api.unloadModel(loadedModel.variant);
+      }
+
       setModels((prev) =>
         prev.map((m) =>
-          m.variant === variant ? { ...m, status: "loading" as const } : m,
+          m.variant === variant
+            ? { ...m, status: "loading" as const }
+            : isChatTarget &&
+                m.status === "ready" &&
+                VIEW_CONFIGS.chat.modelFilter(m.variant)
+              ? { ...m, status: "downloaded" as const }
+              : m,
         ),
       );
 
