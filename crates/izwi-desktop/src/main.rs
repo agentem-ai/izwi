@@ -11,7 +11,7 @@ use url::Url;
 )]
 struct DesktopArgs {
     /// Base URL of the Izwi local server
-    #[arg(long, default_value = "http://127.0.0.1:8080")]
+    #[arg(long, default_value = "http://localhost:8080")]
     server_url: String,
 
     /// Desktop window title

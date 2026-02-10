@@ -53,6 +53,7 @@ export function TranscriptionPage({
   const viewConfig = VIEW_CONFIGS.transcription;
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [modalIntentModel, setModalIntentModel] = useState<string | null>(null);
+  const [autoCloseOnIntentReady, setAutoCloseOnIntentReady] = useState(false);
 
   const STATUS_ORDER: Record<ModelInfo["status"], number> = {
     ready: 0,
@@ -122,20 +123,32 @@ export function TranscriptionPage({
     null;
   const selectedModelReady = selectedModelInfo?.status === "ready";
 
+  const closeModelModal = () => {
+    setIsModelModalOpen(false);
+    setAutoCloseOnIntentReady(false);
+  };
+
   useEffect(() => {
-    if (!isModelModalOpen || !modalIntentModel) {
+    if (!isModelModalOpen || !modalIntentModel || !autoCloseOnIntentReady) {
       return;
     }
     const targetModel = transcriptionModels.find(
       (model) => model.variant === modalIntentModel,
     );
     if (targetModel?.status === "ready") {
-      setIsModelModalOpen(false);
+      closeModelModal();
     }
-  }, [isModelModalOpen, modalIntentModel, transcriptionModels]);
+  }, [
+    autoCloseOnIntentReady,
+    closeModelModal,
+    isModelModalOpen,
+    modalIntentModel,
+    transcriptionModels,
+  ]);
 
   const openModelManager = () => {
     setModalIntentModel(resolvedSelectedModel);
+    setAutoCloseOnIntentReady(false);
     setIsModelModalOpen(true);
   };
 
@@ -246,7 +259,7 @@ export function TranscriptionPage({
           onClick={(event) => {
             event.stopPropagation();
             onSelect(model.variant);
-            setIsModelModalOpen(false);
+            closeModelModal();
           }}
           className="btn btn-primary text-xs"
         >
@@ -275,6 +288,7 @@ export function TranscriptionPage({
         onOpenModelManager={openModelManager}
         onModelRequired={() => {
           setModalIntentModel(resolvedSelectedModel);
+          setAutoCloseOnIntentReady(true);
           setIsModelModalOpen(true);
           onError("Select and load an ASR model to start transcribing.");
         }}
@@ -287,7 +301,7 @@ export function TranscriptionPage({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={() => setIsModelModalOpen(false)}
+            onClick={closeModelModal}
           >
             <motion.div
               initial={{ y: 16, opacity: 0, scale: 0.98 }}
@@ -308,7 +322,7 @@ export function TranscriptionPage({
                 </div>
                 <button
                   className="btn btn-ghost text-xs"
-                  onClick={() => setIsModelModalOpen(false)}
+                  onClick={closeModelModal}
                 >
                   <X className="w-3.5 h-3.5" />
                   Close
