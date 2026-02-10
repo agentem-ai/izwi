@@ -361,6 +361,12 @@ function App() {
               <VoicePage
                 models={models}
                 loading={loading}
+                downloadProgress={downloadProgress}
+                onDownload={handleDownload}
+                onCancelDownload={handleCancelDownload}
+                onLoad={handleLoad}
+                onUnload={handleUnload}
+                onDelete={handleDelete}
                 onError={setError}
               />
             }
