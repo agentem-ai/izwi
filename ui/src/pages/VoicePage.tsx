@@ -148,6 +148,39 @@ function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
+function decodePcmI16Base64(base64Data: string): Float32Array {
+  const binary = atob(base64Data);
+  const sampleCount = Math.floor(binary.length / 2);
+  const out = new Float32Array(sampleCount);
+
+  for (let i = 0; i < sampleCount; i += 1) {
+    const lo = binary.charCodeAt(i * 2);
+    const hi = binary.charCodeAt(i * 2 + 1);
+    let value = (hi << 8) | lo;
+    if (value & 0x8000) {
+      value -= 0x10000;
+    }
+    out[i] = value / 0x8000;
+  }
+
+  return out;
+}
+
+function mergeSampleChunks(chunks: Float32Array[]): Float32Array {
+  const totalSamples = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const merged = new Float32Array(totalSamples);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
+}
+
+function makeTranscriptEntryId(role: "user" | "assistant"): string {
+  return `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 async function transcodeToWav(
   inputBlob: Blob,
   targetSampleRate = 16000,
@@ -243,10 +276,20 @@ export function VoicePage({
   const runtimeStatusRef = useRef<RuntimeStatus>("idle");
   const conversationRef = useRef<ChatMessage[]>([]);
   const isSessionActiveRef = useRef(false);
+  const turnIdRef = useRef(0);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const asrStreamAbortRef = useRef<AbortController | null>(null);
+  const chatStreamAbortRef = useRef<AbortController | null>(null);
+  const ttsStreamAbortRef = useRef<AbortController | null>(null);
+  const ttsPlaybackContextRef = useRef<AudioContext | null>(null);
+  const ttsPlaybackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const ttsNextPlaybackTimeRef = useRef(0);
+  const ttsSampleRateRef = useRef(24000);
+  const ttsSamplesRef = useRef<Float32Array[]>([]);
+  const ttsStreamSessionRef = useRef(0);
 
   const sortedModels = useMemo(() => {
     const statusOrder: Record<ModelInfo["status"], number> = {
@@ -373,7 +416,36 @@ export function VoicePage({
     [selectedAsrInfo, selectedTextInfo, selectedTtsInfo],
   );
 
+  const stopTtsStreamingPlayback = useCallback(() => {
+    ttsStreamSessionRef.current += 1;
+
+    if (ttsStreamAbortRef.current) {
+      ttsStreamAbortRef.current.abort();
+      ttsStreamAbortRef.current = null;
+    }
+
+    for (const source of ttsPlaybackSourcesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        // Ignore already-stopped sources.
+      }
+    }
+    ttsPlaybackSourcesRef.current.clear();
+
+    if (ttsPlaybackContextRef.current) {
+      ttsPlaybackContextRef.current.close().catch(() => {});
+      ttsPlaybackContextRef.current = null;
+    }
+
+    ttsNextPlaybackTimeRef.current = 0;
+    ttsSampleRateRef.current = 24000;
+    ttsSamplesRef.current = [];
+  }, []);
+
   const clearAudioPlayback = useCallback(() => {
+    stopTtsStreamingPlayback();
+
     const audio = audioRef.current;
     if (audio) {
       audio.pause();
@@ -385,10 +457,11 @@ export function VoicePage({
       URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = null;
     }
-  }, []);
+  }, [stopTtsStreamingPlayback]);
 
   const stopSession = useCallback(() => {
     isSessionActiveRef.current = false;
+    turnIdRef.current += 1;
     processingRef.current = false;
     silenceMsRef.current = 0;
     speechStartRef.current = null;
@@ -416,6 +489,16 @@ export function VoicePage({
       audioContextRef.current = null;
     }
 
+    if (asrStreamAbortRef.current) {
+      asrStreamAbortRef.current.abort();
+      asrStreamAbortRef.current = null;
+    }
+
+    if (chatStreamAbortRef.current) {
+      chatStreamAbortRef.current.abort();
+      chatStreamAbortRef.current = null;
+    }
+
     analyserRef.current = null;
     clearAudioPlayback();
   }, [clearAudioPlayback]);
@@ -424,26 +507,334 @@ export function VoicePage({
     return () => stopSession();
   }, [stopSession]);
 
-  const addTranscript = useCallback(
-    (role: "user" | "assistant", text: string) => {
-      const trimmed = text.trim();
-      if (!trimmed) return;
+  const appendTranscriptEntry = useCallback((entry: TranscriptEntry) => {
+    setTranscript((prev) => [...prev, entry]);
+  }, []);
 
-      setTranscript((prev) => [
-        ...prev,
-        {
-          id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          role,
-          text: trimmed,
+  const setTranscriptEntryText = useCallback((entryId: string, text: string) => {
+    setTranscript((prev) => {
+      const index = prev.findIndex((entry) => entry.id === entryId);
+      if (index === -1) {
+        return prev;
+      }
+      const next = [...prev];
+      next[index] = {
+        ...next[index],
+        text,
+      };
+      return next;
+    });
+  }, []);
+
+  const removeTranscriptEntry = useCallback((entryId: string) => {
+    setTranscript((prev) => prev.filter((entry) => entry.id !== entryId));
+  }, []);
+
+  const streamUserTranscription = useCallback(
+    (audioBase64: string, modelId: string): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const entryId = makeTranscriptEntryId("user");
+        let assembledText = "";
+        let settled = false;
+
+        appendTranscriptEntry({
+          id: entryId,
+          role: "user",
+          text: "",
           timestamp: Date.now(),
-        },
-      ]);
-    },
-    [],
+        });
+
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          fn();
+        };
+
+        asrStreamAbortRef.current = api.asrTranscribeStream(
+          {
+            audio_base64: audioBase64,
+            model_id: modelId,
+            language: "Auto",
+          },
+          {
+            onDelta: (delta) => {
+              assembledText += delta;
+              setTranscriptEntryText(entryId, assembledText);
+            },
+            onPartial: (text) => {
+              assembledText = text;
+              setTranscriptEntryText(entryId, assembledText);
+            },
+            onFinal: (text) => {
+              assembledText = text;
+              setTranscriptEntryText(entryId, assembledText);
+            },
+            onError: (errorMessage) => {
+              settle(() => {
+                asrStreamAbortRef.current = null;
+                const finalText = assembledText.trim();
+                if (finalText) {
+                  setTranscriptEntryText(entryId, finalText);
+                } else {
+                  removeTranscriptEntry(entryId);
+                }
+                reject(new Error(errorMessage));
+              });
+            },
+            onDone: () => {
+              settle(() => {
+                asrStreamAbortRef.current = null;
+                const finalText = assembledText.trim();
+                if (finalText) {
+                  setTranscriptEntryText(entryId, finalText);
+                } else {
+                  removeTranscriptEntry(entryId);
+                }
+                resolve(finalText);
+              });
+            },
+          },
+        );
+      }),
+    [appendTranscriptEntry, removeTranscriptEntry, setTranscriptEntryText],
+  );
+
+  const streamAssistantResponse = useCallback(
+    (messages: ChatMessage[], modelId: string): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const entryId = makeTranscriptEntryId("assistant");
+        let rawText = "";
+        let settled = false;
+
+        appendTranscriptEntry({
+          id: entryId,
+          role: "assistant",
+          text: "",
+          timestamp: Date.now(),
+        });
+
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          fn();
+        };
+
+        const updateVisibleText = () => {
+          const visible = parseFinalAnswer(rawText);
+          setTranscriptEntryText(entryId, visible);
+        };
+
+        chatStreamAbortRef.current = api.chatCompletionsStream(
+          {
+            model_id: modelId,
+            messages,
+            max_tokens: 1536,
+          },
+          {
+            onDelta: (delta) => {
+              rawText += delta;
+              updateVisibleText();
+            },
+            onDone: (message) => {
+              settle(() => {
+                chatStreamAbortRef.current = null;
+                if (message) {
+                  rawText = message;
+                }
+
+                const finalText = parseFinalAnswer(rawText) || rawText.trim();
+                if (finalText) {
+                  setTranscriptEntryText(entryId, finalText);
+                } else {
+                  removeTranscriptEntry(entryId);
+                }
+                resolve(finalText);
+              });
+            },
+            onError: (errorMessage) => {
+              settle(() => {
+                chatStreamAbortRef.current = null;
+                const finalText = parseFinalAnswer(rawText) || rawText.trim();
+                if (finalText) {
+                  setTranscriptEntryText(entryId, finalText);
+                } else {
+                  removeTranscriptEntry(entryId);
+                }
+                reject(new Error(errorMessage));
+              });
+            },
+          },
+        );
+      }),
+    [appendTranscriptEntry, removeTranscriptEntry, setTranscriptEntryText],
+  );
+
+  const streamAssistantSpeech = useCallback(
+    (text: string, modelId: string, speaker: string, turnId: number) =>
+      new Promise<void>((resolve, reject) => {
+        clearAudioPlayback();
+
+        const playbackContext = new AudioContext();
+        ttsPlaybackContextRef.current = playbackContext;
+        ttsNextPlaybackTimeRef.current = playbackContext.currentTime + 0.05;
+        ttsSampleRateRef.current = 24000;
+        ttsSamplesRef.current = [];
+
+        const streamSession = ++ttsStreamSessionRef.current;
+        let settled = false;
+        let streamDone = false;
+        let playbackStarted = false;
+
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          fn();
+        };
+
+        const finalizeIfComplete = () => {
+          if (!streamDone || ttsPlaybackSourcesRef.current.size > 0) {
+            return;
+          }
+
+          if (ttsStreamSessionRef.current === streamSession) {
+            const merged = mergeSampleChunks(ttsSamplesRef.current);
+            if (merged.length > 0) {
+              const wavBlob = encodeWavPcm16(merged, ttsSampleRateRef.current);
+              const nextUrl = URL.createObjectURL(wavBlob);
+              if (audioUrlRef.current) {
+                URL.revokeObjectURL(audioUrlRef.current);
+              }
+              audioUrlRef.current = nextUrl;
+            }
+
+            if (ttsPlaybackContextRef.current) {
+              ttsPlaybackContextRef.current.close().catch(() => {});
+              ttsPlaybackContextRef.current = null;
+            }
+
+            ttsPlaybackSourcesRef.current.clear();
+            ttsNextPlaybackTimeRef.current = 0;
+            ttsSamplesRef.current = [];
+            ttsStreamAbortRef.current = null;
+
+            if (turnId === turnIdRef.current) {
+              if (isSessionActiveRef.current) {
+                setRuntimeStatus("listening");
+              } else {
+                setRuntimeStatus("idle");
+              }
+            }
+          }
+
+          settle(() => resolve());
+        };
+
+        ttsStreamAbortRef.current = api.generateTTSStream(
+          {
+            text,
+            model_id: modelId,
+            speaker,
+            max_tokens: 0,
+            format: "pcm",
+          },
+          {
+            onStart: ({ sampleRate, audioFormat }) => {
+              if (ttsStreamSessionRef.current !== streamSession) return;
+              ttsSampleRateRef.current = sampleRate;
+
+              if (audioFormat !== "pcm_i16") {
+                stopTtsStreamingPlayback();
+                settle(() => {
+                  reject(
+                    new Error(
+                      `Unsupported streamed audio format '${audioFormat}'. Expected pcm_i16.`,
+                    ),
+                  );
+                });
+              }
+            },
+            onChunk: ({ audioBase64 }) => {
+              if (ttsStreamSessionRef.current !== streamSession) return;
+
+              const context = ttsPlaybackContextRef.current;
+              if (!context) return;
+
+              const samples = decodePcmI16Base64(audioBase64);
+              if (samples.length === 0) return;
+
+              if (!playbackStarted) {
+                playbackStarted = true;
+                processingRef.current = false;
+                if (turnId === turnIdRef.current) {
+                  setRuntimeStatus("assistant_speaking");
+                }
+              }
+
+              ttsSamplesRef.current.push(samples);
+
+              const buffer = context.createBuffer(
+                1,
+                samples.length,
+                ttsSampleRateRef.current,
+              );
+              const samplesForPlayback = new Float32Array(samples.length);
+              samplesForPlayback.set(samples);
+              buffer.copyToChannel(samplesForPlayback, 0);
+
+              const source = context.createBufferSource();
+              source.buffer = buffer;
+              source.connect(context.destination);
+
+              const scheduledAt = Math.max(
+                context.currentTime + 0.02,
+                ttsNextPlaybackTimeRef.current,
+              );
+              source.start(scheduledAt);
+              ttsNextPlaybackTimeRef.current = scheduledAt + buffer.duration;
+
+              ttsPlaybackSourcesRef.current.add(source);
+              source.onended = () => {
+                ttsPlaybackSourcesRef.current.delete(source);
+                finalizeIfComplete();
+              };
+
+              if (context.state === "suspended") {
+                context.resume().catch(() => {});
+              }
+            },
+            onError: (errorMessage) => {
+              if (ttsStreamSessionRef.current !== streamSession) {
+                settle(() => resolve());
+                return;
+              }
+
+              stopTtsStreamingPlayback();
+              settle(() => reject(new Error(errorMessage)));
+            },
+            onDone: () => {
+              if (ttsStreamSessionRef.current !== streamSession) {
+                settle(() => resolve());
+                return;
+              }
+
+              streamDone = true;
+              if (!playbackStarted) {
+                processingRef.current = false;
+              }
+              finalizeIfComplete();
+            },
+          },
+        );
+      }),
+    [clearAudioPlayback, stopTtsStreamingPlayback],
   );
 
   const processUtterance = useCallback(
     async (audioBlob: Blob) => {
+      if (!isSessionActiveRef.current) {
+        return;
+      }
+
       if (!selectedAsrModel || !selectedTextModel || !selectedTtsModel) {
         setError(
           "Select ASR, text, and TTS models before starting voice mode.",
@@ -464,17 +855,20 @@ export function VoicePage({
         return;
       }
 
+      const turnId = turnIdRef.current + 1;
+      turnIdRef.current = turnId;
+
       try {
         setRuntimeStatus("processing");
         const wavBlob = await transcodeToWav(audioBlob, 16000);
+        if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
         const audioBase64 = await blobToBase64(wavBlob);
-        const asr = await api.asrTranscribe({
-          audio_base64: audioBase64,
-          model_id: selectedAsrModel,
-          language: "Auto",
-        });
+        const userText = await streamUserTranscription(
+          audioBase64,
+          selectedAsrModel,
+        );
 
-        const userText = asr.transcription.trim();
+        if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
         if (!userText) {
           processingRef.current = false;
           if (isSessionActiveRef.current) {
@@ -483,24 +877,24 @@ export function VoicePage({
           return;
         }
 
-        addTranscript("user", userText);
-
         const requestMessages: ChatMessage[] = [
           SYSTEM_PROMPT,
           ...conversationRef.current,
           { role: "user", content: userText },
         ];
 
-        const chat = await api.chatCompletions({
-          model_id: selectedTextModel,
-          messages: requestMessages,
-          max_tokens: 1536,
-        });
-
-        const rawAssistant = chat.message.content || "";
-        const assistantText =
-          parseFinalAnswer(rawAssistant) || rawAssistant.trim();
-        addTranscript("assistant", assistantText);
+        const assistantText = await streamAssistantResponse(
+          requestMessages,
+          selectedTextModel,
+        );
+        if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
+        if (!assistantText) {
+          processingRef.current = false;
+          if (isSessionActiveRef.current) {
+            setRuntimeStatus("listening");
+          }
+          return;
+        }
 
         setConversation((prev) => [
           ...prev,
@@ -508,25 +902,17 @@ export function VoicePage({
           { role: "assistant", content: assistantText },
         ]);
 
-        const tts = await api.generateTTSWithStats({
-          text: assistantText,
-          model_id: selectedTtsModel,
-          speaker: selectedSpeaker,
-          max_tokens: 0,
-          format: "wav",
-        });
-
-        clearAudioPlayback();
-        const nextUrl = URL.createObjectURL(tts.audioBlob);
-        audioUrlRef.current = nextUrl;
-
-        const audio = audioRef.current;
-        if (!audio) throw new Error("Audio output is not available");
-        audio.src = nextUrl;
-
-        setRuntimeStatus("assistant_speaking");
-        await audio.play();
+        await streamAssistantSpeech(
+          assistantText,
+          selectedTtsModel,
+          selectedSpeaker,
+          turnId,
+        );
       } catch (err) {
+        if (turnId !== turnIdRef.current) {
+          return;
+        }
+
         const message =
           err instanceof Error ? err.message : "Voice turn failed";
         setError(message);
@@ -537,18 +923,27 @@ export function VoicePage({
           setRuntimeStatus("idle");
         }
       } finally {
-        processingRef.current = false;
+        if (turnId === turnIdRef.current) {
+          processingRef.current = false;
+          if (
+            isSessionActiveRef.current &&
+            runtimeStatusRef.current === "processing"
+          ) {
+            setRuntimeStatus("listening");
+          }
+        }
       }
     },
     [
-      addTranscript,
-      clearAudioPlayback,
       hasRunnableConfig,
       onError,
       selectedAsrModel,
       selectedSpeaker,
       selectedTextModel,
       selectedTtsModel,
+      streamAssistantResponse,
+      streamAssistantSpeech,
+      streamUserTranscription,
     ],
   );
 

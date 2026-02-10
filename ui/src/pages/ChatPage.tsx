@@ -105,6 +105,7 @@ export function ChatPage({
   const viewConfig = VIEW_CONFIGS.chat;
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [modalIntentModel, setModalIntentModel] = useState<string | null>(null);
+  const [autoCloseOnIntentReady, setAutoCloseOnIntentReady] = useState(false);
 
   const chatModels = useMemo(
     () =>
@@ -135,15 +136,25 @@ export function ChatPage({
     chatModels.find((model) => model.variant === resolvedSelectedModel) ?? null;
   const selectedModelReady = selectedModelInfo?.status === "ready";
 
+  const closeModelModal = () => {
+    setIsModelModalOpen(false);
+    setAutoCloseOnIntentReady(false);
+  };
+
   useEffect(() => {
-    if (!isModelModalOpen || !modalIntentModel) {
+    if (!isModelModalOpen || !modalIntentModel || !autoCloseOnIntentReady) {
       return;
     }
     const targetModel = chatModels.find((m) => m.variant === modalIntentModel);
     if (targetModel?.status === "ready") {
-      setIsModelModalOpen(false);
+      closeModelModal();
     }
-  }, [chatModels, isModelModalOpen, modalIntentModel]);
+  }, [
+    autoCloseOnIntentReady,
+    chatModels,
+    isModelModalOpen,
+    modalIntentModel,
+  ]);
 
   const handleModelSelect = (variant: string) => {
     const model = chatModels.find((m) => m.variant === variant);
@@ -155,12 +166,14 @@ export function ChatPage({
 
     if (model.status !== "ready") {
       setModalIntentModel(variant);
+      setAutoCloseOnIntentReady(true);
       setIsModelModalOpen(true);
     }
   };
 
   const openModelManager = () => {
     setModalIntentModel(resolvedSelectedModel);
+    setAutoCloseOnIntentReady(false);
     setIsModelModalOpen(true);
   };
 
@@ -247,7 +260,7 @@ export function ChatPage({
           onClick={(event) => {
             event.stopPropagation();
             onSelect(model.variant);
-            setIsModelModalOpen(false);
+            closeModelModal();
           }}
           className="btn btn-primary text-xs"
         >
@@ -271,6 +284,7 @@ export function ChatPage({
         onOpenModelManager={openModelManager}
         onModelRequired={() => {
           setModalIntentModel(resolvedSelectedModel);
+          setAutoCloseOnIntentReady(true);
           setIsModelModalOpen(true);
           onError("Select a model and load it to start chatting.");
         }}
@@ -283,7 +297,7 @@ export function ChatPage({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={() => setIsModelModalOpen(false)}
+            onClick={closeModelModal}
           >
             <motion.div
               initial={{ y: 16, opacity: 0, scale: 0.98 }}
@@ -304,7 +318,7 @@ export function ChatPage({
                 </div>
                 <button
                   className="btn btn-ghost text-xs"
-                  onClick={() => setIsModelModalOpen(false)}
+                  onClick={closeModelModal}
                 >
                   <X className="w-3.5 h-3.5" />
                   Close
