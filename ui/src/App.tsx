@@ -361,8 +361,8 @@ function App() {
             }
           />
           <Route path="/my-models" element={<Navigate to="/models" replace />} />
-          <Route path="/" element={<Navigate to="/text-to-speech" replace />} />
-          <Route path="*" element={<Navigate to="/text-to-speech" replace />} />
+          <Route path="/" element={<Navigate to="/voice" replace />} />
+          <Route path="*" element={<Navigate to="/voice" replace />} />
         </Route>
       </Routes>
     </BrowserRouter>
