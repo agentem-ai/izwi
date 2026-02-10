@@ -93,7 +93,7 @@ function isTtsVariant(variant: string): boolean {
 }
 
 function isRunnableModelStatus(status: ModelInfo["status"]): boolean {
-  return status === "downloaded" || status === "ready";
+  return status === "ready";
 }
 
 async function blobToBase64(blob: Blob): Promise<string> {
@@ -351,6 +351,16 @@ export function VoicePage({
       !asrModels.some((m) => m.variant === selectedAsrModel)
     ) {
       const preferredAsr =
+        asrModels.find(
+          (m) => m.variant === "Qwen3-ASR-0.6B-4bit" && m.status === "ready",
+        ) ||
+        asrModels.find(
+          (m) =>
+            m.variant.includes("Qwen3-ASR-0.6B") &&
+            m.variant.includes("4bit") &&
+            m.status === "ready",
+        ) ||
+        asrModels.find((m) => m.status === "ready") ||
         asrModels.find((m) => m.variant === "Qwen3-ASR-0.6B-4bit") ||
         asrModels.find(
           (m) =>
@@ -368,6 +378,10 @@ export function VoicePage({
       !textModels.some((m) => m.variant === selectedTextModel)
     ) {
       const preferredText =
+        textModels.find(
+          (m) => m.variant === "Qwen3-0.6B-4bit" && m.status === "ready",
+        ) ||
+        textModels.find((m) => m.status === "ready") ||
         textModels.find((m) => m.variant === "Qwen3-0.6B-4bit") ||
         textModels[0];
       setSelectedTextModel(preferredText?.variant ?? null);
@@ -380,6 +394,23 @@ export function VoicePage({
       !ttsModels.some((m) => m.variant === selectedTtsModel)
     ) {
       const preferredTts =
+        ttsModels.find(
+          (m) =>
+            m.variant === "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit" &&
+            m.status === "ready",
+        ) ||
+        ttsModels.find(
+          (m) =>
+            m.variant === "Qwen3-TTS-12Hz-0.6B-Base-4bit" &&
+            m.status === "ready",
+        ) ||
+        ttsModels.find(
+          (m) =>
+            m.variant.includes("0.6B") &&
+            m.variant.includes("4bit") &&
+            m.status === "ready",
+        ) ||
+        ttsModels.find((m) => m.status === "ready") ||
         ttsModels.find(
           (m) => m.variant === "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
         ) ||
@@ -847,7 +878,7 @@ export function VoicePage({
 
       if (!hasRunnableConfig) {
         setError(
-          "Selected models must be downloaded or loaded. Open Config to manage models.",
+          "Selected models must be loaded. Open Config to manage models.",
         );
         setIsConfigOpen(true);
         setRuntimeStatus("listening");
@@ -959,7 +990,7 @@ export function VoicePage({
 
     if (!hasRunnableConfig) {
       const message =
-        "Selected models must be downloaded or loaded. Open Config to manage models.";
+        "Selected models must be loaded. Open Config to manage models.";
       setError(message);
       onError?.(message);
       setIsConfigOpen(true);
@@ -1242,7 +1273,12 @@ export function VoicePage({
                 "btn w-full mt-5 text-sm min-h-[46px]",
                 runtimeStatus === "idle" ? "btn-primary" : "btn-danger",
               )}
-              disabled={!selectedAsrModel || !selectedTextModel || !selectedTtsModel}
+              disabled={
+                !selectedAsrModel ||
+                !selectedTextModel ||
+                !selectedTtsModel ||
+                !hasRunnableConfig
+              }
             >
               {runtimeStatus === "idle" ? (
                 <>
