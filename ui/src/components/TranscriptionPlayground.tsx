@@ -59,6 +59,99 @@ const LANGUAGE_OPTIONS = [
   "Macedonian",
 ];
 
+function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
+  const bytesPerSample = 2;
+  const blockAlign = bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = samples.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  const writeString = (offset: number, value: string) => {
+    for (let i = 0; i < value.length; i += 1) {
+      view.setUint8(offset + i, value.charCodeAt(i));
+    }
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i += 1) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]));
+    const int16 = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+    view.setInt16(offset, int16, true);
+    offset += 2;
+  }
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+async function transcodeToWav(
+  inputBlob: Blob,
+  targetSampleRate = 16000,
+): Promise<Blob> {
+  if (inputBlob.type === "audio/wav" || inputBlob.type === "audio/x-wav") {
+    return inputBlob;
+  }
+
+  const decodeContext = new AudioContext();
+  try {
+    const sourceBytes = await inputBlob.arrayBuffer();
+    const decoded = await decodeContext.decodeAudioData(sourceBytes.slice(0));
+
+    const monoBuffer = decodeContext.createBuffer(
+      1,
+      decoded.length,
+      decoded.sampleRate,
+    );
+    const mono = monoBuffer.getChannelData(0);
+
+    for (let i = 0; i < decoded.length; i += 1) {
+      let sum = 0;
+      for (let ch = 0; ch < decoded.numberOfChannels; ch += 1) {
+        sum += decoded.getChannelData(ch)[i] ?? 0;
+      }
+      mono[i] = sum / decoded.numberOfChannels;
+    }
+
+    const rendered = await (() => {
+      if (decoded.sampleRate === targetSampleRate) {
+        return Promise.resolve(monoBuffer);
+      }
+
+      const targetLength = Math.ceil(
+        (monoBuffer.length * targetSampleRate) / monoBuffer.sampleRate,
+      );
+      const offline = new OfflineAudioContext(
+        1,
+        targetLength,
+        targetSampleRate,
+      );
+      const source = offline.createBufferSource();
+      source.buffer = monoBuffer;
+      source.connect(offline.destination);
+      source.start(0);
+      return offline.startRendering();
+    })();
+
+    return encodeWavPcm16(rendered.getChannelData(0), targetSampleRate);
+  } finally {
+    decodeContext.close().catch(() => {});
+  }
+}
+
 export function TranscriptionPlayground({
   selectedModel,
   selectedModelReady = false,
@@ -102,15 +195,17 @@ export function TranscriptionPlayground({
       setProcessingStats(null);
       setTranscription("");
 
-      const url = URL.createObjectURL(audioBlob);
-      setAudioUrl((previousUrl) => {
-        if (previousUrl) {
-          URL.revokeObjectURL(previousUrl);
-        }
-        return url;
-      });
-
       try {
+        const wavBlob = await transcodeToWav(audioBlob, 16000);
+
+        const url = URL.createObjectURL(wavBlob);
+        setAudioUrl((previousUrl) => {
+          if (previousUrl) {
+            URL.revokeObjectURL(previousUrl);
+          }
+          return url;
+        });
+
         const reader = new FileReader();
         const audioBase64 = await new Promise<string>((resolve, reject) => {
           reader.onloadend = () => {
@@ -118,7 +213,7 @@ export function TranscriptionPlayground({
             resolve(base64);
           };
           reader.onerror = reject;
-          reader.readAsDataURL(audioBlob);
+          reader.readAsDataURL(wavBlob);
         });
 
         if (streamingEnabled) {
@@ -201,7 +296,21 @@ export function TranscriptionPlayground({
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
+      let mediaRecorder: MediaRecorder | null = null;
+      const mimeCandidates = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+      ];
+      for (const mimeType of mimeCandidates) {
+        if (MediaRecorder.isTypeSupported(mimeType)) {
+          mediaRecorder = new MediaRecorder(stream, { mimeType });
+          break;
+        }
+      }
+      if (!mediaRecorder) {
+        mediaRecorder = new MediaRecorder(stream);
+      }
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
@@ -213,7 +322,7 @@ export function TranscriptionPlayground({
 
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, {
-          type: "audio/webm",
+          type: mediaRecorder?.mimeType || "audio/webm",
         });
         stream.getTracks().forEach((track) => track.stop());
         await processAudio(audioBlob);
