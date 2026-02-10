@@ -1,6 +1,6 @@
-import { motion } from "framer-motion";
+import { useEffect, useMemo, useState } from "react";
 import { ModelInfo } from "../api";
-import { ModelManager } from "../components/ModelManager";
+import { RouteModelModal } from "../components/RouteModelModal";
 import { VoiceDesignPlayground } from "../components/VoiceDesignPlayground";
 import { VIEW_CONFIGS } from "../types";
 
@@ -41,17 +41,89 @@ export function VoiceDesignPage({
   onError,
 }: VoiceDesignPageProps) {
   const viewConfig = VIEW_CONFIGS["voice-design"];
+  const [isModelModalOpen, setIsModelModalOpen] = useState(false);
+  const [modalIntentModel, setModalIntentModel] = useState<string | null>(null);
 
-  const relevantSelectedModel = (() => {
-    if (!selectedModel) return null;
-    if (viewConfig.modelFilter(selectedModel)) {
+  const STATUS_ORDER: Record<ModelInfo["status"], number> = {
+    ready: 0,
+    loading: 1,
+    downloading: 2,
+    downloaded: 3,
+    not_downloaded: 4,
+    error: 5,
+  };
+
+  const routeModels = useMemo(
+    () =>
+      models
+        .filter((model) => !model.variant.includes("Tokenizer"))
+        .filter((model) => viewConfig.modelFilter(model.variant))
+        .sort((a, b) => {
+          const orderDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+          if (orderDiff !== 0) {
+            return orderDiff;
+          }
+          return a.variant.localeCompare(b.variant);
+        }),
+    [models, viewConfig],
+  );
+
+  const preferredModelOrder = [
+    "Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit",
+    "Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit",
+    "Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
+    "Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+  ];
+
+  const resolvedSelectedModel = (() => {
+    if (selectedModel && routeModels.some((m) => m.variant === selectedModel)) {
       return selectedModel;
     }
-    const readyModel = models.find(
-      (m) => m.status === "ready" && viewConfig.modelFilter(m.variant),
-    );
-    return readyModel?.variant || null;
+
+    for (const variant of preferredModelOrder) {
+      const readyPreferred = routeModels.find(
+        (model) => model.variant === variant && model.status === "ready",
+      );
+      if (readyPreferred) {
+        return readyPreferred.variant;
+      }
+    }
+
+    const readyModel = routeModels.find((model) => model.status === "ready");
+    if (readyModel) {
+      return readyModel.variant;
+    }
+
+    for (const variant of preferredModelOrder) {
+      const preferred = routeModels.find((model) => model.variant === variant);
+      if (preferred) {
+        return preferred.variant;
+      }
+    }
+
+    return routeModels[0]?.variant ?? null;
   })();
+
+  const selectedModelInfo =
+    routeModels.find((model) => model.variant === resolvedSelectedModel) ?? null;
+  const selectedModelReady = selectedModelInfo?.status === "ready";
+
+  useEffect(() => {
+    if (!isModelModalOpen || !modalIntentModel) {
+      return;
+    }
+    const targetModel = routeModels.find(
+      (model) => model.variant === modalIntentModel,
+    );
+    if (targetModel?.status === "ready") {
+      setIsModelModalOpen(false);
+    }
+  }, [isModelModalOpen, modalIntentModel, routeModels]);
+
+  const openModelManager = () => {
+    setModalIntentModel(resolvedSelectedModel);
+    setIsModelModalOpen(true);
+  };
 
   return (
     <div className="max-w-6xl mx-auto">
@@ -59,50 +131,36 @@ export function VoiceDesignPage({
         <h1 className="text-xl font-semibold text-white">Voice Design</h1>
       </div>
 
-      <div className="grid lg:grid-cols-[320px,1fr] gap-4 lg:gap-6">
-        {/* Models sidebar */}
-        <div className="card p-3 lg:p-4">
-          <div className="mb-3">
-            <h2 className="text-sm font-medium text-white">Models</h2>
-          </div>
+      <VoiceDesignPlayground
+        selectedModel={resolvedSelectedModel}
+        selectedModelReady={selectedModelReady}
+        modelLabel={selectedModelInfo?.variant ?? null}
+        onOpenModelManager={openModelManager}
+        onModelRequired={() => {
+          setModalIntentModel(resolvedSelectedModel);
+          setIsModelModalOpen(true);
+          onError("Select and load a VoiceDesign model to continue.");
+        }}
+      />
 
-          {loading ? (
-            <div className="flex flex-col items-center justify-center py-12 gap-2">
-              <motion.div
-                className="w-6 h-6 border-2 border-white border-t-transparent rounded-full"
-                animate={{ rotate: 360 }}
-                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-              />
-              <p className="text-xs text-gray-400">Loading...</p>
-            </div>
-          ) : (
-            <ModelManager
-              models={models}
-              selectedModel={relevantSelectedModel}
-              onDownload={onDownload}
-              onCancelDownload={onCancelDownload}
-              onLoad={onLoad}
-              onUnload={onUnload}
-              onDelete={onDelete}
-              onSelect={onSelect}
-              downloadProgress={downloadProgress}
-              modelFilter={viewConfig.modelFilter}
-              emptyStateTitle={viewConfig.emptyStateTitle}
-              emptyStateDescription={viewConfig.emptyStateDescription}
-            />
-          )}
-        </div>
-
-        {/* Playground */}
-        <div>
-          <VoiceDesignPlayground
-            selectedModel={relevantSelectedModel}
-            onModelRequired={() =>
-              onError("Please load the VoiceDesign model first")
-            }
-          />
-        </div>
-      </div>
+      <RouteModelModal
+        isOpen={isModelModalOpen}
+        onClose={() => setIsModelModalOpen(false)}
+        title="Voice Design Models"
+        description="Manage VoiceDesign models for this route."
+        models={routeModels}
+        loading={loading}
+        selectedVariant={resolvedSelectedModel}
+        intentVariant={modalIntentModel}
+        downloadProgress={downloadProgress}
+        onDownload={onDownload}
+        onCancelDownload={onCancelDownload}
+        onLoad={onLoad}
+        onUnload={onUnload}
+        onDelete={onDelete}
+        onUseModel={onSelect}
+        emptyMessage={viewConfig.emptyStateDescription}
+      />
     </div>
   );
 }

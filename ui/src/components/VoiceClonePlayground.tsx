@@ -8,6 +8,7 @@ import {
   Loader2,
   Globe,
   ChevronDown,
+  Settings2,
 } from "lucide-react";
 import { api } from "../api";
 import { VoiceClone } from "./VoiceClone";
@@ -16,11 +17,17 @@ import clsx from "clsx";
 
 interface VoiceClonePlaygroundProps {
   selectedModel: string | null;
+  selectedModelReady?: boolean;
+  modelLabel?: string | null;
+  onOpenModelManager?: () => void;
   onModelRequired: () => void;
 }
 
 export function VoiceClonePlayground({
   selectedModel,
+  selectedModelReady = false,
+  modelLabel,
+  onOpenModelManager,
   onModelRequired,
 }: VoiceClonePlaygroundProps) {
   const [text, setText] = useState("");
@@ -39,7 +46,7 @@ export function VoiceClonePlayground({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleGenerate = async () => {
-    if (!selectedModel) {
+    if (!selectedModel || !selectedModelReady) {
       onModelRequired();
       return;
     }
@@ -136,52 +143,83 @@ export function VoiceClonePlayground({
           </div>
         </div>
 
-        {/* Language selector */}
-        <div className="relative">
-          <button
-            onClick={() => setShowLanguageSelect(!showLanguageSelect)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
-          >
-            <Globe className="w-3.5 h-3.5 text-gray-500" />
-            <span className="text-white">
-              {LANGUAGES.find((l) => l.id === language)?.name || language}
-            </span>
-            <ChevronDown
-              className={clsx(
-                "w-3.5 h-3.5 text-gray-500 transition-transform",
-                showLanguageSelect && "rotate-180",
-              )}
-            />
-          </button>
+        <div className="flex items-center gap-2">
+          {onOpenModelManager && (
+            <button
+              onClick={onOpenModelManager}
+              className="btn btn-secondary text-xs"
+            >
+              <Settings2 className="w-4 h-4" />
+              Models
+            </button>
+          )}
 
-          <AnimatePresence>
-            {showLanguageSelect && (
-              <motion.div
-                initial={{ opacity: 0, y: -5 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -5 }}
-                className="absolute right-0 mt-1 w-40 sm:w-44 max-h-64 overflow-y-auto p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
-              >
-                {LANGUAGES.map((lang) => (
-                  <button
-                    key={lang.id}
-                    onClick={() => {
-                      setLanguage(lang.id);
-                      setShowLanguageSelect(false);
-                    }}
-                    className={clsx(
-                      "w-full px-2 py-1.5 rounded text-left text-sm transition-colors",
-                      language === lang.id
-                        ? "bg-white/10 text-white"
-                        : "hover:bg-[#2a2a2a] text-gray-400",
-                    )}
-                  >
-                    {lang.name}
-                  </button>
-                ))}
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {/* Language selector */}
+          <div className="relative">
+            <button
+              onClick={() => setShowLanguageSelect(!showLanguageSelect)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
+            >
+              <Globe className="w-3.5 h-3.5 text-gray-500" />
+              <span className="text-white">
+                {LANGUAGES.find((l) => l.id === language)?.name || language}
+              </span>
+              <ChevronDown
+                className={clsx(
+                  "w-3.5 h-3.5 text-gray-500 transition-transform",
+                  showLanguageSelect && "rotate-180",
+                )}
+              />
+            </button>
+
+            <AnimatePresence>
+              {showLanguageSelect && (
+                <motion.div
+                  initial={{ opacity: 0, y: -5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -5 }}
+                  className="absolute right-0 mt-1 w-40 sm:w-44 max-h-64 overflow-y-auto p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
+                >
+                  {LANGUAGES.map((lang) => (
+                    <button
+                      key={lang.id}
+                      onClick={() => {
+                        setLanguage(lang.id);
+                        setShowLanguageSelect(false);
+                      }}
+                      className={clsx(
+                        "w-full px-2 py-1.5 rounded text-left text-sm transition-colors",
+                        language === lang.id
+                          ? "bg-white/10 text-white"
+                          : "hover:bg-[#2a2a2a] text-gray-400",
+                      )}
+                    >
+                      {lang.name}
+                    </button>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+      </div>
+
+      <div className="mb-4 rounded-xl border border-[#2b2b2b] bg-[#171717] p-3">
+        <div className="text-[11px] text-gray-500 uppercase tracking-wide">
+          Active Model
+        </div>
+        <div className="mt-1 text-sm text-white truncate">
+          {modelLabel ?? "No model selected"}
+        </div>
+        <div
+          className={clsx(
+            "mt-1 text-xs",
+            selectedModelReady ? "text-emerald-300" : "text-amber-300",
+          )}
+        >
+          {selectedModelReady
+            ? "Loaded and ready"
+            : "Open Models and load a Base model"}
         </div>
       </div>
 
@@ -244,7 +282,7 @@ export function VoiceClonePlayground({
         <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
           <button
             onClick={handleGenerate}
-            disabled={generating || !selectedModel || !isVoiceReady}
+            disabled={generating || !selectedModelReady || !isVoiceReady}
             className={clsx(
               "btn flex-1 min-h-[44px]",
               generating ? "btn-secondary" : "btn-primary",
@@ -287,13 +325,13 @@ export function VoiceClonePlayground({
           )}
         </div>
 
-        {!selectedModel && (
+        {!selectedModelReady && (
           <p className="text-xs text-gray-400">
             Load a Base model to clone voices
           </p>
         )}
 
-        {selectedModel && !isVoiceReady && (
+        {selectedModelReady && !isVoiceReady && (
           <p className="text-xs text-gray-400">
             Record or upload a voice sample to get started
           </p>
