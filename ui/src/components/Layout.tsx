@@ -31,32 +31,42 @@ interface NavItem {
   path: string;
 }
 
-const NAV_ITEMS: NavItem[] = [
-  {
-    id: "chat",
-    label: "Chat",
-    description: "Text-to-text conversation",
-    icon: MessageSquare,
-    path: "/chat",
-  },
+const TOP_NAV_ITEMS: NavItem[] = [
   {
     id: "voice",
     label: "Voice",
-    description: "Realtime voice assistant",
+    description: "Flagship realtime interaction",
     icon: AudioLines,
     path: "/voice",
   },
   {
+    id: "chat",
+    label: "Chat",
+    description: "Standard AI interaction hub",
+    icon: MessageSquare,
+    path: "/chat",
+  },
+  {
+    id: "transcription",
+    label: "Transcription",
+    description: "Input utility for audio workflows",
+    icon: FileText,
+    path: "/transcription",
+  },
+];
+
+const CREATION_NAV_ITEMS: NavItem[] = [
+  {
     id: "text-to-speech",
     label: "Text to Speech",
-    description: "Generate speech from text",
+    description: "Output speech from text",
     icon: Mic,
     path: "/text-to-speech",
   },
   {
     id: "voice-cloning",
     label: "Voice Cloning",
-    description: "Clone any voice from audio",
+    description: "Identity personalization from reference audio",
     icon: Users,
     path: "/voice-cloning",
   },
@@ -66,13 +76,6 @@ const NAV_ITEMS: NavItem[] = [
     description: "Create voices from descriptions",
     icon: Wand2,
     path: "/voice-design",
-  },
-  {
-    id: "transcription",
-    label: "Transcription",
-    description: "Speech-to-text conversion",
-    icon: FileText,
-    path: "/transcription",
   },
 ];
 
@@ -151,7 +154,54 @@ export function Layout({
         {/* Navigation */}
         <nav className="flex-1 p-3 overflow-y-auto flex flex-col">
           <div className="space-y-1">
-            {NAV_ITEMS.map((item) => (
+            {TOP_NAV_ITEMS.map((item) => (
+              <NavLink
+                key={item.id}
+                to={item.path}
+                className={({ isActive }) =>
+                  clsx(
+                    "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all group",
+                    isActive
+                      ? "bg-[#1a1a1a] border border-[#333333]"
+                      : "hover:bg-[#161616] border border-transparent",
+                  )
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    <div
+                      className={clsx(
+                        "p-2 rounded-lg transition-all",
+                        isActive
+                          ? "bg-white text-black"
+                          : "bg-[#1f1f1f] text-gray-400 group-hover:text-gray-300 group-hover:bg-[#262626]",
+                      )}
+                    >
+                      <item.icon className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div
+                        className={clsx(
+                          "text-sm font-medium transition-colors truncate",
+                          isActive
+                            ? "text-white"
+                            : "text-gray-400 group-hover:text-gray-300",
+                        )}
+                      >
+                        {item.label}
+                      </div>
+                      <div className="text-xs text-gray-600 truncate">
+                        {item.description}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </NavLink>
+            ))}
+          </div>
+
+          <div className="mt-3 pt-3 border-t border-[#262626]/80 space-y-1">
+            {CREATION_NAV_ITEMS.map((item) => (
               <NavLink
                 key={item.id}
                 to={item.path}
