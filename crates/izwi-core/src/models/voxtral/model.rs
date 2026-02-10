@@ -113,6 +113,17 @@ impl VoxtralRealtimeModel {
         sample_rate: u32,
         _language: Option<&str>,
     ) -> Result<String> {
+        let mut no_op = |_delta: &str| {};
+        self.transcribe_with_callback(audio, sample_rate, _language, &mut no_op)
+    }
+
+    pub fn transcribe_with_callback(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        _language: Option<&str>,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String> {
         // Resample to 16kHz if needed
         let audio = if sample_rate != 16_000 {
             resample_audio(audio, sample_rate, 16_000)?
@@ -172,6 +183,7 @@ impl VoxtralRealtimeModel {
         // Generate
         let mut cache = Qwen3Cache::new(self.language_model.num_layers());
         let mut generated = Vec::new();
+        let mut assembled = String::new();
         let max_tokens = 1024usize;
 
         // Forward with audio - use forward_with_embeds for custom embeddings
@@ -192,6 +204,13 @@ impl VoxtralRealtimeModel {
             }
 
             generated.push(next);
+            let decoded = self.tokenizer.decode_text(&generated)?;
+            let delta = text_delta(&assembled, &decoded);
+            for ch in delta.chars() {
+                let mut buf = [0u8; 4];
+                on_delta(ch.encode_utf8(&mut buf));
+            }
+            assembled = decoded;
 
             let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
             logits = self
@@ -200,8 +219,7 @@ impl VoxtralRealtimeModel {
             pos += 1;
         }
 
-        // Decode
-        self.tokenizer.decode_text(&generated)
+        Ok(assembled.trim().to_string())
     }
 
     /// Pool audio embeddings by block_size
@@ -668,6 +686,18 @@ fn argmax(logits: &Tensor) -> Result<u32> {
         }
     }
     Ok(max_idx as u32)
+}
+
+fn text_delta(previous: &str, current: &str) -> String {
+    if let Some(delta) = current.strip_prefix(previous) {
+        return delta.to_string();
+    }
+    let common = previous
+        .chars()
+        .zip(current.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    current.chars().skip(common).collect()
 }
 
 fn resample_audio(audio: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {

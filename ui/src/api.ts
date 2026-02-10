@@ -134,6 +134,7 @@ export interface ASRTranscribeResponse {
 
 export type ASRStreamEvent =
   | { event: "start"; audio_duration_secs: number | null }
+  | { event: "delta"; delta: string }
   | { event: "partial"; text: string; is_final: boolean }
   | {
       event: "final";
@@ -146,6 +147,7 @@ export type ASRStreamEvent =
 
 export interface ASRStreamCallbacks {
   onStart?: (audioDuration: number | null) => void;
+  onDelta?: (delta: string) => void;
   onPartial?: (text: string) => void;
   onFinal?: (
     text: string,
@@ -449,6 +451,7 @@ class ApiClient {
 
         const decoder = new TextDecoder();
         let buffer = "";
+        let assembledText = "";
 
         while (true) {
           const { done, value } = await reader.read();
@@ -464,16 +467,34 @@ class ApiClient {
             const data = line.slice(5).trim();
             if (!data) continue;
 
+            if (data === "[DONE]") {
+              callbacks.onDone?.();
+              return;
+            }
+
             try {
               const event = JSON.parse(data) as ASRStreamEvent;
               switch (event.event) {
                 case "start":
                   callbacks.onStart?.(event.audio_duration_secs);
                   break;
+                case "delta":
+                  assembledText += event.delta;
+                  callbacks.onDelta?.(event.delta);
+                  callbacks.onPartial?.(assembledText);
+                  break;
                 case "partial":
+                  if (event.text.startsWith(assembledText)) {
+                    const delta = event.text.slice(assembledText.length);
+                    if (delta) callbacks.onDelta?.(delta);
+                  } else if (event.text !== assembledText) {
+                    callbacks.onDelta?.(event.text);
+                  }
+                  assembledText = event.text;
                   callbacks.onPartial?.(event.text);
                   break;
                 case "final":
+                  assembledText = event.text;
                   callbacks.onFinal?.(
                     event.text,
                     event.language,

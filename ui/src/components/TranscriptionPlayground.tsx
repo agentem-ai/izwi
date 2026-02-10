@@ -151,8 +151,8 @@ export function TranscriptionPlayground({
             onStart: (duration) => {
               audioDuration = duration;
             },
-            onPartial: (text) => {
-              setTranscription(text);
+            onDelta: (delta) => {
+              setTranscription((prev) => `${prev}${delta}`);
             },
             onFinal: (text, language, duration) => {
               setTranscription(text);

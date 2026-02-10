@@ -83,8 +83,8 @@ impl Qwen3AsrModel {
         }
         let audio_dtype = DType::F32;
         let text_dtype = if is_quantized {
-            let requested = parse_asr_dtype(config.thinker_config.dtype.as_deref())
-                .unwrap_or(DType::BF16);
+            let requested =
+                parse_asr_dtype(config.thinker_config.dtype.as_deref()).unwrap_or(DType::BF16);
             let selected = match device.kind {
                 DeviceKind::Metal => DType::F32,
                 DeviceKind::Cpu => DType::F32,
@@ -211,6 +211,17 @@ impl Qwen3AsrModel {
         sample_rate: u32,
         language: Option<&str>,
     ) -> Result<String> {
+        let mut no_op = |_delta: &str| {};
+        self.transcribe_with_callback(audio, sample_rate, language, &mut no_op)
+    }
+
+    pub fn transcribe_with_callback(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String> {
         let audio = if sample_rate != 16_000 {
             resample(audio, sample_rate, 16_000)?
         } else {
@@ -240,8 +251,7 @@ impl Qwen3AsrModel {
             .to_dtype(self.audio_dtype)?;
 
         let feature_lens = vec![frames];
-        let mut audio_embeds =
-            self.audio_tower.forward(&mel, Some(&feature_lens))?; // [1, t, hidden]
+        let mut audio_embeds = self.audio_tower.forward(&mel, Some(&feature_lens))?; // [1, t, hidden]
         if audio_embeds.dtype() != self.text_dtype {
             audio_embeds = audio_embeds.to_dtype(self.text_dtype)?;
         }
@@ -269,6 +279,7 @@ impl Qwen3AsrModel {
         let mut pos = base_pos;
 
         let mut generated: Vec<u32> = Vec::new();
+        let mut assembled = String::new();
         let stop_tokens = collect_stop_token_ids(&self.specials);
 
         // Keep this bounded to reduce latency.
@@ -282,6 +293,13 @@ impl Qwen3AsrModel {
                 break;
             }
             generated.push(next);
+            let decoded = self.decode_generated_untrimmed(&generated)?;
+            let delta = text_delta(&assembled, &decoded);
+            for ch in delta.chars() {
+                let mut buf = [0u8; 4];
+                on_delta(ch.encode_utf8(&mut buf));
+            }
+            assembled = decoded;
 
             // Forward pass for next token with updated position
             let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
@@ -302,7 +320,7 @@ impl Qwen3AsrModel {
             pos += 1;
         }
 
-        let text = self.decode_generated(&generated)?;
+        let text = assembled.trim().to_string();
         Ok(text)
     }
 
@@ -402,14 +420,14 @@ impl Qwen3AsrModel {
         self.parse_alignment(&alignment_text, audio.len() as u32 / 16)
     }
 
-    fn decode_generated(&self, tokens: &[u32]) -> Result<String> {
+    fn decode_generated_untrimmed(&self, tokens: &[u32]) -> Result<String> {
         let filtered: Vec<u32> = tokens
             .iter()
             .copied()
             .filter(|id| !is_special_generation_token(&self.specials, *id))
             .collect();
         let text = self.tokenizer.decode_text(&filtered)?;
-        Ok(text.trim().to_string())
+        Ok(text)
     }
 
     fn forward_with_audio(
@@ -790,6 +808,18 @@ fn argmax(logits: &Tensor) -> Result<u32> {
     Ok(max_idx as u32)
 }
 
+fn text_delta(previous: &str, current: &str) -> String {
+    if let Some(delta) = current.strip_prefix(previous) {
+        return delta.to_string();
+    }
+    let common = previous
+        .chars()
+        .zip(current.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    current.chars().skip(common).collect()
+}
+
 fn collect_stop_token_ids(specials: &SpecialTokenIds) -> Vec<u32> {
     let mut stop_ids = vec![specials.im_end, specials.eos];
     if let Some(alt) = specials.eos_alt {
@@ -844,5 +874,11 @@ mod tests {
         assert_eq!(parse_asr_dtype(Some("fp16")), Some(DType::F16));
         assert_eq!(parse_asr_dtype(Some("float32")), Some(DType::F32));
         assert_eq!(parse_asr_dtype(Some("unknown")), None);
+    }
+
+    #[test]
+    fn text_delta_finds_suffix_when_prefix_changes() {
+        assert_eq!(text_delta("Hello", "Hello world"), " world");
+        assert_eq!(text_delta("abcd", "abXY"), "XY");
     }
 }

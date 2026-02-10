@@ -9,8 +9,8 @@ use axum::{
 };
 use base64::Engine;
 use std::convert::Infallible;
-use std::time::Instant;
-use tokio_stream::StreamExt;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::error::ApiError;
@@ -45,6 +45,8 @@ struct StreamEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    delta: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     audio_duration_secs: Option<f32>,
@@ -56,12 +58,18 @@ pub async fn transcriptions(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Response<Body>, ApiError> {
-    let req = parse_transcription_request(req).await?;
+    let mut req = parse_transcription_request(req).await?;
     let audio_base64 = req
         .audio_base64
+        .take()
         .ok_or_else(|| ApiError::bad_request("Missing audio input (`file` or `audio_base64`)"))?;
 
     info!("OpenAI transcription request: {} bytes", audio_base64.len());
+
+    if req.stream {
+        return transcriptions_stream(state, req, audio_base64).await;
+    }
+
     let _permit = state.acquire_permit().await;
 
     let started = Instant::now();
@@ -70,44 +78,6 @@ pub async fn transcriptions(
         .asr_transcribe(&audio_base64, req.model.as_deref(), req.language.as_deref())
         .await?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-
-    if req.stream {
-        let event = StreamEvent {
-            event: "final",
-            text: Some(output.text.clone()),
-            language: output.language.clone(),
-            audio_duration_secs: Some(output.duration_secs),
-            error: None,
-        };
-
-        let stream = async_stream::stream! {
-            let start = StreamEvent {
-                event: "start",
-                text: None,
-                language: None,
-                audio_duration_secs: Some(output.duration_secs),
-                error: None,
-            };
-            yield Ok::<_, Infallible>(serde_json::to_string(&start).unwrap_or_default());
-            yield Ok::<_, Infallible>(serde_json::to_string(&event).unwrap_or_default());
-            let done = StreamEvent {
-                event: "done",
-                text: None,
-                language: None,
-                audio_duration_secs: None,
-                error: None,
-            };
-            yield Ok::<_, Infallible>(serde_json::to_string(&done).unwrap_or_default());
-        }
-        .map(|payload| Ok::<_, Infallible>(format!("data: {}\n\n", payload.unwrap_or_default())));
-
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "text/event-stream")
-            .header(header::CACHE_CONTROL, "no-cache")
-            .body(Body::from_stream(stream))
-            .unwrap());
-    }
 
     let response_format = req
         .response_format
@@ -150,6 +120,140 @@ pub async fn transcriptions(
             other
         ))),
     }
+}
+
+async fn transcriptions_stream(
+    state: AppState,
+    req: TranscriptionRequest,
+    audio_base64: String,
+) -> Result<Response<Body>, ApiError> {
+    let timeout = Duration::from_secs(state.request_timeout_secs);
+    let model = req.model;
+    let language = req.language;
+
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<String>();
+    let engine = state.engine.clone();
+    let semaphore = state.request_semaphore.clone();
+
+    tokio::spawn(async move {
+        let _permit = match semaphore.acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                let err = StreamEvent {
+                    event: "error",
+                    text: None,
+                    delta: None,
+                    language: None,
+                    audio_duration_secs: None,
+                    error: Some("Server is shutting down".to_string()),
+                };
+                let _ = event_tx.send(serde_json::to_string(&err).unwrap_or_default());
+
+                let done = StreamEvent {
+                    event: "done",
+                    text: None,
+                    delta: None,
+                    language: None,
+                    audio_duration_secs: None,
+                    error: None,
+                };
+                let _ = event_tx.send(serde_json::to_string(&done).unwrap_or_default());
+                return;
+            }
+        };
+
+        let start = StreamEvent {
+            event: "start",
+            text: None,
+            delta: None,
+            language: None,
+            audio_duration_secs: None,
+            error: None,
+        };
+        let _ = event_tx.send(serde_json::to_string(&start).unwrap_or_default());
+
+        let delta_tx = event_tx.clone();
+        let result = tokio::time::timeout(timeout, async {
+            engine
+                .asr_transcribe_streaming(
+                    &audio_base64,
+                    model.as_deref(),
+                    language.as_deref(),
+                    move |delta| {
+                        let event = StreamEvent {
+                            event: "delta",
+                            text: None,
+                            delta: Some(delta),
+                            language: None,
+                            audio_duration_secs: None,
+                            error: None,
+                        };
+                        let _ = delta_tx.send(serde_json::to_string(&event).unwrap_or_default());
+                    },
+                )
+                .await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(output)) => {
+                let final_event = StreamEvent {
+                    event: "final",
+                    text: Some(output.text),
+                    delta: None,
+                    language: output.language,
+                    audio_duration_secs: Some(output.duration_secs),
+                    error: None,
+                };
+                let _ = event_tx.send(serde_json::to_string(&final_event).unwrap_or_default());
+            }
+            Ok(Err(err)) => {
+                let error_event = StreamEvent {
+                    event: "error",
+                    text: None,
+                    delta: None,
+                    language: None,
+                    audio_duration_secs: None,
+                    error: Some(err.to_string()),
+                };
+                let _ = event_tx.send(serde_json::to_string(&error_event).unwrap_or_default());
+            }
+            Err(_) => {
+                let error_event = StreamEvent {
+                    event: "error",
+                    text: None,
+                    delta: None,
+                    language: None,
+                    audio_duration_secs: None,
+                    error: Some("Transcription request timed out".to_string()),
+                };
+                let _ = event_tx.send(serde_json::to_string(&error_event).unwrap_or_default());
+            }
+        }
+
+        let done = StreamEvent {
+            event: "done",
+            text: None,
+            delta: None,
+            language: None,
+            audio_duration_secs: None,
+            error: None,
+        };
+        let _ = event_tx.send(serde_json::to_string(&done).unwrap_or_default());
+    });
+
+    let stream = async_stream::stream! {
+        while let Some(payload) = event_rx.recv().await {
+            yield Ok::<_, Infallible>(format!("data: {payload}\n\n"));
+        }
+    };
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from_stream(stream))
+        .unwrap())
 }
 
 #[derive(Debug, serde::Deserialize)]

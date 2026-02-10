@@ -14,6 +14,20 @@ impl InferenceEngine {
         audio_base64: &str,
         language: Option<&str>,
     ) -> Result<AsrTranscription> {
+        self.voxtral_transcribe_streaming(audio_base64, language, |_delta| {})
+            .await
+    }
+
+    /// Transcribe audio with Voxtral Realtime and emit incremental deltas.
+    pub async fn voxtral_transcribe_streaming<F>(
+        &self,
+        audio_base64: &str,
+        language: Option<&str>,
+        on_delta: F,
+    ) -> Result<AsrTranscription>
+    where
+        F: FnMut(String) + Send + 'static,
+    {
         let variant = ModelVariant::VoxtralMini4BRealtime2602;
 
         let model = if let Some(model) = self.model_registry.get_voxtral(variant).await {
@@ -34,7 +48,16 @@ impl InferenceEngine {
         let text = tokio::task::spawn_blocking({
             let model = model.clone();
             let language = language.map(|s| s.to_string());
-            move || model.transcribe(&samples, sample_rate, language.as_deref())
+            move || {
+                let mut callback = on_delta;
+                let mut emit = |delta: &str| callback(delta.to_string());
+                model.transcribe_with_callback(
+                    &samples,
+                    sample_rate,
+                    language.as_deref(),
+                    &mut emit,
+                )
+            }
         })
         .await
         .map_err(|e| {
@@ -55,10 +78,27 @@ impl InferenceEngine {
         model_id: Option<&str>,
         language: Option<&str>,
     ) -> Result<AsrTranscription> {
+        self.asr_transcribe_streaming(audio_base64, model_id, language, |_delta| {})
+            .await
+    }
+
+    /// Transcribe audio with Qwen3-ASR and emit incremental deltas.
+    pub async fn asr_transcribe_streaming<F>(
+        &self,
+        audio_base64: &str,
+        model_id: Option<&str>,
+        language: Option<&str>,
+        on_delta: F,
+    ) -> Result<AsrTranscription>
+    where
+        F: FnMut(String) + Send + 'static,
+    {
         let variant = resolve_asr_model_variant(model_id);
 
         if variant.is_voxtral() {
-            return self.voxtral_transcribe(audio_base64, language).await;
+            return self
+                .voxtral_transcribe_streaming(audio_base64, language, on_delta)
+                .await;
         }
 
         let model = if let Some(model) = self.model_registry.get_asr(variant).await {
@@ -74,12 +114,28 @@ impl InferenceEngine {
         };
 
         let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
-        let text = model.transcribe(&samples, sample_rate, language)?;
+        let samples_len = samples.len();
+        let text = tokio::task::spawn_blocking({
+            let model = model.clone();
+            let language = language.map(|s| s.to_string());
+            move || {
+                let mut callback = on_delta;
+                let mut emit = |delta: &str| callback(delta.to_string());
+                model.transcribe_with_callback(
+                    &samples,
+                    sample_rate,
+                    language.as_deref(),
+                    &mut emit,
+                )
+            }
+        })
+        .await
+        .map_err(|e| Error::InferenceError(format!("ASR transcription task failed: {}", e)))??;
 
         Ok(AsrTranscription {
             text,
             language: language.map(|s| s.to_string()),
-            duration_secs: samples.len() as f32 / sample_rate as f32,
+            duration_secs: samples_len as f32 / sample_rate as f32,
         })
     }
 
