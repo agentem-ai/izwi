@@ -4,7 +4,7 @@ Izwi is a Rust-based local inference stack for speech and audio workflows, with:
 - text-to-speech (TTS),
 - automatic speech recognition (ASR),
 - chat/audio-chat model support,
-- a CLI-first workflow (`izwi`) and a web UI.
+- a CLI-first workflow (`izwi`), web UI, and Tauri desktop shell.
 
 The server exposes OpenAI-style routes under `/v1` and is easiest to run through the CLI.
 
@@ -16,6 +16,7 @@ The server exposes OpenAI-style routes under `/v1` and is easiest to run through
 - CLI for serving, model lifecycle management, TTS, ASR, chat, and benchmarking
 - Model download/load/unload flows from Hugging Face
 - Web UI (React + Vite) for interactive testing
+- Tauri desktop app mode launched from the CLI
 - Apple Silicon acceleration support (Metal), with cross-platform native builds
 
 ## Requirements
@@ -62,7 +63,7 @@ cargo build --release
 ./scripts/install-cli.sh
 ```
 
-The install script places `izwi` and `izwi-server` in `~/.local/bin` by default and updates shell setup.
+The install script places `izwi`, `izwi-server`, and `izwi-desktop` in `~/.local/bin` by default and updates shell setup.
 
 ### 4. Start Izwi
 
@@ -71,6 +72,12 @@ izwi serve
 ```
 
 Server URL: `http://localhost:8080`
+
+Desktop mode:
+
+```bash
+izwi serve --mode desktop
+```
 
 To serve the bundled UI from the same server endpoint, build it once:
 

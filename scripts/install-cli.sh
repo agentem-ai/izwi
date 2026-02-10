@@ -63,7 +63,7 @@ install_from_source() {
     fi
     
     # Build release binaries
-    cargo build --release --bin izwi --bin izwi-server
+    cargo build --release --bin izwi --bin izwi-server --bin izwi-desktop
     
     # Create bin directory
     mkdir -p "$BIN_DIR"
@@ -71,6 +71,7 @@ install_from_source() {
     # Copy binaries
     cp "target/release/izwi" "$BIN_DIR/"
     cp "target/release/izwi-server" "$BIN_DIR/"
+    cp "target/release/izwi-desktop" "$BIN_DIR/"
     
     echo -e "${GREEN}✓ Binaries installed to $BIN_DIR${NC}"
 }
@@ -122,7 +123,8 @@ print_usage() {
     echo ""
     echo "Quick start:"
     echo "  izwi --help              # Show help"
-    echo "  izwi serve               # Start the server"
+    echo "  izwi serve               # Start server mode"
+    echo "  izwi serve --mode desktop # Start server + desktop app"
     echo "  izwi pull qwen3-tts-0.6b-base  # Download a model"
     echo "  izwi tts 'Hello world'   # Generate speech"
     echo ""
