@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Izwi Desktop",
+  "version": "0.1.0",
+  "identifier": "com.agentem.izwi.desktop",
+  "build": {
+    "frontendDist": "../../ui/dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "capabilities": [
+        "default"
+      ],
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

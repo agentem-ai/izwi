@@ -1,0 +1,20 @@
+[package]
+name = "izwi-desktop"
+description = "Tauri desktop shell for Izwi local inference server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "izwi-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.5.5", features = [] }
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+anyhow = { workspace = true }
+url = "2.5"
+tauri = { version = "2.10.2", features = [] }

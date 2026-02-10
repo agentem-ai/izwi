@@ -1,10 +1,13 @@
 use crate::error::{CliError, Result};
 use crate::style::Theme;
+use crate::ServeMode;
 use console::style;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 pub struct ServeArgs {
+    pub mode: ServeMode,
     pub host: String,
     pub port: u16,
     pub models_dir: Option<PathBuf>,
@@ -22,15 +25,16 @@ pub struct ServeArgs {
 pub async fn execute(args: ServeArgs) -> Result<()> {
     let theme = Theme::default();
 
-    // Print banner
     theme.print_banner();
 
-    // Check if we're in a supported environment
     let platform = detect_platform();
     println!("   Platform: {}", style(&platform).cyan());
 
-    // Show configuration
     println!("\n{}", style("Configuration:").bold().underlined());
+    println!(
+        "  Mode:           {}",
+        style(serve_mode_label(&args.mode)).cyan()
+    );
     println!("  Host:           {}:{}", args.host, args.port);
     if let Some(ref dir) = args.models_dir {
         println!("  Models dir:     {}", dir.display());
@@ -48,13 +52,72 @@ pub async fn execute(args: ServeArgs) -> Result<()> {
     );
     println!("  Log level:      {}", args.log_level);
 
-    // Set environment variables
+    set_server_env(&args);
+
+    println!("\n{}", style("Starting server...").bold());
+    let mut server_child = spawn_server(&args)?;
+
+    let connect_host = server_connect_host(&args.host);
+    let api_endpoint = format!("http://{}:{}/v1", connect_host, args.port);
+    let web_ui = format!("http://{}:{}", connect_host, args.port);
+
+    match &args.mode {
+        ServeMode::Server => {
+            println!("\n{}", style("Server is running!").green().bold());
+            println!("  API endpoint: {}", style(&api_endpoint).cyan());
+            if !args.no_ui {
+                println!("  Web UI:       {}", style(&web_ui).cyan());
+            }
+            println!("\nPress Ctrl+C to stop the server.\n");
+
+            let status = server_child
+                .wait()
+                .map_err(|e| CliError::Other(format!("Server error: {}", e)))?;
+
+            if !status.success() {
+                return Err(CliError::Other(format!(
+                    "Server exited with code: {:?}",
+                    status.code()
+                )));
+            }
+        }
+        ServeMode::Desktop => {
+            if let Err(err) = wait_for_server_ready(&api_endpoint, Duration::from_secs(30)).await {
+                let _ = shutdown_child(&mut server_child, "server");
+                return Err(err);
+            }
+
+            println!("\n{}", style("Server is running!").green().bold());
+            println!("  API endpoint: {}", style(&api_endpoint).cyan());
+            println!("  Desktop URL:  {}", style(&web_ui).cyan());
+            println!("  Launching desktop app...");
+
+            let mut desktop_child = spawn_desktop(&args, &web_ui)?;
+            println!("\n{}", style("Desktop app is running.").green().bold());
+            println!("Close the desktop window or press Ctrl+C to stop.\n");
+
+            supervise_desktop_mode(&mut server_child, &mut desktop_child).await?;
+        }
+    }
+
+    Ok(())
+}
+
+fn serve_mode_label(mode: &ServeMode) -> &'static str {
+    match mode {
+        ServeMode::Server => "server",
+        ServeMode::Desktop => "desktop",
+    }
+}
+
+fn set_server_env(args: &ServeArgs) {
     std::env::set_var("RUST_LOG", &args.log_level);
     std::env::set_var("IZWI_HOST", &args.host);
     std::env::set_var("IZWI_PORT", args.port.to_string());
     std::env::set_var("IZWI_MAX_BATCH_SIZE", args.max_batch_size.to_string());
     std::env::set_var("IZWI_MAX_CONCURRENT", args.max_concurrent.to_string());
     std::env::set_var("IZWI_TIMEOUT", args.timeout.to_string());
+    std::env::set_var("IZWI_SERVE_MODE", serve_mode_label(&args.mode));
 
     if args.metal || cfg!(target_os = "macos") {
         std::env::set_var("IZWI_USE_METAL", "1");
@@ -71,31 +134,27 @@ pub async fn execute(args: ServeArgs) -> Result<()> {
     if args.cors {
         std::env::set_var("IZWI_CORS", "1");
     }
+}
 
-    println!("\n{}", style("Starting server...").bold());
-
-    // Try to start the server
-    // For now, we'll use cargo run as a fallback, but in production
-    // this would use the compiled binary
+fn spawn_server(args: &ServeArgs) -> Result<Child> {
     let server_binary = if args.dev {
         "cargo".to_string()
     } else {
-        // Look for compiled binary
+        let binary_name = platform_binary_name("izwi-server");
         let binary_path = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .map(|p| p.join("izwi-server"))
+            .map(|p| p.join(&binary_name))
             .or_else(|| {
                 std::env::current_dir()
                     .ok()
-                    .map(|p| p.join("target/release/izwi-server"))
+                    .map(|p| p.join("target/release").join(&binary_name))
             })
-            .unwrap_or_else(|| PathBuf::from("izwi-server"));
+            .unwrap_or_else(|| PathBuf::from(&binary_name));
 
         if binary_path.exists() {
             binary_path.to_string_lossy().to_string()
         } else {
-            // Fallback to cargo run
             println!("  {}", style("Using development mode (cargo run)").yellow());
             "cargo".to_string()
         }
@@ -112,42 +171,154 @@ pub async fn execute(args: ServeArgs) -> Result<()> {
         Command::new(server_binary)
     };
 
-    // Configure command
     cmd.env("RUST_LOG", &args.log_level);
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
 
-    println!("\n{}", style("Server is running!").green().bold());
-    println!(
-        "  API endpoint: {}",
-        style(format!("http://{}:{}/v1", args.host, args.port)).cyan()
-    );
-    if !args.no_ui {
-        println!(
-            "  Web UI:       {}",
-            style(format!("http://{}:{}", args.host, args.port)).cyan()
-        );
+    cmd.spawn()
+        .map_err(|e| CliError::Other(format!("Failed to start server: {}", e)))
+}
+
+fn spawn_desktop(args: &ServeArgs, server_url: &str) -> Result<Child> {
+    let desktop_binary = if args.dev {
+        "cargo".to_string()
+    } else {
+        let binary_name = platform_binary_name("izwi-desktop");
+        let binary_path = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .map(|p| p.join(&binary_name))
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|p| p.join("target/release").join(&binary_name))
+            })
+            .unwrap_or_else(|| PathBuf::from(&binary_name));
+
+        if binary_path.exists() {
+            binary_path.to_string_lossy().to_string()
+        } else {
+            println!(
+                "  {}",
+                style("Desktop binary not found, using cargo run fallback").yellow()
+            );
+            "cargo".to_string()
+        }
+    };
+
+    let mut cmd = if desktop_binary == "cargo" {
+        let mut c = Command::new("cargo");
+        c.arg("run").arg("--bin").arg("izwi-desktop");
+        if !args.dev {
+            c.arg("--release");
+        }
+        c.arg("--")
+            .arg("--server-url")
+            .arg(server_url)
+            .arg("--window-title")
+            .arg("Izwi");
+        c
+    } else {
+        let mut c = Command::new(desktop_binary);
+        c.arg("--server-url")
+            .arg(server_url)
+            .arg("--window-title")
+            .arg("Izwi");
+        c
+    };
+
+    cmd.stdout(Stdio::inherit());
+    cmd.stderr(Stdio::inherit());
+
+    cmd.spawn()
+        .map_err(|e| CliError::Other(format!("Failed to start desktop app: {}", e)))
+}
+
+async fn wait_for_server_ready(api_endpoint: &str, timeout: Duration) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()?;
+
+    let health_url = format!("{}/health", api_endpoint);
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if let Ok(resp) = client.get(&health_url).send().await {
+            if resp.status().is_success() {
+                return Ok(());
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return Err(CliError::Other(format!(
+                "Server did not become ready within {}s ({})",
+                timeout.as_secs(),
+                health_url
+            )));
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    println!("\nPress Ctrl+C to stop the server.\n");
+}
 
-    // Run the server and wait for it
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| CliError::Other(format!("Failed to start server: {}", e)))?;
+async fn supervise_desktop_mode(server: &mut Child, desktop: &mut Child) -> Result<()> {
+    loop {
+        if let Some(status) = server.try_wait()? {
+            let _ = shutdown_child(desktop, "desktop app");
+            return Err(CliError::Other(format!(
+                "Server exited while desktop app was running (code: {:?})",
+                status.code()
+            )));
+        }
 
-    // Wait for the process
-    let status = child
+        if let Some(status) = desktop.try_wait()? {
+            if !status.success() {
+                eprintln!(
+                    "{}",
+                    style(format!(
+                        "Desktop app exited with code {:?}; shutting down server.",
+                        status.code()
+                    ))
+                    .yellow()
+                );
+            }
+            shutdown_child(server, "server")?;
+            return Ok(());
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn shutdown_child(child: &mut Child, name: &str) -> Result<()> {
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
+
+    child
+        .kill()
+        .map_err(|e| CliError::Other(format!("Failed to stop {}: {}", name, e)))?;
+
+    child
         .wait()
-        .map_err(|e| CliError::Other(format!("Server error: {}", e)))?;
-
-    if !status.success() {
-        return Err(CliError::Other(format!(
-            "Server exited with code: {:?}",
-            status.code()
-        )));
-    }
+        .map_err(|e| CliError::Other(format!("Failed while waiting for {}: {}", name, e)))?;
 
     Ok(())
+}
+
+fn platform_binary_name(base: &str) -> String {
+    if cfg!(windows) {
+        format!("{}.exe", base)
+    } else {
+        base.to_string()
+    }
+}
+
+fn server_connect_host(host: &str) -> String {
+    match host {
+        "0.0.0.0" | "::" => "127.0.0.1".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn detect_platform() -> String {

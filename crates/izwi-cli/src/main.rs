@@ -86,6 +86,13 @@ pub enum Commands {
     /// Supports graceful shutdown with Ctrl+C.
     #[command(name = "serve", alias = "server")]
     Serve {
+        /// Startup mode
+        ///
+        /// - server: Start only the HTTP server
+        /// - desktop: Start server and desktop app
+        #[arg(long, value_enum, default_value = "server", env = "IZWI_SERVE_MODE")]
+        mode: ServeMode,
+
         /// Host to bind to
         #[arg(short = 'H', long, default_value = "0.0.0.0", env = "IZWI_HOST")]
         host: String,
@@ -508,6 +515,14 @@ pub enum Shell {
     Elvish,
 }
 
+#[derive(Clone, ValueEnum)]
+pub enum ServeMode {
+    /// Start the API server only
+    Server,
+    /// Start API server and desktop application
+    Desktop,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -527,6 +542,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Serve {
+            mode,
             host,
             port,
             models_dir,
@@ -541,6 +557,7 @@ async fn main() -> Result<()> {
             no_ui,
         } => {
             commands::serve::execute(commands::serve::ServeArgs {
+                mode,
                 host,
                 port,
                 models_dir,
