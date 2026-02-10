@@ -90,6 +90,7 @@ pub enum Commands {
         ///
         /// - server: Start only the HTTP server
         /// - desktop: Start server and desktop app
+        /// - web: Start server and open the web UI in your browser
         #[arg(long, value_enum, default_value = "server", env = "IZWI_SERVE_MODE")]
         mode: ServeMode,
 
@@ -521,6 +522,8 @@ pub enum ServeMode {
     Server,
     /// Start API server and desktop application
     Desktop,
+    /// Start API server and open the web UI in a browser tab
+    Web,
 }
 
 #[tokio::main]

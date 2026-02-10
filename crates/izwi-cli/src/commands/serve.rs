@@ -98,6 +98,51 @@ pub async fn execute(args: ServeArgs) -> Result<()> {
 
             supervise_desktop_mode(&mut server_child, &mut desktop_child).await?;
         }
+        ServeMode::Web => {
+            if let Err(err) = wait_for_server_ready(&api_endpoint, Duration::from_secs(30)).await {
+                let _ = shutdown_child(&mut server_child, "server");
+                return Err(err);
+            }
+
+            println!("\n{}", style("Server is running!").green().bold());
+            println!("  API endpoint: {}", style(&api_endpoint).cyan());
+
+            if args.no_ui {
+                eprintln!(
+                    "{}",
+                    style("Web mode requested with --no-ui; opening API root instead.").yellow()
+                );
+            }
+
+            println!("  Web URL:      {}", style(&web_ui).cyan());
+            println!("  Launching browser...");
+
+            if let Err(err) = open_in_browser(&web_ui) {
+                eprintln!(
+                    "{}",
+                    style(format!(
+                        "Could not launch browser automatically: {}. Open {} manually.",
+                        err, web_ui
+                    ))
+                    .yellow()
+                );
+            } else {
+                println!("{}", style("  Browser opened.").dim());
+            }
+
+            println!("\nPress Ctrl+C to stop the server.\n");
+
+            let status = server_child
+                .wait()
+                .map_err(|e| CliError::Other(format!("Server error: {}", e)))?;
+
+            if !status.success() {
+                return Err(CliError::Other(format!(
+                    "Server exited with code: {:?}",
+                    status.code()
+                )));
+            }
+        }
     }
 
     Ok(())
@@ -107,6 +152,7 @@ fn serve_mode_label(mode: &ServeMode) -> &'static str {
     match mode {
         ServeMode::Server => "server",
         ServeMode::Desktop => "desktop",
+        ServeMode::Web => "web",
     }
 }
 
@@ -232,6 +278,35 @@ fn spawn_desktop(args: &ServeArgs, server_url: &str) -> Result<Child> {
 
     cmd.spawn()
         .map_err(|e| CliError::Other(format!("Failed to start desktop app: {}", e)))
+}
+
+fn open_in_browser(url: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = Command::new("open");
+        c.arg(url);
+        c
+    };
+
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", "", url]);
+        c
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+    cmd.spawn()
+        .map_err(|e| CliError::Other(format!("Failed to launch browser: {}", e)))?;
+    Ok(())
 }
 
 async fn wait_for_server_ready(api_endpoint: &str, timeout: Duration) -> Result<()> {
