@@ -7,11 +7,18 @@ import {
   Loader2,
   PhoneOff,
   AudioLines,
+  Settings2,
+  Download,
+  Play,
+  Square,
+  Trash2,
+  X,
+  CheckCircle2,
 } from "lucide-react";
 import clsx from "clsx";
 
 import { api, ChatMessage, ModelInfo } from "../api";
-import { SPEAKERS } from "../types";
+import { SPEAKERS, VIEW_CONFIGS } from "../types";
 
 type RuntimeStatus =
   | "idle"
@@ -30,6 +37,21 @@ interface TranscriptEntry {
 interface VoicePageProps {
   models: ModelInfo[];
   loading: boolean;
+  downloadProgress: Record<
+    string,
+    {
+      percent: number;
+      currentFile: string;
+      status: string;
+      downloadedBytes: number;
+      totalBytes: number;
+    }
+  >;
+  onDownload: (variant: string) => void;
+  onCancelDownload?: (variant: string) => void;
+  onLoad: (variant: string) => void;
+  onUnload: (variant: string) => void;
+  onDelete: (variant: string) => void;
   onError?: (message: string) => void;
 }
 
@@ -56,6 +78,22 @@ function parseFinalAnswer(content: string): string {
   }
 
   return out.trim();
+}
+
+function isAsrVariant(variant: string): boolean {
+  return variant.includes("Qwen3-ASR") || variant.includes("Voxtral");
+}
+
+function isTextVariant(variant: string): boolean {
+  return VIEW_CONFIGS.chat.modelFilter(variant);
+}
+
+function isTtsVariant(variant: string): boolean {
+  return variant.includes("Qwen3-TTS") && !variant.includes("Tokenizer");
+}
+
+function isRunnableModelStatus(status: ModelInfo["status"]): boolean {
+  return status === "downloaded" || status === "ready";
 }
 
 async function blobToBase64(blob: Blob): Promise<string> {
@@ -164,7 +202,17 @@ async function transcodeToWav(
   }
 }
 
-export function VoicePage({ models, loading, onError }: VoicePageProps) {
+export function VoicePage({
+  models,
+  loading,
+  downloadProgress,
+  onDownload,
+  onCancelDownload,
+  onLoad,
+  onUnload,
+  onDelete,
+  onError,
+}: VoicePageProps) {
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
@@ -181,6 +229,7 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
   const [vadThreshold, setVadThreshold] = useState(0.02);
   const [silenceDurationMs, setSilenceDurationMs] = useState(900);
   const [minSpeechMs, setMinSpeechMs] = useState(300);
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
 
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -199,35 +248,46 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
   const audioUrlRef = useRef<string | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
-  const availableModels = useMemo(
-    () =>
-      models.filter((m) => m.status === "downloaded" || m.status === "ready"),
-    [models],
-  );
+  const sortedModels = useMemo(() => {
+    const statusOrder: Record<ModelInfo["status"], number> = {
+      ready: 0,
+      loading: 1,
+      downloaded: 2,
+      downloading: 3,
+      not_downloaded: 4,
+      error: 5,
+    };
+
+    return [...models]
+      .filter((m) => !m.variant.includes("Tokenizer"))
+      .sort((a, b) => {
+        const order = statusOrder[a.status] - statusOrder[b.status];
+        if (order !== 0) return order;
+        return a.variant.localeCompare(b.variant);
+      });
+  }, [models]);
 
   const asrModels = useMemo(
-    () =>
-      availableModels.filter(
-        (m) =>
-          m.variant.includes("Qwen3-ASR") ||
-          m.variant.includes("ForcedAligner") ||
-          m.variant.includes("Voxtral"),
-      ),
-    [availableModels],
+    () => sortedModels.filter((m) => isAsrVariant(m.variant)),
+    [sortedModels],
   );
-
   const textModels = useMemo(
-    () => availableModels.filter((m) => m.variant === "Qwen3-0.6B-4bit"),
-    [availableModels],
+    () => sortedModels.filter((m) => isTextVariant(m.variant)),
+    [sortedModels],
   );
-
   const ttsModels = useMemo(
+    () => sortedModels.filter((m) => isTtsVariant(m.variant)),
+    [sortedModels],
+  );
+  const voiceRouteModels = useMemo(
     () =>
-      availableModels.filter(
+      sortedModels.filter(
         (m) =>
-          m.variant.includes("Qwen3-TTS") && !m.variant.includes("Tokenizer"),
+          isAsrVariant(m.variant) ||
+          isTextVariant(m.variant) ||
+          isTtsVariant(m.variant),
       ),
-    [availableModels],
+    [sortedModels],
   );
 
   useEffect(() => {
@@ -247,7 +307,15 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
       !selectedAsrModel ||
       !asrModels.some((m) => m.variant === selectedAsrModel)
     ) {
-      setSelectedAsrModel(asrModels[0]?.variant ?? null);
+      const preferredAsr =
+        asrModels.find((m) => m.variant === "Qwen3-ASR-0.6B-4bit") ||
+        asrModels.find(
+          (m) =>
+            m.variant.includes("Qwen3-ASR-0.6B") &&
+            m.variant.includes("4bit"),
+        ) ||
+        asrModels[0];
+      setSelectedAsrModel(preferredAsr?.variant ?? null);
     }
   }, [asrModels, selectedAsrModel]);
 
@@ -256,7 +324,10 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
       !selectedTextModel ||
       !textModels.some((m) => m.variant === selectedTextModel)
     ) {
-      setSelectedTextModel(textModels[0]?.variant ?? null);
+      const preferredText =
+        textModels.find((m) => m.variant === "Qwen3-0.6B-4bit") ||
+        textModels[0];
+      setSelectedTextModel(preferredText?.variant ?? null);
     }
   }, [textModels, selectedTextModel]);
 
@@ -265,9 +336,42 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
       !selectedTtsModel ||
       !ttsModels.some((m) => m.variant === selectedTtsModel)
     ) {
-      setSelectedTtsModel(ttsModels[0]?.variant ?? null);
+      const preferredTts =
+        ttsModels.find(
+          (m) => m.variant === "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
+        ) ||
+        ttsModels.find((m) => m.variant === "Qwen3-TTS-12Hz-0.6B-Base-4bit") ||
+        ttsModels.find(
+          (m) => m.variant.includes("0.6B") && m.variant.includes("4bit"),
+        ) ||
+        ttsModels[0];
+      setSelectedTtsModel(preferredTts?.variant ?? null);
     }
   }, [ttsModels, selectedTtsModel]);
+
+  const selectedAsrInfo = useMemo(
+    () => asrModels.find((m) => m.variant === selectedAsrModel) ?? null,
+    [asrModels, selectedAsrModel],
+  );
+  const selectedTextInfo = useMemo(
+    () => textModels.find((m) => m.variant === selectedTextModel) ?? null,
+    [textModels, selectedTextModel],
+  );
+  const selectedTtsInfo = useMemo(
+    () => ttsModels.find((m) => m.variant === selectedTtsModel) ?? null,
+    [ttsModels, selectedTtsModel],
+  );
+
+  const hasRunnableConfig = useMemo(
+    () =>
+      !!selectedAsrInfo &&
+      !!selectedTextInfo &&
+      !!selectedTtsInfo &&
+      isRunnableModelStatus(selectedAsrInfo.status) &&
+      isRunnableModelStatus(selectedTextInfo.status) &&
+      isRunnableModelStatus(selectedTtsInfo.status),
+    [selectedAsrInfo, selectedTextInfo, selectedTtsInfo],
+  );
 
   const clearAudioPlayback = useCallback(() => {
     const audio = audioRef.current;
@@ -344,6 +448,17 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
         setError(
           "Select ASR, text, and TTS models before starting voice mode.",
         );
+        setIsConfigOpen(true);
+        setRuntimeStatus("listening");
+        processingRef.current = false;
+        return;
+      }
+
+      if (!hasRunnableConfig) {
+        setError(
+          "Selected models must be downloaded or loaded. Open Config to manage models.",
+        );
+        setIsConfigOpen(true);
         setRuntimeStatus("listening");
         processingRef.current = false;
         return;
@@ -428,6 +543,7 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
     [
       addTranscript,
       clearAudioPlayback,
+      hasRunnableConfig,
       onError,
       selectedAsrModel,
       selectedSpeaker,
@@ -442,6 +558,16 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
         "Select ASR, text, and TTS models before starting voice mode.";
       setError(message);
       onError?.(message);
+      setIsConfigOpen(true);
+      return;
+    }
+
+    if (!hasRunnableConfig) {
+      const message =
+        "Selected models must be downloaded or loaded. Open Config to manage models.";
+      setError(message);
+      onError?.(message);
+      setIsConfigOpen(true);
       return;
     }
 
@@ -581,6 +707,7 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
     }
   }, [
     clearAudioPlayback,
+    hasRunnableConfig,
     minSpeechMs,
     onError,
     processUtterance,
@@ -613,6 +740,49 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
     Math.round((audioLevel / Math.max(vadThreshold, 0.001)) * 40),
   );
 
+  const getStatusClass = (status: ModelInfo["status"]) => {
+    switch (status) {
+      case "ready":
+        return "bg-emerald-500/15 border-emerald-500/40 text-emerald-300";
+      case "loading":
+      case "downloading":
+        return "bg-sky-500/15 border-sky-500/40 text-sky-300";
+      case "downloaded":
+        return "bg-white/10 border-white/20 text-gray-300";
+      case "error":
+        return "bg-red-500/15 border-red-500/40 text-red-300";
+      default:
+        return "bg-[#1c1c1c] border-[#2a2a2a] text-gray-500";
+    }
+  };
+
+  const getStatusLabel = (status: ModelInfo["status"]) => {
+    switch (status) {
+      case "not_downloaded":
+        return "Not downloaded";
+      case "downloading":
+        return "Downloading";
+      case "downloaded":
+        return "Downloaded";
+      case "loading":
+        return "Loading";
+      case "ready":
+        return "Loaded";
+      case "error":
+        return "Error";
+      default:
+        return status;
+    }
+  };
+
+  const getModelRoles = (variant: string): string[] => {
+    const roles: string[] = [];
+    if (isAsrVariant(variant)) roles.push("ASR");
+    if (isTextVariant(variant)) roles.push("TEXT");
+    if (isTtsVariant(variant)) roles.push("TTS");
+    return roles;
+  };
+
   if (loading) {
     return (
       <div className="max-w-6xl mx-auto">
@@ -630,204 +800,123 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
 
   return (
     <div className="max-w-6xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold text-white">Voice</h1>
+      <div className="flex items-start justify-between gap-3 mb-6">
+        <div>
+          <h1 className="text-xl font-semibold text-white">Realtime Voice</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Low-latency speech loop with configurable ASR, LLM, and TTS.
+          </p>
+        </div>
+        <button
+          onClick={() => setIsConfigOpen(true)}
+          className="btn btn-secondary text-sm"
+        >
+          <Settings2 className="w-4 h-4" />
+          Config
+        </button>
       </div>
 
-      <div className="grid lg:grid-cols-[360px,1fr] gap-4 lg:gap-6">
-        <div className="card p-4 space-y-4">
-          <div className="space-y-1">
-            <label className="text-xs text-gray-500">ASR Model</label>
-            <select
-              value={selectedAsrModel ?? ""}
-              onChange={(e) => setSelectedAsrModel(e.target.value)}
-              className="input"
-            >
-              {asrModels.map((m) => (
-                <option key={m.variant} value={m.variant}>
-                  {m.variant}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs text-gray-500">Text Model</label>
-            <select
-              value={selectedTextModel ?? ""}
-              onChange={(e) => setSelectedTextModel(e.target.value)}
-              className="input"
-            >
-              {textModels.map((m) => (
-                <option key={m.variant} value={m.variant}>
-                  {m.variant}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs text-gray-500">TTS Model</label>
-            <select
-              value={selectedTtsModel ?? ""}
-              onChange={(e) => setSelectedTtsModel(e.target.value)}
-              className="input"
-            >
-              {ttsModels.map((m) => (
-                <option key={m.variant} value={m.variant}>
-                  {m.variant}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs text-gray-500">Assistant Voice</label>
-            <select
-              value={selectedSpeaker}
-              onChange={(e) => setSelectedSpeaker(e.target.value)}
-              className="input"
-            >
-              {SPEAKERS.map((speaker) => (
-                <option key={speaker.id} value={speaker.id}>
-                  {speaker.name} ({speaker.language})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="pt-2 border-t border-[#2a2a2a] space-y-3">
-            <div>
-              <label className="text-xs text-gray-500">
-                VAD Sensitivity ({vadThreshold.toFixed(3)})
-              </label>
-              <input
-                type="range"
-                min={0.005}
-                max={0.08}
-                step={0.001}
-                value={vadThreshold}
-                onChange={(e) => setVadThreshold(parseFloat(e.target.value))}
-                className="w-full mt-1"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-500">
-                End Silence (ms): {silenceDurationMs}
-              </label>
-              <input
-                type="range"
-                min={400}
-                max={1800}
-                step={50}
-                value={silenceDurationMs}
-                onChange={(e) =>
-                  setSilenceDurationMs(parseInt(e.target.value, 10))
-                }
-                className="w-full mt-1"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-500">
-                Minimum Speech (ms): {minSpeechMs}
-              </label>
-              <input
-                type="range"
-                min={150}
-                max={1200}
-                step={50}
-                value={minSpeechMs}
-                onChange={(e) => setMinSpeechMs(parseInt(e.target.value, 10))}
-                className="w-full mt-1"
-              />
-            </div>
-          </div>
-
-          <button
-            onClick={toggleSession}
-            className={clsx(
-              "btn w-full text-sm min-h-[44px]",
-              runtimeStatus === "idle" ? "btn-primary" : "btn-danger",
-            )}
-            disabled={
-              asrModels.length === 0 ||
-              textModels.length === 0 ||
-              ttsModels.length === 0
-            }
-          >
-            {runtimeStatus === "idle" ? (
-              <>
-                <Mic className="w-4 h-4" />
-                Start Voice Session
-              </>
-            ) : (
-              <>
-                <PhoneOff className="w-4 h-4" />
-                Stop Session
-              </>
-            )}
-          </button>
-
-          {(asrModels.length === 0 ||
-            textModels.length === 0 ||
-            ttsModels.length === 0) && (
-            <p className="text-xs text-amber-400">
-              Download required ASR/Text/TTS models first in My Models.
-            </p>
-          )}
-        </div>
-
-        <div className="card p-4 flex flex-col min-h-[400px] sm:min-h-[500px] lg:min-h-[620px]">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-white font-medium">
-                Session Status
-              </span>
-              <span
-                className={clsx(
-                  "text-xs px-2 py-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] text-gray-300",
+      <div className="grid xl:grid-cols-[360px,1fr] gap-4 lg:gap-6">
+        <div className="card p-5">
+          <div className="flex flex-col items-center text-center">
+            <div className="relative mb-5">
+              <div className="w-28 h-28 rounded-full bg-[#141414] border border-[#2a2a2a] flex items-center justify-center">
+                {runtimeStatus === "assistant_speaking" ? (
+                  <Volume2 className="w-8 h-8 text-white" />
+                ) : runtimeStatus === "user_speaking" ? (
+                  <AudioLines className="w-8 h-8 text-white" />
+                ) : runtimeStatus === "processing" ? (
+                  <Loader2 className="w-8 h-8 text-white animate-spin" />
+                ) : runtimeStatus === "listening" ? (
+                  <Mic className="w-8 h-8 text-white" />
+                ) : (
+                  <MicOff className="w-8 h-8 text-gray-500" />
                 )}
-              >
-                {statusLabel}
-              </span>
+              </div>
+              <div className="absolute -inset-2 rounded-full border border-white/10" />
             </div>
 
-            <div className="flex items-center gap-2">
-              {runtimeStatus === "assistant_speaking" ? (
-                <Volume2 className="w-4 h-4 text-gray-400" />
-              ) : runtimeStatus === "user_speaking" ? (
-                <AudioLines className="w-4 h-4 text-gray-400" />
-              ) : runtimeStatus === "processing" ? (
-                <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />
-              ) : runtimeStatus === "listening" ? (
-                <Mic className="w-4 h-4 text-gray-400" />
-              ) : (
-                <MicOff className="w-4 h-4 text-gray-500" />
+            <div className="text-sm text-white font-medium">{statusLabel}</div>
+            <p className="text-xs text-gray-500 mt-1">
+              Barge-in is enabled while the assistant is speaking.
+            </p>
+
+            <button
+              onClick={toggleSession}
+              className={clsx(
+                "btn w-full mt-5 text-sm min-h-[46px]",
+                runtimeStatus === "idle" ? "btn-primary" : "btn-danger",
               )}
-            </div>
+              disabled={!selectedAsrModel || !selectedTextModel || !selectedTtsModel}
+            >
+              {runtimeStatus === "idle" ? (
+                <>
+                  <Mic className="w-4 h-4" />
+                  Start Session
+                </>
+              ) : (
+                <>
+                  <PhoneOff className="w-4 h-4" />
+                  Stop Session
+                </>
+              )}
+            </button>
           </div>
 
-          <div className="mb-4">
+          <div className="mt-5 pt-4 border-t border-[#252525] space-y-3">
             <div className="h-2 rounded bg-[#1b1b1b] border border-[#2a2a2a] overflow-hidden">
               <div
                 className="h-full bg-white transition-all duration-75"
                 style={{ width: `${vadPercent}%` }}
               />
             </div>
-            <p className="text-[11px] text-gray-600 mt-1">
-              Live input level (barge-in enabled while assistant is speaking)
-            </p>
+            <div className="space-y-2 text-xs">
+              {[
+                { label: "ASR", model: selectedAsrInfo },
+                { label: "Text", model: selectedTextInfo },
+                { label: "TTS", model: selectedTtsInfo },
+              ].map((item) => (
+                <div
+                  key={item.label}
+                  className="flex items-center justify-between gap-2"
+                >
+                  <span className="text-gray-500">{item.label}</span>
+                  {item.model ? (
+                    <span
+                      className={clsx(
+                        "inline-flex items-center rounded-md border px-2 py-0.5 max-w-[220px] truncate",
+                        getStatusClass(item.model.status),
+                      )}
+                      title={item.model.variant}
+                    >
+                      {item.model.variant}
+                    </span>
+                  ) : (
+                    <span className="text-amber-400">Not selected</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="card p-4 flex flex-col min-h-[420px] sm:min-h-[520px] lg:min-h-[640px]">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm text-white font-medium">Conversation</span>
+            <span className="text-xs px-2 py-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] text-gray-300">
+              {statusLabel}
+            </span>
           </div>
 
           <div className="flex-1 overflow-y-auto pr-1 space-y-3">
             {transcript.length === 0 ? (
               <div className="h-full flex items-center justify-center text-center">
                 <div>
-                  <p className="text-sm text-gray-400">No transcript yet.</p>
+                  <p className="text-sm text-gray-400">
+                    No conversation yet.
+                  </p>
                   <p className="text-xs text-gray-600 mt-1">
-                    Start a voice session and speak to begin.
+                    Configure your voice stack and start a realtime session.
                   </p>
                 </div>
               </div>
@@ -881,6 +970,340 @@ export function VoicePage({ models, loading, onError }: VoicePageProps) {
           </AnimatePresence>
         </div>
       </div>
+
+      <AnimatePresence>
+        {isConfigOpen && (
+          <motion.div
+            className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm p-4 sm:p-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsConfigOpen(false)}
+          >
+            <motion.div
+              initial={{ y: 16, opacity: 0, scale: 0.98 }}
+              animate={{ y: 0, opacity: 1, scale: 1 }}
+              exit={{ y: 16, opacity: 0, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="mx-auto max-w-5xl max-h-[90vh] overflow-hidden card"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="px-4 sm:px-5 py-4 border-b border-[#262626] flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-semibold text-white">
+                    Voice Configuration
+                  </h2>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Configure realtime model stack and manage model lifecycle.
+                  </p>
+                </div>
+                <button
+                  className="btn btn-ghost text-xs"
+                  onClick={() => setIsConfigOpen(false)}
+                >
+                  <X className="w-3.5 h-3.5" />
+                  Close
+                </button>
+              </div>
+
+              <div className="p-4 sm:p-5 overflow-y-auto max-h-[calc(90vh-88px)] space-y-6">
+                <section className="grid md:grid-cols-2 xl:grid-cols-4 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs text-gray-500">ASR Model</label>
+                    <select
+                      value={selectedAsrModel ?? ""}
+                      onChange={(e) => setSelectedAsrModel(e.target.value)}
+                      className="input"
+                    >
+                      {asrModels.map((m) => (
+                        <option key={m.variant} value={m.variant}>
+                          {m.variant} • {getStatusLabel(m.status)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs text-gray-500">Text Model</label>
+                    <select
+                      value={selectedTextModel ?? ""}
+                      onChange={(e) => setSelectedTextModel(e.target.value)}
+                      className="input"
+                    >
+                      {textModels.map((m) => (
+                        <option key={m.variant} value={m.variant}>
+                          {m.variant} • {getStatusLabel(m.status)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs text-gray-500">TTS Model</label>
+                    <select
+                      value={selectedTtsModel ?? ""}
+                      onChange={(e) => setSelectedTtsModel(e.target.value)}
+                      className="input"
+                    >
+                      {ttsModels.map((m) => (
+                        <option key={m.variant} value={m.variant}>
+                          {m.variant} • {getStatusLabel(m.status)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs text-gray-500">Assistant Voice</label>
+                    <select
+                      value={selectedSpeaker}
+                      onChange={(e) => setSelectedSpeaker(e.target.value)}
+                      className="input"
+                    >
+                      {SPEAKERS.map((speaker) => (
+                        <option key={speaker.id} value={speaker.id}>
+                          {speaker.name} ({speaker.language})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </section>
+
+                <section className="grid md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-xs text-gray-500">
+                      VAD Sensitivity ({vadThreshold.toFixed(3)})
+                    </label>
+                    <input
+                      type="range"
+                      min={0.005}
+                      max={0.08}
+                      step={0.001}
+                      value={vadThreshold}
+                      onChange={(e) => setVadThreshold(parseFloat(e.target.value))}
+                      className="w-full mt-1"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500">
+                      End Silence (ms): {silenceDurationMs}
+                    </label>
+                    <input
+                      type="range"
+                      min={400}
+                      max={1800}
+                      step={50}
+                      value={silenceDurationMs}
+                      onChange={(e) =>
+                        setSilenceDurationMs(parseInt(e.target.value, 10))
+                      }
+                      className="w-full mt-1"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500">
+                      Minimum Speech (ms): {minSpeechMs}
+                    </label>
+                    <input
+                      type="range"
+                      min={150}
+                      max={1200}
+                      step={50}
+                      value={minSpeechMs}
+                      onChange={(e) => setMinSpeechMs(parseInt(e.target.value, 10))}
+                      className="w-full mt-1"
+                    />
+                  </div>
+                </section>
+
+                <section className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-medium text-white">Models</h3>
+                    <span className="text-xs text-gray-500">
+                      Manage download, load, unload, and delete
+                    </span>
+                  </div>
+
+                  {voiceRouteModels.map((model) => {
+                    const roles = getModelRoles(model.variant);
+                    const progress =
+                      downloadProgress[model.variant]?.percent ??
+                      model.download_progress ??
+                      0;
+                    const isSelectedAsr = selectedAsrModel === model.variant;
+                    const isSelectedText = selectedTextModel === model.variant;
+                    const isSelectedTts = selectedTtsModel === model.variant;
+
+                    return (
+                      <div
+                        key={model.variant}
+                        className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-sm text-white font-medium truncate">
+                              {model.variant}
+                            </div>
+                            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                              {roles.map((role) => (
+                                <span
+                                  key={role}
+                                  className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-gray-300"
+                                >
+                                  {role}
+                                </span>
+                              ))}
+                              <span
+                                className={clsx(
+                                  "text-[10px] px-1.5 py-0.5 rounded border",
+                                  getStatusClass(model.status),
+                                )}
+                              >
+                                {getStatusLabel(model.status)}
+                              </span>
+                              {model.status === "ready" && (
+                                <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300">
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  Loaded
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {isSelectedAsr && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/15 border border-sky-500/30 text-sky-300">
+                                  ASR selected
+                                </span>
+                              )}
+                              {isSelectedText && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300">
+                                  Text selected
+                                </span>
+                              )}
+                              {isSelectedTts && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-purple-300">
+                                  TTS selected
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center justify-end gap-2">
+                            {model.status === "downloading" && onCancelDownload && (
+                              <button
+                                onClick={() => onCancelDownload(model.variant)}
+                                className="btn btn-danger text-xs"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                                Cancel
+                              </button>
+                            )}
+                            {(model.status === "not_downloaded" ||
+                              model.status === "error") && (
+                              <button
+                                onClick={() => onDownload(model.variant)}
+                                className="btn btn-primary text-xs"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                Download
+                              </button>
+                            )}
+                            {model.status === "downloaded" && (
+                              <button
+                                onClick={() => onLoad(model.variant)}
+                                className="btn btn-primary text-xs"
+                              >
+                                <Play className="w-3.5 h-3.5" />
+                                Load
+                              </button>
+                            )}
+                            {model.status === "ready" && (
+                              <button
+                                onClick={() => onUnload(model.variant)}
+                                className="btn btn-secondary text-xs"
+                              >
+                                <Square className="w-3.5 h-3.5" />
+                                Unload
+                              </button>
+                            )}
+                            {(model.status === "downloaded" ||
+                              model.status === "ready") && (
+                              <button
+                                onClick={() => {
+                                  if (
+                                    confirm(
+                                      `Delete ${model.variant}? This removes downloaded files.`,
+                                    )
+                                  ) {
+                                    onDelete(model.variant);
+                                    if (selectedAsrModel === model.variant) {
+                                      setSelectedAsrModel(null);
+                                    }
+                                    if (selectedTextModel === model.variant) {
+                                      setSelectedTextModel(null);
+                                    }
+                                    if (selectedTtsModel === model.variant) {
+                                      setSelectedTtsModel(null);
+                                    }
+                                  }
+                                }}
+                                className="btn btn-danger text-xs"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {model.status === "downloading" && (
+                          <div className="mt-2">
+                            <div className="h-1.5 rounded bg-[#1f1f1f] overflow-hidden">
+                              <div
+                                className="h-full rounded bg-white transition-all duration-300"
+                                style={{ width: `${progress}%` }}
+                              />
+                            </div>
+                            <div className="mt-1 text-[11px] text-gray-500">
+                              Downloading {Math.round(progress)}%
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {isAsrVariant(model.variant) && (
+                            <button
+                              onClick={() => setSelectedAsrModel(model.variant)}
+                              className="btn btn-ghost text-xs"
+                            >
+                              Use as ASR
+                            </button>
+                          )}
+                          {isTextVariant(model.variant) && (
+                            <button
+                              onClick={() => setSelectedTextModel(model.variant)}
+                              className="btn btn-ghost text-xs"
+                            >
+                              Use as Text
+                            </button>
+                          )}
+                          {isTtsVariant(model.variant) && (
+                            <button
+                              onClick={() => setSelectedTtsModel(model.variant)}
+                              className="btn btn-ghost text-xs"
+                            >
+                              Use as TTS
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </section>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <audio
         ref={audioRef}
