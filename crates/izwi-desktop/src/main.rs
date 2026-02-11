@@ -38,8 +38,10 @@ fn main() -> Result<()> {
     tauri::Builder::default()
         .setup(move |app| {
             #[cfg(target_os = "macos")]
-            if let Err(err) = ensure_macos_cli_links(app.handle()) {
-                eprintln!("warning: could not configure terminal commands automatically: {err}");
+            if is_running_from_macos_app_bundle() {
+                if let Err(err) = ensure_macos_cli_links(app.handle()) {
+                    eprintln!("warning: could not configure terminal commands automatically: {err}");
+                }
             }
 
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(server_url.clone()))
@@ -57,10 +59,30 @@ fn main() -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
+fn is_running_from_macos_app_bundle() -> bool {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+
+    exe.components()
+        .any(|component| component.as_os_str() == "Contents")
+}
+
+#[cfg(target_os = "macos")]
 fn ensure_macos_cli_links<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<()> {
     use std::process::Command;
 
-    let resource_dir = app.path().resource_dir()?;
+    let resource_dir = match app.path().resource_dir() {
+        Ok(path) => path,
+        Err(err) => {
+            // Raw dev/release binaries (outside an app bundle) don't have a resource directory.
+            if err.to_string().to_lowercase().contains("unknown path") {
+                return Ok(());
+            }
+            return Err(err.into());
+        }
+    };
     let cli_target = resource_dir.join("bin").join("izwi");
     let server_target = resource_dir.join("bin").join("izwi-server");
 
