@@ -119,13 +119,14 @@ export function Layout({
       <div className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-[#0a0a0a] border-b border-[#262626]">
         <div className="flex items-center justify-between p-4">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg overflow-hidden border border-[#2a2a2a] bg-[#111111]">
+            <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-white/20 bg-[#161616] shadow-[inset_0_1px_0_rgba(255,255,255,0.14),0_0_0_1px_rgba(255,255,255,0.05)]">
               <img
                 src="/app-icon.png"
                 srcSet="/app-icon-128.png 1x, /app-icon-256.png 2x"
                 alt="Izwi logo"
-                className="w-full h-full object-cover"
+                className="w-full h-full object-cover p-0.5 brightness-125 contrast-125"
               />
+              <span className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.18),transparent_56%)]" />
             </div>
             <div>
               <h1 className="text-sm font-semibold text-white">Izwi</h1>
@@ -172,13 +173,14 @@ export function Layout({
           )}
           >
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg overflow-hidden border border-[#2a2a2a] bg-[#111111] flex-shrink-0">
+            <div className="relative w-9 h-9 rounded-lg overflow-hidden border border-white/20 bg-[#161616] shadow-[inset_0_1px_0_rgba(255,255,255,0.14),0_0_0_1px_rgba(255,255,255,0.05)] flex-shrink-0">
               <img
                 src="/app-icon.png"
                 srcSet="/app-icon-128.png 1x, /app-icon-256.png 2x"
                 alt="Izwi logo"
-                className="w-full h-full object-cover"
+                className="w-full h-full object-cover p-0.5 brightness-125 contrast-125"
               />
+              <span className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.18),transparent_56%)]" />
             </div>
             <div className={clsx(isSidebarCollapsed && "hidden")}>
               <h1 className="text-base font-semibold text-white">Izwi</h1>
