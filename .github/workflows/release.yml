@@ -93,6 +93,12 @@ jobs:
             -DestinationPath "release-assets/izwi-cli-${{ github.ref_name }}-${{ matrix.asset_suffix }}.zip" `
             -Force
 
+      - name: Include macOS uninstall helper
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p release-assets
+          cp scripts/uninstall-macos.sh "release-assets/uninstall-izwi-macos.sh"
+
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version "^2.0"
 
@@ -100,7 +106,17 @@ jobs:
         if: runner.os != 'macOS' || secrets.APPLE_SIGNING_IDENTITY == ''
         env:
           CI: "true"
-        run: cargo tauri build --manifest-path crates/izwi-desktop/Cargo.toml --bundles ${{ matrix.bundle_kind }}
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            cargo tauri build \
+              --manifest-path crates/izwi-desktop/Cargo.toml \
+              --bundles ${{ matrix.bundle_kind }} \
+              --config crates/izwi-desktop/tauri.macos.conf.json
+          else
+            cargo tauri build \
+              --manifest-path crates/izwi-desktop/Cargo.toml \
+              --bundles ${{ matrix.bundle_kind }}
+          fi
 
       - name: Build desktop bundle (signed macOS)
         if: runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY != ''
@@ -112,7 +128,11 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: cargo tauri build --manifest-path crates/izwi-desktop/Cargo.toml --bundles ${{ matrix.bundle_kind }}
+        run: |
+          cargo tauri build \
+            --manifest-path crates/izwi-desktop/Cargo.toml \
+            --bundles ${{ matrix.bundle_kind }} \
+            --config crates/izwi-desktop/tauri.macos.conf.json
 
       - name: Collect desktop bundle artifact (Linux/macOS)
         if: runner.os != 'Windows'

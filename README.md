@@ -104,6 +104,7 @@ GitHub tag releases build installers and terminal bundles for:
 - macOS (`.dmg`, unsigned by default until signing is configured; app startup attempts to link `izwi`/`izwi-server` in PATH and may prompt for admin access).
 
 Release process details are in `docs/RELEASING.md`.
+macOS install/uninstall instructions are in `docs/MACOS.md`.
 
 ## First Commands to Run
 

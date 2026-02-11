@@ -51,6 +51,43 @@ On app startup, Izwi tries to create PATH symlinks:
 
 If permissions prevent automatic setup, the app requests admin privileges via macOS and runs the link command. If that is denied, it prints fallback `sudo ln -sf ...` commands.
 
+### macOS install steps
+
+1. Download the macOS `.dmg` from the GitHub release.
+2. Open the `.dmg`.
+3. Drag `Izwi Desktop.app` into `/Applications`.
+4. Launch `Izwi Desktop` from Applications.
+5. Verify terminal access:
+
+```bash
+izwi --version
+izwi serve --help
+```
+
+### macOS uninstall steps
+
+Quick uninstall script:
+
+```bash
+./scripts/uninstall-macos.sh
+```
+
+Or manual full uninstall:
+
+```bash
+pkill -f "izwi-server|izwi serve|izwi-desktop|Izwi Desktop" >/dev/null 2>&1 || true
+sudo rm -rf "/Applications/Izwi Desktop.app"
+sudo rm -f /opt/homebrew/bin/izwi /opt/homebrew/bin/izwi-server
+sudo rm -f /usr/local/bin/izwi /usr/local/bin/izwi-server
+rm -rf "$HOME/Library/Application Support/izwi"
+rm -rf "$HOME/Library/Application Support/com.agentem.izwi.desktop"
+rm -rf "$HOME/Library/Saved Application State/com.agentem.izwi.desktop.savedState"
+rm -rf "$HOME/Library/Caches/com.agentem.izwi.desktop"
+rm -rf "$HOME/Library/WebKit/com.agentem.izwi.desktop"
+```
+
+Detailed user-facing instructions are also in `docs/MACOS.md`.
+
 ## Runtime logging defaults
 
 Production defaults now use `warn` level logs:
