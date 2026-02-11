@@ -153,6 +153,8 @@ function App() {
         console.error("SSE error:", err);
         eventSource.close();
         delete eventSourcesRef.current[variant];
+        activeDownloadsRef.current.delete(variant);
+        loadModels();
       };
     },
     [loadModels],

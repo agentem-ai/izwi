@@ -22,6 +22,13 @@ use crate::model::info::ModelVariant;
 const HF_BASE_URL: &str = "https://huggingface.co";
 const CHUNK_SIZE: usize = 8192; // 8KB chunks for streaming
 
+#[derive(Debug, Clone)]
+struct FileDownloadPlan {
+    file: String,
+    expected_size: u64,
+    strict_size_check: bool,
+}
+
 /// Progress update for model downloads
 #[derive(Debug, Clone)]
 pub struct DownloadProgress {
@@ -494,37 +501,54 @@ impl ModelDownloader {
 
         info!("Downloading {} to {:?}", repo_id, local_dir);
 
-        let files = self.get_model_files(variant);
-        let total_files = files.len();
-
-        // Fetch actual file sizes from server for accurate progress tracking
-        let file_sizes = self.get_actual_file_sizes(variant).await;
-        let total_bytes: u64 = file_sizes.iter().sum();
+        let file_plans = self.get_file_download_plans(variant).await;
+        let total_files = file_plans.len();
+        let total_bytes: u64 = file_plans.iter().map(|plan| plan.expected_size).sum();
         let mut downloaded_bytes: u64 = 0;
 
-        for (idx, file) in files.iter().enumerate() {
-            let file_size = file_sizes.get(idx).copied().unwrap_or(0);
+        for (idx, plan) in file_plans.iter().enumerate() {
+            let file = &plan.file;
+            let file_size = plan.expected_size;
             let dest = local_dir.join(file);
 
             // Skip if already downloaded
             if dest.exists() {
                 let actual_size = tokio::fs::metadata(&dest).await?.len();
-                debug!("File already exists: {:?} ({} bytes)", dest, actual_size);
-                downloaded_bytes += actual_size;
+                let should_redownload =
+                    plan.strict_size_check && file_size > 0 && actual_size != file_size;
 
-                // Send progress update
-                let progress = DownloadProgress {
-                    variant,
-                    downloaded_bytes,
-                    total_bytes,
-                    current_file: file.clone(),
-                    current_file_downloaded: actual_size,
-                    current_file_total: actual_size,
-                    files_completed: idx + 1,
-                    files_total: total_files,
-                };
-                let _ = progress_tx.send(progress);
-                continue;
+                if should_redownload {
+                    warn!(
+                        "Existing file size mismatch for {} (expected {} bytes, found {}), re-downloading",
+                        file, file_size, actual_size
+                    );
+                    tokio::fs::remove_file(&dest).await?;
+                } else {
+                    debug!("File already exists: {:?} ({} bytes)", dest, actual_size);
+                    downloaded_bytes += if file_size > 0 {
+                        file_size
+                    } else {
+                        actual_size
+                    };
+
+                    // Send progress update
+                    let progress = DownloadProgress {
+                        variant,
+                        downloaded_bytes,
+                        total_bytes,
+                        current_file: file.clone(),
+                        current_file_downloaded: actual_size,
+                        current_file_total: if file_size > 0 {
+                            file_size
+                        } else {
+                            actual_size
+                        },
+                        files_completed: idx + 1,
+                        files_total: total_files,
+                    };
+                    let _ = progress_tx.send(progress);
+                    continue;
+                }
             }
 
             // Stream download with per-chunk progress updates
@@ -563,6 +587,14 @@ impl ModelDownloader {
                 .await
             {
                 Ok(bytes_downloaded) => {
+                    if plan.strict_size_check && file_size > 0 && bytes_downloaded != file_size {
+                        let _ = tokio::fs::remove_file(&dest).await;
+                        return Err(Error::DownloadError(format!(
+                            "Downloaded size mismatch for {}: expected {} bytes, got {} bytes",
+                            file, file_size, bytes_downloaded
+                        )));
+                    }
+
                     downloaded_bytes += bytes_downloaded;
 
                     let progress = DownloadProgress {
@@ -582,6 +614,11 @@ impl ModelDownloader {
                 Err(e) => {
                     warn!("Failed to download {}: {}", file, e);
                     file_pb.finish_with_message(format!("{} ✗", file));
+                    let _ = tokio::fs::remove_file(&dest).await;
+                    return Err(Error::DownloadError(format!(
+                        "Failed to download required file {}: {}",
+                        file, e
+                    )));
                 }
             }
 
@@ -754,36 +791,44 @@ impl ModelDownloader {
     }
 
     /// Get actual file sizes for all model files
-    async fn get_actual_file_sizes(&self, variant: ModelVariant) -> Vec<u64> {
+    async fn get_file_download_plans(&self, variant: ModelVariant) -> Vec<FileDownloadPlan> {
         let files = self.get_model_files(variant);
         let repo_id = variant.repo_id();
         let local_dir = self.model_path(variant);
 
-        let mut sizes = Vec::with_capacity(files.len());
+        let mut plans = Vec::with_capacity(files.len());
 
         for file in &files {
             let dest = local_dir.join(file);
 
-            // If file exists locally, use actual size
-            if dest.exists() {
-                if let Ok(metadata) = tokio::fs::metadata(&dest).await {
-                    sizes.push(metadata.len());
-                    continue;
-                }
-            }
-
-            // Otherwise fetch actual size from server
+            // Prefer remote file sizes for accurate total bytes and integrity checks.
             match self.get_actual_file_size(&repo_id, file).await {
-                Ok(size) => sizes.push(size),
+                Ok(size) => plans.push(FileDownloadPlan {
+                    file: file.clone(),
+                    expected_size: size,
+                    strict_size_check: true,
+                }),
                 Err(_) => {
-                    // Fall back to estimate if HEAD request fails
-                    let estimate = self.get_single_file_size_estimate(variant, file);
-                    sizes.push(estimate);
+                    // Fall back to local size if present (resume semantics), else estimate.
+                    let fallback_size = if dest.exists() {
+                        tokio::fs::metadata(&dest)
+                            .await
+                            .map(|m| m.len())
+                            .unwrap_or_else(|_| self.get_single_file_size_estimate(variant, file))
+                    } else {
+                        self.get_single_file_size_estimate(variant, file)
+                    };
+
+                    plans.push(FileDownloadPlan {
+                        file: file.clone(),
+                        expected_size: fallback_size,
+                        strict_size_check: false,
+                    });
                 }
             }
         }
 
-        sizes
+        plans
     }
 
     /// Get estimated size for a single file (fallback when HEAD fails)

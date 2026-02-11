@@ -4,7 +4,8 @@
   "version": "0.1.0-alpha",
   "identifier": "com.agentem.izwi.desktop",
   "build": {
-    "frontendDist": "../../ui/dist"
+    "frontendDist": "../../ui/dist",
+    "beforeBuildCommand": "npm --prefix ../../ui run build"
   },
   "app": {
     "windows": [],
