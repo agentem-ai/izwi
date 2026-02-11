@@ -22,6 +22,10 @@ For each OS runner, the workflow builds:
   - Windows: `NSIS .exe`
   - macOS: `.dmg`
 
+Linux `.deb` installs terminal commands into `/usr/bin`:
+- `izwi`
+- `izwi-server`
+
 All artifacts are attached to the GitHub Release for the tag.
 
 ## Signing and notarization
@@ -37,6 +41,15 @@ The workflow is already prepared to use these optional secrets on macOS:
 - `APPLE_ID`
 - `APPLE_PASSWORD`
 - `APPLE_TEAM_ID`
+
+## macOS CLI behavior (DMG install)
+
+The macOS app bundle includes `izwi` and `izwi-server` in app resources.
+On app startup, Izwi tries to create PATH symlinks:
+
+- `/opt/homebrew/bin` (Apple Silicon fallback) or `/usr/local/bin`
+
+If permissions prevent automatic setup, the app requests admin privileges via macOS and runs the link command. If that is denied, it prints fallback `sudo ln -sf ...` commands.
 
 ## Runtime logging defaults
 

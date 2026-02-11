@@ -100,8 +100,8 @@ Dev UI URL: `http://localhost:5173`
 
 GitHub tag releases build installers and terminal bundles for:
 - Windows (`NSIS .exe`),
-- Linux (`.deb`),
-- macOS (`.dmg`, unsigned by default until signing is configured).
+- Linux (`.deb`, includes `izwi` and `izwi-server` in `/usr/bin`),
+- macOS (`.dmg`, unsigned by default until signing is configured; app startup attempts to link `izwi`/`izwi-server` in PATH and may prompt for admin access).
 
 Release process details are in `docs/RELEASING.md`.
 
