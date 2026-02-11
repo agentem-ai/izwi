@@ -127,7 +127,7 @@ pub enum Commands {
         timeout: u64,
 
         /// Log level
-        #[arg(long, default_value = "info", env = "RUST_LOG")]
+        #[arg(long, default_value = "warn", env = "RUST_LOG")]
         log_level: String,
 
         /// Enable development mode with hot reload

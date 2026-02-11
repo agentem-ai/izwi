@@ -96,6 +96,15 @@ npm run dev
 
 Dev UI URL: `http://localhost:5173`
 
+## Releases
+
+GitHub tag releases build installers and terminal bundles for:
+- Windows (`NSIS .exe`),
+- Linux (`.deb`),
+- macOS (`.dmg`, unsigned by default until signing is configured).
+
+Release process details are in `docs/RELEASING.md`.
+
 ## First Commands to Run
 
 Use these to verify end-to-end setup:
