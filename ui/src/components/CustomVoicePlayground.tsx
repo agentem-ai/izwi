@@ -351,7 +351,7 @@ export function CustomVoicePlayground({
               onClick={() => setShowSpeakerSelect(!showSpeakerSelect)}
               className="flex items-center gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
             >
-              <div className="w-6 h-6 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-[10px] font-medium text-white">
+              <div className="speaker-avatar w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium">
                 {speaker.charAt(0)}
               </div>
               <span className="text-white">
@@ -385,7 +385,7 @@ export function CustomVoicePlayground({
                         speaker === s.id ? "bg-white/10" : "hover:bg-[#2a2a2a]",
                       )}
                     >
-                      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-xs font-medium text-white flex-shrink-0">
+                      <div className="speaker-avatar w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium flex-shrink-0">
                         {s.name.charAt(0)}
                       </div>
                       <div className="flex-1 min-w-0">
