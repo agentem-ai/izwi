@@ -10,7 +10,6 @@ import {
   AudioLines,
   Box,
   Github,
-  Waves,
   AlertCircle,
   X,
   Menu,
@@ -120,8 +119,13 @@ export function Layout({
       <div className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-[#0a0a0a] border-b border-[#262626]">
         <div className="flex items-center justify-between p-4">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
-              <Waves className="w-4 h-4 text-black" />
+            <div className="w-8 h-8 rounded-lg overflow-hidden border border-[#2a2a2a] bg-[#111111]">
+              <img
+                src="/app-icon.png"
+                srcSet="/app-icon-128.png 1x, /app-icon-256.png 2x"
+                alt="Izwi logo"
+                className="w-full h-full object-cover"
+              />
             </div>
             <div>
               <h1 className="text-sm font-semibold text-white">Izwi</h1>
@@ -166,10 +170,15 @@ export function Layout({
               ? "flex-col items-center gap-2 px-2 py-3"
               : "items-center justify-between p-4",
           )}
-        >
+          >
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-white rounded-lg flex items-center justify-center flex-shrink-0">
-              <Waves className="w-5 h-5 text-black" />
+            <div className="w-9 h-9 rounded-lg overflow-hidden border border-[#2a2a2a] bg-[#111111] flex-shrink-0">
+              <img
+                src="/app-icon.png"
+                srcSet="/app-icon-128.png 1x, /app-icon-256.png 2x"
+                alt="Izwi logo"
+                className="w-full h-full object-cover"
+              />
             </div>
             <div className={clsx(isSidebarCollapsed && "hidden")}>
               <h1 className="text-base font-semibold text-white">Izwi</h1>
