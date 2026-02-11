@@ -350,12 +350,18 @@ function App() {
     });
 
     Object.keys(eventSourcesRef.current).forEach((variant) => {
-      if (!downloading.has(variant)) {
+      const streamStatus = downloadProgress[variant]?.status;
+      const shouldKeepStream =
+        downloading.has(variant) ||
+        activeDownloadsRef.current.has(variant) ||
+        streamStatus === "downloading";
+
+      if (!shouldKeepStream) {
         closeDownloadStream(variant);
         activeDownloadsRef.current.delete(variant);
       }
     });
-  }, [models, connectDownloadStream, closeDownloadStream]);
+  }, [models, downloadProgress, connectDownloadStream, closeDownloadStream]);
 
   useEffect(() => {
     return () => {
