@@ -6,6 +6,7 @@
 //! - Non-blocking downloads with background task spawning
 //! - Real-time progress via channels
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -22,6 +23,12 @@ use crate::model::info::ModelVariant;
 
 const HF_BASE_URL: &str = "https://huggingface.co";
 const CHUNK_SIZE: usize = 8192; // 8KB chunks for streaming
+
+#[derive(Debug, Deserialize)]
+struct HfRepoTreeEntry {
+    path: String,
+    size: Option<u64>,
+}
 
 #[derive(Debug, Clone)]
 struct FileDownloadPlan {
@@ -122,6 +129,7 @@ pub struct ModelDownloader {
     http_client: reqwest::Client,
     active_downloads: Arc<RwLock<std::collections::HashMap<ModelVariant, ActiveDownload>>>,
     latest_progress: Arc<RwLock<std::collections::HashMap<ModelVariant, DownloadProgress>>>,
+    repo_tree_cache: Arc<RwLock<HashMap<String, HashMap<String, u64>>>>,
     multi_progress: MultiProgress,
     state_manager: DownloadStateManager,
 }
@@ -148,6 +156,7 @@ impl ModelDownloader {
             http_client,
             active_downloads: Arc::new(RwLock::new(std::collections::HashMap::new())),
             latest_progress: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            repo_tree_cache: Arc::new(RwLock::new(HashMap::new())),
             multi_progress,
             state_manager: DownloadStateManager::new(),
         })
@@ -171,6 +180,53 @@ impl ModelDownloader {
     async fn clear_latest_progress(&self, variant: ModelVariant) {
         let mut latest = self.latest_progress.write().await;
         latest.remove(&variant);
+    }
+
+    async fn get_repo_tree_index(&self, repo_id: &str) -> Result<HashMap<String, u64>> {
+        if let Some(cached) = self.repo_tree_cache.read().await.get(repo_id).cloned() {
+            return Ok(cached);
+        }
+
+        let url = format!("{}/api/models/{}/tree/main?recursive=1", HF_BASE_URL, repo_id);
+        let response = self
+            .http_client
+            .get(&url)
+            .header("User-Agent", "izwi-audio/0.1.0")
+            .send()
+            .await
+            .map_err(|e| Error::HfHubError(format!("Repo tree request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(Error::HfHubError(format!(
+                "HTTP {} for repo tree {}",
+                response.status(),
+                url
+            )));
+        }
+
+        let entries: Vec<HfRepoTreeEntry> = response
+            .json()
+            .await
+            .map_err(|e| Error::HfHubError(format!("Failed to parse repo tree JSON: {}", e)))?;
+
+        let mut index = HashMap::with_capacity(entries.len());
+        for entry in entries {
+            index.insert(entry.path, entry.size.unwrap_or(0));
+        }
+
+        self.repo_tree_cache
+            .write()
+            .await
+            .insert(repo_id.to_string(), index.clone());
+
+        Ok(index)
+    }
+
+    fn is_not_found_hf_error(err: &Error) -> bool {
+        match err {
+            Error::HfHubError(msg) | Error::DownloadError(msg) => msg.contains("404"),
+            _ => false,
+        }
     }
 
     /// Download a file with streaming and progress bar
@@ -313,7 +369,6 @@ impl ModelDownloader {
             // Original models: 0.6B has single file, 1.7B has sharded weights
             let has_model = if variant.is_quantized() {
                 path.join("model.safetensors").exists()
-                    && path.join("model.safetensors.index.json").exists()
             } else if matches!(variant, ModelVariant::Qwen3Asr06B) {
                 path.join("model.safetensors").exists()
             } else {
@@ -377,9 +432,8 @@ impl ModelDownloader {
         info!("Downloading {} to {:?}", repo_id, local_dir);
 
         // Create overall progress bar
-        let files = self.get_model_files(variant);
-        let file_sizes = self.get_file_sizes(variant);
-        let total_bytes: u64 = file_sizes.iter().sum();
+        let file_plans = self.get_file_download_plans(variant).await?;
+        let total_bytes: u64 = file_plans.iter().map(|plan| plan.expected_size).sum();
 
         let overall_pb = self.multi_progress.add(ProgressBar::new(total_bytes));
         overall_pb.set_style(
@@ -392,7 +446,8 @@ impl ModelDownloader {
 
         let mut downloaded_bytes: u64 = 0;
 
-        for (idx, file) in files.iter().enumerate() {
+        for plan in &file_plans {
+            let file = &plan.file;
             let dest = local_dir.join(file);
 
             // Skip if already downloaded
@@ -405,7 +460,7 @@ impl ModelDownloader {
             }
 
             // Create file progress bar
-            let file_size = file_sizes.get(idx).copied().unwrap_or(0);
+            let file_size = plan.expected_size;
             let file_pb = self.multi_progress.add(ProgressBar::new(file_size));
             file_pb.set_style(
                 ProgressStyle::default_bar()
@@ -514,6 +569,7 @@ impl ModelDownloader {
             http_client: self.http_client.clone(),
             active_downloads: Arc::clone(&self.active_downloads),
             latest_progress: Arc::clone(&self.latest_progress),
+            repo_tree_cache: Arc::clone(&self.repo_tree_cache),
             multi_progress: MultiProgress::new(), // Each spawned task gets its own multi-progress
             state_manager: self.state_manager.clone(),
         }
@@ -554,7 +610,7 @@ impl ModelDownloader {
 
         info!("Downloading {} to {:?}", repo_id, local_dir);
 
-        let file_plans = self.get_file_download_plans(variant).await;
+        let file_plans = self.get_file_download_plans(variant).await?;
         let total_files = file_plans.len();
         let total_bytes: u64 = file_plans.iter().map(|plan| plan.expected_size).sum();
         let mut downloaded_bytes: u64 = 0;
@@ -785,6 +841,7 @@ impl ModelDownloader {
                 "config.json".to_string(),
                 "generation_config.json".to_string(),
                 "chat_template.jinja".to_string(),
+                "added_tokens.json".to_string(),
                 "tokenizer.json".to_string(),
                 "tokenizer_config.json".to_string(),
                 "special_tokens_map.json".to_string(),
@@ -792,6 +849,8 @@ impl ModelDownloader {
                 "merges.txt".to_string(),
                 "model.safetensors".to_string(),
                 "model.safetensors.index.json".to_string(),
+                "model-00001-of-00002.safetensors".to_string(),
+                "model-00002-of-00002.safetensors".to_string(),
             ];
         }
 
@@ -885,24 +944,71 @@ impl ModelDownloader {
     }
 
     /// Get actual file sizes for all model files
-    async fn get_file_download_plans(&self, variant: ModelVariant) -> Vec<FileDownloadPlan> {
+    async fn get_file_download_plans(&self, variant: ModelVariant) -> Result<Vec<FileDownloadPlan>> {
         let files = self.get_model_files(variant);
         let repo_id = variant.repo_id();
         let local_dir = self.model_path(variant);
 
-        let mut plans = Vec::with_capacity(files.len());
+        if let Ok(repo_tree_index) = self.get_repo_tree_index(repo_id).await {
+            let mut plans = Vec::with_capacity(files.len());
+            let mut skipped = 0usize;
 
+            for file in &files {
+                if let Some(size) = repo_tree_index.get(file) {
+                    plans.push(FileDownloadPlan {
+                        file: file.clone(),
+                        expected_size: *size,
+                        strict_size_check: *size > 0,
+                    });
+                } else {
+                    skipped += 1;
+                    debug!(
+                        "Skipping unavailable file for {}: {} (not present in repo tree)",
+                        variant, file
+                    );
+                }
+            }
+
+            if plans.is_empty() {
+                return Err(Error::DownloadError(format!(
+                    "No downloadable files discovered for {} in repo {}",
+                    variant, repo_id
+                )));
+            }
+
+            if skipped > 0 {
+                info!(
+                    "Skipped {} unavailable file(s) for {} based on repo tree inventory",
+                    skipped, variant
+                );
+            }
+
+            return Ok(plans);
+        }
+
+        warn!(
+            "Falling back to per-file HEAD planning for {} because repo tree query failed",
+            variant
+        );
+
+        let mut plans = Vec::with_capacity(files.len());
         for file in &files {
             let dest = local_dir.join(file);
-
-            // Prefer remote file sizes for accurate total bytes and integrity checks.
             match self.get_actual_file_size(&repo_id, file).await {
                 Ok(size) => plans.push(FileDownloadPlan {
                     file: file.clone(),
                     expected_size: size,
                     strict_size_check: true,
                 }),
-                Err(_) => {
+                Err(e) => {
+                    if Self::is_not_found_hf_error(&e) {
+                        debug!(
+                            "Skipping unavailable file for {}: {} (HEAD returned 404)",
+                            variant, file
+                        );
+                        continue;
+                    }
+
                     // Fall back to local size if present (resume semantics), else estimate.
                     let fallback_size = if dest.exists() {
                         tokio::fs::metadata(&dest)
@@ -922,7 +1028,14 @@ impl ModelDownloader {
             }
         }
 
-        plans
+        if plans.is_empty() {
+            return Err(Error::DownloadError(format!(
+                "No downloadable files discovered for {}",
+                variant
+            )));
+        }
+
+        Ok(plans)
     }
 
     /// Get estimated size for a single file (fallback when HEAD fails)
