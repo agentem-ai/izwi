@@ -1,7 +1,6 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  Check,
   CheckCircle2,
   Download,
   Loader2,
@@ -304,22 +303,22 @@ export function RouteModelModal({
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     setPendingDeleteVariant(null);
-                                    onDelete(model.variant);
-                                  }}
-                                  className="btn btn-danger text-xs"
-                                >
-                                  <Check className="w-3.5 h-3.5" />
-                                  Confirm
-                                </button>
-                                <button
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    setPendingDeleteVariant(null);
                                   }}
                                   className="btn btn-secondary text-xs"
                                 >
                                   <X className="w-3.5 h-3.5" />
                                   Cancel
+                                </button>
+                                <button
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setPendingDeleteVariant(null);
+                                    onDelete(model.variant);
+                                  }}
+                                  className="btn text-xs border border-red-500/45 bg-red-500/15 text-red-300 hover:bg-red-500/25 hover:text-red-200"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  Confirm Delete
                                 </button>
                               </div>
                             ) : (
@@ -328,7 +327,7 @@ export function RouteModelModal({
                                   event.stopPropagation();
                                   setPendingDeleteVariant(model.variant);
                                 }}
-                                className="btn btn-danger text-xs"
+                                className="btn text-xs border border-red-500/45 bg-red-500/15 text-red-300 hover:bg-red-500/25 hover:text-red-200"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                                 Delete

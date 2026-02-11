@@ -13,8 +13,6 @@ import {
   Square,
   Trash2,
   X,
-  Check,
-  CheckCircle2,
 } from "lucide-react";
 import clsx from "clsx";
 
@@ -308,6 +306,23 @@ export function VoicePage({
       setPendingDeleteVariant(null);
     }
   }, [isConfigOpen]);
+
+  const handleConfigDelete = useCallback(
+    (variant: string) => {
+      setPendingDeleteVariant(null);
+      onDelete(variant);
+      if (selectedAsrModel === variant) {
+        setSelectedAsrModel(null);
+      }
+      if (selectedTextModel === variant) {
+        setSelectedTextModel(null);
+      }
+      if (selectedTtsModel === variant) {
+        setSelectedTtsModel(null);
+      }
+    },
+    [onDelete, selectedAsrModel, selectedTextModel, selectedTtsModel],
+  );
 
   const sortedModels = useMemo(() => {
     const statusOrder: Record<ModelInfo["status"], number> = {
@@ -1455,121 +1470,178 @@ export function VoicePage({
                 </button>
               </div>
 
-              <div className="p-4 sm:p-5 overflow-y-auto max-h-[calc(90vh-88px)] space-y-6">
-                <section className="grid md:grid-cols-2 xl:grid-cols-4 gap-3">
-                  <div className="space-y-1">
-                    <label className="text-xs text-gray-500">ASR Model</label>
-                    <select
-                      value={selectedAsrModel ?? ""}
-                      onChange={(e) => setSelectedAsrModel(e.target.value)}
-                      className="input"
-                    >
-                      {asrModels.map((m) => (
-                        <option key={m.variant} value={m.variant}>
-                          {m.variant} • {getStatusLabel(m.status)}
-                        </option>
-                      ))}
-                    </select>
+              <div className="p-4 sm:p-5 overflow-y-auto max-h-[calc(90vh-88px)] space-y-5">
+                <section className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-medium text-white">
+                      Pipeline Selection
+                    </h3>
+                    <span className="text-[11px] text-gray-500">
+                      Assign one model to each stage.
+                    </span>
                   </div>
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-xs text-gray-400">ASR Model</label>
+                        {selectedAsrInfo && (
+                          <span
+                            className={clsx(
+                              "text-[10px] px-1.5 py-0.5 rounded border",
+                              getStatusClass(selectedAsrInfo.status),
+                            )}
+                          >
+                            {getStatusLabel(selectedAsrInfo.status)}
+                          </span>
+                        )}
+                      </div>
+                      <select
+                        value={selectedAsrModel ?? ""}
+                        onChange={(e) => setSelectedAsrModel(e.target.value)}
+                        className="input"
+                      >
+                        {asrModels.map((m) => (
+                          <option key={m.variant} value={m.variant}>
+                            {m.variant} • {getStatusLabel(m.status)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-gray-500">Text Model</label>
-                    <select
-                      value={selectedTextModel ?? ""}
-                      onChange={(e) => setSelectedTextModel(e.target.value)}
-                      className="input"
-                    >
-                      {textModels.map((m) => (
-                        <option key={m.variant} value={m.variant}>
-                          {m.variant} • {getStatusLabel(m.status)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                    <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-xs text-gray-400">Text Model</label>
+                        {selectedTextInfo && (
+                          <span
+                            className={clsx(
+                              "text-[10px] px-1.5 py-0.5 rounded border",
+                              getStatusClass(selectedTextInfo.status),
+                            )}
+                          >
+                            {getStatusLabel(selectedTextInfo.status)}
+                          </span>
+                        )}
+                      </div>
+                      <select
+                        value={selectedTextModel ?? ""}
+                        onChange={(e) => setSelectedTextModel(e.target.value)}
+                        className="input"
+                      >
+                        {textModels.map((m) => (
+                          <option key={m.variant} value={m.variant}>
+                            {m.variant} • {getStatusLabel(m.status)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-gray-500">TTS Model</label>
-                    <select
-                      value={selectedTtsModel ?? ""}
-                      onChange={(e) => setSelectedTtsModel(e.target.value)}
-                      className="input"
-                    >
-                      {ttsModels.map((m) => (
-                        <option key={m.variant} value={m.variant}>
-                          {m.variant} • {getStatusLabel(m.status)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                    <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-xs text-gray-400">TTS Model</label>
+                        {selectedTtsInfo && (
+                          <span
+                            className={clsx(
+                              "text-[10px] px-1.5 py-0.5 rounded border",
+                              getStatusClass(selectedTtsInfo.status),
+                            )}
+                          >
+                            {getStatusLabel(selectedTtsInfo.status)}
+                          </span>
+                        )}
+                      </div>
+                      <select
+                        value={selectedTtsModel ?? ""}
+                        onChange={(e) => setSelectedTtsModel(e.target.value)}
+                        className="input"
+                      >
+                        {ttsModels.map((m) => (
+                          <option key={m.variant} value={m.variant}>
+                            {m.variant} • {getStatusLabel(m.status)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs text-gray-500">Assistant Voice</label>
-                    <select
-                      value={selectedSpeaker}
-                      onChange={(e) => setSelectedSpeaker(e.target.value)}
-                      className="input"
-                    >
-                      {SPEAKERS.map((speaker) => (
-                        <option key={speaker.id} value={speaker.id}>
-                          {speaker.name} ({speaker.language})
-                        </option>
-                      ))}
-                    </select>
+                    <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
+                      <label className="text-xs text-gray-400">Assistant Voice</label>
+                      <select
+                        value={selectedSpeaker}
+                        onChange={(e) => setSelectedSpeaker(e.target.value)}
+                        className="input"
+                      >
+                        {SPEAKERS.map((speaker) => (
+                          <option key={speaker.id} value={speaker.id}>
+                            {speaker.name} ({speaker.language})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                 </section>
 
-                <section className="grid md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="text-xs text-gray-500">
-                      VAD Sensitivity ({vadThreshold.toFixed(3)})
-                    </label>
-                    <input
-                      type="range"
-                      min={0.005}
-                      max={0.08}
-                      step={0.001}
-                      value={vadThreshold}
-                      onChange={(e) => setVadThreshold(parseFloat(e.target.value))}
-                      className="w-full mt-1"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500">
-                      End Silence (ms): {silenceDurationMs}
-                    </label>
-                    <input
-                      type="range"
-                      min={400}
-                      max={1800}
-                      step={50}
-                      value={silenceDurationMs}
-                      onChange={(e) =>
-                        setSilenceDurationMs(parseInt(e.target.value, 10))
-                      }
-                      className="w-full mt-1"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500">
-                      Minimum Speech (ms): {minSpeechMs}
-                    </label>
-                    <input
-                      type="range"
-                      min={150}
-                      max={1200}
-                      step={50}
-                      value={minSpeechMs}
-                      onChange={(e) => setMinSpeechMs(parseInt(e.target.value, 10))}
-                      className="w-full mt-1"
-                    />
-                  </div>
+                <section className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3">
+                  <details>
+                    <summary className="cursor-pointer text-sm text-white">
+                      Advanced Speech Detection
+                    </summary>
+                    <div className="mt-3 grid md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="text-xs text-gray-500">
+                          VAD Sensitivity ({vadThreshold.toFixed(3)})
+                        </label>
+                        <input
+                          type="range"
+                          min={0.005}
+                          max={0.08}
+                          step={0.001}
+                          value={vadThreshold}
+                          onChange={(e) =>
+                            setVadThreshold(parseFloat(e.target.value))
+                          }
+                          className="w-full mt-1"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-500">
+                          End Silence (ms): {silenceDurationMs}
+                        </label>
+                        <input
+                          type="range"
+                          min={400}
+                          max={1800}
+                          step={50}
+                          value={silenceDurationMs}
+                          onChange={(e) =>
+                            setSilenceDurationMs(parseInt(e.target.value, 10))
+                          }
+                          className="w-full mt-1"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-500">
+                          Minimum Speech (ms): {minSpeechMs}
+                        </label>
+                        <input
+                          type="range"
+                          min={150}
+                          max={1200}
+                          step={50}
+                          value={minSpeechMs}
+                          onChange={(e) =>
+                            setMinSpeechMs(parseInt(e.target.value, 10))
+                          }
+                          className="w-full mt-1"
+                        />
+                      </div>
+                    </div>
+                  </details>
                 </section>
 
                 <section className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-medium text-white">Models</h3>
-                    <span className="text-xs text-gray-500">
-                      Manage download, load, unload, and delete
+                    <h3 className="text-sm font-medium text-white">Model Library</h3>
+                    <span className="text-[11px] text-gray-500">
+                      Download, load, unload, and delete
                     </span>
                   </div>
 
@@ -1592,43 +1664,32 @@ export function VoicePage({
                             <div className="text-sm text-white font-medium truncate">
                               {model.variant}
                             </div>
-                            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            <div className="mt-1 flex flex-nowrap items-center gap-1.5 overflow-x-auto">
                               {roles.map((role) => (
                                 <span
                                   key={role}
-                                  className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-gray-300"
+                                  className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap"
                                 >
                                   {role}
                                 </span>
                               ))}
                               <span
-                                className={clsx(
-                                  "text-[10px] px-1.5 py-0.5 rounded border",
-                                  getStatusClass(model.status),
-                                )}
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap"
                               >
                                 {getStatusLabel(model.status)}
                               </span>
-                              {model.status === "ready" && (
-                                <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300">
-                                  <CheckCircle2 className="w-3 h-3" />
-                                  Loaded
-                                </span>
-                              )}
-                            </div>
-                            <div className="mt-1 flex flex-wrap gap-1">
                               {isSelectedAsr && (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/15 border border-sky-500/30 text-sky-300">
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap">
                                   ASR selected
                                 </span>
                               )}
                               {isSelectedText && (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300">
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap">
                                   Text selected
                                 </span>
                               )}
                               {isSelectedTts && (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-purple-300">
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap">
                                   TTS selected
                                 </span>
                               )}
@@ -1678,30 +1739,18 @@ export function VoicePage({
                               pendingDeleteVariant === model.variant ? (
                                 <div className="flex items-center gap-1">
                                   <button
-                                    onClick={() => {
-                                      setPendingDeleteVariant(null);
-                                      onDelete(model.variant);
-                                      if (selectedAsrModel === model.variant) {
-                                        setSelectedAsrModel(null);
-                                      }
-                                      if (selectedTextModel === model.variant) {
-                                        setSelectedTextModel(null);
-                                      }
-                                      if (selectedTtsModel === model.variant) {
-                                        setSelectedTtsModel(null);
-                                      }
-                                    }}
-                                    className="btn btn-danger text-xs"
-                                  >
-                                    <Check className="w-3.5 h-3.5" />
-                                    Confirm
-                                  </button>
-                                  <button
                                     onClick={() => setPendingDeleteVariant(null)}
                                     className="btn btn-secondary text-xs"
                                   >
                                     <X className="w-3.5 h-3.5" />
                                     Cancel
+                                  </button>
+                                  <button
+                                    onClick={() => handleConfigDelete(model.variant)}
+                                    className="btn text-xs border border-red-500/45 bg-red-500/15 text-red-300 hover:bg-red-500/25 hover:text-red-200"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    Confirm Delete
                                   </button>
                                 </div>
                               ) : (
@@ -1709,7 +1758,7 @@ export function VoicePage({
                                   onClick={() =>
                                     setPendingDeleteVariant(model.variant)
                                   }
-                                  className="btn btn-danger text-xs"
+                                  className="btn text-xs border border-red-500/45 bg-red-500/15 text-red-300 hover:bg-red-500/25 hover:text-red-200"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                   Delete
@@ -1745,32 +1794,6 @@ export function VoicePage({
                           </div>
                         )}
 
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {isAsrVariant(model.variant) && (
-                            <button
-                              onClick={() => setSelectedAsrModel(model.variant)}
-                              className="btn btn-ghost text-xs"
-                            >
-                              Use as ASR
-                            </button>
-                          )}
-                          {isTextVariant(model.variant) && (
-                            <button
-                              onClick={() => setSelectedTextModel(model.variant)}
-                              className="btn btn-ghost text-xs"
-                            >
-                              Use as Text
-                            </button>
-                          )}
-                          {isTtsVariant(model.variant) && (
-                            <button
-                              onClick={() => setSelectedTtsModel(model.variant)}
-                              className="btn btn-ghost text-xs"
-                            >
-                              Use as TTS
-                            </button>
-                          )}
-                        </div>
                       </div>
                     );
                   })}

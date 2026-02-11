@@ -10,7 +10,6 @@ import {
   Filter,
   ChevronDown,
   Loader2,
-  Check,
   X,
   RefreshCw,
 } from "lucide-react";
@@ -418,6 +417,9 @@ export function MyModelsPage({
     onDelete(variant);
   };
 
+  const destructiveDeleteButtonClass =
+    "flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-red-500/45 bg-red-500/15 text-red-300 text-xs font-medium hover:bg-red-500/25 hover:text-red-200 transition-colors";
+
   if (loading) {
     return (
       <div className="max-w-6xl mx-auto">
@@ -734,29 +736,32 @@ export function MyModelsPage({
                           <span className="hidden sm:inline">Load</span>
                         </button>
                         {confirmDelete === model.variant ? (
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => handleDelete(model.variant)}
-                              className="p-1.5 rounded bg-white text-black hover:bg-gray-200 transition-colors"
-                              title="Confirm delete"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                            </button>
+                          <div className="flex items-center gap-1.5">
                             <button
                               onClick={() => setConfirmDelete(null)}
-                              className="p-1.5 rounded bg-[#262626] text-gray-400 hover:text-white transition-colors"
+                              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#262626] border border-[#303030] text-gray-300 text-xs font-medium hover:text-white hover:bg-[#2e2e2e] transition-colors"
                               title="Cancel"
                             >
                               <X className="w-3.5 h-3.5" />
+                              Cancel
+                            </button>
+                            <button
+                              onClick={() => handleDelete(model.variant)}
+                              className={destructiveDeleteButtonClass}
+                              title="Confirm delete"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Confirm Delete
                             </button>
                           </div>
                         ) : (
                           <button
                             onClick={() => setConfirmDelete(model.variant)}
-                            className="p-1.5 rounded text-gray-500 hover:text-white hover:bg-[#262626] transition-colors"
+                            className={destructiveDeleteButtonClass}
                             title="Delete model"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Delete</span>
                           </button>
                         )}
                       </>
@@ -772,29 +777,32 @@ export function MyModelsPage({
                           <span className="hidden sm:inline">Unload</span>
                         </button>
                         {confirmDelete === model.variant ? (
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => handleDelete(model.variant)}
-                              className="p-1.5 rounded bg-white text-black hover:bg-gray-200 transition-colors"
-                              title="Confirm delete"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                            </button>
+                          <div className="flex items-center gap-1.5">
                             <button
                               onClick={() => setConfirmDelete(null)}
-                              className="p-1.5 rounded bg-[#262626] text-gray-400 hover:text-white transition-colors"
+                              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#262626] border border-[#303030] text-gray-300 text-xs font-medium hover:text-white hover:bg-[#2e2e2e] transition-colors"
                               title="Cancel"
                             >
                               <X className="w-3.5 h-3.5" />
+                              Cancel
+                            </button>
+                            <button
+                              onClick={() => handleDelete(model.variant)}
+                              className={destructiveDeleteButtonClass}
+                              title="Confirm delete"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Confirm Delete
                             </button>
                           </div>
                         ) : (
                           <button
                             onClick={() => setConfirmDelete(model.variant)}
-                            className="p-1.5 rounded text-gray-500 hover:text-white hover:bg-[#262626] transition-colors"
+                            className={destructiveDeleteButtonClass}
                             title="Delete model"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Delete</span>
                           </button>
                         )}
                       </>
