@@ -324,6 +324,7 @@ export function MyModelsPage({
   loading,
   downloadProgress,
   onDownload,
+  onCancelDownload,
   onLoad,
   onUnload,
   onDelete,
@@ -699,16 +700,27 @@ export function MyModelsPage({
                     )}
 
                     {isDownloading && (
-                      <div className="flex items-center gap-2 px-2.5 py-1.5">
-                        <span className="text-xs text-gray-500">
-                          {Math.round(progress)}%
-                        </span>
-                        <div className="w-16 h-1 bg-[#1f1f1f] rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-white rounded-full transition-all duration-300"
-                            style={{ width: `${progress}%` }}
-                          />
+                      <div className="flex items-center gap-2 px-2 py-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-500">
+                            {Math.round(progress)}%
+                          </span>
+                          <div className="w-16 h-1 bg-[#1f1f1f] rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-white rounded-full transition-all duration-300"
+                              style={{ width: `${progress}%` }}
+                            />
+                          </div>
                         </div>
+                        {onCancelDownload && (
+                          <button
+                            onClick={() => onCancelDownload(model.variant)}
+                            className="flex items-center gap-1 px-2 py-1 rounded bg-[#2a1616] border border-[#4a2020] text-[11px] text-red-300 hover:bg-[#3a1c1c] transition-colors"
+                          >
+                            <X className="w-3 h-3" />
+                            Cancel
+                          </button>
+                        )}
                       </div>
                     )}
 

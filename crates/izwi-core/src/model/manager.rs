@@ -263,6 +263,11 @@ impl ModelManager {
 
     /// Delete downloaded model files
     pub async fn delete_model(&self, variant: ModelVariant) -> Result<()> {
+        // Ensure background download is stopped before we remove files.
+        if self.downloader.is_download_active(variant).await {
+            let _ = self.downloader.cancel_download(variant).await;
+        }
+
         // Unload first
         self.unload_model(variant).await?;
 

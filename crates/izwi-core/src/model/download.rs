@@ -14,6 +14,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use reqwest;
 use tokio::sync::{broadcast, RwLock};
 use tokio::task::JoinHandle;
+use tokio::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
@@ -204,6 +205,8 @@ impl ModelDownloader {
         let mut file = tokio::fs::File::create(dest).await?;
         let mut downloaded = 0u64;
         let mut stream = response.bytes_stream();
+        let mut last_progress_emit = Instant::now();
+        let mut last_progress_bytes = 0u64;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| Error::HfHubError(format!("Stream error: {}", e)))?;
@@ -217,15 +220,39 @@ impl ModelDownloader {
             // Send real-time progress update
             if let Some(ref tx) = progress_tx {
                 if let Some(ref template) = progress_template {
-                    let progress = DownloadProgress {
-                        current_file_downloaded: downloaded,
-                        current_file_total: total_size.max(downloaded),
-                        // Calculate total downloaded: base bytes from completed files + current file progress
-                        downloaded_bytes: template.downloaded_bytes + downloaded,
-                        ..template.clone()
-                    };
-                    let _ = tx.send(progress);
+                    let bytes_delta = downloaded.saturating_sub(last_progress_bytes);
+                    let should_emit =
+                        bytes_delta >= 256 * 1024
+                            || last_progress_emit.elapsed() >= Duration::from_millis(200)
+                            || (total_size > 0 && downloaded >= total_size);
+
+                    if should_emit {
+                        let progress = DownloadProgress {
+                            current_file_downloaded: downloaded,
+                            current_file_total: total_size.max(downloaded),
+                            // Calculate total downloaded: base bytes from completed files + current file progress
+                            downloaded_bytes: template.downloaded_bytes + downloaded,
+                            ..template.clone()
+                        };
+                        let _ = tx.send(progress);
+                        last_progress_emit = Instant::now();
+                        last_progress_bytes = downloaded;
+                    }
                 }
+            }
+        }
+
+        // Ensure we always emit a final per-file progress event, even if throttled updates
+        // did not include the final chunk.
+        if let Some(ref tx) = progress_tx {
+            if let Some(ref template) = progress_template {
+                let progress = DownloadProgress {
+                    current_file_downloaded: downloaded,
+                    current_file_total: total_size.max(downloaded),
+                    downloaded_bytes: template.downloaded_bytes + downloaded,
+                    ..template.clone()
+                };
+                let _ = tx.send(progress);
             }
         }
 
@@ -412,7 +439,7 @@ impl ModelDownloader {
             .await;
 
         // Create broadcast channel for progress (allows multiple subscribers)
-        let (progress_tx, _progress_rx) = broadcast::channel(100);
+        let (progress_tx, _progress_rx) = broadcast::channel(512);
         let downloader = self.clone_downloader();
         let progress_tx_clone = progress_tx.clone();
 

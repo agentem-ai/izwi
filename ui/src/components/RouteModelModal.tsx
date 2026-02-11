@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  Check,
   CheckCircle2,
   Download,
   Loader2,
@@ -9,6 +10,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { ModelInfo } from "../api";
 
 interface RouteModelModalProps {
@@ -100,6 +102,16 @@ export function RouteModelModal({
   onUseModel,
   emptyMessage = "No models are available for this route.",
 }: RouteModelModalProps) {
+  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<string | null>(
+    null,
+  );
+
+  useEffect(() => {
+    if (!isOpen) {
+      setPendingDeleteVariant(null);
+    }
+  }, [isOpen]);
+
   const activeReadyModelVariant =
     models.find((model) => model.status === "ready")?.variant ?? null;
 
@@ -286,18 +298,42 @@ export function RouteModelModal({
                           )}
                           {(model.status === "downloaded" ||
                             model.status === "ready") && (
-                            <button
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                if (confirm(`Delete ${model.variant}?`)) {
-                                  onDelete(model.variant);
-                                }
-                              }}
-                              className="btn btn-danger text-xs"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              Delete
-                            </button>
+                            pendingDeleteVariant === model.variant ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setPendingDeleteVariant(null);
+                                    onDelete(model.variant);
+                                  }}
+                                  className="btn btn-danger text-xs"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  Confirm
+                                </button>
+                                <button
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setPendingDeleteVariant(null);
+                                  }}
+                                  className="btn btn-secondary text-xs"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setPendingDeleteVariant(model.variant);
+                                }}
+                                className="btn btn-danger text-xs"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                Delete
+                              </button>
+                            )
                           )}
                         </div>
                       </div>

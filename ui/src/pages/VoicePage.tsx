@@ -13,6 +13,7 @@ import {
   Square,
   Trash2,
   X,
+  Check,
   CheckCircle2,
 } from "lucide-react";
 import clsx from "clsx";
@@ -78,6 +79,14 @@ function parseFinalAnswer(content: string): string {
   }
 
   return out.trim();
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 function isAsrVariant(variant: string): boolean {
@@ -263,6 +272,9 @@ export function VoicePage({
   const [silenceDurationMs, setSilenceDurationMs] = useState(900);
   const [minSpeechMs, setMinSpeechMs] = useState(300);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
+  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<string | null>(
+    null,
+  );
 
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -290,6 +302,12 @@ export function VoicePage({
   const ttsSampleRateRef = useRef(24000);
   const ttsSamplesRef = useRef<Float32Array[]>([]);
   const ttsStreamSessionRef = useRef(0);
+
+  useEffect(() => {
+    if (!isConfigOpen) {
+      setPendingDeleteVariant(null);
+    }
+  }, [isConfigOpen]);
 
   const sortedModels = useMemo(() => {
     const statusOrder: Record<ModelInfo["status"], number> = {
@@ -1557,10 +1575,9 @@ export function VoicePage({
 
                   {voiceRouteModels.map((model) => {
                     const roles = getModelRoles(model.variant);
+                    const progressValue = downloadProgress[model.variant];
                     const progress =
-                      downloadProgress[model.variant]?.percent ??
-                      model.download_progress ??
-                      0;
+                      progressValue?.percent ?? model.download_progress ?? 0;
                     const isSelectedAsr = selectedAsrModel === model.variant;
                     const isSelectedText = selectedTextModel === model.variant;
                     const isSelectedTts = selectedTtsModel === model.variant;
@@ -1658,30 +1675,46 @@ export function VoicePage({
                             )}
                             {(model.status === "downloaded" ||
                               model.status === "ready") && (
-                              <button
-                                onClick={() => {
-                                  if (
-                                    confirm(
-                                      `Delete ${model.variant}? This removes downloaded files.`,
-                                    )
-                                  ) {
-                                    onDelete(model.variant);
-                                    if (selectedAsrModel === model.variant) {
-                                      setSelectedAsrModel(null);
-                                    }
-                                    if (selectedTextModel === model.variant) {
-                                      setSelectedTextModel(null);
-                                    }
-                                    if (selectedTtsModel === model.variant) {
-                                      setSelectedTtsModel(null);
-                                    }
+                              pendingDeleteVariant === model.variant ? (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => {
+                                      setPendingDeleteVariant(null);
+                                      onDelete(model.variant);
+                                      if (selectedAsrModel === model.variant) {
+                                        setSelectedAsrModel(null);
+                                      }
+                                      if (selectedTextModel === model.variant) {
+                                        setSelectedTextModel(null);
+                                      }
+                                      if (selectedTtsModel === model.variant) {
+                                        setSelectedTtsModel(null);
+                                      }
+                                    }}
+                                    className="btn btn-danger text-xs"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    Confirm
+                                  </button>
+                                  <button
+                                    onClick={() => setPendingDeleteVariant(null)}
+                                    className="btn btn-secondary text-xs"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() =>
+                                    setPendingDeleteVariant(model.variant)
                                   }
-                                }}
-                                className="btn btn-danger text-xs"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                Delete
-                              </button>
+                                  className="btn btn-danger text-xs"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  Delete
+                                </button>
+                              )
                             )}
                           </div>
                         </div>
@@ -1696,7 +1729,19 @@ export function VoicePage({
                             </div>
                             <div className="mt-1 text-[11px] text-gray-500">
                               Downloading {Math.round(progress)}%
+                              {progressValue && progressValue.totalBytes > 0 && (
+                                <>
+                                  {" "}
+                                  ({formatBytes(progressValue.downloadedBytes)} /{" "}
+                                  {formatBytes(progressValue.totalBytes)})
+                                </>
+                              )}
                             </div>
+                            {progressValue?.currentFile && (
+                              <div className="mt-0.5 text-[11px] text-gray-600 truncate">
+                                {progressValue.currentFile}
+                              </div>
+                            )}
                           </div>
                         )}
 

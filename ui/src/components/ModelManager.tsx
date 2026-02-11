@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  Check,
   Download,
   Play,
   Square,
@@ -300,6 +301,9 @@ export function ModelManager({
   emptyStateDescription,
 }: ModelManagerProps) {
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
+  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<string | null>(
+    null,
+  );
   const ttsModels = models
     .filter((m) => !m.variant.includes("Tokenizer"))
     .filter((m) => (modelFilter ? modelFilter(m.variant) : true))
@@ -574,22 +578,42 @@ export function ModelManager({
                             <Play className="w-4 h-4" />
                             Load
                           </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (
-                                confirm(
-                                  `Delete ${details.shortName}? This will remove all downloaded files.`,
-                                )
-                              ) {
-                                onDelete(model.variant);
-                              }
-                            }}
-                            className="btn btn-danger text-sm"
-                            disabled={isDisabled}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          {pendingDeleteVariant === model.variant ? (
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPendingDeleteVariant(null);
+                                  onDelete(model.variant);
+                                }}
+                                className="btn btn-danger text-sm"
+                                disabled={isDisabled}
+                              >
+                                <Check className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPendingDeleteVariant(null);
+                                }}
+                                className="btn btn-secondary text-sm"
+                                disabled={isDisabled}
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPendingDeleteVariant(model.variant);
+                              }}
+                              className="btn btn-danger text-sm"
+                              disabled={isDisabled}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
                         </>
                       )}
 
@@ -606,22 +630,42 @@ export function ModelManager({
                             <Square className="w-4 h-4" />
                             Unload
                           </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (
-                                confirm(
-                                  `Delete ${details.shortName}? This will unload and remove all files.`,
-                                )
-                              ) {
-                                onDelete(model.variant);
-                              }
-                            }}
-                            className="btn btn-danger text-sm"
-                            disabled={isDisabled}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          {pendingDeleteVariant === model.variant ? (
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPendingDeleteVariant(null);
+                                  onDelete(model.variant);
+                                }}
+                                className="btn btn-danger text-sm"
+                                disabled={isDisabled}
+                              >
+                                <Check className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPendingDeleteVariant(null);
+                                }}
+                                className="btn btn-secondary text-sm"
+                                disabled={isDisabled}
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPendingDeleteVariant(model.variant);
+                              }}
+                              className="btn btn-danger text-sm"
+                              disabled={isDisabled}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
                         </>
                       )}
                     </div>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  Check,
   CheckCircle2,
   Download,
   Loader2,
@@ -89,6 +90,14 @@ function getStatusClass(status: ModelInfo["status"]): string {
   }
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 export function ChatPage({
   models,
   selectedModel,
@@ -106,6 +115,9 @@ export function ChatPage({
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [modalIntentModel, setModalIntentModel] = useState<string | null>(null);
   const [autoCloseOnIntentReady, setAutoCloseOnIntentReady] = useState(false);
+  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<string | null>(
+    null,
+  );
 
   const chatModels = useMemo(
     () =>
@@ -139,6 +151,7 @@ export function ChatPage({
   const closeModelModal = () => {
     setIsModelModalOpen(false);
     setAutoCloseOnIntentReady(false);
+    setPendingDeleteVariant(null);
   };
 
   useEffect(() => {
@@ -340,10 +353,9 @@ export function ChatPage({
                     const isSelected = resolvedSelectedModel === model.variant;
                     const isIntent = modalIntentModel === model.variant;
                     const isActiveModel = activeReadyModelVariant === model.variant;
+                    const progressValue = downloadProgress[model.variant];
                     const progress =
-                      downloadProgress[model.variant]?.percent ??
-                      model.download_progress ??
-                      0;
+                      progressValue?.percent ?? model.download_progress ?? 0;
 
                     return (
                       <div
@@ -384,22 +396,42 @@ export function ChatPage({
                             {renderModelPrimaryAction(model, isActiveModel)}
                             {(model.status === "downloaded" ||
                               model.status === "ready") && (
-                              <button
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  if (
-                                    confirm(
-                                      `Delete ${getChatModelName(model.variant)}?`,
-                                    )
-                                  ) {
-                                    onDelete(model.variant);
-                                  }
-                                }}
-                                className="btn btn-danger text-xs"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                Delete
-                              </button>
+                              pendingDeleteVariant === model.variant ? (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setPendingDeleteVariant(null);
+                                      onDelete(model.variant);
+                                    }}
+                                    className="btn btn-danger text-xs"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    Confirm
+                                  </button>
+                                  <button
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setPendingDeleteVariant(null);
+                                    }}
+                                    className="btn btn-secondary text-xs"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setPendingDeleteVariant(model.variant);
+                                  }}
+                                  className="btn btn-danger text-xs"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  Delete
+                                </button>
+                              )
                             )}
                             {model.status === "ready" && (
                               <button
@@ -426,7 +458,19 @@ export function ChatPage({
                             </div>
                             <div className="mt-1 text-[11px] text-gray-500">
                               Downloading {Math.round(progress)}%
+                              {progressValue && progressValue.totalBytes > 0 && (
+                                <>
+                                  {" "}
+                                  ({formatBytes(progressValue.downloadedBytes)} /{" "}
+                                  {formatBytes(progressValue.totalBytes)})
+                                </>
+                              )}
                             </div>
+                            {progressValue?.currentFile && (
+                              <div className="mt-0.5 text-[11px] text-gray-600 truncate">
+                                {progressValue.currentFile}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

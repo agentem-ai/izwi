@@ -36,6 +36,8 @@ function App() {
   const activeDownloadsRef = useRef<Set<string>>(new Set());
   const activeModelLoadsRef = useRef<Set<string>>(new Set());
   const eventSourcesRef = useRef<Record<string, EventSource>>({});
+  const reconnectTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const suppressReconnectRef = useRef<Set<string>>(new Set());
   const initializedRef = useRef(false);
 
   const loadModels = useCallback(async () => {
@@ -46,6 +48,17 @@ function App() {
           ? { ...model, status: "loading" as const }
           : model,
       );
+
+      const downloadingVariants = new Set(
+        mergedModels
+          .filter((model) => model.status === "downloading")
+          .map((model) => model.variant),
+      );
+      suppressReconnectRef.current.forEach((variant) => {
+        if (!downloadingVariants.has(variant)) {
+          suppressReconnectRef.current.delete(variant);
+        }
+      });
 
       setModels(mergedModels);
 
@@ -100,13 +113,41 @@ function App() {
     };
   }, [models, loadModels]);
 
+  const clearDownloadProgress = useCallback((variant: string) => {
+    setDownloadProgress((prev) => {
+      const { [variant]: _removed, ...rest } = prev;
+      return rest;
+    });
+  }, []);
+
+  const clearReconnectTimer = useCallback((variant: string) => {
+    const timer = reconnectTimersRef.current[variant];
+    if (timer) {
+      clearTimeout(timer);
+      delete reconnectTimersRef.current[variant];
+    }
+  }, []);
+
+  const closeDownloadStream = useCallback(
+    (variant: string) => {
+      clearReconnectTimer(variant);
+
+      const eventSource = eventSourcesRef.current[variant];
+      if (eventSource) {
+        eventSource.close();
+        delete eventSourcesRef.current[variant];
+      }
+    },
+    [clearReconnectTimer],
+  );
+
   // Connect to SSE for real-time download progress
   const connectDownloadStream = useCallback(
     (variant: string) => {
-      // Close existing connection if any
-      if (eventSourcesRef.current[variant]) {
-        eventSourcesRef.current[variant].close();
-      }
+      clearReconnectTimer(variant);
+      closeDownloadStream(variant);
+      suppressReconnectRef.current.delete(variant);
+      activeDownloadsRef.current.add(variant);
 
       const eventSource = new EventSource(
         `${api.baseUrl}/admin/models/${variant}/download/progress`,
@@ -129,20 +170,17 @@ function App() {
 
           // Close connection when complete
           if (data.status === "completed" || data.status === "error") {
-            eventSource.close();
-            delete eventSourcesRef.current[variant];
+            closeDownloadStream(variant);
             activeDownloadsRef.current.delete(variant);
+            suppressReconnectRef.current.delete(variant);
 
             // Refresh models after completion
-            loadModels();
+            void loadModels();
 
             // Clear progress after delay
             setTimeout(() => {
-              setDownloadProgress((prev) => {
-                const { [variant]: _, ...rest } = prev;
-                return rest;
-              });
-            }, 2000);
+              clearDownloadProgress(variant);
+            }, 3000);
           }
         } catch (err) {
           console.error("Failed to parse progress event:", err);
@@ -151,14 +189,83 @@ function App() {
 
       eventSource.onerror = (err) => {
         console.error("SSE error:", err);
-        eventSource.close();
-        delete eventSourcesRef.current[variant];
-        activeDownloadsRef.current.delete(variant);
-        loadModels();
+        closeDownloadStream(variant);
+
+        if (suppressReconnectRef.current.has(variant)) {
+          return;
+        }
+        if (reconnectTimersRef.current[variant]) {
+          return;
+        }
+
+        reconnectTimersRef.current[variant] = setTimeout(async () => {
+          delete reconnectTimersRef.current[variant];
+
+          if (suppressReconnectRef.current.has(variant)) {
+            return;
+          }
+
+          try {
+            const model = await api.getModelInfo(variant);
+            if (model.status === "downloading") {
+              connectDownloadStream(variant);
+              return;
+            }
+          } catch (reconnectErr) {
+            console.error(`Reconnect check failed for ${variant}:`, reconnectErr);
+          }
+
+          activeDownloadsRef.current.delete(variant);
+          clearDownloadProgress(variant);
+          await loadModels();
+        }, 1500);
       };
     },
-    [loadModels],
+    [
+      clearDownloadProgress,
+      clearReconnectTimer,
+      closeDownloadStream,
+      loadModels,
+    ],
   );
+
+  // Keep stream subscriptions aligned to active downloading models,
+  // including downloads that started before this page mounted.
+  useEffect(() => {
+    const downloading = new Set(
+      models
+        .filter((model) => model.status === "downloading")
+        .map((model) => model.variant),
+    );
+
+    downloading.forEach((variant) => {
+      if (suppressReconnectRef.current.has(variant)) {
+        return;
+      }
+      activeDownloadsRef.current.add(variant);
+      if (!eventSourcesRef.current[variant] && !reconnectTimersRef.current[variant]) {
+        connectDownloadStream(variant);
+      }
+    });
+
+    Object.keys(eventSourcesRef.current).forEach((variant) => {
+      if (!downloading.has(variant)) {
+        closeDownloadStream(variant);
+        activeDownloadsRef.current.delete(variant);
+      }
+    });
+  }, [models, connectDownloadStream, closeDownloadStream]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(eventSourcesRef.current).forEach((source) => source.close());
+      eventSourcesRef.current = {};
+      Object.values(reconnectTimersRef.current).forEach((timer) =>
+        clearTimeout(timer),
+      );
+      reconnectTimersRef.current = {};
+    };
+  }, []);
 
   const handleDownload = async (variant: string) => {
     try {
@@ -166,6 +273,8 @@ function App() {
       if (activeDownloadsRef.current.has(variant)) {
         return;
       }
+      suppressReconnectRef.current.delete(variant);
+      clearReconnectTimer(variant);
       activeDownloadsRef.current.add(variant);
 
       setModels((prev) =>
@@ -190,11 +299,7 @@ function App() {
       activeDownloadsRef.current.delete(variant);
       setError(err.message || "Failed to download model. Please try again.");
 
-      // Close SSE connection on error
-      if (eventSourcesRef.current[variant]) {
-        eventSourcesRef.current[variant].close();
-        delete eventSourcesRef.current[variant];
-      }
+      closeDownloadStream(variant);
 
       await loadModels();
     }
@@ -202,21 +307,15 @@ function App() {
 
   const handleCancelDownload = async (variant: string) => {
     try {
-      // Close SSE connection
-      if (eventSourcesRef.current[variant]) {
-        eventSourcesRef.current[variant].close();
-        delete eventSourcesRef.current[variant];
-      }
+      suppressReconnectRef.current.add(variant);
+      closeDownloadStream(variant);
 
       activeDownloadsRef.current.delete(variant);
 
       await api.cancelDownload(variant);
 
       // Update UI immediately
-      setDownloadProgress((prev) => {
-        const { [variant]: _, ...rest } = prev;
-        return rest;
-      });
+      clearDownloadProgress(variant);
 
       setModels((prev) =>
         prev.map((m) =>
@@ -232,8 +331,10 @@ function App() {
 
       await loadModels();
     } catch (err: any) {
+      suppressReconnectRef.current.delete(variant);
       console.error("Cancel failed:", err);
       setError(err.message || "Failed to cancel download.");
+      await loadModels();
     }
   };
 
@@ -299,6 +400,11 @@ function App() {
 
   const handleDelete = async (variant: string) => {
     try {
+      suppressReconnectRef.current.add(variant);
+      closeDownloadStream(variant);
+      activeDownloadsRef.current.delete(variant);
+      clearDownloadProgress(variant);
+
       await api.deleteModel(variant);
       // Refresh models after delete
       await loadModels();
@@ -306,8 +412,10 @@ function App() {
         setSelectedModel(null);
       }
     } catch (err) {
+      suppressReconnectRef.current.delete(variant);
       console.error("Delete failed:", err);
       setError("Failed to delete model. Please try again.");
+      await loadModels();
     }
   };
 

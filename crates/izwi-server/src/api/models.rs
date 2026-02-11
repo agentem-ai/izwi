@@ -7,6 +7,7 @@ use axum::{
 };
 use futures::stream::Stream;
 use serde::Serialize;
+use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
 use crate::error::ApiError;
@@ -209,6 +210,11 @@ pub async fn download_progress_stream(
         loop {
             match progress_rx.recv().await {
                 Ok(progress) => {
+                    let is_completed = progress.files_total > 0
+                        && progress.files_completed >= progress.files_total
+                        && (progress.total_bytes == 0
+                            || progress.downloaded_bytes >= progress.total_bytes);
+
                     let event = ProgressEvent {
                         variant: progress.variant.to_string(),
                         downloaded_bytes: progress.downloaded_bytes,
@@ -219,7 +225,7 @@ pub async fn download_progress_stream(
                         files_completed: progress.files_completed,
                         files_total: progress.files_total,
                         percent: progress.total_percent(),
-                        status: if progress.files_completed >= progress.files_total {
+                        status: if is_completed {
                             "completed".to_string()
                         } else {
                             "downloading".to_string()
@@ -234,8 +240,15 @@ pub async fn download_progress_stream(
                         break;
                     }
                 }
-                Err(_) => {
-                    // Channel closed or lagged, stop streaming
+                Err(RecvError::Lagged(skipped)) => {
+                    warn!(
+                        "Download progress stream lagged for {} (skipped {} updates); continuing",
+                        variant, skipped
+                    );
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    // Channel closed: the download task has exited.
                     break;
                 }
             }
