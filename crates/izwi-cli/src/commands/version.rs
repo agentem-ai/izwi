@@ -39,6 +39,6 @@ pub fn execute(full: bool, theme: &Theme) {
     println!();
     println!(
         "For more information, visit: {}",
-        style("https://github.com/agentem/izwi-audio").cyan()
+        style("https://github.com/agentem-ai/izwi").cyan()
     );
 }

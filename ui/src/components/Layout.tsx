@@ -399,11 +399,11 @@ export function Layout({
               )}
             </div>
             <a
-              href="https://github.com/QwenLM/Qwen3-TTS"
+              href="https://github.com/agentem-ai/izwi"
               target="_blank"
               rel="noopener noreferrer"
               className="p-1.5 rounded hover:bg-[#1a1a1a] transition-colors"
-              title="Qwen3-TTS on GitHub"
+              title="Izwi on GitHub"
             >
               <Github className="w-4 h-4 text-gray-500 hover:text-white" />
             </a>
