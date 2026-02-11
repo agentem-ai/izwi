@@ -65,9 +65,20 @@ impl ModelManager {
                 continue;
             }
 
-            let is_downloaded = self.downloader.is_downloaded(*variant);
             let download_state = self.downloader.state_manager().get_state(*variant).await;
 
+            if download_state == DownloadState::Downloading {
+                state.info.status = ModelStatus::Downloading;
+                if let Some(progress) = self.downloader.get_latest_progress(*variant).await {
+                    state.info.download_progress = Some(progress.total_percent());
+                } else if state.info.download_progress.is_none() {
+                    state.info.download_progress = Some(0.0);
+                }
+                state.info.error_message = None;
+                continue;
+            }
+
+            let is_downloaded = self.downloader.is_downloaded(*variant);
             if is_downloaded {
                 state.info.status = ModelStatus::Downloaded;
                 state.info.local_path = Some(self.downloader.model_path(*variant));
@@ -78,14 +89,6 @@ impl ModelManager {
             }
 
             match download_state {
-                DownloadState::Downloading => {
-                    state.info.status = ModelStatus::Downloading;
-                    if let Some(progress) = self.downloader.get_latest_progress(*variant).await {
-                        state.info.download_progress = Some(progress.total_percent());
-                    } else if state.info.download_progress.is_none() {
-                        state.info.download_progress = Some(0.0);
-                    }
-                }
                 DownloadState::Error => {
                     state.info.status = ModelStatus::Error;
                     state.info.error_message = Some("Download failed".to_string());
@@ -96,6 +99,7 @@ impl ModelManager {
                     state.info.size_bytes = None;
                     state.info.download_progress = None;
                 }
+                DownloadState::Downloading => {}
             }
         }
     }
@@ -352,5 +356,47 @@ impl ModelManager {
 impl Clone for ModelDownloader {
     fn clone(&self) -> Self {
         ModelDownloader::new(self.models_dir.clone()).unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::EngineConfig;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn refresh_keeps_downloading_status_when_partial_files_exist() {
+        let temp_dir = std::env::temp_dir().join(format!("izwi-manager-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let config = EngineConfig {
+            models_dir: PathBuf::from(&temp_dir),
+            ..EngineConfig::default()
+        };
+        let manager = ModelManager::new(config).unwrap();
+        let variant = ModelVariant::Qwen306B4Bit;
+
+        let model_dir = temp_dir.join(variant.dir_name());
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("config.json"), "{}").unwrap();
+        std::fs::write(model_dir.join("vocab.json"), "{}").unwrap();
+        std::fs::write(model_dir.join("merges.txt"), "").unwrap();
+        std::fs::write(model_dir.join("model.safetensors"), [0u8]).unwrap();
+
+        manager
+            .downloader
+            .state_manager()
+            .set_state(variant, DownloadState::Downloading)
+            .await;
+
+        let models = manager.list_models().await;
+        let model = models.into_iter().find(|m| m.variant == variant).unwrap();
+
+        assert_eq!(model.status, ModelStatus::Downloading);
+        assert_eq!(model.download_progress, Some(0.0));
+
+        std::fs::remove_dir_all(&temp_dir).unwrap();
     }
 }
