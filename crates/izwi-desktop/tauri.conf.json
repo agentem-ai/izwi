@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Izwi Desktop",
+  "productName": "Izwi",
   "version": "0.1.0-alpha",
   "identifier": "com.agentem.izwi.desktop",
   "build": {

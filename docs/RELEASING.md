@@ -55,8 +55,8 @@ If permissions prevent automatic setup, the app requests admin privileges via ma
 
 1. Download the macOS `.dmg` from the GitHub release.
 2. Open the `.dmg`.
-3. Drag `Izwi Desktop.app` into `/Applications`.
-4. Launch `Izwi Desktop` from Applications.
+3. Drag `Izwi.app` into `/Applications`.
+4. Launch `Izwi` from Applications.
 5. Verify terminal access:
 
 ```bash
@@ -75,8 +75,8 @@ Quick uninstall script:
 Or manual full uninstall:
 
 ```bash
-pkill -f "izwi-server|izwi serve|izwi-desktop|Izwi Desktop" >/dev/null 2>&1 || true
-sudo rm -rf "/Applications/Izwi Desktop.app"
+pkill -f "izwi-server|izwi serve|izwi-desktop|/Applications/Izwi\.app|Izwi\.app" >/dev/null 2>&1 || true
+sudo rm -rf "/Applications/Izwi.app"
 sudo rm -f /opt/homebrew/bin/izwi /opt/homebrew/bin/izwi-server
 sudo rm -f /usr/local/bin/izwi /usr/local/bin/izwi-server
 rm -rf "$HOME/Library/Application Support/izwi"

@@ -2,10 +2,10 @@
 
 ## Install
 
-1. Download `Izwi Desktop` for macOS from the latest GitHub release.
+1. Download `Izwi` for macOS from the latest GitHub release.
 2. Open the downloaded `.dmg`.
-3. Drag `Izwi Desktop.app` into `/Applications`.
-4. Launch `Izwi Desktop` from Applications.
+3. Drag `Izwi.app` into `/Applications`.
+4. Launch `Izwi` from Applications.
 5. On first launch, Izwi will try to link `izwi` and `izwi-server` into your PATH and may ask for admin permission.
 6. Verify in Terminal:
 
@@ -34,8 +34,8 @@ chmod +x uninstall-izwi-macos.sh
 ### Manual full uninstall
 
 ```bash
-pkill -f "izwi-server|izwi serve|izwi-desktop|Izwi Desktop" >/dev/null 2>&1 || true
-sudo rm -rf "/Applications/Izwi Desktop.app"
+pkill -f "izwi-server|izwi serve|izwi-desktop|/Applications/Izwi\.app|Izwi\.app" >/dev/null 2>&1 || true
+sudo rm -rf "/Applications/Izwi.app"
 sudo rm -f /opt/homebrew/bin/izwi /opt/homebrew/bin/izwi-server
 sudo rm -f /usr/local/bin/izwi /usr/local/bin/izwi-server
 rm -rf "$HOME/Library/Application Support/izwi"

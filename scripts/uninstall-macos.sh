@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-APP_PATH="/Applications/Izwi Desktop.app"
+APP_PATH="/Applications/Izwi.app"
 IDENTIFIER="com.agentem.izwi.desktop"
 
 PATH_LINKS=(
@@ -23,7 +23,7 @@ DATA_PATHS=(
 )
 
 echo "Stopping running Izwi processes..."
-pkill -f "izwi-server|izwi serve|izwi-desktop|Izwi Desktop" >/dev/null 2>&1 || true
+pkill -f "izwi-server|izwi serve|izwi-desktop|/Applications/Izwi\\.app|Izwi\\.app" >/dev/null 2>&1 || true
 
 if [ -d "$APP_PATH" ]; then
   echo "Removing app bundle: $APP_PATH"
