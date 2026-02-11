@@ -551,8 +551,7 @@ export function TranscriptionPlayground({
                 onChange={(event) =>
                   setStreamingEnabled(event.target.checked)
                 }
-                className="w-3.5 h-3.5 rounded border-[#3a404b] bg-[#0f1115] text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0 disabled:opacity-50"
-                style={{ colorScheme: "dark" }}
+                className="app-checkbox w-3.5 h-3.5 disabled:opacity-50"
                 disabled={isProcessing}
               />
             </label>
