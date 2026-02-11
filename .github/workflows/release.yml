@@ -32,6 +32,13 @@ jobs:
             asset_suffix: macos
             bundle_kind: dmg
             bundle_ext: dmg
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
     steps:
       - name: Checkout
@@ -100,7 +107,7 @@ jobs:
         run: cargo install tauri-cli --locked --version "^2.0"
 
       - name: Build desktop bundle (unsigned/default)
-        if: runner.os != 'macOS' || secrets.APPLE_SIGNING_IDENTITY == ''
+        if: runner.os != 'macOS' || env.APPLE_SIGNING_IDENTITY == ''
         env:
           CI: "true"
         run: |
@@ -116,15 +123,9 @@ jobs:
           fi
 
       - name: Build desktop bundle (signed macOS)
-        if: runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY != ''
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_IDENTITY != ''
         env:
           CI: "true"
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           cargo tauri build \
             --manifest-path crates/izwi-desktop/Cargo.toml \
