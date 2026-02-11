@@ -187,11 +187,14 @@ impl ModelDownloader {
             return Ok(cached);
         }
 
-        let url = format!("{}/api/models/{}/tree/main?recursive=1", HF_BASE_URL, repo_id);
+        let url = format!(
+            "{}/api/models/{}/tree/main?recursive=1",
+            HF_BASE_URL, repo_id
+        );
         let response = self
             .http_client
             .get(&url)
-            .header("User-Agent", "izwi-audio/0.1.0")
+            .header("User-Agent", "izwi-audio/0.1.0-alpha-1")
             .send()
             .await
             .map_err(|e| Error::HfHubError(format!("Repo tree request failed: {}", e)))?;
@@ -295,10 +298,9 @@ impl ModelDownloader {
             if let Some(ref tx) = progress_tx {
                 if let Some(ref template) = progress_template {
                     let bytes_delta = downloaded.saturating_sub(last_progress_bytes);
-                    let should_emit =
-                        bytes_delta >= 256 * 1024
-                            || last_progress_emit.elapsed() >= Duration::from_millis(200)
-                            || (total_size > 0 && downloaded >= total_size);
+                    let should_emit = bytes_delta >= 256 * 1024
+                        || last_progress_emit.elapsed() >= Duration::from_millis(200)
+                        || (total_size > 0 && downloaded >= total_size);
 
                     if should_emit {
                         let progress = DownloadProgress {
@@ -714,9 +716,7 @@ impl ModelDownloader {
                     .await
                 {
                     Ok(bytes_downloaded) => {
-                        if plan.strict_size_check
-                            && file_size > 0
-                            && bytes_downloaded != file_size
+                        if plan.strict_size_check && file_size > 0 && bytes_downloaded != file_size
                         {
                             let _ = tokio::fs::remove_file(&dest).await;
                             last_err = Some(Error::DownloadError(format!(
@@ -944,7 +944,10 @@ impl ModelDownloader {
     }
 
     /// Get actual file sizes for all model files
-    async fn get_file_download_plans(&self, variant: ModelVariant) -> Result<Vec<FileDownloadPlan>> {
+    async fn get_file_download_plans(
+        &self,
+        variant: ModelVariant,
+    ) -> Result<Vec<FileDownloadPlan>> {
         let files = self.get_model_files(variant);
         let repo_id = variant.repo_id();
         let local_dir = self.model_path(variant);
