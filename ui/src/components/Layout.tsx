@@ -15,7 +15,8 @@ import {
   Menu,
 } from "lucide-react";
 import clsx from "clsx";
-import appIconUrl from "../assets/app-icon.png";
+
+const appIconUrl = `/app-icon.png?v=${Date.now()}`;
 
 interface LayoutProps {
   error: string | null;

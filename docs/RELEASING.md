@@ -22,6 +22,8 @@ For each OS runner, the workflow builds:
   - Windows: `NSIS .exe`
   - macOS: `.dmg`
 
+The desktop bundle build runs the UI build automatically via Tauri `beforeBuildCommand`, so `ui/dist` is rebuilt from latest source for every release.
+
 Linux `.deb` installs terminal commands into `/usr/bin`:
 - `izwi`
 - `izwi-server`

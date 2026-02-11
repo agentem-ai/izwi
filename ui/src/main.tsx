@@ -2,7 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./index.css";
-import appIconUrl from "./assets/app-icon.png";
+
+const appIconUrl = `/app-icon.png?v=${Date.now()}`;
 
 function setLinkHref(rel: string, href: string) {
   const link =

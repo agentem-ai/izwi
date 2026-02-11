@@ -39,6 +39,14 @@ interface RouteModelModalProps {
   emptyMessage?: string;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 function getStatusLabel(status: ModelInfo["status"]): string {
   switch (status) {
     case "ready":
@@ -223,10 +231,9 @@ export function RouteModelModal({
                   const isSelected = selectedVariant === model.variant;
                   const isIntent = intentVariant === model.variant;
                   const isActiveModel = activeReadyModelVariant === model.variant;
+                  const progressValue = downloadProgress[model.variant];
                   const progress =
-                    downloadProgress[model.variant]?.percent ??
-                    model.download_progress ??
-                    0;
+                    progressValue?.percent ?? model.download_progress ?? 0;
 
                   return (
                     <div
@@ -305,7 +312,19 @@ export function RouteModelModal({
                           </div>
                           <div className="mt-1 text-[11px] text-gray-500">
                             Downloading {Math.round(progress)}%
+                            {progressValue && progressValue.totalBytes > 0 && (
+                              <>
+                                {" "}
+                                ({formatBytes(progressValue.downloadedBytes)} /{" "}
+                                {formatBytes(progressValue.totalBytes)})
+                              </>
+                            )}
                           </div>
+                          {progressValue?.currentFile && (
+                            <div className="mt-0.5 text-[11px] text-gray-600 truncate">
+                              {progressValue.currentFile}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

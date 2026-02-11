@@ -64,11 +64,8 @@ jobs:
           workspaces: |
             . -> target
 
-      - name: Install UI dependencies
+      - name: Install UI dependencies (for Tauri beforeBuildCommand)
         run: npm ci --prefix ui
-
-      - name: Build UI
-        run: npm run build --prefix ui
 
       - name: Build CLI, server, and desktop binaries
         run: cargo build --release --bin izwi --bin izwi-server --bin izwi-desktop
