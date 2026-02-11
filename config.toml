@@ -2,7 +2,10 @@
 
 [engine]
 # Directory to store downloaded models
-# Default: ~/.local/share/izwi/models
+# Default:
+#   macOS: ~/Library/Application Support/izwi/models
+#   Linux: ~/.local/share/izwi/models
+#   Windows: %LOCALAPPDATA%\izwi\models
 # models_dir = "/path/to/models"
 
 # Maximum batch size for inference

@@ -34,13 +34,42 @@ fn get_config_path(override_path: Option<&PathBuf>) -> Result<PathBuf> {
     Ok(config_dir.join("izwi").join("config.toml"))
 }
 
+fn default_models_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("izwi")
+        .join("models")
+}
+
+fn default_config_contents() -> Result<String> {
+    let mut root = toml::Table::new();
+
+    let mut server = toml::Table::new();
+    server.insert(
+        "host".to_string(),
+        toml::Value::String("localhost".to_string()),
+    );
+    server.insert("port".to_string(), toml::Value::Integer(8080));
+    root.insert("server".to_string(), toml::Value::Table(server));
+
+    let mut models = toml::Table::new();
+    models.insert(
+        "dir".to_string(),
+        toml::Value::String(default_models_dir().to_string_lossy().to_string()),
+    );
+    root.insert("models".to_string(), toml::Value::Table(models));
+
+    let body = toml::to_string_pretty(&root).map_err(|e| CliError::ConfigError(e.to_string()))?;
+    Ok(format!("# Izwi Configuration\n\n{body}"))
+}
+
 async fn show_config(path: &PathBuf, theme: &Theme) -> Result<()> {
     if !path.exists() {
         theme.info("No configuration file found. Using defaults.");
         println!("\nDefault configuration:");
         println!("  server.host = \"localhost\"");
         println!("  server.port = 8080");
-        println!("  models.dir = \"~/.local/share/izwi/models\"");
+        println!("  models.dir = \"{}\"", default_models_dir().display());
         return Ok(());
     }
 
@@ -155,7 +184,8 @@ async fn edit_config(path: &PathBuf, theme: &Theme) -> Result<()> {
                 .await
                 .map_err(|e| CliError::Io(e))?;
         }
-        tokio::fs::write(path, "# Izwi Configuration\n\n[server]\nhost = \"localhost\"\nport = 8080\n\n[models]\ndir = \"~/.local/share/izwi/models\"\n").await
+        tokio::fs::write(path, default_config_contents()?)
+            .await
             .map_err(|e| CliError::Io(e))?;
     }
 

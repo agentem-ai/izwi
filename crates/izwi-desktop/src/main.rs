@@ -40,16 +40,24 @@ fn main() -> Result<()> {
             #[cfg(target_os = "macos")]
             if is_running_from_macos_app_bundle() {
                 if let Err(err) = ensure_macos_cli_links(app.handle()) {
-                    eprintln!("warning: could not configure terminal commands automatically: {err}");
+                    eprintln!(
+                        "warning: could not configure terminal commands automatically: {err}"
+                    );
                 }
             }
 
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(server_url.clone()))
-                .title(window_title.as_str())
-                .inner_size(width, height)
-                .min_inner_size(960.0, 680.0)
-                .resizable(true)
-                .build()?;
+            let mut window_builder =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::External(server_url.clone()))
+                    .title(window_title.as_str())
+                    .inner_size(width, height)
+                    .min_inner_size(960.0, 680.0)
+                    .resizable(true);
+
+            if let Some(icon) = app.default_window_icon() {
+                window_builder = window_builder.icon(icon.clone())?;
+            }
+
+            window_builder.build()?;
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -219,7 +227,10 @@ fn has_non_symlink_collision(path: &std::path::Path) -> Result<bool> {
 fn preferred_path_bin_dir() -> std::path::PathBuf {
     use std::path::PathBuf;
 
-    let preferred = [PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")];
+    let preferred = [
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
 
     if let Some(path) = std::env::var_os("PATH") {
         for entry in std::env::split_paths(&path) {
