@@ -226,6 +226,32 @@ fn spawn_server(args: &ServeArgs) -> Result<Child> {
 }
 
 fn spawn_desktop(args: &ServeArgs, server_url: &str) -> Result<Child> {
+    #[cfg(target_os = "macos")]
+    if !args.dev {
+        if let Some(app_bundle) = resolve_macos_desktop_bundle() {
+            println!(
+                "  {}",
+                style(format!("Using app bundle {}", app_bundle.display())).dim()
+            );
+            let mut cmd = Command::new("open");
+            cmd.arg("-W")
+                .arg("-n")
+                .arg(&app_bundle)
+                .arg("--args")
+                .arg("--server-url")
+                .arg(server_url)
+                .arg("--window-title")
+                .arg("Izwi");
+
+            cmd.stdout(Stdio::inherit());
+            cmd.stderr(Stdio::inherit());
+
+            return cmd
+                .spawn()
+                .map_err(|e| CliError::Other(format!("Failed to start desktop app: {}", e)));
+        }
+    }
+
     let desktop_binary = if args.dev {
         "cargo".to_string()
     } else {
@@ -278,6 +304,55 @@ fn spawn_desktop(args: &ServeArgs, server_url: &str) -> Result<Child> {
 
     cmd.spawn()
         .map_err(|e| CliError::Other(format!("Failed to start desktop app: {}", e)))
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_macos_desktop_bundle() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("IZWI_DESKTOP_APP") {
+        let candidate = PathBuf::from(path);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bundle) = find_macos_bundle_ancestor(&exe) {
+            return Some(bundle);
+        }
+
+        if let Some(parent) = exe.parent() {
+            let sibling_bundle = parent.join("Izwi.app");
+            if sibling_bundle.exists() {
+                return Some(sibling_bundle);
+            }
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        let local_bundle = cwd
+            .join("target")
+            .join("release")
+            .join("bundle")
+            .join("macos")
+            .join("Izwi.app");
+        if local_bundle.exists() {
+            return Some(local_bundle);
+        }
+    }
+
+    let applications_bundle = PathBuf::from("/Applications/Izwi.app");
+    if applications_bundle.exists() {
+        Some(applications_bundle)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn find_macos_bundle_ancestor(path: &std::path::Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|ancestor| ancestor.extension().and_then(|ext| ext.to_str()) == Some("app"))
+        .map(|ancestor| ancestor.to_path_buf())
 }
 
 fn open_in_browser(url: &str) -> Result<()> {
