@@ -121,6 +121,7 @@ pub struct ModelDownloader {
     pub models_dir: PathBuf,
     http_client: reqwest::Client,
     active_downloads: Arc<RwLock<std::collections::HashMap<ModelVariant, ActiveDownload>>>,
+    latest_progress: Arc<RwLock<std::collections::HashMap<ModelVariant, DownloadProgress>>>,
     multi_progress: MultiProgress,
     state_manager: DownloadStateManager,
 }
@@ -131,7 +132,8 @@ impl ModelDownloader {
         std::fs::create_dir_all(&models_dir)?;
 
         let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(3600))
+            // Large model files can take significant time on slower links.
+            .timeout(std::time::Duration::from_secs(6 * 3600))
             // Avoid macOS SystemConfiguration proxy lookups which can fail in
             // restricted runtime environments (sandboxed agents/CI).
             .no_proxy()
@@ -145,6 +147,7 @@ impl ModelDownloader {
             models_dir,
             http_client,
             active_downloads: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            latest_progress: Arc::new(RwLock::new(std::collections::HashMap::new())),
             multi_progress,
             state_manager: DownloadStateManager::new(),
         })
@@ -153,6 +156,21 @@ impl ModelDownloader {
     /// Get download state manager
     pub fn state_manager(&self) -> DownloadStateManager {
         self.state_manager.clone()
+    }
+
+    async fn set_latest_progress(&self, progress: DownloadProgress) {
+        let mut latest = self.latest_progress.write().await;
+        latest.insert(progress.variant, progress);
+    }
+
+    pub async fn get_latest_progress(&self, variant: ModelVariant) -> Option<DownloadProgress> {
+        let latest = self.latest_progress.read().await;
+        latest.get(&variant).cloned()
+    }
+
+    async fn clear_latest_progress(&self, variant: ModelVariant) {
+        let mut latest = self.latest_progress.write().await;
+        latest.remove(&variant);
     }
 
     /// Download a file with streaming and progress bar
@@ -234,6 +252,7 @@ impl ModelDownloader {
                             downloaded_bytes: template.downloaded_bytes + downloaded,
                             ..template.clone()
                         };
+                        self.set_latest_progress(progress.clone()).await;
                         let _ = tx.send(progress);
                         last_progress_emit = Instant::now();
                         last_progress_bytes = downloaded;
@@ -252,6 +271,7 @@ impl ModelDownloader {
                     downloaded_bytes: template.downloaded_bytes + downloaded,
                     ..template.clone()
                 };
+                self.set_latest_progress(progress.clone()).await;
                 let _ = tx.send(progress);
             }
         }
@@ -434,6 +454,7 @@ impl ModelDownloader {
         variant: ModelVariant,
     ) -> Result<broadcast::Receiver<DownloadProgress>> {
         // Set initial state
+        self.clear_latest_progress(variant).await;
         self.state_manager
             .set_state(variant, DownloadState::Downloading)
             .await;
@@ -448,6 +469,10 @@ impl ModelDownloader {
             let result = downloader
                 .download_with_progress(variant, progress_tx_clone)
                 .await;
+
+            if let Err(err) = &result {
+                warn!("Background download failed for {}: {}", variant, err);
+            }
 
             // Update state based on result
             let final_state = match &result {
@@ -488,6 +513,7 @@ impl ModelDownloader {
             models_dir: self.models_dir.clone(),
             http_client: self.http_client.clone(),
             active_downloads: Arc::clone(&self.active_downloads),
+            latest_progress: Arc::clone(&self.latest_progress),
             multi_progress: MultiProgress::new(), // Each spawned task gets its own multi-progress
             state_manager: self.state_manager.clone(),
         }
@@ -532,6 +558,7 @@ impl ModelDownloader {
         let total_files = file_plans.len();
         let total_bytes: u64 = file_plans.iter().map(|plan| plan.expected_size).sum();
         let mut downloaded_bytes: u64 = 0;
+        const MAX_FILE_DOWNLOAD_ATTEMPTS: usize = 4;
 
         for (idx, plan) in file_plans.iter().enumerate() {
             let file = &plan.file;
@@ -573,6 +600,7 @@ impl ModelDownloader {
                         files_completed: idx + 1,
                         files_total: total_files,
                     };
+                    self.set_latest_progress(progress.clone()).await;
                     let _ = progress_tx.send(progress);
                     continue;
                 }
@@ -602,52 +630,90 @@ impl ModelDownloader {
                 files_total: total_files,
             };
 
-            match self
-                .download_file_streaming(
-                    repo_id,
-                    file,
-                    &dest,
-                    Some(file_pb.clone()),
-                    Some(progress_tx.clone()),
-                    Some(progress_template),
-                )
-                .await
-            {
-                Ok(bytes_downloaded) => {
-                    if plan.strict_size_check && file_size > 0 && bytes_downloaded != file_size {
-                        let _ = tokio::fs::remove_file(&dest).await;
-                        return Err(Error::DownloadError(format!(
-                            "Downloaded size mismatch for {}: expected {} bytes, got {} bytes",
-                            file, file_size, bytes_downloaded
-                        )));
+            let mut last_err: Option<Error> = None;
+            let mut bytes_downloaded_for_file = 0u64;
+            let mut attempt = 1usize;
+
+            while attempt <= MAX_FILE_DOWNLOAD_ATTEMPTS {
+                if attempt > 1 {
+                    info!(
+                        "Retrying {} (attempt {}/{})",
+                        file, attempt, MAX_FILE_DOWNLOAD_ATTEMPTS
+                    );
+                    file_pb.set_message(format!(
+                        "{} (retry {}/{})",
+                        file, attempt, MAX_FILE_DOWNLOAD_ATTEMPTS
+                    ));
+                }
+
+                match self
+                    .download_file_streaming(
+                        repo_id,
+                        file,
+                        &dest,
+                        Some(file_pb.clone()),
+                        Some(progress_tx.clone()),
+                        Some(progress_template.clone()),
+                    )
+                    .await
+                {
+                    Ok(bytes_downloaded) => {
+                        if plan.strict_size_check
+                            && file_size > 0
+                            && bytes_downloaded != file_size
+                        {
+                            let _ = tokio::fs::remove_file(&dest).await;
+                            last_err = Some(Error::DownloadError(format!(
+                                "Downloaded size mismatch for {}: expected {} bytes, got {} bytes",
+                                file, file_size, bytes_downloaded
+                            )));
+                        } else {
+                            bytes_downloaded_for_file = bytes_downloaded;
+                            last_err = None;
+                            break;
+                        }
                     }
-
-                    downloaded_bytes += bytes_downloaded;
-
-                    let progress = DownloadProgress {
-                        variant,
-                        downloaded_bytes,
-                        total_bytes,
-                        current_file: file.clone(),
-                        current_file_downloaded: bytes_downloaded,
-                        current_file_total: file_size,
-                        files_completed: idx + 1,
-                        files_total: total_files,
-                    };
-                    let _ = progress_tx.send(progress);
-
-                    file_pb.finish_with_message(format!("{} ✓", file));
+                    Err(e) => {
+                        warn!(
+                            "Failed to download {} (attempt {}/{}): {}",
+                            file, attempt, MAX_FILE_DOWNLOAD_ATTEMPTS, e
+                        );
+                        let _ = tokio::fs::remove_file(&dest).await;
+                        last_err = Some(e);
+                    }
                 }
-                Err(e) => {
-                    warn!("Failed to download {}: {}", file, e);
-                    file_pb.finish_with_message(format!("{} ✗", file));
-                    let _ = tokio::fs::remove_file(&dest).await;
-                    return Err(Error::DownloadError(format!(
-                        "Failed to download required file {}: {}",
-                        file, e
-                    )));
+
+                if attempt < MAX_FILE_DOWNLOAD_ATTEMPTS {
+                    let backoff_ms = 400u64 * (1u64 << (attempt - 1));
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                 }
+                attempt += 1;
             }
+
+            if let Some(e) = last_err {
+                file_pb.finish_with_message(format!("{} ✗", file));
+                return Err(Error::DownloadError(format!(
+                    "Failed to download required file {} after {} attempts: {}",
+                    file, MAX_FILE_DOWNLOAD_ATTEMPTS, e
+                )));
+            }
+
+            downloaded_bytes += bytes_downloaded_for_file;
+
+            let progress = DownloadProgress {
+                variant,
+                downloaded_bytes,
+                total_bytes,
+                current_file: file.clone(),
+                current_file_downloaded: bytes_downloaded_for_file,
+                current_file_total: file_size,
+                files_completed: idx + 1,
+                files_total: total_files,
+            };
+            self.set_latest_progress(progress.clone()).await;
+            let _ = progress_tx.send(progress);
+
+            file_pb.finish_with_message(format!("{} ✓", file));
 
             self.multi_progress.remove(&file_pb);
         }
@@ -663,6 +729,7 @@ impl ModelDownloader {
             files_completed: total_files,
             files_total: total_files,
         };
+        self.set_latest_progress(progress.clone()).await;
         let _ = progress_tx.send(progress);
 
         info!("Model downloaded to {:?}", local_dir);
@@ -942,6 +1009,7 @@ impl ModelDownloader {
             if model_path.exists() {
                 let _ = tokio::fs::remove_dir_all(&model_path).await;
             }
+            self.clear_latest_progress(variant).await;
             // Update state
             self.state_manager
                 .set_state(variant, DownloadState::NotDownloaded)

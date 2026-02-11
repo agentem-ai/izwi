@@ -13,6 +13,7 @@ use tracing::{info, warn};
 use crate::error::ApiError;
 use crate::state::AppState;
 use izwi_core::{parse_model_variant, ModelInfo, ModelVariant};
+use izwi_core::model::download::DownloadState;
 
 /// Response for model list
 #[derive(Serialize)]
@@ -207,6 +208,7 @@ pub async fn download_progress_stream(
         .map_err(|e| ApiError::internal(format!("Failed to subscribe to progress: {}", e)))?;
 
     let stream = async_stream::stream! {
+        let mut last_event: Option<ProgressEvent> = None;
         loop {
             match progress_rx.recv().await {
                 Ok(progress) => {
@@ -216,7 +218,7 @@ pub async fn download_progress_stream(
                             || progress.downloaded_bytes >= progress.total_bytes);
 
                     let event = ProgressEvent {
-                        variant: progress.variant.to_string(),
+                        variant: progress.variant.dir_name().to_string(),
                         downloaded_bytes: progress.downloaded_bytes,
                         total_bytes: progress.total_bytes,
                         current_file: progress.current_file.clone(),
@@ -234,6 +236,7 @@ pub async fn download_progress_stream(
 
                     let json = serde_json::to_string(&event).unwrap_or_default();
                     yield Ok(Event::default().data(json));
+                    last_event = Some(event.clone());
 
                     // Stop if download is complete
                     if event.status == "completed" {
@@ -248,7 +251,81 @@ pub async fn download_progress_stream(
                     continue;
                 }
                 Err(RecvError::Closed) => {
-                    // Channel closed: the download task has exited.
+                    // Channel closed: the download task has exited. Emit one final state
+                    // so clients do not see a silent stream cutoff.
+                    let final_state = state
+                        .engine
+                        .model_manager()
+                        .get_download_state(variant)
+                        .await;
+
+                    match final_state {
+                        DownloadState::Downloaded => {
+                            if let Some(mut event) = last_event.clone() {
+                                event.status = "completed".to_string();
+                                if event.total_bytes > 0 {
+                                    event.downloaded_bytes = event.total_bytes;
+                                    event.percent = 100.0;
+                                }
+                                event.files_completed = event.files_total.max(event.files_completed);
+                                event.current_file = String::new();
+                                event.current_file_downloaded = 0;
+                                event.current_file_total = 0;
+                                let json = serde_json::to_string(&event).unwrap_or_default();
+                                yield Ok(Event::default().data(json));
+                            } else {
+                                let event = ProgressEvent {
+                                    variant: variant.dir_name().to_string(),
+                                    downloaded_bytes: 0,
+                                    total_bytes: 0,
+                                    current_file: String::new(),
+                                    current_file_downloaded: 0,
+                                    current_file_total: 0,
+                                    files_completed: 0,
+                                    files_total: 0,
+                                    percent: 100.0,
+                                    status: "completed".to_string(),
+                                };
+                                let json = serde_json::to_string(&event).unwrap_or_default();
+                                yield Ok(Event::default().data(json));
+                            }
+                        }
+                        DownloadState::Error => {
+                            let mut event = last_event.clone().unwrap_or(ProgressEvent {
+                                variant: variant.dir_name().to_string(),
+                                downloaded_bytes: 0,
+                                total_bytes: 0,
+                                current_file: String::new(),
+                                current_file_downloaded: 0,
+                                current_file_total: 0,
+                                files_completed: 0,
+                                files_total: 0,
+                                percent: 0.0,
+                                status: "error".to_string(),
+                            });
+                            event.status = "error".to_string();
+                            let json = serde_json::to_string(&event).unwrap_or_default();
+                            yield Ok(Event::default().data(json));
+                        }
+                        DownloadState::NotDownloaded => {
+                            let mut event = last_event.clone().unwrap_or(ProgressEvent {
+                                variant: variant.dir_name().to_string(),
+                                downloaded_bytes: 0,
+                                total_bytes: 0,
+                                current_file: String::new(),
+                                current_file_downloaded: 0,
+                                current_file_total: 0,
+                                files_completed: 0,
+                                files_total: 0,
+                                percent: 0.0,
+                                status: "cancelled".to_string(),
+                            });
+                            event.status = "cancelled".to_string();
+                            let json = serde_json::to_string(&event).unwrap_or_default();
+                            yield Ok(Event::default().data(json));
+                        }
+                        DownloadState::Downloading => {}
+                    }
                     break;
                 }
             }

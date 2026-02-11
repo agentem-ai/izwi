@@ -37,6 +37,10 @@ function App() {
   const activeModelLoadsRef = useRef<Set<string>>(new Set());
   const eventSourcesRef = useRef<Record<string, EventSource>>({});
   const reconnectTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const streamWatchdogTimersRef = useRef<
+    Record<string, ReturnType<typeof setInterval>>
+  >({});
+  const lastProgressAtRef = useRef<Record<string, number>>({});
   const suppressReconnectRef = useRef<Set<string>>(new Set());
   const initializedRef = useRef(false);
 
@@ -132,6 +136,13 @@ function App() {
     (variant: string) => {
       clearReconnectTimer(variant);
 
+      const watchdogTimer = streamWatchdogTimersRef.current[variant];
+      if (watchdogTimer) {
+        clearInterval(watchdogTimer);
+        delete streamWatchdogTimersRef.current[variant];
+      }
+      delete lastProgressAtRef.current[variant];
+
       const eventSource = eventSourcesRef.current[variant];
       if (eventSource) {
         eventSource.close();
@@ -153,10 +164,37 @@ function App() {
         `${api.baseUrl}/admin/models/${variant}/download/progress`,
       );
       eventSourcesRef.current[variant] = eventSource;
+      lastProgressAtRef.current[variant] = Date.now();
+
+      const existingWatchdog = streamWatchdogTimersRef.current[variant];
+      if (existingWatchdog) {
+        clearInterval(existingWatchdog);
+      }
+      streamWatchdogTimersRef.current[variant] = setInterval(async () => {
+        if (suppressReconnectRef.current.has(variant)) {
+          return;
+        }
+
+        const lastProgressAt = lastProgressAtRef.current[variant] ?? 0;
+        if (Date.now() - lastProgressAt < 8000) {
+          return;
+        }
+
+        closeDownloadStream(variant);
+        try {
+          const model = await api.getModelInfo(variant);
+          if (model.status === "downloading") {
+            connectDownloadStream(variant);
+          }
+        } catch (watchdogErr) {
+          console.error(`Stream watchdog check failed for ${variant}:`, watchdogErr);
+        }
+      }, 4000);
 
       eventSource.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          lastProgressAtRef.current[variant] = Date.now();
           setDownloadProgress((prev) => ({
             ...prev,
             [variant]: {
@@ -169,7 +207,11 @@ function App() {
           }));
 
           // Close connection when complete
-          if (data.status === "completed" || data.status === "error") {
+          if (
+            data.status === "completed" ||
+            data.status === "error" ||
+            data.status === "cancelled"
+          ) {
             closeDownloadStream(variant);
             activeDownloadsRef.current.delete(variant);
             suppressReconnectRef.current.delete(variant);
@@ -264,6 +306,11 @@ function App() {
         clearTimeout(timer),
       );
       reconnectTimersRef.current = {};
+      Object.values(streamWatchdogTimersRef.current).forEach((timer) =>
+        clearInterval(timer),
+      );
+      streamWatchdogTimersRef.current = {};
+      lastProgressAtRef.current = {};
     };
   }, []);
 
@@ -287,8 +334,9 @@ function App() {
       const response = await api.downloadModel(variant);
 
       if (response.status === "started" || response.status === "downloading") {
-        // Connect to SSE for progress updates
-        connectDownloadStream(variant);
+        // Let the model-status effect own stream subscription to avoid
+        // duplicate EventSource open/close churn.
+        await loadModels();
       } else {
         // Download already complete or not started
         activeDownloadsRef.current.delete(variant);

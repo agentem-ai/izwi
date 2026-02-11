@@ -80,7 +80,9 @@ impl ModelManager {
             match download_state {
                 DownloadState::Downloading => {
                     state.info.status = ModelStatus::Downloading;
-                    if state.info.download_progress.is_none() {
+                    if let Some(progress) = self.downloader.get_latest_progress(*variant).await {
+                        state.info.download_progress = Some(progress.total_percent());
+                    } else if state.info.download_progress.is_none() {
                         state.info.download_progress = Some(0.0);
                     }
                 }
