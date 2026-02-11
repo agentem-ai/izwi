@@ -470,7 +470,7 @@ export function CustomVoicePlayground({
               type="checkbox"
               checked={streamingEnabled}
               onChange={(e) => setStreamingEnabled(e.target.checked)}
-              className="w-4 h-4 rounded border-gray-600 bg-[#1a1a1a] text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0"
+              className="app-checkbox w-4 h-4"
               disabled={generating}
             />
             <span className="text-xs text-gray-400 flex items-center gap-1">

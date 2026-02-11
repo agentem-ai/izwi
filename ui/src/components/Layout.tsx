@@ -13,6 +13,8 @@ import {
   AlertCircle,
   X,
   Menu,
+  Sun,
+  Moon,
 } from "lucide-react";
 import clsx from "clsx";
 
@@ -22,6 +24,9 @@ interface LayoutProps {
   error: string | null;
   onErrorDismiss: () => void;
   readyModelsCount: number;
+  resolvedTheme: "light" | "dark";
+  themePreference: "system" | "light" | "dark";
+  onThemePreferenceChange: (preference: "system" | "light" | "dark") => void;
 }
 
 interface NavItem {
@@ -94,6 +99,9 @@ export function Layout({
   error,
   onErrorDismiss,
   readyModelsCount,
+  resolvedTheme,
+  themePreference,
+  onThemePreferenceChange,
 }: LayoutProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
@@ -115,6 +123,10 @@ export function Layout({
       ? `${readyModelsCount} model${readyModelsCount !== 1 ? "s" : ""} loaded`
       : "No models loaded";
 
+  const switchTheme = () => {
+    onThemePreferenceChange(resolvedTheme === "dark" ? "light" : "dark");
+  };
+
   return (
     <div className="min-h-screen flex bg-[#0d0d0d]">
       {/* Mobile header */}
@@ -133,12 +145,29 @@ export function Layout({
               <h1 className="text-sm font-semibold text-white">Izwi</h1>
             </div>
           </div>
-          <button
-            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="p-2 rounded-lg hover:bg-[#1a1a1a] transition-colors"
-          >
-            <Menu className="w-5 h-5 text-white" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={switchTheme}
+              className="p-2 rounded-lg border border-[#2a2a2a] bg-[#141414] hover:bg-[#1a1a1a] transition-colors"
+              title={
+                resolvedTheme === "dark"
+                  ? "Switch to light mode"
+                  : "Switch to dark mode"
+              }
+            >
+              {resolvedTheme === "dark" ? (
+                <Sun className="w-4 h-4 text-gray-200" />
+              ) : (
+                <Moon className="w-4 h-4 text-gray-700" />
+              )}
+            </button>
+            <button
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="p-2 rounded-lg hover:bg-[#1a1a1a] transition-colors"
+            >
+              <Menu className="w-5 h-5 text-white" />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -209,13 +238,13 @@ export function Layout({
                 onClick={() => setMobileMenuOpen(false)}
                 className={({ isActive }) =>
                   clsx(
-                    "flex items-center rounded-lg transition-all group",
+                    "sidebar-link flex items-center rounded-lg transition-all group",
                     isSidebarCollapsed
                       ? "justify-center px-2 py-2.5"
                       : "gap-3 px-3 py-2.5",
                     isActive
-                      ? "bg-[#1a1a1a] border border-[#333333]"
-                      : "hover:bg-[#161616] border border-transparent",
+                      ? "sidebar-link-active"
+                      : "sidebar-link-idle",
                   )
                 }
               >
@@ -223,10 +252,10 @@ export function Layout({
                   <>
                     <div
                       className={clsx(
-                        "p-2 rounded-lg transition-all",
+                        "sidebar-link-icon p-2 rounded-lg transition-all",
                         isActive
-                          ? "bg-white text-black"
-                          : "bg-[#1f1f1f] text-gray-400 group-hover:text-gray-300 group-hover:bg-[#262626]",
+                          ? "sidebar-link-icon-active"
+                          : "sidebar-link-icon-idle",
                       )}
                     >
                       <item.icon className="w-4 h-4" />
@@ -239,15 +268,15 @@ export function Layout({
                     >
                       <div
                         className={clsx(
-                          "text-sm font-medium transition-colors truncate",
+                          "sidebar-link-title text-sm font-medium transition-colors truncate",
                           isActive
-                            ? "text-white"
-                            : "text-gray-400 group-hover:text-gray-300",
+                            ? "sidebar-link-title-active"
+                            : "sidebar-link-title-idle",
                         )}
                       >
                         {item.label}
                       </div>
-                      <div className="text-xs text-gray-600 truncate">
+                      <div className="sidebar-link-description text-xs truncate">
                         {item.description}
                       </div>
                     </div>
@@ -266,13 +295,13 @@ export function Layout({
                 onClick={() => setMobileMenuOpen(false)}
                 className={({ isActive }) =>
                   clsx(
-                    "flex items-center rounded-lg transition-all group",
+                    "sidebar-link flex items-center rounded-lg transition-all group",
                     isSidebarCollapsed
                       ? "justify-center px-2 py-2.5"
                       : "gap-3 px-3 py-2.5",
                     isActive
-                      ? "bg-[#1a1a1a] border border-[#333333]"
-                      : "hover:bg-[#161616] border border-transparent",
+                      ? "sidebar-link-active"
+                      : "sidebar-link-idle",
                   )
                 }
               >
@@ -280,10 +309,10 @@ export function Layout({
                   <>
                     <div
                       className={clsx(
-                        "p-2 rounded-lg transition-all",
+                        "sidebar-link-icon p-2 rounded-lg transition-all",
                         isActive
-                          ? "bg-white text-black"
-                          : "bg-[#1f1f1f] text-gray-400 group-hover:text-gray-300 group-hover:bg-[#262626]",
+                          ? "sidebar-link-icon-active"
+                          : "sidebar-link-icon-idle",
                       )}
                     >
                       <item.icon className="w-4 h-4" />
@@ -296,15 +325,15 @@ export function Layout({
                     >
                       <div
                         className={clsx(
-                          "text-sm font-medium transition-colors truncate",
+                          "sidebar-link-title text-sm font-medium transition-colors truncate",
                           isActive
-                            ? "text-white"
-                            : "text-gray-400 group-hover:text-gray-300",
+                            ? "sidebar-link-title-active"
+                            : "sidebar-link-title-idle",
                         )}
                       >
                         {item.label}
                       </div>
-                      <div className="text-xs text-gray-600 truncate">
+                      <div className="sidebar-link-description text-xs truncate">
                         {item.description}
                       </div>
                     </div>
@@ -324,13 +353,13 @@ export function Layout({
                 onClick={() => setMobileMenuOpen(false)}
                 className={({ isActive }) =>
                   clsx(
-                    "flex items-center rounded-lg transition-all group",
+                    "sidebar-link flex items-center rounded-lg transition-all group",
                     isSidebarCollapsed
                       ? "justify-center px-2 py-2.5"
                       : "gap-3 px-3 py-2.5",
                     isActive
-                      ? "bg-[#1a1a1a] border border-[#333333]"
-                      : "hover:bg-[#161616] border border-transparent",
+                      ? "sidebar-link-active"
+                      : "sidebar-link-idle",
                   )
                 }
               >
@@ -338,10 +367,10 @@ export function Layout({
                   <>
                     <div
                       className={clsx(
-                        "p-2 rounded-lg transition-all",
+                        "sidebar-link-icon p-2 rounded-lg transition-all",
                         isActive
-                          ? "bg-white text-black"
-                          : "bg-[#1f1f1f] text-gray-400 group-hover:text-gray-300 group-hover:bg-[#262626]",
+                          ? "sidebar-link-icon-active"
+                          : "sidebar-link-icon-idle",
                       )}
                     >
                       <item.icon className="w-4 h-4" />
@@ -354,15 +383,15 @@ export function Layout({
                     >
                       <div
                         className={clsx(
-                          "text-sm font-medium transition-colors truncate",
+                          "sidebar-link-title text-sm font-medium transition-colors truncate",
                           isActive
-                            ? "text-white"
-                            : "text-gray-400 group-hover:text-gray-300",
+                            ? "sidebar-link-title-active"
+                            : "sidebar-link-title-idle",
                         )}
                       >
                         {item.label}
                       </div>
-                      <div className="text-xs text-gray-600 truncate">
+                      <div className="sidebar-link-description text-xs truncate">
                         {item.description}
                       </div>
                     </div>
@@ -429,6 +458,37 @@ export function Layout({
           isSidebarCollapsed ? "lg:ml-[76px]" : "lg:ml-64",
         )}
       >
+        <div className="hidden lg:flex justify-end px-6 lg:px-8 pt-4">
+          <div className="flex flex-col items-end">
+            <button
+              onClick={switchTheme}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[#2a2a2a] bg-[#141414] hover:bg-[#1a1a1a] transition-colors"
+              title={
+                resolvedTheme === "dark"
+                  ? "Switch to light mode"
+                  : "Switch to dark mode"
+              }
+            >
+              {resolvedTheme === "dark" ? (
+                <>
+                  <Sun className="w-4 h-4 text-gray-200" />
+                  <span className="text-xs text-gray-300">Light</span>
+                </>
+              ) : (
+                <>
+                  <Moon className="w-4 h-4 text-gray-700" />
+                  <span className="text-xs text-gray-700">Dark</span>
+                </>
+              )}
+            </button>
+            {themePreference === "system" && (
+              <div className="mt-1 text-[10px] text-right text-gray-500">
+                System
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Error toast */}
         <AnimatePresence>
           {error && (
@@ -453,7 +513,7 @@ export function Layout({
         </AnimatePresence>
 
         {/* Page content */}
-        <main className="p-6 lg:p-8">
+        <main className="p-6 lg:px-8 lg:pb-8 lg:pt-4">
           <Outlet />
         </main>
       </div>
