@@ -46,6 +46,9 @@
   --checkbox-check: #ffffff;
   --checkbox-hover-border: #6b7280;
   --checkbox-focus-ring: rgba(16, 185, 129, 0.35);
+  --speaker-avatar-bg: #2a2a2a;
+  --speaker-avatar-border: #3a3a3a;
+  --speaker-avatar-text: #e5e7eb;
 }
 
 html.theme-light {
@@ -90,6 +93,9 @@ html.theme-light {
   --checkbox-check: #ffffff;
   --checkbox-hover-border: #64748b;
   --checkbox-focus-ring: rgba(15, 23, 42, 0.25);
+  --speaker-avatar-bg: #e2e8f0;
+  --speaker-avatar-border: #cbd5e1;
+  --speaker-avatar-text: #0f172a;
 }
 
 body {
@@ -330,6 +336,12 @@ body {
 .app-checkbox:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.speaker-avatar {
+  background-color: var(--speaker-avatar-bg);
+  border: 1px solid var(--speaker-avatar-border);
+  color: var(--speaker-avatar-text);
 }
 
 /* Custom audio player - dark theme styling */
