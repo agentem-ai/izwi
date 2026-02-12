@@ -35,7 +35,7 @@ toml = "0.8"
 # Model loading
 hf-hub = "0.3"
 safetensors = "0.4"
-tokenizers = "0.19"
+tokenizers = "0.22.2"
 
 # Candle (native inference)
 candle-core = "0.9.2"

@@ -104,12 +104,12 @@ impl Tokenizer {
             .and_then(|cfg| cfg.add_prefix_space)
             .unwrap_or(true);
         let byte_level = ByteLevel::new(add_prefix_space, true, true);
-        inner.with_pre_tokenizer(byte_level.clone());
+        inner.with_pre_tokenizer(Some(byte_level.clone()));
         let decoder = DecoderWrapper::Sequence(Sequence::new(vec![
             DecoderWrapper::ByteFallback(ByteFallback::new()),
             DecoderWrapper::ByteLevel(byte_level),
         ]));
-        inner.with_decoder(decoder);
+        inner.with_decoder(Some(decoder));
 
         if let Some(cfg) = config {
             let mut added: Vec<(u32, AddedToken, bool)> = cfg
