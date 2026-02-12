@@ -160,8 +160,6 @@ impl GgufLoader {
 
     /// Detect quantization type by examining tensor dtypes.
     fn detect_quantization_from_tensors(&self) -> Option<String> {
-        
-
         let mut dtypes = std::collections::HashSet::new();
         for info in self.content.tensor_infos.values() {
             dtypes.insert(format!("{:?}", info.ggml_dtype));

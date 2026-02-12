@@ -238,9 +238,7 @@ pub fn load_weight(vb: &VarBuilder, out_dim: usize, in_dim: usize) -> Result<Ten
 
     let scales = tensor2_f32(vb.get_unchecked_dtype("scales", DType::F32)?)?;
     let biases = if vb.contains_tensor("biases") {
-        Some(tensor2_f32(
-            vb.get_unchecked_dtype("biases", DType::F32)?,
-        )?)
+        Some(tensor2_f32(vb.get_unchecked_dtype("biases", DType::F32)?)?)
     } else {
         None
     };
