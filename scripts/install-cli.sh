@@ -48,6 +48,12 @@ check_requirements() {
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
         source "$HOME/.cargo/env"
     fi
+
+    # Check Node/npm for desktop UI build
+    if ! command -v npm &> /dev/null; then
+        echo -e "${RED}npm is required to build desktop assets (ui/dist). Install Node.js 18+ and retry.${NC}"
+        exit 1
+    fi
     
     echo -e "${GREEN}✓ Requirements satisfied${NC}"
 }
@@ -62,6 +68,12 @@ install_from_source() {
         cd "$temp_dir/izwi"
     fi
     
+    # Build UI assets (required by izwi-desktop compile-time Tauri config)
+    if [ ! -d "ui/node_modules" ]; then
+        npm ci --prefix ui
+    fi
+    npm --prefix ui run build
+
     # Build release binaries (desktop build expects izwi + izwi-server artifacts to exist)
     cargo build --release --bin izwi --bin izwi-server
     cargo build --release --bin izwi-desktop
