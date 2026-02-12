@@ -401,7 +401,7 @@ export function VoicePage({
         (m) =>
           isAsrVariant(m.variant) ||
           isTextVariant(m.variant) ||
-          isTtsVariant(m.variant),
+          isCustomVoiceTtsVariant(m.variant),
       ),
     [sortedModels],
   );
