@@ -382,10 +382,21 @@ impl ModelDownloader {
         if variant.is_chat() {
             let has_config = path.join("config.json").exists();
             let has_tokenizer = path.join("tokenizer.json").exists()
+                || path.join("tokenizer.model").exists()
                 || (path.join("vocab.json").exists() && path.join("merges.txt").exists());
-            // Some exported variants include index.json, some don't.
             let has_model = path.join("model.safetensors").exists()
-                || path.join("model-00001-of-00002.safetensors").exists();
+                || std::fs::read_dir(&path)
+                    .map(|entries| {
+                        entries.filter_map(|e| e.ok()).any(|e| {
+                            e.file_name()
+                                .to_str()
+                                .map(|name| {
+                                    name.starts_with("model-") && name.ends_with(".safetensors")
+                                })
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false);
             return has_config && has_tokenizer && has_model;
         }
 
@@ -837,21 +848,27 @@ impl ModelDownloader {
         }
 
         if variant.is_chat() {
-            return vec![
+            let mut files = vec![
                 "config.json".to_string(),
                 "generation_config.json".to_string(),
                 "chat_template.jinja".to_string(),
                 "added_tokens.json".to_string(),
                 "tokenizer.json".to_string(),
+                "tokenizer.model".to_string(),
                 "tokenizer_config.json".to_string(),
                 "special_tokens_map.json".to_string(),
                 "vocab.json".to_string(),
                 "merges.txt".to_string(),
+                "preprocessor_config.json".to_string(),
                 "model.safetensors".to_string(),
                 "model.safetensors.index.json".to_string(),
-                "model-00001-of-00002.safetensors".to_string(),
-                "model-00002-of-00002.safetensors".to_string(),
             ];
+            for total in [2usize, 3, 4] {
+                for idx in 1..=total {
+                    files.push(format!("model-{idx:05}-of-{total:05}.safetensors"));
+                }
+            }
+            return files;
         }
 
         // Qwen3-ForcedAligner model
@@ -1055,6 +1072,8 @@ impl ModelDownloader {
                     | ModelVariant::Qwen3Tts12Hz17BVoiceDesign => 3_850_000_000,
                     ModelVariant::Qwen3Asr06B => 1_800_000_000,
                     ModelVariant::Qwen306B4Bit => 800_000_000,
+                    ModelVariant::Gemma31BIt => 2_100_000_000,
+                    ModelVariant::Gemma34BIt => 2_400_000_000,
                     ModelVariant::Lfm2Audio15B => 2_900_000_000,
                     ModelVariant::VoxtralMini4BRealtime2602 => 8_900_000_000,
                     _ => 1_500_000_000,

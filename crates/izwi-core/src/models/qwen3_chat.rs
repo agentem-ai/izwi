@@ -6,38 +6,15 @@ use std::path::Path;
 
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use tracing::info;
 
 use crate::error::{Error, Result};
+use crate::models::chat_types::{ChatMessage, ChatRole};
 use crate::models::device::DeviceProfile;
 use crate::models::qwen3::{Qwen3Cache, Qwen3Config, Qwen3Model};
 use crate::tokenizer::Tokenizer;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ChatRole {
-    System,
-    User,
-    Assistant,
-}
-
-impl ChatRole {
-    fn as_prompt_role(&self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::User => "user",
-            Self::Assistant => "assistant",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: ChatRole,
-    pub content: String,
-}
 
 #[derive(Debug, Clone)]
 pub struct ChatGenerationOutput {

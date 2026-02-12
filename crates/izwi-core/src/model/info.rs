@@ -81,6 +81,12 @@ pub enum ModelVariant {
     /// Qwen3 0.6B text model (MLX 4-bit)
     #[serde(rename = "Qwen3-0.6B-4bit")]
     Qwen306B4Bit,
+    /// Gemma 3 1B instruction-tuned chat model
+    #[serde(rename = "Gemma-3-1b-it")]
+    Gemma31BIt,
+    /// Gemma 3 4B instruction-tuned chat model
+    #[serde(rename = "Gemma-3-4b-it")]
+    Gemma34BIt,
     /// Qwen3-ForcedAligner 0.6B model
     #[serde(rename = "Qwen3-ForcedAligner-0.6B")]
     Qwen3ForcedAligner06B,
@@ -130,6 +136,8 @@ impl ModelVariant {
             Self::Qwen3Asr17B8Bit => "mlx-community/Qwen3-ASR-1.7B-8bit",
             Self::Qwen3Asr17BBf16 => "mlx-community/Qwen3-ASR-1.7B-bf16",
             Self::Qwen306B4Bit => "mlx-community/Qwen3-0.6B-4bit",
+            Self::Gemma31BIt => "google/gemma-3-1b-it",
+            Self::Gemma34BIt => "google/gemma-3-4b-it",
             Self::Qwen3ForcedAligner06B => "Qwen/Qwen3-ForcedAligner-0.6B",
             Self::VoxtralMini4BRealtime2602 => "mistralai/Voxtral-Mini-4B-Realtime-2602",
         }
@@ -163,6 +171,8 @@ impl ModelVariant {
             Self::Qwen3Asr17B8Bit => "Qwen3-ASR 1.7B 8-bit",
             Self::Qwen3Asr17BBf16 => "Qwen3-ASR 1.7B bf16",
             Self::Qwen306B4Bit => "Qwen3 0.6B 4-bit",
+            Self::Gemma31BIt => "Gemma 3 1B Instruct",
+            Self::Gemma34BIt => "Gemma 3 4B Instruct",
             Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner 0.6B",
             Self::VoxtralMini4BRealtime2602 => "Voxtral Mini 4B Realtime",
         }
@@ -196,6 +206,8 @@ impl ModelVariant {
             Self::Qwen3Asr17B8Bit => "Qwen3-ASR-1.7B-8bit",
             Self::Qwen3Asr17BBf16 => "Qwen3-ASR-1.7B-bf16",
             Self::Qwen306B4Bit => "Qwen3-0.6B-4bit",
+            Self::Gemma31BIt => "Gemma-3-1b-it",
+            Self::Gemma34BIt => "Gemma-3-4b-it",
             Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner-0.6B",
             Self::VoxtralMini4BRealtime2602 => "Voxtral-Mini-4B-Realtime-2602",
         }
@@ -229,6 +241,8 @@ impl ModelVariant {
             Self::Qwen3Asr17B8Bit => 2_467_859_030,     // ~2.30 GB
             Self::Qwen3Asr17BBf16 => 4_080_710_353,     // ~3.80 GB
             Self::Qwen306B4Bit => 900_000_000,          // ~0.84 GB (est)
+            Self::Gemma31BIt => 2_200_000_000,          // ~2.05 GB (est)
+            Self::Gemma34BIt => 8_600_000_000,          // ~8.01 GB (est)
             Self::Qwen3ForcedAligner06B => 1_840_072_459, // ~1.71 GB
             Self::VoxtralMini4BRealtime2602 => 8_000_000_000, // ~7.45 GB (est)
         }
@@ -262,6 +276,8 @@ impl ModelVariant {
             | Self::Qwen3Asr17B8Bit
             | Self::Qwen3Asr17BBf16 => 6.0,
             Self::Qwen306B4Bit => 2.0,
+            Self::Gemma31BIt => 3.5,
+            Self::Gemma34BIt => 11.0,
             Self::Qwen3ForcedAligner06B => 2.5,
             Self::VoxtralMini4BRealtime2602 => 16.0,
         }
@@ -299,7 +315,10 @@ impl ModelVariant {
 
     /// Whether this is a text chat model
     pub fn is_chat(&self) -> bool {
-        matches!(self, Self::Qwen306B4Bit)
+        matches!(
+            self,
+            Self::Qwen306B4Bit | Self::Gemma31BIt | Self::Gemma34BIt
+        )
     }
 
     pub fn is_tts(&self) -> bool {
@@ -353,7 +372,7 @@ impl ModelVariant {
     /// Whether this variant is currently enabled in the application catalog.
     pub fn is_enabled(&self) -> bool {
         match self {
-            Self::Qwen306B4Bit => true,
+            Self::Qwen306B4Bit | Self::Gemma31BIt | Self::Gemma34BIt => true,
             Self::Lfm2Audio15B | Self::VoxtralMini4BRealtime2602 => false,
             _ => !self.is_quantized(),
         }
@@ -387,6 +406,8 @@ impl ModelVariant {
             Self::Qwen3Asr17B8Bit,
             Self::Qwen3Asr17BBf16,
             Self::Qwen306B4Bit,
+            Self::Gemma31BIt,
+            Self::Gemma34BIt,
             Self::Qwen3ForcedAligner06B,
             Self::VoxtralMini4BRealtime2602,
         ]

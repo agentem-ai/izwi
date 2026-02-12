@@ -52,7 +52,17 @@ function getChatModelName(variant: string): string {
   if (variant === "Qwen3-0.6B-4bit") {
     return withQwen3Prefix("Chat 0.6B 4-bit", variant);
   }
-  return withQwen3Prefix(variant, variant);
+  if (variant === "Gemma-3-1b-it") {
+    return "Gemma 3 1B Instruct";
+  }
+  if (variant === "Gemma-3-4b-it") {
+    return "Gemma 3 4B Instruct";
+  }
+  return variant;
+}
+
+function isThinkingChatModel(variant: string): boolean {
+  return variant === "Qwen3-0.6B-4bit";
 }
 
 function getStatusLabel(status: ModelInfo["status"]): string {
@@ -292,6 +302,9 @@ export function ChatPage({
         selectedModel={resolvedSelectedModel}
         selectedModelReady={selectedModelReady}
         modelLabel={selectedModelInfo ? getChatModelName(selectedModelInfo.variant) : null}
+        supportsThinking={
+          resolvedSelectedModel ? isThinkingChatModel(resolvedSelectedModel) : false
+        }
         modelOptions={modelOptions}
         onSelectModel={handleModelSelect}
         onOpenModelManager={openModelManager}

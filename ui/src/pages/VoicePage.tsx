@@ -132,6 +132,12 @@ function formatModelVariantLabel(variant: string): string {
     return normalized.replace("Qwen3-", "Qwen3 ");
   }
 
+  if (normalized.startsWith("Gemma-3-")) {
+    return normalized
+      .replace("Gemma-3-1b-it", "Gemma 3 1B Instruct")
+      .replace("Gemma-3-4b-it", "Gemma 3 4B Instruct");
+  }
+
   return normalized.replace(/-/g, " ");
 }
 

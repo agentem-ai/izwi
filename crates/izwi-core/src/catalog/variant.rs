@@ -9,6 +9,7 @@ pub enum ModelFamily {
     Qwen3Tts,
     Qwen3Asr,
     Qwen3Chat,
+    Gemma3Chat,
     Qwen3ForcedAligner,
     Voxtral,
     Lfm2Audio,
@@ -94,6 +95,7 @@ impl ModelVariant {
             Qwen3Asr06B | Qwen3Asr06B4Bit | Qwen3Asr06B8Bit | Qwen3Asr06BBf16 | Qwen3Asr17B
             | Qwen3Asr17B4Bit | Qwen3Asr17B8Bit | Qwen3Asr17BBf16 => ModelFamily::Qwen3Asr,
             Qwen306B4Bit => ModelFamily::Qwen3Chat,
+            Gemma31BIt | Gemma34BIt => ModelFamily::Gemma3Chat,
             Qwen3ForcedAligner06B => ModelFamily::Qwen3ForcedAligner,
             VoxtralMini4BRealtime2602 => ModelFamily::Voxtral,
         }
@@ -103,7 +105,7 @@ impl ModelVariant {
         match self.family() {
             ModelFamily::Qwen3Tts => ModelTask::Tts,
             ModelFamily::Qwen3Asr => ModelTask::Asr,
-            ModelFamily::Qwen3Chat => ModelTask::Chat,
+            ModelFamily::Qwen3Chat | ModelFamily::Gemma3Chat => ModelTask::Chat,
             ModelFamily::Qwen3ForcedAligner => ModelTask::ForcedAlign,
             ModelFamily::Voxtral => ModelTask::AudioChat,
             ModelFamily::Lfm2Audio => ModelTask::AudioChat,
@@ -263,6 +265,16 @@ fn resolve_by_heuristic(normalized: &str) -> Option<ModelVariant> {
         return Some(Qwen306B4Bit);
     }
 
+    if normalized.contains("gemma3") || (normalized.contains("gemma") && normalized.contains("it"))
+    {
+        if normalized.contains("1b") {
+            return Some(Gemma31BIt);
+        }
+        if normalized.contains("4b") {
+            return Some(Gemma34BIt);
+        }
+    }
+
     if normalized.contains("lfm2") && normalized.contains("audio") {
         return Some(Lfm2Audio15B);
     }
@@ -331,5 +343,17 @@ mod tests {
     fn resolve_asr_fallback_defaults_to_06b() {
         let resolved = resolve_asr_model_variant(Some("not-a-real-model"));
         assert_eq!(resolved, ModelVariant::Qwen3Asr06B);
+    }
+
+    #[test]
+    fn parse_gemma_by_repo_tail() {
+        let parsed = parse_model_variant("gemma-3-4b-it").unwrap();
+        assert_eq!(parsed, ModelVariant::Gemma34BIt);
+    }
+
+    #[test]
+    fn parse_chat_accepts_gemma() {
+        let parsed = parse_chat_model_variant(Some("google/gemma-3-1b-it")).unwrap();
+        assert_eq!(parsed, ModelVariant::Gemma31BIt);
     }
 }

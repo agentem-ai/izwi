@@ -9,17 +9,61 @@ use tracing::info;
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 
+use super::chat_types::ChatMessage;
 use super::device::DeviceProfile;
+use super::gemma3_chat::Gemma3ChatModel;
 use super::qwen3_asr::Qwen3AsrModel;
-use super::qwen3_chat::Qwen3ChatModel;
+use super::qwen3_chat::{ChatGenerationOutput, Qwen3ChatModel};
 use super::voxtral::VoxtralRealtimeModel;
+
+pub enum NativeChatModel {
+    Qwen3(Qwen3ChatModel),
+    Gemma3(Gemma3ChatModel),
+}
+
+impl NativeChatModel {
+    pub fn generate(
+        &self,
+        messages: &[ChatMessage],
+        max_new_tokens: usize,
+    ) -> Result<ChatGenerationOutput> {
+        match self {
+            Self::Qwen3(model) => model.generate(messages, max_new_tokens),
+            Self::Gemma3(model) => {
+                let output = model.generate(messages, max_new_tokens)?;
+                Ok(ChatGenerationOutput {
+                    text: output.text,
+                    tokens_generated: output.tokens_generated,
+                })
+            }
+        }
+    }
+
+    pub fn generate_with_callback(
+        &self,
+        messages: &[ChatMessage],
+        max_new_tokens: usize,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ChatGenerationOutput> {
+        match self {
+            Self::Qwen3(model) => model.generate_with_callback(messages, max_new_tokens, on_delta),
+            Self::Gemma3(model) => {
+                let output = model.generate_with_callback(messages, max_new_tokens, on_delta)?;
+                Ok(ChatGenerationOutput {
+                    text: output.text,
+                    tokens_generated: output.tokens_generated,
+                })
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ModelRegistry {
     models_dir: PathBuf,
     device: DeviceProfile,
     asr_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<Qwen3AsrModel>>>>>>,
-    chat_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<Qwen3ChatModel>>>>>>,
+    chat_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<NativeChatModel>>>>>>,
     voxtral_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<VoxtralRealtimeModel>>>>>>,
 }
 
@@ -83,7 +127,7 @@ impl ModelRegistry {
         &self,
         variant: ModelVariant,
         model_dir: &Path,
-    ) -> Result<Arc<Qwen3ChatModel>> {
+    ) -> Result<Arc<NativeChatModel>> {
         if !variant.is_chat() {
             return Err(Error::InvalidInput(format!(
                 "Model variant {variant} is not a chat model"
@@ -105,10 +149,28 @@ impl ModelRegistry {
                 let model_dir = model_dir.to_path_buf();
                 let device = self.device.clone();
                 move || async move {
-                    tokio::task::spawn_blocking(move || Qwen3ChatModel::load(&model_dir, device))
-                        .await
-                        .map_err(|e| Error::ModelLoadError(e.to_string()))?
-                        .map(Arc::new)
+                    tokio::task::spawn_blocking(move || {
+                        let model = match variant {
+                            ModelVariant::Qwen306B4Bit => {
+                                NativeChatModel::Qwen3(Qwen3ChatModel::load(&model_dir, device)?)
+                            }
+                            ModelVariant::Gemma31BIt | ModelVariant::Gemma34BIt => {
+                                NativeChatModel::Gemma3(Gemma3ChatModel::load(
+                                    &model_dir, variant, device,
+                                )?)
+                            }
+                            _ => {
+                                return Err(Error::InvalidInput(format!(
+                                    "Unsupported chat model variant: {variant}"
+                                )));
+                            }
+                        };
+
+                        Ok::<NativeChatModel, Error>(model)
+                    })
+                    .await
+                    .map_err(|e| Error::ModelLoadError(e.to_string()))?
+                    .map(Arc::new)
                 }
             })
             .await?;
@@ -160,7 +222,7 @@ impl ModelRegistry {
         guard.get(&variant).and_then(|cell| cell.get().cloned())
     }
 
-    pub async fn get_chat(&self, variant: ModelVariant) -> Option<Arc<Qwen3ChatModel>> {
+    pub async fn get_chat(&self, variant: ModelVariant) -> Option<Arc<NativeChatModel>> {
         let guard = self.chat_models.read().await;
         guard.get(&variant).and_then(|cell| cell.get().cloned())
     }
