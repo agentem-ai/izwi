@@ -99,6 +99,10 @@ function isTtsVariant(variant: string): boolean {
   return variant.includes("Qwen3-TTS") && !variant.includes("Tokenizer");
 }
 
+function isCustomVoiceTtsVariant(variant: string): boolean {
+  return isTtsVariant(variant) && variant.includes("CustomVoice");
+}
+
 function isRunnableModelStatus(status: ModelInfo["status"]): boolean {
   return status === "ready";
 }
@@ -355,6 +359,10 @@ export function VoicePage({
     () => sortedModels.filter((m) => isTtsVariant(m.variant)),
     [sortedModels],
   );
+  const ttsConfigModels = useMemo(
+    () => ttsModels.filter((m) => isCustomVoiceTtsVariant(m.variant)),
+    [ttsModels],
+  );
   const voiceRouteModels = useMemo(
     () =>
       sortedModels.filter(
@@ -424,37 +432,31 @@ export function VoicePage({
   useEffect(() => {
     if (
       !selectedTtsModel ||
-      !ttsModels.some((m) => m.variant === selectedTtsModel)
+      !ttsConfigModels.some((m) => m.variant === selectedTtsModel)
     ) {
       const preferredTts =
-        ttsModels.find(
+        ttsConfigModels.find(
           (m) =>
             m.variant === "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit" &&
             m.status === "ready",
         ) ||
-        ttsModels.find(
-          (m) =>
-            m.variant === "Qwen3-TTS-12Hz-0.6B-Base-4bit" &&
-            m.status === "ready",
-        ) ||
-        ttsModels.find(
+        ttsConfigModels.find(
           (m) =>
             m.variant.includes("0.6B") &&
             m.variant.includes("4bit") &&
             m.status === "ready",
         ) ||
-        ttsModels.find((m) => m.status === "ready") ||
-        ttsModels.find(
+        ttsConfigModels.find((m) => m.status === "ready") ||
+        ttsConfigModels.find(
           (m) => m.variant === "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
         ) ||
-        ttsModels.find((m) => m.variant === "Qwen3-TTS-12Hz-0.6B-Base-4bit") ||
-        ttsModels.find(
+        ttsConfigModels.find(
           (m) => m.variant.includes("0.6B") && m.variant.includes("4bit"),
         ) ||
-        ttsModels[0];
+        ttsConfigModels[0];
       setSelectedTtsModel(preferredTts?.variant ?? null);
     }
-  }, [ttsModels, selectedTtsModel]);
+  }, [ttsConfigModels, selectedTtsModel]);
 
   const selectedAsrInfo = useMemo(
     () => asrModels.find((m) => m.variant === selectedAsrModel) ?? null,
@@ -465,8 +467,8 @@ export function VoicePage({
     [textModels, selectedTextModel],
   );
   const selectedTtsInfo = useMemo(
-    () => ttsModels.find((m) => m.variant === selectedTtsModel) ?? null,
-    [ttsModels, selectedTtsModel],
+    () => ttsConfigModels.find((m) => m.variant === selectedTtsModel) ?? null,
+    [ttsConfigModels, selectedTtsModel],
   );
 
   const hasRunnableConfig = useMemo(
@@ -1554,7 +1556,7 @@ export function VoicePage({
                         onChange={(e) => setSelectedTtsModel(e.target.value)}
                         className="input"
                       >
-                        {ttsModels.map((m) => (
+                        {ttsConfigModels.map((m) => (
                           <option key={m.variant} value={m.variant}>
                             {m.variant} • {getStatusLabel(m.status)}
                           </option>
