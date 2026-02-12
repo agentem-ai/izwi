@@ -38,9 +38,9 @@ safetensors = "0.4"
 tokenizers = "0.19"
 
 # Candle (native inference)
-candle-core = "0.9.1"
-candle-nn = "0.9.1"
-candle-transformers = "0.9.1"
+candle-core = "0.9.2"
+candle-nn = "0.9.2"
+candle-transformers = "0.9.2"
 
 # Audio processing
 hound = "3.5"
