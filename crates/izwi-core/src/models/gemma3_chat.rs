@@ -89,6 +89,16 @@ struct GemmaDefaults {
     head_dim: usize,
 }
 
+fn max_position_embeddings_cap_for_variant(variant: ModelVariant) -> usize {
+    match variant {
+        // 4B has shown severe memory pressure/timeouts on Metal when large
+        // KV caches are preallocated from oversized context settings.
+        ModelVariant::Gemma34BIt => 8_192,
+        ModelVariant::Gemma31BIt => 32_768,
+        _ => 32_768,
+    }
+}
+
 fn defaults_for_variant(variant: ModelVariant) -> GemmaDefaults {
     match variant {
         ModelVariant::Gemma31BIt => GemmaDefaults {
@@ -124,6 +134,7 @@ fn parse_gemma3_config(
     tokenizer_vocab_size: usize,
     checkpoint_vocab_size: Option<usize>,
 ) -> Result<Gemma3Config> {
+    let max_position_embeddings_cap = max_position_embeddings_cap_for_variant(variant);
     let root_value: Value = serde_json::from_str(config_str)?;
     let source = root_value.get("text_config").cloned().unwrap_or(root_value);
 
@@ -174,7 +185,10 @@ fn parse_gemma3_config(
     );
     set_default("sliding_window", Value::from(1024u64));
     set_default("sliding_window_pattern", Value::from(6u64));
-    set_default("max_position_embeddings", Value::from(131_072u64));
+    set_default(
+        "max_position_embeddings",
+        Value::from(max_position_embeddings_cap as u64),
+    );
     let resolved_vocab_size = checkpoint_vocab_size.unwrap_or(tokenizer_vocab_size);
     if let Some(config_vocab_size) = object.get("vocab_size").and_then(|value| value.as_u64()) {
         if config_vocab_size as usize != resolved_vocab_size {
@@ -185,6 +199,24 @@ fn parse_gemma3_config(
         }
     }
     object.insert("vocab_size".to_string(), Value::from(resolved_vocab_size as u64));
+    let resolved_max_position_embeddings = object
+        .get("max_position_embeddings")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+        .unwrap_or(max_position_embeddings_cap);
+    let capped_max_position_embeddings =
+        resolved_max_position_embeddings.min(max_position_embeddings_cap);
+    if capped_max_position_embeddings != resolved_max_position_embeddings {
+        info!(
+            "Capping Gemma {} max_position_embeddings from {} to {} to avoid excessive KV cache allocation",
+            variant.dir_name(),
+            resolved_max_position_embeddings, capped_max_position_embeddings
+        );
+    }
+    object.insert(
+        "max_position_embeddings".to_string(),
+        Value::from(capped_max_position_embeddings as u64),
+    );
 
     let config =
         serde_json::from_value::<Gemma3Config>(Value::Object(object.into_iter().collect()))
@@ -295,7 +327,12 @@ impl Gemma3ChatModel {
         let config_str = fs::read_to_string(config_path)?;
         let mut use_language_model_prefix = should_use_language_model_prefix(&config_str);
         let mut inferred_vocab_size: Option<usize> = None;
-        let dtype = device.select_dtype(None);
+        let dtype = if device.kind.is_metal() {
+            // Prefer F16 for Gemma on Metal to keep memory use in check on larger checkpoints.
+            DType::F16
+        } else {
+            device.select_dtype(None)
+        };
 
         let index_path = model_dir.join("model.safetensors.index.json");
         let vb_base = if index_path.exists() {
