@@ -62,11 +62,15 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
   chat: {
     id: "chat",
     label: "Chat",
-    description: "Text-to-text chat with Qwen3",
+    description: "Text-to-text chat with Qwen3 and Gemma 3",
     icon: "MessageSquare",
-    modelFilter: (variant) => variant === "Qwen3-0.6B-4bit",
+    modelFilter: (variant) =>
+      variant === "Qwen3-0.6B-4bit" ||
+      variant === "Gemma-3-1b-it" ||
+      variant === "Gemma-3-4b-it",
     emptyStateTitle: "No Chat Model Loaded",
-    emptyStateDescription: "Load Qwen3-0.6B-4bit to start chatting",
+    emptyStateDescription:
+      "Load Qwen3-0.6B-4bit, Gemma-3-1b-it, or Gemma-3-4b-it to start chatting",
   },
 };
 

@@ -411,12 +411,17 @@ fn model_type_rank(variant: ModelVariant) -> u8 {
 }
 
 fn model_size_rank(dir_name: &str) -> u8 {
-    if dir_name.contains("0.6B") {
+    let normalized = dir_name.to_ascii_lowercase();
+    if normalized.contains("0.6b") {
         0
-    } else if dir_name.contains("1.7B") {
+    } else if normalized.contains("1b") {
         1
-    } else {
+    } else if normalized.contains("1.7b") {
         2
+    } else if normalized.contains("4b") {
+        3
+    } else {
+        4
     }
 }
 

@@ -195,6 +195,10 @@ impl Tokenizer {
         self.inner.get_vocab_size(true)
     }
 
+    pub fn token_to_id(&self, token: &str) -> Option<u32> {
+        self.inner.token_to_id(token)
+    }
+
     pub fn special_tokens(&self) -> &SpecialTokens {
         &self.special_tokens
     }

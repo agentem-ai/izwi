@@ -4,12 +4,13 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
-use crate::models::qwen3_chat::{ChatMessage, Qwen3ChatModel};
+use crate::models::chat_types::ChatMessage;
+use crate::models::registry::NativeChatModel;
 use crate::runtime::service::InferenceEngine;
 use crate::runtime::types::ChatGeneration;
 
 impl InferenceEngine {
-    async fn get_or_load_chat_model(&self, variant: ModelVariant) -> Result<Arc<Qwen3ChatModel>> {
+    async fn get_or_load_chat_model(&self, variant: ModelVariant) -> Result<Arc<NativeChatModel>> {
         if !variant.is_chat() {
             return Err(Error::InvalidInput(format!(
                 "Model {variant} is not a chat model"

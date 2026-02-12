@@ -6,4 +6,7 @@ pub use crate::models::gguf_loader::{
 };
 pub use crate::models::registry::ModelRegistry;
 
-pub use crate::models::{mlx_compat, qwen3, qwen3_asr, qwen3_chat, qwen3_tts, voxtral, voxtral_lm};
+pub use crate::models::{
+    chat_types, gemma3_chat, mlx_compat, qwen3, qwen3_asr, qwen3_chat, qwen3_tts, voxtral,
+    voxtral_lm,
+};

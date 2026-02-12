@@ -1,7 +1,9 @@
 //! Native model implementations and registry.
 
 pub mod batched_attention;
+pub mod chat_types;
 pub mod device;
+pub mod gemma3_chat;
 pub mod gguf_loader;
 pub mod metal_memory;
 pub mod mlx_compat;

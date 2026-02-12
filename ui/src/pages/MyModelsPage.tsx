@@ -184,6 +184,22 @@ const MODEL_DETAILS: Record<
     capabilities: ["Text Chat", "4-bit"],
     size: "0.9 GB",
   },
+  "Gemma-3-1b-it": {
+    shortName: "Gemma 3 1B",
+    fullName: "Gemma 3 1B Instruct",
+    description: "Lightweight Gemma 3 instruction model for local chat",
+    category: "chat",
+    capabilities: ["Text Chat", "Instruction Tuned"],
+    size: "2.1 GB",
+  },
+  "Gemma-3-4b-it": {
+    shortName: "Gemma 3 4B",
+    fullName: "Gemma 3 4B Instruct",
+    description: "Higher-quality Gemma 3 instruction model for local chat",
+    category: "chat",
+    capabilities: ["Text Chat", "Instruction Tuned"],
+    size: "8.0 GB",
+  },
   // ASR 0.6B models
   "Qwen3-ASR-0.6B": {
     shortName: "ASR 0.6B",

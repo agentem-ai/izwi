@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::models::qwen3_chat::ChatMessage;
+use izwi_core::models::chat_types::ChatMessage;
 use izwi_core::{parse_chat_model_variant, ModelVariant};
 
 #[derive(Debug, Deserialize)]

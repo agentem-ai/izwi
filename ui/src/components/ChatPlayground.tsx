@@ -23,6 +23,7 @@ interface ModelOption {
 interface ChatPlaygroundProps {
   selectedModel: string | null;
   selectedModelReady: boolean;
+  supportsThinking: boolean;
   modelLabel?: string | null;
   modelOptions: ModelOption[];
   onSelectModel: (variant: string) => void;
@@ -30,10 +31,15 @@ interface ChatPlaygroundProps {
   onModelRequired: () => void;
 }
 
-const DEFAULT_SYSTEM_PROMPT: ChatMessage = {
+const THINKING_SYSTEM_PROMPT: ChatMessage = {
   role: "system",
   content:
     "You are a helpful assistant. Keep internal reasoning concise. If you use <think>, always close it with </think> and then provide a final answer.",
+};
+
+const DEFAULT_SYSTEM_PROMPT: ChatMessage = {
+  role: "system",
+  content: "You are a helpful assistant.",
 };
 
 interface ParsedAssistantContent {
@@ -100,6 +106,7 @@ function getStatusTone(option: ModelOption): string {
 export function ChatPlayground({
   selectedModel,
   selectedModelReady,
+  supportsThinking,
   modelLabel,
   modelOptions,
   onSelectModel,
@@ -189,11 +196,14 @@ export function ChatPlayground({
       content: "",
     };
 
-    const historyWithSystem =
-      messages.length > 0 && messages[0].role === "system"
-        ? messages
-        : [DEFAULT_SYSTEM_PROMPT, ...messages];
-    const requestMessages = [...historyWithSystem, userMessage];
+    const systemPrompt = supportsThinking
+      ? THINKING_SYSTEM_PROMPT
+      : DEFAULT_SYSTEM_PROMPT;
+    const requestMessages = [
+      systemPrompt,
+      ...messages.filter((message) => message.role !== "system"),
+      userMessage,
+    ];
 
     setMessages((prev) => [...prev, userMessage, assistantPlaceholder]);
     setInput("");
@@ -447,7 +457,9 @@ export function ChatPlayground({
                     !isUser && idx === visibleMessages.length - 1 && isStreaming;
                   const parsed = isUser
                     ? null
-                    : parseAssistantContent(message.content || "");
+                    : supportsThinking
+                      ? parseAssistantContent(message.content || "")
+                      : null;
                   const messageKey = `${idx}-${message.role}`;
                   const isThoughtExpanded = !!expandedThoughts[messageKey];
                   const showStreamingThinking =
