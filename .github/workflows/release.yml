@@ -74,6 +74,9 @@ jobs:
       - name: Install UI dependencies (for Tauri beforeBuildCommand)
         run: npm ci --prefix ui
 
+      - name: Build UI dist (required by izwi-desktop compile-time Tauri config)
+        run: npm --prefix ui run build
+
       - name: Build CLI, server, and desktop binaries
         run: |
           # izwi-desktop bundles izwi/izwi-server as resources, so build those first.
