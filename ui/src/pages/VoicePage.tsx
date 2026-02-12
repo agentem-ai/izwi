@@ -25,6 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
+import { Slider } from "../components/ui/slider";
 
 type RuntimeStatus =
   | "idle"
@@ -1638,48 +1639,57 @@ export function VoicePage({
                         <label className="text-xs text-gray-500">
                           VAD Sensitivity ({vadThreshold.toFixed(3)})
                         </label>
-                        <input
-                          type="range"
+                        <Slider
+                          aria-label="VAD sensitivity"
                           min={0.005}
                           max={0.08}
                           step={0.001}
-                          value={vadThreshold}
-                          onChange={(e) =>
-                            setVadThreshold(parseFloat(e.target.value))
-                          }
-                          className="w-full mt-1"
+                          value={[vadThreshold]}
+                          onValueChange={(value) => {
+                            const next = value[0];
+                            if (typeof next === "number") {
+                              setVadThreshold(next);
+                            }
+                          }}
+                          className="mt-2"
                         />
                       </div>
                       <div>
                         <label className="text-xs text-gray-500">
                           End Silence (ms): {silenceDurationMs}
                         </label>
-                        <input
-                          type="range"
+                        <Slider
+                          aria-label="End silence duration"
                           min={400}
                           max={1800}
                           step={50}
-                          value={silenceDurationMs}
-                          onChange={(e) =>
-                            setSilenceDurationMs(parseInt(e.target.value, 10))
-                          }
-                          className="w-full mt-1"
+                          value={[silenceDurationMs]}
+                          onValueChange={(value) => {
+                            const next = value[0];
+                            if (typeof next === "number") {
+                              setSilenceDurationMs(next);
+                            }
+                          }}
+                          className="mt-2"
                         />
                       </div>
                       <div>
                         <label className="text-xs text-gray-500">
                           Minimum Speech (ms): {minSpeechMs}
                         </label>
-                        <input
-                          type="range"
+                        <Slider
+                          aria-label="Minimum speech duration"
                           min={150}
                           max={1200}
                           step={50}
-                          value={minSpeechMs}
-                          onChange={(e) =>
-                            setMinSpeechMs(parseInt(e.target.value, 10))
-                          }
-                          className="w-full mt-1"
+                          value={[minSpeechMs]}
+                          onValueChange={(value) => {
+                            const next = value[0];
+                            if (typeof next === "number") {
+                              setMinSpeechMs(next);
+                            }
+                          }}
+                          className="mt-2"
                         />
                       </div>
                     </div>
