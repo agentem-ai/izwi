@@ -33,12 +33,8 @@ jobs:
             bundle_kind: dmg
             bundle_ext: dmg
     env:
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      # Kept at job scope for step conditions only.
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
     steps:
       - name: Checkout
@@ -135,12 +131,19 @@ jobs:
         run: |
           cargo tauri build \
             --bundles ${{ matrix.bundle_kind }} \
+            --no-sign \
             --config crates/izwi-desktop/tauri.macos.conf.json
 
       - name: Build desktop bundle (signed macOS)
         if: runner.os == 'macOS' && env.APPLE_SIGNING_IDENTITY != ''
         env:
           CI: "true"
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           cargo tauri build \
             --bundles ${{ matrix.bundle_kind }} \
