@@ -75,7 +75,10 @@ jobs:
         run: npm ci --prefix ui
 
       - name: Build CLI, server, and desktop binaries
-        run: cargo build --release --bin izwi --bin izwi-server --bin izwi-desktop
+        run: |
+          # izwi-desktop bundles izwi/izwi-server as resources, so build those first.
+          cargo build --release --bin izwi --bin izwi-server
+          cargo build --release --bin izwi-desktop
 
       - name: Package terminal binaries (Linux/macOS)
         if: runner.os != 'Windows'

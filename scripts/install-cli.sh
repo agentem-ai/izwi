@@ -62,8 +62,9 @@ install_from_source() {
         cd "$temp_dir/izwi"
     fi
     
-    # Build release binaries
-    cargo build --release --bin izwi --bin izwi-server --bin izwi-desktop
+    # Build release binaries (desktop build expects izwi + izwi-server artifacts to exist)
+    cargo build --release --bin izwi --bin izwi-server
+    cargo build --release --bin izwi-desktop
     
     # Create bin directory
     mkdir -p "$BIN_DIR"
