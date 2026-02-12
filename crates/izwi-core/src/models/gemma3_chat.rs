@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -9,7 +10,7 @@ use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::gemma3::{Config as Gemma3Config, Model as Gemma3Model};
 use serde_json::Value;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
@@ -121,6 +122,7 @@ fn parse_gemma3_config(
     config_str: &str,
     variant: ModelVariant,
     tokenizer_vocab_size: usize,
+    checkpoint_vocab_size: Option<usize>,
 ) -> Result<Gemma3Config> {
     let root_value: Value = serde_json::from_str(config_str)?;
     let source = root_value.get("text_config").cloned().unwrap_or(root_value);
@@ -173,13 +175,109 @@ fn parse_gemma3_config(
     set_default("sliding_window", Value::from(1024u64));
     set_default("sliding_window_pattern", Value::from(6u64));
     set_default("max_position_embeddings", Value::from(131_072u64));
-    set_default("vocab_size", Value::from(tokenizer_vocab_size as u64));
+    let resolved_vocab_size = checkpoint_vocab_size.unwrap_or(tokenizer_vocab_size);
+    if let Some(config_vocab_size) = object.get("vocab_size").and_then(|value| value.as_u64()) {
+        if config_vocab_size as usize != resolved_vocab_size {
+            info!(
+                "Overriding Gemma vocab_size from config {} to {}",
+                config_vocab_size, resolved_vocab_size
+            );
+        }
+    }
+    object.insert("vocab_size".to_string(), Value::from(resolved_vocab_size as u64));
 
     let config =
         serde_json::from_value::<Gemma3Config>(Value::Object(object.into_iter().collect()))
             .map_err(Error::from)?;
 
     Ok(config)
+}
+
+fn should_use_language_model_prefix(config_str: &str) -> bool {
+    let Ok(root) = serde_json::from_str::<Value>(config_str) else {
+        return false;
+    };
+
+    if root
+        .get("architectures")
+        .and_then(|v| v.as_array())
+        .is_some_and(|architectures| {
+            architectures.iter().any(|entry| {
+                entry
+                    .as_str()
+                    .is_some_and(|name| name == "Gemma3ForConditionalGeneration")
+            })
+        })
+    {
+        return true;
+    }
+
+    root.get("model_type")
+        .and_then(|v| v.as_str())
+        .is_some_and(|model_type| model_type == "gemma3")
+}
+
+const MAX_SAFE_TENSORS_HEADER_SIZE: usize = 100_000_000;
+
+fn tensor_shape_from_safetensors_header(
+    safetensors_path: &Path,
+    tensor_name: &str,
+) -> Result<Option<Vec<usize>>> {
+    let mut file = fs::File::open(safetensors_path)?;
+
+    let mut n_buf = [0u8; 8];
+    file.read_exact(&mut n_buf)?;
+    let header_len_u64 = u64::from_le_bytes(n_buf);
+    let header_len: usize = header_len_u64
+        .try_into()
+        .map_err(|_| Error::InvalidInput("Invalid safetensors header length".to_string()))?;
+    if header_len > MAX_SAFE_TENSORS_HEADER_SIZE {
+        return Err(Error::InvalidInput(format!(
+            "Safetensors header too large: {header_len}"
+        )));
+    }
+
+    let mut header_buf = vec![0u8; header_len];
+    file.read_exact(&mut header_buf)?;
+
+    let metadata: Value = serde_json::from_slice(&header_buf)?;
+    let tensor_entry = match metadata.get(tensor_name) {
+        Some(entry) => entry,
+        None => return Ok(None),
+    };
+    let shape = match tensor_entry.get("shape").and_then(|shape| shape.as_array()) {
+        Some(shape) => shape,
+        None => return Ok(None),
+    };
+
+    let dims = shape
+        .iter()
+        .map(|dim| dim.as_u64().map(|value| value as usize))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "Invalid shape metadata for tensor {tensor_name} in {}",
+                safetensors_path.display()
+            ))
+        })?;
+
+    Ok(Some(dims))
+}
+
+fn infer_embed_vocab_size_from_safetensors(
+    safetensors_path: &Path,
+    tensor_name: &str,
+) -> Result<Option<usize>> {
+    let shape = match tensor_shape_from_safetensors_header(safetensors_path, tensor_name)? {
+        Some(shape) => shape,
+        None => return Ok(None),
+    };
+
+    let Some(vocab_size) = shape.first().copied() else {
+        return Ok(None);
+    };
+
+    Ok(Some(vocab_size))
 }
 
 pub struct Gemma3ChatModel {
@@ -195,11 +293,12 @@ impl Gemma3ChatModel {
 
         let config_path = model_dir.join("config.json");
         let config_str = fs::read_to_string(config_path)?;
-        let config = parse_gemma3_config(&config_str, variant, tokenizer.vocab_size)?;
+        let mut use_language_model_prefix = should_use_language_model_prefix(&config_str);
+        let mut inferred_vocab_size: Option<usize> = None;
         let dtype = device.select_dtype(None);
 
         let index_path = model_dir.join("model.safetensors.index.json");
-        let vb = if index_path.exists() {
+        let vb_base = if index_path.exists() {
             let index_data = fs::read_to_string(&index_path)?;
             let index: Value = serde_json::from_str(&index_data)?;
             let weight_map = index
@@ -208,6 +307,43 @@ impl Gemma3ChatModel {
                 .ok_or_else(|| {
                     Error::InvalidInput("Invalid model.safetensors.index.json format".to_string())
                 })?;
+            if weight_map
+                .keys()
+                .any(|tensor_name| tensor_name.starts_with("language_model."))
+            {
+                use_language_model_prefix = true;
+            }
+
+            let embed_tensor_name = if use_language_model_prefix {
+                "language_model.model.embed_tokens.weight"
+            } else {
+                "model.embed_tokens.weight"
+            };
+            if let Some(shard_name) = weight_map.get(embed_tensor_name).and_then(|v| v.as_str()) {
+                let shard_path = model_dir.join(shard_name);
+                inferred_vocab_size =
+                    infer_embed_vocab_size_from_safetensors(&shard_path, embed_tensor_name)?;
+            } else {
+                let fallback_tensor_name = if embed_tensor_name
+                    == "language_model.model.embed_tokens.weight"
+                {
+                    "model.embed_tokens.weight"
+                } else {
+                    "language_model.model.embed_tokens.weight"
+                };
+                if let Some(shard_name) =
+                    weight_map.get(fallback_tensor_name).and_then(|v| v.as_str())
+                {
+                    let shard_path = model_dir.join(shard_name);
+                    inferred_vocab_size = infer_embed_vocab_size_from_safetensors(
+                        &shard_path,
+                        fallback_tensor_name,
+                    )?;
+                    if fallback_tensor_name.starts_with("language_model.") {
+                        use_language_model_prefix = true;
+                    }
+                }
+            }
 
             let mut shard_files: Vec<String> = weight_map
                 .values()
@@ -221,7 +357,48 @@ impl Gemma3ChatModel {
             unsafe { VarBuilder::from_mmaped_safetensors(&shard_paths, dtype, &device.device)? }
         } else {
             let weights_path = model_dir.join("model.safetensors");
+            for tensor_name in [
+                "model.embed_tokens.weight",
+                "language_model.model.embed_tokens.weight",
+            ] {
+                if let Some(vocab_size) =
+                    infer_embed_vocab_size_from_safetensors(&weights_path, tensor_name)?
+                {
+                    inferred_vocab_size = Some(vocab_size);
+                    if tensor_name.starts_with("language_model.") {
+                        use_language_model_prefix = true;
+                    }
+                    break;
+                }
+            }
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], dtype, &device.device)? }
+        };
+
+        if let Some(vocab_size) = inferred_vocab_size {
+            info!(
+                "Gemma {} using checkpoint embedding vocab size {}",
+                variant.dir_name(),
+                vocab_size
+            );
+        } else {
+            warn!(
+                "Could not infer Gemma {} embedding vocab size from checkpoint, falling back to tokenizer vocab {}",
+                variant.dir_name(),
+                tokenizer.vocab_size
+            );
+        }
+
+        let config = parse_gemma3_config(
+            &config_str,
+            variant,
+            tokenizer.vocab_size,
+            inferred_vocab_size,
+        )?;
+
+        let vb = if use_language_model_prefix {
+            vb_base.pp("language_model")
+        } else {
+            vb_base
         };
 
         let text_model = Gemma3Model::new(false, &config, vb).map_err(Error::from)?;
@@ -256,11 +433,13 @@ impl Gemma3ChatModel {
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ChatGenerationOutput> {
         let prompt_ids = self.build_prompt(messages)?;
-        let mut input_ids = Tensor::from_vec(
-            prompt_ids.clone(),
-            (1, prompt_ids.len()),
-            &self.device.device,
-        )?;
+        if prompt_ids.is_empty() {
+            return Err(Error::InvalidInput(
+                "Gemma prompt produced no tokens".to_string(),
+            ));
+        }
+        let mut input_ids =
+            Tensor::from_vec(vec![prompt_ids[0]], (1, 1), &self.device.device)?;
         let mut seqlen_offset = 0usize;
 
         let mut generated_ids = Vec::new();
@@ -271,6 +450,17 @@ impl Gemma3ChatModel {
             .lock()
             .map_err(|_| Error::InferenceError("Gemma model mutex poisoned".to_string()))?;
         model.clear_kv_cache();
+
+        // Feed the prompt token-by-token to keep KV-cache updates contiguous on Metal.
+        // Some Gemma 3 checkpoints can hit Candle `slice_set` errors when pre-filling
+        // with long prompt tensors in a single forward pass.
+        for &token in prompt_ids.iter().skip(1) {
+            model
+                .forward(&input_ids, seqlen_offset)
+                .map_err(Error::from)?;
+            seqlen_offset += 1;
+            input_ids = Tensor::from_vec(vec![token], (1, 1), &self.device.device)?;
+        }
 
         for _ in 0..max_new_tokens {
             let logits = model
@@ -292,7 +482,7 @@ impl Gemma3ChatModel {
             }
             assembled = decoded;
 
-            seqlen_offset += input_ids.dim(1)?;
+            seqlen_offset += 1;
             input_ids = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
         }
 
