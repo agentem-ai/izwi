@@ -18,6 +18,13 @@ import clsx from "clsx";
 
 import { api, ChatMessage, ModelInfo } from "../api";
 import { SPEAKERS, VIEW_CONFIGS } from "../types";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 
 type RuntimeStatus =
   | "idle"
@@ -101,6 +108,30 @@ function isTtsVariant(variant: string): boolean {
 
 function isCustomVoiceTtsVariant(variant: string): boolean {
   return isTtsVariant(variant) && variant.includes("CustomVoice");
+}
+
+function formatModelVariantLabel(variant: string): string {
+  const normalized = variant
+    .replace(/-4bit\b/g, "-4-bit")
+    .replace(/-8bit\b/g, "-8-bit");
+
+  if (normalized.startsWith("Qwen3-ASR-")) {
+    return normalized.replace("Qwen3-ASR-", "ASR ");
+  }
+
+  if (normalized.startsWith("Qwen3-TTS-12Hz-")) {
+    return normalized.replace("Qwen3-TTS-12Hz-", "TTS ");
+  }
+
+  if (normalized.startsWith("Qwen3-ForcedAligner-")) {
+    return normalized.replace("Qwen3-ForcedAligner-", "ForcedAligner ");
+  }
+
+  if (normalized.startsWith("Qwen3-")) {
+    return normalized.replace("Qwen3-", "Qwen3 ");
+  }
+
+  return normalized.replace(/-/g, " ");
 }
 
 function isRunnableModelStatus(status: ModelInfo["status"]): boolean {
@@ -1350,12 +1381,12 @@ export function VoicePage({
                   {item.model ? (
                     <span
                       className={clsx(
-                        "inline-flex items-center rounded-md border px-2 py-0.5 max-w-[220px] truncate",
+                        "inline-flex items-center rounded-md border px-2 py-0.5 max-w-[220px] truncate text-[11px]",
                         getStatusClass(item.model.status),
                       )}
                       title={item.model.variant}
                     >
-                      {item.model.variant}
+                      {formatModelVariantLabel(item.model.variant)}
                     </span>
                   ) : (
                     <span className="text-amber-400">Not selected</span>
@@ -1497,17 +1528,22 @@ export function VoicePage({
                           </span>
                         )}
                       </div>
-                      <select
-                        value={selectedAsrModel ?? ""}
-                        onChange={(e) => setSelectedAsrModel(e.target.value)}
-                        className="input"
+                      <Select
+                        value={selectedAsrModel ?? undefined}
+                        onValueChange={setSelectedAsrModel}
                       >
-                        {asrModels.map((m) => (
-                          <option key={m.variant} value={m.variant}>
-                            {m.variant} • {getStatusLabel(m.status)}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select ASR model" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {asrModels.map((m) => (
+                            <SelectItem key={m.variant} value={m.variant}>
+                              {formatModelVariantLabel(m.variant)} •{" "}
+                              {getStatusLabel(m.status)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
 
                     <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
@@ -1524,17 +1560,22 @@ export function VoicePage({
                           </span>
                         )}
                       </div>
-                      <select
-                        value={selectedTextModel ?? ""}
-                        onChange={(e) => setSelectedTextModel(e.target.value)}
-                        className="input"
+                      <Select
+                        value={selectedTextModel ?? undefined}
+                        onValueChange={setSelectedTextModel}
                       >
-                        {textModels.map((m) => (
-                          <option key={m.variant} value={m.variant}>
-                            {m.variant} • {getStatusLabel(m.status)}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select text model" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {textModels.map((m) => (
+                            <SelectItem key={m.variant} value={m.variant}>
+                              {formatModelVariantLabel(m.variant)} •{" "}
+                              {getStatusLabel(m.status)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
 
                     <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
@@ -1551,32 +1592,38 @@ export function VoicePage({
                           </span>
                         )}
                       </div>
-                      <select
-                        value={selectedTtsModel ?? ""}
-                        onChange={(e) => setSelectedTtsModel(e.target.value)}
-                        className="input"
+                      <Select
+                        value={selectedTtsModel ?? undefined}
+                        onValueChange={setSelectedTtsModel}
                       >
-                        {ttsConfigModels.map((m) => (
-                          <option key={m.variant} value={m.variant}>
-                            {m.variant} • {getStatusLabel(m.status)}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select TTS model" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {ttsConfigModels.map((m) => (
+                            <SelectItem key={m.variant} value={m.variant}>
+                              {formatModelVariantLabel(m.variant)} •{" "}
+                              {getStatusLabel(m.status)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
 
                     <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
                       <label className="text-xs text-gray-400">Assistant Voice</label>
-                      <select
-                        value={selectedSpeaker}
-                        onChange={(e) => setSelectedSpeaker(e.target.value)}
-                        className="input"
-                      >
-                        {SPEAKERS.map((speaker) => (
-                          <option key={speaker.id} value={speaker.id}>
-                            {speaker.name} ({speaker.language})
-                          </option>
-                        ))}
-                      </select>
+                      <Select value={selectedSpeaker} onValueChange={setSelectedSpeaker}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select assistant voice" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {SPEAKERS.map((speaker) => (
+                            <SelectItem key={speaker.id} value={speaker.id}>
+                              {speaker.name} ({speaker.language})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                   </div>
                 </section>

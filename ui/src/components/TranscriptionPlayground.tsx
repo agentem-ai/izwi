@@ -17,6 +17,13 @@ import {
 import clsx from "clsx";
 import { api } from "../api";
 import { ASRStats, GenerationStats } from "./GenerationStats";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select";
 
 interface TranscriptionPlaygroundProps {
   selectedModel: string | null;
@@ -529,19 +536,22 @@ export function TranscriptionPlayground({
             )}
           </div>
           <div className="flex items-center gap-2">
-            <select
+            <Select
               value={selectedLanguage}
-              onChange={(event) => setSelectedLanguage(event.target.value)}
-              className="bg-[#101216] border border-[#333842] text-xs text-gray-300 rounded-md px-2 py-1.5 focus:outline-none focus:ring-0 focus:border-[#333842] disabled:text-gray-500 disabled:border-[#2a2e36] [&>option]:bg-[#101216] [&>option]:text-gray-300"
-              style={{ colorScheme: "dark" }}
+              onValueChange={setSelectedLanguage}
               disabled={isProcessing}
             >
-              {LANGUAGE_OPTIONS.map((language) => (
-                <option key={language} value={language}>
-                  {language}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="h-[34px] w-[170px] border-[#333842] bg-[#101216] text-xs text-gray-300">
+                <SelectValue placeholder="Language" />
+              </SelectTrigger>
+              <SelectContent>
+                {LANGUAGE_OPTIONS.map((language) => (
+                  <SelectItem key={language} value={language}>
+                    {language}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <label className="flex items-center gap-1.5 rounded-md border border-[#333842] bg-[#101216] px-2 py-1.5 text-xs text-gray-300">
               <Radio className="w-3 h-3 text-gray-400" />
               Stream
