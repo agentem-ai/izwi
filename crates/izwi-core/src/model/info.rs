@@ -352,7 +352,11 @@ impl ModelVariant {
 
     /// Whether this variant is currently enabled in the application catalog.
     pub fn is_enabled(&self) -> bool {
-        !self.is_quantized()
+        match self {
+            Self::Qwen306B4Bit => true,
+            Self::Lfm2Audio15B | Self::VoxtralMini4BRealtime2602 => false,
+            _ => !self.is_quantized(),
+        }
     }
 
     /// Get all available variants

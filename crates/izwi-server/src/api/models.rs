@@ -36,13 +36,14 @@ pub struct OpenAiModel {
 
 /// List all available models
 pub async fn list_models(State(state): State<AppState>) -> Result<Json<ModelsResponse>, ApiError> {
-    let models = state
+    let mut models: Vec<ModelInfo> = state
         .engine
         .list_models()
         .await
         .into_iter()
         .filter(|model| model.enabled)
         .collect();
+    models.sort_by_key(model_sort_key);
     Ok(Json(ModelsResponse { models }))
 }
 
@@ -376,4 +377,57 @@ pub async fn cancel_download(
 /// Parse model variant from string
 fn parse_variant(s: &str) -> Result<ModelVariant, ApiError> {
     parse_model_variant(s).map_err(|err| ApiError::bad_request(err.to_string()))
+}
+
+fn model_sort_key(model: &ModelInfo) -> (u8, u8, u8, String) {
+    let variant = model.variant;
+    let dir_name = variant.dir_name();
+    (
+        model_type_rank(variant),
+        model_size_rank(dir_name),
+        model_precision_rank(dir_name),
+        dir_name.to_string(),
+    )
+}
+
+fn model_type_rank(variant: ModelVariant) -> u8 {
+    if variant.is_asr() {
+        0
+    } else if variant.is_tts() {
+        1
+    } else if variant.is_chat() {
+        2
+    } else if variant.is_forced_aligner() {
+        3
+    } else if variant.is_tokenizer() {
+        4
+    } else if variant.is_lfm2() {
+        5
+    } else if variant.is_voxtral() {
+        6
+    } else {
+        7
+    }
+}
+
+fn model_size_rank(dir_name: &str) -> u8 {
+    if dir_name.contains("0.6B") {
+        0
+    } else if dir_name.contains("1.7B") {
+        1
+    } else {
+        2
+    }
+}
+
+fn model_precision_rank(dir_name: &str) -> u8 {
+    if dir_name.contains("-4bit") {
+        2
+    } else if dir_name.contains("-8bit") {
+        3
+    } else if dir_name.contains("-bf16") {
+        1
+    } else {
+        0
+    }
 }
