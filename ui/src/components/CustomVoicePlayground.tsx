@@ -449,11 +449,11 @@ export function CustomVoicePlayground({
           </div>
         </div>
 
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between rounded-lg border border-[#2a2a2a] bg-[#171717] px-3 py-2">
           {/* Instruct toggle */}
           <button
             onClick={() => setShowInstruct(!showInstruct)}
-            className="flex items-center gap-2 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            className="flex items-center gap-2 text-xs text-gray-500 hover:text-white transition-colors"
           >
             <MessageSquare className="w-3.5 h-3.5" />
             {showInstruct ? "Hide" : "Add"} speaking instructions
@@ -522,7 +522,7 @@ export function CustomVoicePlayground({
         </AnimatePresence>
 
         {isStreaming && (
-          <div className="p-2 rounded bg-emerald-950/30 border border-emerald-900/40 text-emerald-400 text-xs flex items-center gap-2">
+          <div className="p-2 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
             Streaming audio chunks...
           </div>
@@ -533,10 +533,7 @@ export function CustomVoicePlayground({
           <button
             onClick={handleGenerate}
             disabled={generating || !selectedModelReady}
-            className={clsx(
-              "btn flex-1 min-h-[44px]",
-              generating ? "btn-secondary" : "btn-primary",
-            )}
+            className="btn btn-primary flex-1 min-h-[44px]"
           >
             {generating ? (
               <>

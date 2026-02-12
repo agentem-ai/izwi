@@ -283,10 +283,7 @@ export function VoiceClonePlayground({
           <button
             onClick={handleGenerate}
             disabled={generating || !selectedModelReady || !isVoiceReady}
-            className={clsx(
-              "btn flex-1 min-h-[44px]",
-              generating ? "btn-secondary" : "btn-primary",
-            )}
+            className="btn btn-primary flex-1 min-h-[44px]"
           >
             {generating ? (
               <>

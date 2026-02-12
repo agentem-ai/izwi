@@ -137,7 +137,7 @@ body {
 /* Button styles */
 .btn {
   @apply px-4 py-2 rounded-md font-medium transition-colors duration-150 flex items-center justify-center gap-2;
-  @apply disabled:opacity-40 disabled:cursor-not-allowed;
+  @apply disabled:opacity-55 disabled:cursor-not-allowed;
 }
 
 .btn-primary {
@@ -158,6 +158,16 @@ body {
 
 .btn-secondary:hover {
   background-color: var(--bg-surface-4);
+}
+
+html.theme-light .btn:disabled {
+  opacity: 0.72;
+}
+
+html.theme-light .btn-secondary:disabled {
+  background-color: var(--bg-surface-2);
+  border-color: var(--border-strong);
+  color: var(--text-muted);
 }
 
 .btn-ghost {
@@ -440,6 +450,18 @@ html.theme-light .text-gray-700 {
   color: #1f2937 !important;
 }
 
+html.theme-light .text-emerald-300 {
+  color: #059669 !important;
+}
+
+html.theme-light .text-emerald-400 {
+  color: #047857 !important;
+}
+
+html.theme-light .text-amber-300 {
+  color: #b45309 !important;
+}
+
 html.theme-light .bg-white {
   background-color: var(--accent-solid) !important;
 }
@@ -497,6 +519,14 @@ html.theme-light .bg-\[\#2a1616\] {
   background-color: var(--danger-bg) !important;
 }
 
+html.theme-light .bg-emerald-500\/10 {
+  background-color: rgba(16, 185, 129, 0.14) !important;
+}
+
+html.theme-light .bg-emerald-950\/30 {
+  background-color: rgba(16, 185, 129, 0.14) !important;
+}
+
 html.theme-light .bg-\[\#3a1c1c\] {
   background-color: var(--danger-bg-hover) !important;
 }
@@ -537,6 +567,14 @@ html.theme-light .border-\[\#4e89c2\] {
 
 html.theme-light .border-\[\#4a2020\] {
   border-color: var(--danger-border) !important;
+}
+
+html.theme-light .border-emerald-500\/30 {
+  border-color: rgba(5, 150, 105, 0.35) !important;
+}
+
+html.theme-light .border-emerald-900\/40 {
+  border-color: rgba(5, 150, 105, 0.35) !important;
 }
 
 /* Select dropdown styling */
