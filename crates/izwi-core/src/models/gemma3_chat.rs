@@ -276,7 +276,7 @@ impl Gemma3ChatModel {
             let logits = model
                 .forward(&input_ids, seqlen_offset)
                 .map_err(Error::from)?;
-            let next = argmax(&logits.i(0)?)?;
+            let next = select_next_token(&logits)?;
 
             if next == self.tokenizer.specials.end_of_turn || next == self.tokenizer.specials.eos {
                 break;
@@ -408,6 +408,28 @@ fn argmax(logits: &Tensor) -> Result<u32> {
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
         .ok_or_else(|| Error::InferenceError("Empty logits".to_string()))?;
     Ok(idx as u32)
+}
+
+fn select_next_token(logits: &Tensor) -> Result<u32> {
+    match logits.rank() {
+        // [vocab]
+        1 => argmax(logits),
+        // [seq, vocab]
+        2 => {
+            let seq_len = logits.dim(0)?;
+            argmax(&logits.i(seq_len.saturating_sub(1))?)
+        }
+        // [batch, seq, vocab]
+        3 => {
+            let seq_len = logits.dim(1)?;
+            argmax(&logits.i((0, seq_len.saturating_sub(1)))?)
+        }
+        _ => Err(Error::InferenceError(format!(
+            "Unexpected Gemma logits rank: {} with dims {:?}",
+            logits.rank(),
+            logits.dims()
+        ))),
+    }
 }
 
 fn text_delta(previous: &str, current: &str) -> String {
