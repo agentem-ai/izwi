@@ -1,5 +1,11 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
@@ -31,19 +37,23 @@ fn main() -> Result<()> {
     let args = DesktopArgs::parse();
     let server_url = Url::parse(&args.server_url)
         .with_context(|| format!("invalid --server-url value: {}", args.server_url))?;
-    let server_host = server_url
-        .host_str()
-        .context("--server-url must include a host")?;
-    let server_origin = match server_url.port() {
-        Some(port) => format!("{}://{}:{}", server_url.scheme(), server_host, port),
-        None => format!("{}://{}", server_url.scheme(), server_host),
-    };
+    let (server_host, server_port) = server_host_port(&server_url)?;
+    let server_origin = format!("{}://{}:{}", server_url.scheme(), server_host, server_port);
     let window_title = args.window_title.clone();
     let width = args.width;
     let height = args.height;
+    let managed_server = Arc::new(Mutex::new(None::<Child>));
+    let setup_server_handle = Arc::clone(&managed_server);
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(move |app| {
+            if let Some(server_child) = maybe_start_local_server(app.handle(), &server_url)? {
+                let mut child_slot = setup_server_handle
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("failed to acquire server startup lock"))?;
+                *child_slot = Some(server_child);
+            }
+
             #[cfg(target_os = "macos")]
             if is_running_from_macos_app_bundle() {
                 if let Err(err) = ensure_macos_cli_links(app.handle()) {
@@ -72,8 +82,23 @@ fn main() -> Result<()> {
             window_builder.build()?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .map_err(|e| anyhow::anyhow!("failed to run desktop app: {}", e))?;
+        .build(tauri::generate_context!())
+        .map_err(|e| anyhow::anyhow!("failed to build desktop app: {}", e))?;
+
+    let exit_code = app.run_return(|_, _| {});
+
+    if let Ok(mut child_slot) = managed_server.lock() {
+        if let Some(mut child) = child_slot.take() {
+            shutdown_child(&mut child);
+        }
+    }
+
+    if exit_code != 0 {
+        return Err(anyhow::anyhow!(
+            "desktop app exited with code {}",
+            exit_code
+        ));
+    }
 
     Ok(())
 }
@@ -85,6 +110,126 @@ fn js_string_literal(value: &str) -> String {
         .replace('\n', "\\n")
         .replace('\r', "\\r");
     format!("\"{}\"", escaped)
+}
+
+fn server_host_port(server_url: &Url) -> Result<(String, u16)> {
+    let host = server_url
+        .host_str()
+        .context("--server-url must include a host")?
+        .to_string();
+    let port = server_url
+        .port_or_known_default()
+        .context("--server-url must include a port or use a known scheme")?;
+    Ok((host, port))
+}
+
+fn maybe_start_local_server<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    server_url: &Url,
+) -> Result<Option<Child>> {
+    const START_TIMEOUT: Duration = Duration::from_secs(15);
+    const POLL_INTERVAL: Duration = Duration::from_millis(200);
+    const CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
+
+    let (host, port) = server_host_port(server_url)?;
+    if !is_local_server_host(&host) {
+        return Ok(None);
+    }
+
+    if is_server_reachable(&host, port, CONNECT_TIMEOUT) {
+        return Ok(None);
+    }
+
+    let mut cmd = match resolve_server_binary(app) {
+        Some(path) => Command::new(path),
+        None => Command::new(platform_binary_name("izwi-server")),
+    };
+
+    let bind_host = if host == "localhost" {
+        "127.0.0.1"
+    } else {
+        host.as_str()
+    };
+
+    cmd.env("IZWI_HOST", bind_host)
+        .env("IZWI_PORT", port.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null());
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to start izwi-server for {}:{}", host, port))?;
+
+    let started = Instant::now();
+    while started.elapsed() < START_TIMEOUT {
+        if is_server_reachable(&host, port, CONNECT_TIMEOUT) {
+            return Ok(Some(child));
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .context("failed while checking izwi-server status")?
+        {
+            anyhow::bail!(
+                "izwi-server exited before becoming ready on {}:{} (status: {})",
+                host,
+                port,
+                status
+            );
+        }
+
+        thread::sleep(POLL_INTERVAL);
+    }
+
+    shutdown_child(&mut child);
+    anyhow::bail!("timed out waiting for izwi-server on {}:{}", host, port)
+}
+
+fn is_local_server_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1" | "0.0.0.0" | "::")
+}
+
+fn is_server_reachable(host: &str, port: u16, timeout: Duration) -> bool {
+    let addrs = match (host, port).to_socket_addrs() {
+        Ok(addrs) => addrs.collect::<Vec<_>>(),
+        Err(_) => return false,
+    };
+
+    addrs
+        .iter()
+        .any(|addr| TcpStream::connect_timeout(addr, timeout).is_ok())
+}
+
+fn resolve_server_binary<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
+    let binary_name = platform_binary_name("izwi-server");
+    let mut candidates = Vec::new();
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("bin").join(&binary_name));
+        candidates.push(resource_dir.join(&binary_name));
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join(&binary_name));
+        }
+    }
+
+    candidates.into_iter().find(|candidate| candidate.exists())
+}
+
+fn platform_binary_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{}.exe", name)
+    } else {
+        name.to_string()
+    }
+}
+
+fn shutdown_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(target_os = "macos")]
