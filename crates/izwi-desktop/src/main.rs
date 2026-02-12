@@ -31,6 +31,13 @@ fn main() -> Result<()> {
     let args = DesktopArgs::parse();
     let server_url = Url::parse(&args.server_url)
         .with_context(|| format!("invalid --server-url value: {}", args.server_url))?;
+    let server_host = server_url
+        .host_str()
+        .context("--server-url must include a host")?;
+    let server_origin = match server_url.port() {
+        Some(port) => format!("{}://{}:{}", server_url.scheme(), server_host, port),
+        None => format!("{}://{}", server_url.scheme(), server_host),
+    };
     let window_title = args.window_title.clone();
     let width = args.width;
     let height = args.height;
@@ -46,8 +53,13 @@ fn main() -> Result<()> {
                 }
             }
 
+            let init_script = format!(
+                "window.__IZWI_SERVER_URL__ = {};",
+                js_string_literal(&server_origin)
+            );
             let mut window_builder =
-                WebviewWindowBuilder::new(app, "main", WebviewUrl::External(server_url.clone()))
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .initialization_script(init_script)
                     .title(window_title.as_str())
                     .inner_size(width, height)
                     .min_inner_size(960.0, 680.0)
@@ -64,6 +76,15 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to run desktop app: {}", e))?;
 
     Ok(())
+}
+
+fn js_string_literal(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
+    format!("\"{}\"", escaped)
 }
 
 #[cfg(target_os = "macos")]

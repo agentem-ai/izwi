@@ -1,4 +1,10 @@
-const API_BASE = "/v1";
+const tauriServerUrl =
+  typeof window !== "undefined"
+    ? ((window as { __IZWI_SERVER_URL__?: string }).__IZWI_SERVER_URL__ ?? null)
+    : null;
+const API_BASE = tauriServerUrl
+  ? `${tauriServerUrl.replace(/\/$/, "")}/v1`
+  : "/v1";
 
 // ============================================================================
 // Types
