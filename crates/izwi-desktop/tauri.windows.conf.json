@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": {
+      "../../target/release/izwi.exe": "bin/izwi.exe",
+      "../../target/release/izwi-server.exe": "bin/izwi-server.exe"
+    }
+  }
+}
