@@ -33,9 +33,7 @@ impl Default for BackendRouter {
 
 impl BackendRouter {
     pub fn from_env_with_default(default_backend: ExecutionBackend) -> Self {
-        Self {
-            default_backend,
-        }
+        Self { default_backend }
     }
 
     pub fn from_env() -> Self {

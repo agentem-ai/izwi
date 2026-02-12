@@ -12,8 +12,8 @@ use tracing::{info, warn};
 
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::{parse_model_variant, ModelInfo, ModelVariant};
 use izwi_core::model::download::DownloadState;
+use izwi_core::{parse_model_variant, ModelInfo, ModelVariant};
 
 /// Response for model list
 #[derive(Serialize)]
@@ -36,7 +36,13 @@ pub struct OpenAiModel {
 
 /// List all available models
 pub async fn list_models(State(state): State<AppState>) -> Result<Json<ModelsResponse>, ApiError> {
-    let models = state.engine.list_models().await;
+    let models = state
+        .engine
+        .list_models()
+        .await
+        .into_iter()
+        .filter(|model| model.enabled)
+        .collect();
     Ok(Json(ModelsResponse { models }))
 }
 

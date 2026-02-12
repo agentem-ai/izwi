@@ -350,6 +350,11 @@ impl ModelVariant {
         )
     }
 
+    /// Whether this variant is currently enabled in the application catalog.
+    pub fn is_enabled(&self) -> bool {
+        !self.is_quantized()
+    }
+
     /// Get all available variants
     pub fn all() -> &'static [ModelVariant] {
         &[
@@ -412,6 +417,7 @@ pub enum ModelStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub variant: ModelVariant,
+    pub enabled: bool,
     pub status: ModelStatus,
     pub local_path: Option<PathBuf>,
     pub size_bytes: Option<u64>,
@@ -423,6 +429,7 @@ impl ModelInfo {
     pub fn new(variant: ModelVariant) -> Self {
         Self {
             variant,
+            enabled: variant.is_enabled(),
             status: ModelStatus::NotDownloaded,
             local_path: None,
             size_bytes: None,

@@ -222,8 +222,14 @@ impl AttentionBatchBuilder {
             &device,
             memory_pool.clone(),
         )?;
-        let padded_values =
-            Self::pad_tensors(values, max_seq_len, hidden_size, dtype, &device, memory_pool)?;
+        let padded_values = Self::pad_tensors(
+            values,
+            max_seq_len,
+            hidden_size,
+            dtype,
+            &device,
+            memory_pool,
+        )?;
 
         // Stack into batch tensors
         let queries = Tensor::stack(&padded_queries, 0).map_err(Error::from)?;
@@ -273,8 +279,7 @@ impl AttentionBatchBuilder {
                         let tensor = Tensor::zeros(shape, dtype, device).map_err(Error::from)?;
                         PooledTensor::new(tensor, None)
                     };
-                    let padded =
-                        Tensor::cat(&[&t, pooled.tensor()], 0).map_err(Error::from)?;
+                    let padded = Tensor::cat(&[&t, pooled.tensor()], 0).map_err(Error::from)?;
                     Ok(padded)
                 } else {
                     Ok(t)

@@ -144,8 +144,7 @@ impl MetalMemoryPool {
             pool_key
         } else {
             self.misses.fetch_add(1, Ordering::Relaxed);
-            let tensor =
-                Tensor::zeros(shape.clone(), dtype, &self.device).map_err(Error::from)?;
+            let tensor = Tensor::zeros(shape.clone(), dtype, &self.device).map_err(Error::from)?;
             self.checked_out.fetch_add(1, Ordering::Relaxed);
             return Ok(tensor);
         };
@@ -174,10 +173,7 @@ impl MetalMemoryPool {
                         return Ok(buffer.tensor);
                     }
 
-                    return buffer
-                        .tensor
-                        .reshape(shape.clone())
-                        .map_err(Error::from);
+                    return buffer.tensor.reshape(shape.clone()).map_err(Error::from);
                 }
             }
         }

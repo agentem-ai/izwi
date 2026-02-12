@@ -75,7 +75,8 @@ async fn run_batcher(
             senders.push(item.respond_to);
         }
 
-        let handle = tokio::task::spawn_blocking(move || process_batch_requests(requests, model, config));
+        let handle =
+            tokio::task::spawn_blocking(move || process_batch_requests(requests, model, config));
 
         match handle.await {
             Ok(results) => {
@@ -119,7 +120,8 @@ fn process_batch_requests(
 
     let available_speakers = model.available_speakers();
 
-    let mut results: Vec<Option<Result<GenerationResult>>> = (0..batch.len()).map(|_| None).collect();
+    let mut results: Vec<Option<Result<GenerationResult>>> =
+        (0..batch.len()).map(|_| None).collect();
     let mut batch_inputs = Vec::new();
     let mut batch_indices = Vec::new();
 

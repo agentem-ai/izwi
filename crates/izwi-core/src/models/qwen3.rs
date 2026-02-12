@@ -276,7 +276,13 @@ impl Qwen3Attention {
             let k = k.reshape((bsz, seq_len, self.num_heads * self.head_dim))?;
             let v = v.reshape((bsz, seq_len, self.num_heads * self.head_dim))?;
             let attention_mask = if seq_len > 1 {
-                Some(causal_mask(seq_len, seq_len, start_pos, q.device(), q.dtype())?)
+                Some(causal_mask(
+                    seq_len,
+                    seq_len,
+                    start_pos,
+                    q.device(),
+                    q.dtype(),
+                )?)
             } else {
                 None
             };
