@@ -96,7 +96,11 @@ function formatBytes(bytes: number): string {
 }
 
 function isAsrVariant(variant: string): boolean {
-  return variant.includes("Qwen3-ASR") || variant.includes("Voxtral");
+  return (
+    variant.includes("Qwen3-ASR") ||
+    variant.includes("Voxtral") ||
+    variant === "Gemma-3-1b-it"
+  );
 }
 
 function isTextVariant(variant: string): boolean {
@@ -143,6 +147,10 @@ function formatModelVariantLabel(variant: string): string {
 
 function isRunnableModelStatus(status: ModelInfo["status"]): boolean {
   return status === "ready";
+}
+
+function requiresManualDownload(variant: string): boolean {
+  return variant === "Gemma-3-1b-it";
 }
 
 async function blobToBase64(blob: Blob): Promise<string> {
@@ -1760,13 +1768,24 @@ export function VoicePage({
                             )}
                             {(model.status === "not_downloaded" ||
                               model.status === "error") && (
-                              <button
-                                onClick={() => onDownload(model.variant)}
-                                className="btn btn-primary text-xs"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                                Download
-                              </button>
+                              requiresManualDownload(model.variant) ? (
+                                <button
+                                  className="btn btn-secondary text-xs"
+                                  disabled
+                                  title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                  Manual download
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => onDownload(model.variant)}
+                                  className="btn btn-primary text-xs"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                  Download
+                                </button>
+                              )
                             )}
                             {model.status === "downloaded" && (
                               <button

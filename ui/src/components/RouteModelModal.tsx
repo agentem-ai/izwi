@@ -83,6 +83,10 @@ function getStatusClass(status: ModelInfo["status"]): string {
   }
 }
 
+function requiresManualDownload(variant: string): boolean {
+  return variant === "Gemma-3-1b-it";
+}
+
 export function RouteModelModal({
   isOpen,
   onClose,
@@ -134,6 +138,19 @@ export function RouteModelModal({
     }
 
     if (model.status === "not_downloaded" || model.status === "error") {
+      if (requiresManualDownload(model.variant)) {
+        return (
+          <button
+            className="btn btn-secondary text-xs"
+            disabled
+            title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
+          >
+            <Download className="w-3.5 h-3.5" />
+            Manual download
+          </button>
+        );
+      }
+
       return (
         <button
           onClick={(event) => {

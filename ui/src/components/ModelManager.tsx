@@ -36,6 +36,10 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function requiresManualDownload(variant: string): boolean {
+  return variant === "Gemma-3-1b-it";
+}
+
 interface ModelManagerProps {
   models: ModelInfo[];
   selectedModel: string | null;
@@ -566,17 +570,28 @@ export function ModelManager({
                       )}
 
                       {model.status === "not_downloaded" && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDownload(model.variant);
-                          }}
-                          className="btn btn-primary text-sm flex-1"
-                          disabled={isDisabled}
-                        >
-                          <Download className="w-4 h-4" />
-                          Download
-                        </button>
+                        requiresManualDownload(model.variant) ? (
+                          <button
+                            className="btn btn-secondary text-sm flex-1"
+                            disabled
+                            title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
+                          >
+                            <Download className="w-4 h-4" />
+                            Manual download
+                          </button>
+                        ) : (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDownload(model.variant);
+                            }}
+                            className="btn btn-primary text-sm flex-1"
+                            disabled={isDisabled}
+                          >
+                            <Download className="w-4 h-4" />
+                            Download
+                          </button>
+                        )
                       )}
 
                       {isDownloaded && (

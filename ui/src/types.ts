@@ -70,7 +70,7 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
       variant === "Gemma-3-4b-it",
     emptyStateTitle: "No Chat Model Loaded",
     emptyStateDescription:
-      "Load Qwen3-0.6B-4bit, Gemma-3-1b-it, or Gemma-3-4b-it to start chatting",
+      "Load Qwen3-0.6B-4bit or Gemma-3-1b-it to start chatting",
   },
 };
 

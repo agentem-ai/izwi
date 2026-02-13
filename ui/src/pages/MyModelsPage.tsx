@@ -334,6 +334,10 @@ function getStatusColor(status: ModelInfo["status"]): string {
   }
 }
 
+function requiresManualDownload(variant: string): boolean {
+  return variant === "Gemma-3-1b-it";
+}
+
 export function MyModelsPage({
   models,
   loading,
@@ -697,13 +701,25 @@ export function MyModelsPage({
                   {/* Actions */}
                   <div className="flex items-center gap-2 flex-shrink-0">
                     {model.status === "not_downloaded" && (
-                      <button
-                        onClick={() => onDownload(model.variant)}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-white text-black text-xs font-medium hover:bg-gray-200 transition-colors"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline">Download</span>
-                      </button>
+                      requiresManualDownload(model.variant) ? (
+                        <button
+                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#262626] border border-[#303030] text-gray-300 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                          disabled
+                          title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Manual download</span>
+                          <span className="sm:hidden">Manual</span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => onDownload(model.variant)}
+                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-white text-black text-xs font-medium hover:bg-gray-200 transition-colors"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Download</span>
+                        </button>
+                      )
                     )}
 
                     {isDownloading && (

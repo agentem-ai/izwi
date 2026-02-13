@@ -54,6 +54,7 @@ pub async fn list_models_openai(
     let models = state.engine.list_models().await;
     let data = models
         .into_iter()
+        .filter(|model| model.enabled)
         .map(|model| OpenAiModel {
             id: model.variant.dir_name().to_string(),
             object: "model",

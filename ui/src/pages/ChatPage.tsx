@@ -99,6 +99,10 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function requiresManualDownload(variant: string): boolean {
+  return variant === "Gemma-3-1b-it";
+}
+
 export function ChatPage({
   models,
   selectedModel,
@@ -215,6 +219,19 @@ export function ChatPage({
     }
 
     if (model.status === "not_downloaded" || model.status === "error") {
+      if (requiresManualDownload(model.variant)) {
+        return (
+          <button
+            className="btn btn-secondary text-xs"
+            disabled
+            title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
+          >
+            <Download className="w-3.5 h-3.5" />
+            Manual download
+          </button>
+        );
+      }
+
       return (
         <button
           onClick={(event) => {
