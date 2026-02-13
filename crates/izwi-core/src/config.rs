@@ -50,6 +50,13 @@ impl Default for EngineConfig {
 }
 
 fn default_models_dir() -> PathBuf {
+    if let Ok(from_env) = std::env::var("IZWI_MODELS_DIR") {
+        let trimmed = from_env.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("izwi")

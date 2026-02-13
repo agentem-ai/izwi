@@ -16,13 +16,31 @@ impl InferenceEngine {
             self.model_registry.unload_asr(variant).await;
         } else if variant.is_chat() {
             self.model_registry.unload_chat(variant).await;
+        } else if variant.is_lfm2() {
+            self.model_registry.unload_lfm2(variant).await;
+            let mut lfm2_tts_guard = self.lfm2_fallback_tts_model.write().await;
+            *lfm2_tts_guard = None;
+            let mut lfm2_tts_variant_guard = self.lfm2_fallback_tts_variant.write().await;
+            *lfm2_tts_variant_guard = None;
+            let mut path_guard = self.loaded_model_path.write().await;
+            *path_guard = None;
+            let mut variant_guard = self.loaded_tts_variant.write().await;
+            *variant_guard = None;
         } else if variant.is_voxtral() {
             self.model_registry.unload_voxtral(variant).await;
         } else if variant.is_tts() {
             let mut model_guard = self.tts_model.write().await;
             *model_guard = None;
+            if *self.lfm2_fallback_tts_variant.read().await == Some(variant) {
+                let mut lfm2_tts_guard = self.lfm2_fallback_tts_model.write().await;
+                *lfm2_tts_guard = None;
+                let mut lfm2_tts_variant_guard = self.lfm2_fallback_tts_variant.write().await;
+                *lfm2_tts_variant_guard = None;
+            }
             let mut path_guard = self.loaded_model_path.write().await;
             *path_guard = None;
+            let mut variant_guard = self.loaded_tts_variant.write().await;
+            *variant_guard = None;
         }
 
         self.model_manager.unload_model(variant).await
@@ -72,6 +90,25 @@ impl InferenceEngine {
             return Ok(());
         }
 
+        if variant.is_lfm2() {
+            self.model_registry.load_lfm2(variant, &model_path).await?;
+
+            // Clear legacy Qwen TTS slot and mark active TTS variant.
+            let mut model_guard = self.tts_model.write().await;
+            *model_guard = None;
+            let mut lfm2_tts_guard = self.lfm2_fallback_tts_model.write().await;
+            *lfm2_tts_guard = None;
+            let mut lfm2_tts_variant_guard = self.lfm2_fallback_tts_variant.write().await;
+            *lfm2_tts_variant_guard = None;
+            let mut path_guard = self.loaded_model_path.write().await;
+            *path_guard = Some(model_path);
+            let mut variant_guard = self.loaded_tts_variant.write().await;
+            *variant_guard = Some(variant);
+
+            self.model_manager.mark_loaded(variant).await;
+            return Ok(());
+        }
+
         if variant.is_voxtral() {
             self.model_registry
                 .load_voxtral(variant, &model_path)
@@ -105,6 +142,8 @@ impl InferenceEngine {
             *model_guard = Some(tts_model);
             let mut path_guard = self.loaded_model_path.write().await;
             *path_guard = Some(model_path);
+            let mut variant_guard = self.loaded_tts_variant.write().await;
+            *variant_guard = Some(variant);
 
             self.model_manager.mark_loaded(variant).await;
             return Ok(());

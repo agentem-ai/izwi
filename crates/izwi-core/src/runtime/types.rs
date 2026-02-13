@@ -17,6 +17,15 @@ pub struct ChatGeneration {
     pub generation_time_ms: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct SpeechToSpeechGeneration {
+    pub text: String,
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub input_transcription: Option<String>,
+    pub generation_time_ms: f64,
+}
+
 /// Configuration for audio generation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationConfig {

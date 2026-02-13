@@ -77,6 +77,7 @@ export function TranscriptionPage({
   );
 
   const preferredModelOrder = [
+    "LFM2-Audio-1.5B",
     "Qwen3-ASR-0.6B-4bit",
     "Qwen3-ASR-0.6B",
     "Parakeet-TDT-0.6B-v3",

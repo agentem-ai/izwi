@@ -12,6 +12,7 @@ use crate::model::ModelVariant;
 use super::chat_types::ChatMessage;
 use super::device::DeviceProfile;
 use super::gemma3_chat::Gemma3ChatModel;
+use super::lfm2_audio::Lfm2AudioModel;
 use super::parakeet_asr::ParakeetAsrModel;
 use super::qwen3_asr::Qwen3AsrModel;
 use super::qwen3_chat::{ChatGenerationOutput, Qwen3ChatModel};
@@ -104,6 +105,7 @@ pub struct ModelRegistry {
     asr_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<NativeAsrModel>>>>>>,
     chat_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<NativeChatModel>>>>>>,
     voxtral_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<VoxtralRealtimeModel>>>>>>,
+    lfm2_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<Lfm2AudioModel>>>>>>,
 }
 
 impl ModelRegistry {
@@ -114,6 +116,7 @@ impl ModelRegistry {
             asr_models: Arc::new(RwLock::new(HashMap::new())),
             chat_models: Arc::new(RwLock::new(HashMap::new())),
             voxtral_models: Arc::new(RwLock::new(HashMap::new())),
+            lfm2_models: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -263,6 +266,42 @@ impl ModelRegistry {
         Ok(model.clone())
     }
 
+    pub async fn load_lfm2(
+        &self,
+        variant: ModelVariant,
+        model_dir: &Path,
+    ) -> Result<Arc<Lfm2AudioModel>> {
+        if !variant.is_lfm2() {
+            return Err(Error::InvalidInput(format!(
+                "Model variant {variant} is not an LFM2 model"
+            )));
+        }
+
+        let cell = {
+            let mut guard = self.lfm2_models.write().await;
+            guard
+                .entry(variant)
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
+        };
+
+        info!("Loading LFM2 model {variant} from {model_dir:?}");
+
+        let model = cell
+            .get_or_try_init({
+                let model_dir = model_dir.to_path_buf();
+                move || async move {
+                    tokio::task::spawn_blocking(move || Lfm2AudioModel::load(&model_dir))
+                        .await
+                        .map_err(|e| Error::ModelLoadError(e.to_string()))?
+                        .map(Arc::new)
+                }
+            })
+            .await?;
+
+        Ok(model.clone())
+    }
+
     pub async fn get_asr(&self, variant: ModelVariant) -> Option<Arc<NativeAsrModel>> {
         let guard = self.asr_models.read().await;
         guard.get(&variant).and_then(|cell| cell.get().cloned())
@@ -278,6 +317,11 @@ impl ModelRegistry {
         guard.get(&variant).and_then(|cell| cell.get().cloned())
     }
 
+    pub async fn get_lfm2(&self, variant: ModelVariant) -> Option<Arc<Lfm2AudioModel>> {
+        let guard = self.lfm2_models.read().await;
+        guard.get(&variant).and_then(|cell| cell.get().cloned())
+    }
+
     pub async fn unload_asr(&self, variant: ModelVariant) {
         let mut guard = self.asr_models.write().await;
         guard.remove(&variant);
@@ -290,6 +334,11 @@ impl ModelRegistry {
 
     pub async fn unload_voxtral(&self, variant: ModelVariant) {
         let mut guard = self.voxtral_models.write().await;
+        guard.remove(&variant);
+    }
+
+    pub async fn unload_lfm2(&self, variant: ModelVariant) {
+        let mut guard = self.lfm2_models.write().await;
         guard.remove(&variant);
     }
 }

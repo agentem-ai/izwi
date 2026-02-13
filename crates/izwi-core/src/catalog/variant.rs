@@ -145,7 +145,7 @@ pub fn parse_model_variant(input: &str) -> Result<ModelVariant, ParseModelVarian
 
 pub fn parse_tts_model_variant(input: &str) -> Result<ModelVariant, ParseModelVariantError> {
     let variant = parse_model_variant(input)?;
-    if variant.is_tts() {
+    if variant.is_tts() || variant.is_lfm2() {
         Ok(variant)
     } else {
         Err(ParseModelVariantError::new(input))
@@ -175,12 +175,14 @@ pub fn resolve_asr_model_variant(input: Option<&str>) -> ModelVariant {
     };
 
     match parse_model_variant(raw) {
-        Ok(variant) if variant.is_asr() || variant.is_voxtral() => variant,
+        Ok(variant) if variant.is_asr() || variant.is_voxtral() || variant.is_lfm2() => variant,
         Ok(_) => Qwen3Asr06B,
         Err(_) => {
             let normalized = normalize_identifier(raw);
             if normalized.contains("voxtral") {
                 VoxtralMini4BRealtime2602
+            } else if normalized.contains("lfm2") && normalized.contains("audio") {
+                Lfm2Audio15B
             } else if normalized.contains("parakeet") {
                 if normalized.contains("v3") {
                     ParakeetTdt06BV3
@@ -358,6 +360,18 @@ mod tests {
     fn resolve_asr_fallback_defaults_to_06b() {
         let resolved = resolve_asr_model_variant(Some("not-a-real-model"));
         assert_eq!(resolved, ModelVariant::Qwen3Asr06B);
+    }
+
+    #[test]
+    fn parse_tts_accepts_lfm2_audio() {
+        let parsed = parse_tts_model_variant("LFM2-Audio-1.5B").unwrap();
+        assert_eq!(parsed, ModelVariant::Lfm2Audio15B);
+    }
+
+    #[test]
+    fn resolve_asr_accepts_lfm2_audio() {
+        let resolved = resolve_asr_model_variant(Some("LFM2-Audio-1.5B"));
+        assert_eq!(resolved, ModelVariant::Lfm2Audio15B);
     }
 
     #[test]

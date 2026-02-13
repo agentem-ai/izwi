@@ -7,6 +7,7 @@
 mod asr;
 mod audio_io;
 mod chat;
+mod lfm2;
 mod model_router;
 mod service;
 mod tts;
@@ -16,5 +17,5 @@ mod types;
 pub use service::InferenceEngine;
 pub use types::{
     AsrTranscription, AudioChunk, ChatGeneration, ChunkStats, GenerationConfig, GenerationRequest,
-    GenerationResult,
+    GenerationResult, SpeechToSpeechGeneration,
 };

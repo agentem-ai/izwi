@@ -99,8 +99,13 @@ function isAsrVariant(variant: string): boolean {
   return (
     variant.includes("Qwen3-ASR") ||
     variant.includes("Parakeet-TDT") ||
-    variant.includes("Voxtral")
+    variant.includes("Voxtral") ||
+    variant === "LFM2-Audio-1.5B"
   );
+}
+
+function isLfm2Variant(variant: string): boolean {
+  return variant === "LFM2-Audio-1.5B";
 }
 
 function isTextVariant(variant: string): boolean {
@@ -144,6 +149,10 @@ function formatModelVariantLabel(variant: string): string {
     return normalized
       .replace("Gemma-3-1b-it", "Gemma 3 1B Instruct")
       .replace("Gemma-3-4b-it", "Gemma 3 4B Instruct");
+  }
+
+  if (normalized === "LFM2-Audio-1.5B") {
+    return "LFM2 Audio 1.5B";
   }
 
   return normalized.replace(/-/g, " ");
@@ -495,15 +504,29 @@ export function VoicePage({
     [ttsConfigModels, selectedTtsModel],
   );
 
+  const lfm2DirectMode = useMemo(
+    () => !!selectedAsrInfo && isLfm2Variant(selectedAsrInfo.variant),
+    [selectedAsrInfo],
+  );
+
   const hasRunnableConfig = useMemo(
-    () =>
-      !!selectedAsrInfo &&
-      !!selectedTextInfo &&
-      !!selectedTtsInfo &&
-      isRunnableModelStatus(selectedAsrInfo.status) &&
-      isRunnableModelStatus(selectedTextInfo.status) &&
-      isRunnableModelStatus(selectedTtsInfo.status),
-    [selectedAsrInfo, selectedTextInfo, selectedTtsInfo],
+    () => {
+      if (!selectedAsrInfo || !isRunnableModelStatus(selectedAsrInfo.status)) {
+        return false;
+      }
+
+      if (lfm2DirectMode) {
+        return true;
+      }
+
+      return (
+        !!selectedTextInfo &&
+        !!selectedTtsInfo &&
+        isRunnableModelStatus(selectedTextInfo.status) &&
+        isRunnableModelStatus(selectedTtsInfo.status)
+      );
+    },
+    [lfm2DirectMode, selectedAsrInfo, selectedTextInfo, selectedTtsInfo],
   );
 
   const stopTtsStreamingPlayback = useCallback(() => {
@@ -920,15 +943,75 @@ export function VoicePage({
     [clearAudioPlayback, stopTtsStreamingPlayback],
   );
 
+  const playAssistantBlob = useCallback(
+    (audioBlob: Blob, turnId: number) =>
+      new Promise<void>((resolve, reject) => {
+        clearAudioPlayback();
+
+        const nextUrl = URL.createObjectURL(audioBlob);
+        if (audioUrlRef.current) {
+          URL.revokeObjectURL(audioUrlRef.current);
+        }
+        audioUrlRef.current = nextUrl;
+
+        let audio = audioRef.current;
+        if (!audio) {
+          audio = new Audio();
+          audioRef.current = audio;
+        }
+
+        const finalize = (error?: Error) => {
+          audio!.onended = null;
+          audio!.onerror = null;
+
+          if (turnId === turnIdRef.current) {
+            if (isSessionActiveRef.current) {
+              setRuntimeStatus("listening");
+            } else {
+              setRuntimeStatus("idle");
+            }
+          }
+
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        };
+
+        audio.src = nextUrl;
+        audio.onended = () => finalize();
+        audio.onerror = () => finalize(new Error("Failed to play assistant audio"));
+
+        if (turnId === turnIdRef.current) {
+          setRuntimeStatus("assistant_speaking");
+        }
+
+        audio.play().catch((error) => {
+          finalize(
+            error instanceof Error
+              ? error
+              : new Error("Failed to start assistant audio playback"),
+          );
+        });
+      }),
+    [clearAudioPlayback],
+  );
+
   const processUtterance = useCallback(
     async (audioBlob: Blob) => {
       if (!isSessionActiveRef.current) {
         return;
       }
 
-      if (!selectedAsrModel || !selectedTextModel || !selectedTtsModel) {
+      if (
+        !selectedAsrModel ||
+        (!lfm2DirectMode && (!selectedTextModel || !selectedTtsModel))
+      ) {
         setError(
-          "Select ASR, text, and TTS models before starting voice mode.",
+          lfm2DirectMode
+            ? "Select an LFM2 model before starting voice mode."
+            : "Select ASR, text, and TTS models before starting voice mode.",
         );
         setIsConfigOpen(true);
         setRuntimeStatus("listening");
@@ -951,6 +1034,54 @@ export function VoicePage({
 
       try {
         setRuntimeStatus("processing");
+
+        if (lfm2DirectMode) {
+          const wavBlob = await transcodeToWav(audioBlob, 24000);
+          if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
+
+          const response = await api.speechToSpeech({
+            audio_file: wavBlob,
+            audio_filename: "voice-turn.wav",
+            model_id: selectedAsrModel,
+            language: "English",
+          });
+
+          if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
+
+          const userText = response.transcription?.trim() || "";
+          if (userText) {
+            appendTranscriptEntry({
+              id: makeTranscriptEntryId("user"),
+              role: "user",
+              text: userText,
+              timestamp: Date.now(),
+            });
+          }
+
+          const assistantText = response.text.trim();
+          if (assistantText) {
+            appendTranscriptEntry({
+              id: makeTranscriptEntryId("assistant"),
+              role: "assistant",
+              text: assistantText,
+              timestamp: Date.now(),
+            });
+          }
+
+          if (userText || assistantText) {
+            setConversation((prev) => [
+              ...prev,
+              ...(userText ? [{ role: "user", content: userText } as ChatMessage] : []),
+              ...(assistantText
+                ? [{ role: "assistant", content: assistantText } as ChatMessage]
+                : []),
+            ]);
+          }
+
+          await playAssistantBlob(response.audioBlob, turnId);
+          return;
+        }
+
         const wavBlob = await transcodeToWav(audioBlob, 16000);
         if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
         const userText = await streamUserTranscription(
@@ -975,7 +1106,7 @@ export function VoicePage({
 
         const assistantText = await streamAssistantResponse(
           requestMessages,
-          selectedTextModel,
+          selectedTextModel!,
         );
         if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
         if (!assistantText) {
@@ -994,7 +1125,7 @@ export function VoicePage({
 
         await streamAssistantSpeech(
           assistantText,
-          selectedTtsModel,
+          selectedTtsModel!,
           selectedSpeaker,
           turnId,
         );
@@ -1025,8 +1156,11 @@ export function VoicePage({
       }
     },
     [
+      appendTranscriptEntry,
       hasRunnableConfig,
+      lfm2DirectMode,
       onError,
+      playAssistantBlob,
       selectedAsrModel,
       selectedSpeaker,
       selectedTextModel,
@@ -1038,9 +1172,14 @@ export function VoicePage({
   );
 
   const startSession = useCallback(async () => {
-    if (!selectedAsrModel || !selectedTextModel || !selectedTtsModel) {
+    if (
+      !selectedAsrModel ||
+      (!lfm2DirectMode && (!selectedTextModel || !selectedTtsModel))
+    ) {
       const message =
-        "Select ASR, text, and TTS models before starting voice mode.";
+        lfm2DirectMode
+          ? "Select an LFM2 model before starting voice mode."
+          : "Select ASR, text, and TTS models before starting voice mode.";
       setError(message);
       onError?.(message);
       setIsConfigOpen(true);
@@ -1193,6 +1332,7 @@ export function VoicePage({
   }, [
     clearAudioPlayback,
     hasRunnableConfig,
+    lfm2DirectMode,
     minSpeechMs,
     onError,
     processUtterance,
@@ -1325,6 +1465,11 @@ export function VoicePage({
             <p className="text-xs text-gray-500 mt-1">
               Barge-in is enabled while the assistant is speaking.
             </p>
+            {lfm2DirectMode && (
+              <p className="text-[11px] text-emerald-300 mt-2">
+                LFM2 direct mode enabled (single-model speech-to-speech).
+              </p>
+            )}
 
             <button
               onClick={toggleSession}
@@ -1334,8 +1479,7 @@ export function VoicePage({
               )}
               disabled={
                 !selectedAsrModel ||
-                !selectedTextModel ||
-                !selectedTtsModel ||
+                (!lfm2DirectMode && (!selectedTextModel || !selectedTtsModel)) ||
                 !hasRunnableConfig
               }
             >
@@ -1506,6 +1650,11 @@ export function VoicePage({
                       Assign one model to each stage.
                     </span>
                   </div>
+                  {lfm2DirectMode && (
+                    <div className="text-[11px] text-emerald-300">
+                      LFM2 direct mode is active. Text and TTS selections are ignored.
+                    </div>
+                  )}
                   <div className="grid md:grid-cols-2 gap-3">
                     <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
                       <div className="flex items-center justify-between gap-2">

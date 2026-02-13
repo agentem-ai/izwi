@@ -29,6 +29,9 @@ pub struct InferenceEngine {
     pub(crate) tts_model: Arc<RwLock<Option<Qwen3TtsModel>>>,
     pub(crate) tts_batcher: Option<TtsBatcher>,
     pub(crate) loaded_model_path: RwLock<Option<PathBuf>>,
+    pub(crate) loaded_tts_variant: RwLock<Option<ModelVariant>>,
+    pub(crate) lfm2_fallback_tts_model: Arc<RwLock<Option<Qwen3TtsModel>>>,
+    pub(crate) lfm2_fallback_tts_variant: RwLock<Option<ModelVariant>>,
     pub(crate) device: DeviceProfile,
 }
 
@@ -54,6 +57,7 @@ impl InferenceEngine {
         ));
 
         let tts_model = Arc::new(RwLock::new(None));
+        let lfm2_fallback_tts_model = Arc::new(RwLock::new(None));
         let tts_batcher = if config.max_batch_size > 1 {
             Some(TtsBatcher::new(config.clone(), tts_model.clone()))
         } else {
@@ -77,6 +81,9 @@ impl InferenceEngine {
             tts_model,
             tts_batcher,
             loaded_model_path: RwLock::new(None),
+            loaded_tts_variant: RwLock::new(None),
+            lfm2_fallback_tts_model,
+            lfm2_fallback_tts_variant: RwLock::new(None),
             device,
         })
     }
@@ -128,6 +135,17 @@ impl InferenceEngine {
 
     /// Get available speakers for loaded TTS model.
     pub async fn available_speakers(&self) -> Result<Vec<String>> {
+        let loaded_variant = *self.loaded_tts_variant.read().await;
+        if matches!(loaded_variant, Some(ModelVariant::Lfm2Audio15B)) {
+            if let Some(model) = self
+                .model_registry
+                .get_lfm2(ModelVariant::Lfm2Audio15B)
+                .await
+            {
+                return Ok(model.available_voices());
+            }
+        }
+
         let tts_model = self.tts_model.read().await;
         let model = tts_model
             .as_ref()

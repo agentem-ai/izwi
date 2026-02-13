@@ -51,7 +51,7 @@ pub use error::{Error, Result};
 pub use runtime::{
     AsrTranscription, ChatGeneration, ChunkStats, GenerationRequest, GenerationResult,
 };
-pub use runtime::{AudioChunk, GenerationConfig, InferenceEngine};
+pub use runtime::{AudioChunk, GenerationConfig, InferenceEngine, SpeechToSpeechGeneration};
 
 // Catalog/model metadata re-exports
 pub use catalog::{
@@ -62,3 +62,11 @@ pub use catalog::{
 
 // Native family/device registry re-exports
 pub use families::{DeviceProfile, DeviceSelector, ModelRegistry};
+
+#[cfg(test)]
+pub(crate) fn env_test_lock() -> &'static std::sync::Mutex<()> {
+    use std::sync::{Mutex, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}

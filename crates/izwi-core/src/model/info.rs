@@ -397,7 +397,8 @@ impl ModelVariant {
         match self {
             Self::Qwen306B4Bit | Self::Gemma31BIt => true,
             Self::Gemma34BIt => false,
-            Self::Lfm2Audio15B | Self::VoxtralMini4BRealtime2602 => false,
+            Self::Lfm2Audio15B => true,
+            Self::VoxtralMini4BRealtime2602 => false,
             Self::ParakeetTdt06BV2 | Self::ParakeetTdt06BV3 => true,
             _ => !self.is_quantized(),
         }

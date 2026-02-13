@@ -8,6 +8,60 @@ use crate::runtime::service::InferenceEngine;
 use crate::runtime::types::AsrTranscription;
 
 impl InferenceEngine {
+    pub(crate) async fn asr_transcribe_with_variant_streaming<F>(
+        &self,
+        variant: ModelVariant,
+        audio_base64: &str,
+        language: Option<&str>,
+        on_delta: F,
+    ) -> Result<AsrTranscription>
+    where
+        F: FnMut(String) + Send + 'static,
+    {
+        if variant.is_voxtral() {
+            return self
+                .voxtral_transcribe_streaming(audio_base64, language, on_delta)
+                .await;
+        }
+
+        let model = if let Some(model) = self.model_registry.get_asr(variant).await {
+            model
+        } else {
+            let path = self
+                .model_manager
+                .get_model_info(variant)
+                .await
+                .and_then(|i| i.local_path)
+                .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
+            self.model_registry.load_asr(variant, &path).await?
+        };
+
+        let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
+        let samples_len = samples.len();
+        let text = tokio::task::spawn_blocking({
+            let model = model.clone();
+            let language = language.map(|s| s.to_string());
+            move || {
+                let mut callback = on_delta;
+                let mut emit = |delta: &str| callback(delta.to_string());
+                model.transcribe_with_callback(
+                    &samples,
+                    sample_rate,
+                    language.as_deref(),
+                    &mut emit,
+                )
+            }
+        })
+        .await
+        .map_err(|e| Error::InferenceError(format!("ASR transcription task failed: {}", e)))??;
+
+        Ok(AsrTranscription {
+            text,
+            language: language.map(|s| s.to_string()),
+            duration_secs: samples_len as f32 / sample_rate as f32,
+        })
+    }
+
     /// Transcribe audio with Voxtral Realtime (native).
     pub async fn voxtral_transcribe(
         &self,
@@ -95,48 +149,14 @@ impl InferenceEngine {
     {
         let variant = resolve_asr_model_variant(model_id);
 
-        if variant.is_voxtral() {
+        if variant.is_lfm2() {
             return self
-                .voxtral_transcribe_streaming(audio_base64, language, on_delta)
+                .lfm2_asr_transcribe_streaming(audio_base64, language, on_delta)
                 .await;
         }
 
-        let model = if let Some(model) = self.model_registry.get_asr(variant).await {
-            model
-        } else {
-            let path = self
-                .model_manager
-                .get_model_info(variant)
-                .await
-                .and_then(|i| i.local_path)
-                .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
-            self.model_registry.load_asr(variant, &path).await?
-        };
-
-        let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
-        let samples_len = samples.len();
-        let text = tokio::task::spawn_blocking({
-            let model = model.clone();
-            let language = language.map(|s| s.to_string());
-            move || {
-                let mut callback = on_delta;
-                let mut emit = |delta: &str| callback(delta.to_string());
-                model.transcribe_with_callback(
-                    &samples,
-                    sample_rate,
-                    language.as_deref(),
-                    &mut emit,
-                )
-            }
-        })
-        .await
-        .map_err(|e| Error::InferenceError(format!("ASR transcription task failed: {}", e)))??;
-
-        Ok(AsrTranscription {
-            text,
-            language: language.map(|s| s.to_string()),
-            duration_secs: samples_len as f32 / sample_rate as f32,
-        })
+        self.asr_transcribe_with_variant_streaming(variant, audio_base64, language, on_delta)
+            .await
     }
 
     /// Force alignment: align reference text with audio timestamps.

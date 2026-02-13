@@ -5,6 +5,7 @@ pub mod chat_types;
 pub mod device;
 pub mod gemma3_chat;
 pub mod gguf_loader;
+pub mod lfm2_audio;
 pub mod metal_memory;
 pub mod mlx_compat;
 pub mod parakeet_asr;

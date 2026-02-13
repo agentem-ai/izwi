@@ -20,11 +20,13 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
   "custom-voice": {
     id: "custom-voice",
     label: "Text to Speech",
-    description: "Generate speech with built-in voice profiles",
+    description: "Generate speech with built-in voice profiles (Qwen3 + LFM2)",
     icon: "Volume2",
-    modelFilter: (variant) => variant.includes("CustomVoice"),
+    modelFilter: (variant) =>
+      variant.includes("CustomVoice") || variant === "LFM2-Audio-1.5B",
     emptyStateTitle: "No TTS Model Loaded",
-    emptyStateDescription: "Load a CustomVoice model to generate speech",
+    emptyStateDescription:
+      "Load a CustomVoice model or LFM2-Audio-1.5B to generate speech",
   },
   "voice-clone": {
     id: "voice-clone",
@@ -51,15 +53,16 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
     id: "transcription",
     label: "Transcription",
     description:
-      "Speech-to-text with Qwen3-ASR, Parakeet-TDT, and Voxtral models",
+      "Speech-to-text with Qwen3-ASR, Parakeet-TDT, Voxtral, and LFM2 models",
     icon: "FileText",
     modelFilter: (variant) =>
       variant.includes("Qwen3-ASR") ||
       variant.includes("Parakeet-TDT") ||
-      variant.includes("Voxtral"),
+      variant.includes("Voxtral") ||
+      variant === "LFM2-Audio-1.5B",
     emptyStateTitle: "No ASR Model Loaded",
     emptyStateDescription:
-      "Download and load a Qwen3-ASR, Parakeet-TDT, or Voxtral model for speech transcription",
+      "Download and load a Qwen3-ASR, Parakeet-TDT, Voxtral, or LFM2 model for speech transcription",
   },
   chat: {
     id: "chat",

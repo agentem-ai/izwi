@@ -12,6 +12,13 @@ use crate::runtime::types::{AudioChunk, GenerationConfig, GenerationRequest, Gen
 impl InferenceEngine {
     /// Generate audio from text using the loaded native TTS model.
     pub async fn generate(&self, request: GenerationRequest) -> Result<GenerationResult> {
+        if matches!(
+            *self.loaded_tts_variant.read().await,
+            Some(crate::model::ModelVariant::Lfm2Audio15B)
+        ) {
+            return self.lfm2_tts_generate(request).await;
+        }
+
         if self.config.max_batch_size > 1
             && request.reference_audio.is_none()
             && request.reference_text.is_none()
@@ -133,6 +140,13 @@ impl InferenceEngine {
         request: GenerationRequest,
         chunk_tx: mpsc::Sender<AudioChunk>,
     ) -> Result<()> {
+        if matches!(
+            *self.loaded_tts_variant.read().await,
+            Some(crate::model::ModelVariant::Lfm2Audio15B)
+        ) {
+            return self.lfm2_tts_generate_streaming(request, chunk_tx).await;
+        }
+
         let tts_model = self.tts_model.clone();
         let text = request.text.clone();
         let speaker = request.config.speaker.clone();

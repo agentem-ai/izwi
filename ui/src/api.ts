@@ -249,6 +249,47 @@ export interface ASRStatusResponse {
   cached_models: string[];
 }
 
+export interface SpeechToSpeechRequest {
+  audio_base64?: string;
+  audio_file?: Blob;
+  audio_filename?: string;
+  model_id?: string;
+  language?: string;
+  system_prompt?: string;
+  temperature?: number;
+  top_k?: number;
+}
+
+export interface SpeechToSpeechResponse {
+  text: string;
+  transcription: string | null;
+  audioBlob: Blob;
+  sampleRate: number;
+  generationTimeMs: number;
+}
+
+export type SpeechToSpeechStreamEvent =
+  | { event: "start" }
+  | { event: "delta"; delta: string }
+  | {
+      event: "final";
+      text: string;
+      transcription: string | null;
+      audio_base64: string;
+      sample_rate: number;
+      generation_time_ms: number;
+    }
+  | { event: "error"; error: string }
+  | { event: "done" };
+
+export interface SpeechToSpeechStreamCallbacks {
+  onStart?: () => void;
+  onDelta?: (delta: string) => void;
+  onFinal?: (result: SpeechToSpeechResponse) => void;
+  onError?: (error: string) => void;
+  onDone?: () => void;
+}
+
 interface OpenAiChatCompletion {
   id: string;
   model: string;
@@ -720,6 +761,129 @@ class ApiClient {
     return abortController;
   }
 
+  async speechToSpeech(
+    request: SpeechToSpeechRequest,
+  ): Promise<SpeechToSpeechResponse> {
+    const response = await fetch(
+      `${this.baseUrl}/audio/speech-to-speech`,
+      this.buildSpeechToSpeechRequestInit(request, false),
+    );
+
+    if (!response.ok) {
+      const error = await response
+        .json()
+        .catch(() => ({ error: { message: "Speech-to-speech failed" } }));
+      throw new Error(error.error?.message || "Speech-to-speech failed");
+    }
+
+    const payload = await response.json();
+    return {
+      text: payload.text ?? "",
+      transcription: payload.transcription ?? null,
+      audioBlob: this.wavBlobFromBase64(payload.audio_base64 ?? ""),
+      sampleRate: payload.sample_rate ?? 24000,
+      generationTimeMs:
+        typeof payload.generation_time_ms === "number"
+          ? payload.generation_time_ms
+          : 0,
+    };
+  }
+
+  speechToSpeechStream(
+    request: SpeechToSpeechRequest,
+    callbacks: SpeechToSpeechStreamCallbacks,
+  ): AbortController {
+    const abortController = new AbortController();
+
+    const startStream = async () => {
+      try {
+        const response = await fetch(`${this.baseUrl}/audio/speech-to-speech`, {
+          ...this.buildSpeechToSpeechRequestInit(request, true),
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) {
+          const error = await response
+            .json()
+            .catch(() => ({ error: { message: "Speech-to-speech streaming failed" } }));
+          callbacks.onError?.(
+            error.error?.message || "Speech-to-speech streaming failed",
+          );
+          callbacks.onDone?.();
+          return;
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          callbacks.onError?.("No response body");
+          callbacks.onDone?.();
+          return;
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let latestText = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (!data) continue;
+
+            try {
+              const event = JSON.parse(data) as SpeechToSpeechStreamEvent;
+              switch (event.event) {
+                case "start":
+                  callbacks.onStart?.();
+                  break;
+                case "delta":
+                  latestText += event.delta;
+                  callbacks.onDelta?.(event.delta);
+                  break;
+                case "final":
+                  callbacks.onFinal?.({
+                    text: event.text || latestText,
+                    transcription: event.transcription ?? null,
+                    audioBlob: this.wavBlobFromBase64(event.audio_base64),
+                    sampleRate: event.sample_rate,
+                    generationTimeMs: event.generation_time_ms,
+                  });
+                  break;
+                case "error":
+                  callbacks.onError?.(event.error);
+                  break;
+                case "done":
+                  callbacks.onDone?.();
+                  return;
+              }
+            } catch {
+              // Skip malformed payloads.
+            }
+          }
+        }
+
+        callbacks.onDone?.();
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") {
+          callbacks.onError?.(
+            error instanceof Error ? error.message : "Speech-to-speech stream error",
+          );
+        }
+        callbacks.onDone?.();
+      }
+    };
+
+    startStream();
+    return abortController;
+  }
+
   private buildAsrRequestInit(
     request: ASRTranscribeRequest,
     responseFormat: AsrResponseFormat,
@@ -759,6 +923,64 @@ class ApiClient {
         stream,
       }),
     };
+  }
+
+  private buildSpeechToSpeechRequestInit(
+    request: SpeechToSpeechRequest,
+    stream: boolean,
+  ): RequestInit {
+    if (request.audio_file) {
+      const form = new FormData();
+      form.append(
+        "file",
+        request.audio_file,
+        request.audio_filename || "audio.wav",
+      );
+      form.append("stream", stream ? "true" : "false");
+      if (request.model_id) form.append("model", request.model_id);
+      if (request.language) form.append("language", request.language);
+      if (request.system_prompt) form.append("system_prompt", request.system_prompt);
+      if (typeof request.temperature === "number") {
+        form.append("temperature", request.temperature.toString());
+      }
+      if (typeof request.top_k === "number") {
+        form.append("top_k", request.top_k.toString());
+      }
+
+      return {
+        method: "POST",
+        body: form,
+      };
+    }
+
+    if (!request.audio_base64) {
+      throw new Error("Missing audio input");
+    }
+
+    return {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        audio_base64: request.audio_base64,
+        model: request.model_id,
+        language: request.language,
+        system_prompt: request.system_prompt,
+        temperature: request.temperature,
+        top_k: request.top_k,
+        stream,
+      }),
+    };
+  }
+
+  private wavBlobFromBase64(audioBase64: string): Blob {
+    const binary = atob(audioBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return new Blob([bytes], { type: "audio/wav" });
   }
 
   // ========================================================================

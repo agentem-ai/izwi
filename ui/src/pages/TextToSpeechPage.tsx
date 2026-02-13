@@ -54,6 +54,7 @@ export function TextToSpeechPage({
   );
 
   const preferredModelOrder = [
+    "LFM2-Audio-1.5B",
     "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
     "Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit",
     "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",
@@ -167,7 +168,9 @@ export function TextToSpeechPage({
         onModelRequired={() => {
           setModalIntentModel(resolvedSelectedModel);
           setIsModelModalOpen(true);
-          onError("Select and load a CustomVoice model to generate speech.");
+          onError(
+            "Select and load a CustomVoice model or LFM2-Audio-1.5B to generate speech.",
+          );
         }}
       />
 
@@ -175,7 +178,7 @@ export function TextToSpeechPage({
         isOpen={isModelModalOpen}
         onClose={() => setIsModelModalOpen(false)}
         title="Text-to-Speech Models"
-        description="Manage CustomVoice models for this route."
+        description="Manage CustomVoice and LFM2 models for this route."
         models={routeModels}
         loading={loading}
         selectedVariant={resolvedSelectedModel}
