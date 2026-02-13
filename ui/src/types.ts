@@ -16,6 +16,11 @@ export interface ViewConfig {
   disabled?: boolean;
 }
 
+export function isLfmAudioVariant(variant: string): boolean {
+  const normalized = variant.toLowerCase();
+  return normalized.includes("lfm2") && normalized.includes("audio");
+}
+
 export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
   "custom-voice": {
     id: "custom-voice",
@@ -23,10 +28,10 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
     description: "Generate speech with built-in voice profiles (Qwen3 + LFM2)",
     icon: "Volume2",
     modelFilter: (variant) =>
-      variant.includes("CustomVoice") || variant === "LFM2-Audio-1.5B",
+      variant.includes("CustomVoice") || isLfmAudioVariant(variant),
     emptyStateTitle: "No TTS Model Loaded",
     emptyStateDescription:
-      "Load a CustomVoice model or LFM2-Audio-1.5B to generate speech",
+      "Load a CustomVoice or LFM2 model to generate speech",
   },
   "voice-clone": {
     id: "voice-clone",
@@ -59,7 +64,7 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
       variant.includes("Qwen3-ASR") ||
       variant.includes("Parakeet-TDT") ||
       variant.includes("Voxtral") ||
-      variant === "LFM2-Audio-1.5B",
+      isLfmAudioVariant(variant),
     emptyStateTitle: "No ASR Model Loaded",
     emptyStateDescription:
       "Download and load a Qwen3-ASR, Parakeet-TDT, Voxtral, or LFM2 model for speech transcription",

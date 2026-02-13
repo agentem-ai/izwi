@@ -12,10 +12,11 @@ use crate::runtime::types::{AudioChunk, GenerationConfig, GenerationRequest, Gen
 impl InferenceEngine {
     /// Generate audio from text using the loaded native TTS model.
     pub async fn generate(&self, request: GenerationRequest) -> Result<GenerationResult> {
-        if matches!(
-            *self.loaded_tts_variant.read().await,
-            Some(crate::model::ModelVariant::Lfm2Audio15B)
-        ) {
+        let loaded_variant = *self.loaded_tts_variant.read().await;
+        if loaded_variant
+            .map(|variant| variant.is_lfm2())
+            .unwrap_or(false)
+        {
             return self.lfm2_tts_generate(request).await;
         }
 
@@ -140,10 +141,11 @@ impl InferenceEngine {
         request: GenerationRequest,
         chunk_tx: mpsc::Sender<AudioChunk>,
     ) -> Result<()> {
-        if matches!(
-            *self.loaded_tts_variant.read().await,
-            Some(crate::model::ModelVariant::Lfm2Audio15B)
-        ) {
+        let loaded_variant = *self.loaded_tts_variant.read().await;
+        if loaded_variant
+            .map(|variant| variant.is_lfm2())
+            .unwrap_or(false)
+        {
             return self.lfm2_tts_generate_streaming(request, chunk_tx).await;
         }
 

@@ -151,7 +151,7 @@ impl InferenceEngine {
 
         if variant.is_lfm2() {
             return self
-                .lfm2_asr_transcribe_streaming(audio_base64, language, on_delta)
+                .lfm2_asr_transcribe_streaming(variant, audio_base64, language, on_delta)
                 .await;
         }
 

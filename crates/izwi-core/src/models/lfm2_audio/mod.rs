@@ -172,6 +172,8 @@ impl Lfm2AudioModel {
         self.generate_sequential(
             &state,
             512,
+            false,
+            None,
             None,
             Some(1),
             None,
@@ -221,10 +223,13 @@ impl Lfm2AudioModel {
         let mut assembled = String::new();
         let mut audio_frames: Vec<Vec<u32>> = vec![Vec::new(); self.cfg.codebooks];
         let mut rng = SimpleRng::new();
+        let inferred_audio_frame_cap = text.chars().count().saturating_add(24).clamp(48, 480);
 
         self.generate_sequential(
             &state,
             max_new_tokens.max(256),
+            true,
+            Some(inferred_audio_frame_cap),
             None,
             None,
             temperature,
@@ -441,6 +446,8 @@ impl Lfm2AudioModel {
         &self,
         state: &ChatState,
         max_new_tokens: usize,
+        stop_on_audio_end: bool,
+        max_audio_frames: Option<usize>,
         text_temperature: Option<f32>,
         text_top_k: Option<usize>,
         audio_temperature: Option<f32>,
@@ -451,6 +458,7 @@ impl Lfm2AudioModel {
     ) -> Result<()> {
         let mut in_emb = self.build_prefill_embeddings(state)?;
         let mut current_modality = LfmModality::Text;
+        let mut emitted_audio_frames = 0usize;
         let mut cache = LfmCache::new(self.lfm.config());
 
         for _ in 0..max_new_tokens {
@@ -495,10 +503,20 @@ impl Lfm2AudioModel {
                         for t in &mut frame {
                             *t = END_OF_AUDIO_TOKEN;
                         }
+                        if stop_on_audio_end {
+                            break;
+                        }
                         current_modality = LfmModality::Text;
                     }
 
                     on_audio(&frame);
+                    emitted_audio_frames = emitted_audio_frames.saturating_add(1);
+                    if max_audio_frames
+                        .map(|limit| emitted_audio_frames >= limit)
+                        .unwrap_or(false)
+                    {
+                        break;
+                    }
                     let frame_t = Tensor::from_vec(
                         frame,
                         self.cfg.codebooks,

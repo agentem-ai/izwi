@@ -13,8 +13,28 @@ use crate::runtime::types::{
 };
 
 impl InferenceEngine {
-    pub(crate) async fn get_or_load_lfm2_model(&self) -> Result<std::sync::Arc<Lfm2AudioModel>> {
-        let variant = ModelVariant::Lfm2Audio15B;
+    fn default_lfm2_variant() -> ModelVariant {
+        ModelVariant::Lfm2Audio15B
+    }
+
+    async fn resolve_active_lfm2_variant(&self) -> ModelVariant {
+        if let Some(variant) = *self.loaded_tts_variant.read().await {
+            if variant.is_lfm2() {
+                return variant;
+            }
+        }
+        Self::default_lfm2_variant()
+    }
+
+    pub(crate) async fn get_or_load_lfm2_model(
+        &self,
+        variant: ModelVariant,
+    ) -> Result<std::sync::Arc<Lfm2AudioModel>> {
+        if !variant.is_lfm2() {
+            return Err(Error::InvalidInput(format!(
+                "Model variant {variant} is not an LFM2 model"
+            )));
+        }
 
         if let Some(model) = self.model_registry.get_lfm2(variant).await {
             return Ok(model);
@@ -44,6 +64,7 @@ impl InferenceEngine {
 
     pub async fn lfm2_asr_transcribe_streaming<F>(
         &self,
+        variant: ModelVariant,
         audio_base64: &str,
         language: Option<&str>,
         on_delta: F,
@@ -51,7 +72,7 @@ impl InferenceEngine {
     where
         F: FnMut(String) + Send + 'static,
     {
-        let model = self.get_or_load_lfm2_model().await?;
+        let model = self.get_or_load_lfm2_model(variant).await?;
         let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
         let samples_len = samples.len();
         let text = tokio::task::spawn_blocking({
@@ -85,7 +106,8 @@ impl InferenceEngine {
             ));
         }
 
-        let model = self.get_or_load_lfm2_model().await?;
+        let variant = self.resolve_active_lfm2_variant().await;
+        let model = self.get_or_load_lfm2_model(variant).await?;
         let started = std::time::Instant::now();
         let request_id = request.id.clone();
         let voice_instruction = request.voice_description.clone().unwrap_or_else(|| {
@@ -103,7 +125,7 @@ impl InferenceEngine {
                 Some(64)
             };
             let max_new_tokens = if request.config.max_tokens == 0 {
-                768
+                512
             } else {
                 request.config.max_tokens
             };
@@ -171,7 +193,8 @@ impl InferenceEngine {
         F: FnMut(String) + Send + 'static,
     {
         let started = std::time::Instant::now();
-        let model = self.get_or_load_lfm2_model().await?;
+        let variant = self.resolve_active_lfm2_variant().await;
+        let model = self.get_or_load_lfm2_model(variant).await?;
         let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
         let prompt = system_prompt.unwrap_or(LFM2_DEFAULT_S2S_PROMPT).to_string();
         if let Some(lang) = language {
