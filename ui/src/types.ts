@@ -79,7 +79,14 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
   },
 };
 
-export const SPEAKERS = [
+export interface SpeakerProfile {
+  id: string;
+  name: string;
+  language: string;
+  description: string;
+}
+
+export const QWEN_SPEAKERS: SpeakerProfile[] = [
   {
     id: "Vivian",
     name: "Vivian",
@@ -135,6 +142,35 @@ export const SPEAKERS = [
     description: "Mature and wise male voice",
   },
 ];
+
+export const LFM2_SPEAKERS: SpeakerProfile[] = [
+  {
+    id: "US Female",
+    name: "US Female",
+    language: "English",
+    description: "US female preset voice",
+  },
+  {
+    id: "US Male",
+    name: "US Male",
+    language: "English",
+    description: "US male preset voice",
+  },
+  {
+    id: "UK Female",
+    name: "UK Female",
+    language: "English",
+    description: "UK female preset voice",
+  },
+  {
+    id: "UK Male",
+    name: "UK Male",
+    language: "English",
+    description: "UK male preset voice",
+  },
+];
+
+export const SPEAKERS = QWEN_SPEAKERS;
 
 export const LANGUAGES = [
   { id: "Auto", name: "Auto Detect" },
