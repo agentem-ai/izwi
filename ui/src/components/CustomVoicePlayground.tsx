@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Volume2,
@@ -16,10 +16,19 @@ import { SPEAKERS } from "../types";
 import { GenerationStats } from "./GenerationStats";
 import clsx from "clsx";
 
+interface ModelOption {
+  value: string;
+  label: string;
+  statusLabel: string;
+  isReady: boolean;
+}
+
 interface CustomVoicePlaygroundProps {
   selectedModel: string | null;
   selectedModelReady?: boolean;
   modelLabel?: string | null;
+  modelOptions?: ModelOption[];
+  onSelectModel?: (variant: string) => void;
   onOpenModelManager?: () => void;
   onModelRequired: () => void;
 }
@@ -94,6 +103,8 @@ export function CustomVoicePlayground({
   selectedModel,
   selectedModelReady = false,
   modelLabel,
+  modelOptions = [],
+  onSelectModel,
   onOpenModelManager,
   onModelRequired,
 }: CustomVoicePlaygroundProps) {
@@ -109,6 +120,7 @@ export function CustomVoicePlayground({
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [generationStats, setGenerationStats] =
     useState<TTSGenerationStats | null>(null);
+  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -119,8 +131,30 @@ export function CustomVoicePlayground({
   const nextPlaybackTimeRef = useRef(0);
   const streamSampleRateRef = useRef(24000);
   const streamSamplesRef = useRef<Float32Array[]>([]);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
 
   const selectedSpeaker = SPEAKERS.find((s) => s.id === speaker);
+
+  const selectedOption = useMemo(() => {
+    if (!selectedModel) {
+      return null;
+    }
+    return modelOptions.find((option) => option.value === selectedModel) || null;
+  }, [selectedModel, modelOptions]);
+
+  useEffect(() => {
+    const onPointerDown = (event: MouseEvent) => {
+      if (
+        modelMenuRef.current &&
+        event.target instanceof Node &&
+        !modelMenuRef.current.contains(event.target)
+      ) {
+        setIsModelMenuOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", onPointerDown);
+    return () => window.removeEventListener("mousedown", onPointerDown);
+  }, []);
 
   const replaceAudioUrl = useCallback((nextUrl: string | null) => {
     if (audioUrlRef.current) {
@@ -322,6 +356,88 @@ export function CustomVoicePlayground({
     textareaRef.current?.focus();
   };
 
+  const getStatusTone = (option: ModelOption): string => {
+    if (option.isReady) {
+      return "text-emerald-300 bg-emerald-500/10 border-emerald-500/25";
+    }
+    if (
+      option.statusLabel.toLowerCase().includes("downloading") ||
+      option.statusLabel.toLowerCase().includes("loading")
+    ) {
+      return "text-sky-300 bg-sky-500/10 border-sky-500/25";
+    }
+    if (option.statusLabel.toLowerCase().includes("error")) {
+      return "text-red-300 bg-red-500/10 border-red-500/25";
+    }
+    return "text-gray-300 bg-white/5 border-white/15";
+  };
+
+  const handleOpenModels = () => {
+    setIsModelMenuOpen(false);
+    onOpenModelManager?.();
+  };
+
+  const renderModelSelector = () => (
+    <div className="relative z-40" ref={modelMenuRef}>
+      <button
+        onClick={() => setIsModelMenuOpen((prev) => !prev)}
+        className={clsx(
+          "h-9 px-3 rounded-xl border inline-flex items-center gap-2 text-xs transition-colors",
+          selectedOption?.isReady
+            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+            : "border-[#3a5f82] bg-[#1f2328] text-gray-100 hover:border-[#4e89c2]",
+        )}
+      >
+        <span className="max-w-[170px] truncate">
+          {selectedOption?.label || "Select model"}
+        </span>
+        <ChevronDown className="w-3.5 h-3.5 opacity-80" />
+      </button>
+
+      <AnimatePresence>
+        {isModelMenuOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: 6, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 6, scale: 0.98 }}
+            transition={{ duration: 0.16 }}
+            className="absolute right-0 bottom-11 w-[300px] max-w-[80vw] rounded-2xl border border-[#32353a] bg-[#16181c] p-2 shadow-2xl z-[90]"
+          >
+            <div className="max-h-64 overflow-y-auto pr-1 space-y-1">
+              {modelOptions.map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => {
+                    onSelectModel?.(option.value);
+                    setIsModelMenuOpen(false);
+                  }}
+                  className={clsx(
+                    "w-full text-left rounded-xl px-2.5 py-2 transition-colors border",
+                    selectedOption?.value === option.value
+                      ? "bg-[#24272c] border-[#464a52]"
+                      : "bg-transparent border-transparent hover:bg-[#202328]",
+                  )}
+                >
+                  <div className="text-xs text-gray-100 truncate">
+                    {option.label}
+                  </div>
+                  <span
+                    className={clsx(
+                      "mt-1 inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px]",
+                      getStatusTone(option),
+                    )}
+                  >
+                    {option.statusLabel}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+
   return (
     <div className="card p-4">
       {/* Header */}
@@ -336,16 +452,6 @@ export function CustomVoicePlayground({
         </div>
 
         <div className="flex items-center gap-2">
-          {onOpenModelManager && (
-            <button
-              onClick={onOpenModelManager}
-              className="btn btn-secondary text-xs"
-            >
-              <Settings2 className="w-4 h-4" />
-              Models
-            </button>
-          )}
-
           <div className="relative">
             <button
               onClick={() => setShowSpeakerSelect(!showSpeakerSelect)}
@@ -414,21 +520,37 @@ export function CustomVoicePlayground({
       </div>
 
       <div className="mb-4 rounded-xl border border-[#2b2b2b] bg-[#171717] p-3">
-        <div className="text-[11px] text-gray-500 uppercase tracking-wide">
-          Active Model
-        </div>
-        <div className="mt-1 text-sm text-white truncate">
-          {modelLabel ?? "No model selected"}
-        </div>
-        <div
-          className={clsx(
-            "mt-1 text-xs",
-            selectedModelReady ? "text-emerald-300" : "text-amber-300",
-          )}
-        >
-          {selectedModelReady
-            ? "Loaded and ready"
-            : "Open Models and load a CustomVoice model"}
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="text-[11px] text-gray-500 uppercase tracking-wide">
+              Active Model
+            </div>
+            <div className="mt-1 text-sm text-white truncate">
+              {modelLabel ?? "No model selected"}
+            </div>
+            <div
+              className={clsx(
+                "mt-1 text-xs",
+                selectedModelReady ? "text-emerald-300" : "text-amber-300",
+              )}
+            >
+              {selectedModelReady
+                ? "Loaded and ready"
+                : "Open Models and load a CustomVoice model"}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {modelOptions.length > 0 && renderModelSelector()}
+            {onOpenModelManager && (
+              <button
+                onClick={handleOpenModels}
+                className="btn btn-secondary text-xs"
+              >
+                <Settings2 className="w-4 h-4" />
+                Models
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

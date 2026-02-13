@@ -275,6 +275,28 @@ export function TranscriptionPage({
   const activeReadyModelVariant =
     transcriptionModels.find((model) => model.status === "ready")?.variant ?? null;
 
+  const modelOptions = transcriptionModels.map((model) => ({
+    value: model.variant,
+    label: model.variant,
+    statusLabel: getStatusLabel(model.status),
+    isReady: model.status === "ready",
+  }));
+
+  const handleModelSelect = (variant: string) => {
+    const model = transcriptionModels.find((m) => m.variant === variant);
+    if (!model) {
+      return;
+    }
+
+    onSelect(variant);
+
+    if (model.status !== "ready") {
+      setModalIntentModel(variant);
+      setAutoCloseOnIntentReady(true);
+      setIsModelModalOpen(true);
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto">
       <div className="mb-6">
@@ -285,6 +307,8 @@ export function TranscriptionPage({
         selectedModel={resolvedSelectedModel}
         selectedModelReady={selectedModelReady}
         modelLabel={selectedModelInfo?.variant ?? null}
+        modelOptions={modelOptions}
+        onSelectModel={handleModelSelect}
         onOpenModelManager={openModelManager}
         onModelRequired={() => {
           setModalIntentModel(resolvedSelectedModel);
