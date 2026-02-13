@@ -96,11 +96,7 @@ function formatBytes(bytes: number): string {
 }
 
 function isAsrVariant(variant: string): boolean {
-  return (
-    variant.includes("Qwen3-ASR") ||
-    variant.includes("Voxtral") ||
-    variant === "Gemma-3-1b-it"
-  );
+  return variant.includes("Qwen3-ASR") || variant.includes("Voxtral");
 }
 
 function isTextVariant(variant: string): boolean {
