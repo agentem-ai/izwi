@@ -213,16 +213,6 @@ export function TranscriptionPlayground({
           return url;
         });
 
-        const reader = new FileReader();
-        const audioBase64 = await new Promise<string>((resolve, reject) => {
-          reader.onloadend = () => {
-            const base64 = (reader.result as string).split(",")[1];
-            resolve(base64);
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(wavBlob);
-        });
-
         if (streamingEnabled) {
           setIsStreaming(true);
           const startTime = Date.now();
@@ -230,7 +220,8 @@ export function TranscriptionPlayground({
 
           streamAbortRef.current = api.asrTranscribeStream(
             {
-              audio_base64: audioBase64,
+              audio_file: wavBlob,
+              audio_filename: "audio.wav",
               model_id: selectedModel || undefined,
               language: selectedLanguage,
             },
@@ -270,7 +261,8 @@ export function TranscriptionPlayground({
           );
         } else {
           const response = await api.asrTranscribe({
-            audio_base64: audioBase64,
+            audio_file: wavBlob,
+            audio_filename: "audio.wav",
             model_id: selectedModel || undefined,
             language: selectedLanguage,
           });
@@ -399,11 +391,8 @@ export function TranscriptionPlayground({
       if (streamAbortRef.current) {
         streamAbortRef.current.abort();
       }
-      if (audioUrl) {
-        URL.revokeObjectURL(audioUrl);
-      }
     };
-  }, [audioUrl]);
+  }, []);
 
   const canRunInput = !isProcessing && !isRecording && selectedModelReady;
   const showResult = Boolean(transcription || isStreaming || isProcessing);
