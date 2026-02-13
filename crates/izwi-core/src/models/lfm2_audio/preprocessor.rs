@@ -1,4 +1,7 @@
 use candle_core::Tensor;
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
 
@@ -8,6 +11,7 @@ use super::config::PreprocessorConfig;
 
 const LOG_GUARD: f32 = 5.960_464_5e-8;
 const NORMALIZE_EPS: f32 = 1e-5;
+const PREEMPHASIS: f32 = 0.97;
 
 #[derive(Debug, Clone)]
 pub struct Lfm2AudioPreprocessor {
@@ -69,11 +73,14 @@ impl Lfm2AudioPreprocessor {
             return Err(Error::InvalidInput("Empty audio input".to_string()));
         }
 
+        let seq_len = audio.len() / self.hop_length;
+        let preemph = apply_preemphasis(audio, PREEMPHASIS);
+
         // Keep parity with NeMo-style center padding.
         let center_pad = self.cfg.n_fft / 2;
-        let mut padded = Vec::with_capacity(audio.len() + center_pad * 2);
+        let mut padded = Vec::with_capacity(preemph.len() + center_pad * 2);
         padded.extend(std::iter::repeat_n(0.0, center_pad));
-        padded.extend_from_slice(audio);
+        padded.extend_from_slice(&preemph);
         padded.extend(std::iter::repeat_n(0.0, center_pad));
 
         let frame_count = if padded.len() >= self.cfg.n_fft {
@@ -122,14 +129,9 @@ impl Lfm2AudioPreprocessor {
             }
         }
 
-        let valid_frames = audio.len() / self.hop_length;
+        let valid_frames = seq_len.min(frame_count);
         if self.cfg.normalize == "per_feature" {
-            normalize_per_feature(
-                &mut mel,
-                self.n_mels,
-                frame_count,
-                valid_frames.min(frame_count),
-            );
+            normalize_per_feature(&mut mel, self.n_mels, frame_count, valid_frames);
         }
 
         if valid_frames < frame_count {
@@ -146,15 +148,40 @@ impl Lfm2AudioPreprocessor {
             &candle_core::Device::Cpu,
         )?;
 
-        Ok((features, valid_frames.min(frame_count)))
+        // Keep frame length parity with upstream ChatState logic:
+        // modality length is derived from mel width, not seq_len.
+        Ok((features, frame_count))
     }
 }
 
-pub fn resample_linear(audio: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
+pub fn resample_audio(audio: &[f32], src_rate: u32, dst_rate: u32) -> Result<Vec<f32>> {
     if audio.is_empty() || src_rate == 0 || dst_rate == 0 || src_rate == dst_rate {
-        return audio.to_vec();
+        return Ok(audio.to_vec());
     }
 
+    if audio.len() < 32 {
+        return Ok(resample_linear_fallback(audio, src_rate, dst_rate));
+    }
+
+    let params = SincInterpolationParameters {
+        sinc_len: 128,
+        f_cutoff: 0.95,
+        interpolation: SincInterpolationType::Cubic,
+        oversampling_factor: 128,
+        window: WindowFunction::BlackmanHarris2,
+    };
+
+    let ratio = dst_rate as f64 / src_rate as f64;
+    let mut resampler = SincFixedIn::<f32>::new(ratio, 2.0, params, audio.len(), 1)
+        .map_err(|e| Error::InferenceError(format!("LFM2 resampler init failed: {e}")))?;
+    let input = vec![audio.to_vec()];
+    match resampler.process(&input, None) {
+        Ok(mut out) => Ok(out.pop().unwrap_or_default()),
+        Err(_) => Ok(resample_linear_fallback(audio, src_rate, dst_rate)),
+    }
+}
+
+fn resample_linear_fallback(audio: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
     let ratio = dst_rate as f64 / src_rate as f64;
     let out_len = ((audio.len() as f64) * ratio).round().max(1.0) as usize;
     let mut out = vec![0f32; out_len];
@@ -183,12 +210,43 @@ fn hann_window(win_length: usize) -> Vec<f32> {
         .collect()
 }
 
-fn hz_to_mel(hz: f32) -> f32 {
-    2595.0 * (1.0 + hz / 700.0).log10()
+fn apply_preemphasis(audio: &[f32], factor: f32) -> Vec<f32> {
+    if audio.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::with_capacity(audio.len());
+    out.push(audio[0]);
+    for i in 1..audio.len() {
+        out.push(audio[i] - factor * audio[i - 1]);
+    }
+    out
 }
 
-fn mel_to_hz(mel: f32) -> f32 {
-    700.0 * (10f32.powf(mel / 2595.0) - 1.0)
+fn hz_to_mel_slaney(hz: f32) -> f32 {
+    let f_sp = 200.0 / 3.0;
+    let min_log_hz = 1000.0;
+    let min_log_mel = min_log_hz / f_sp;
+    let logstep = (6.4f32).ln() / 27.0;
+
+    if hz < min_log_hz {
+        hz / f_sp
+    } else {
+        min_log_mel + (hz / min_log_hz).ln() / logstep
+    }
+}
+
+fn mel_to_hz_slaney(mel: f32) -> f32 {
+    let f_sp = 200.0 / 3.0;
+    let min_log_hz = 1000.0;
+    let min_log_mel = min_log_hz / f_sp;
+    let logstep = (6.4f32).ln() / 27.0;
+
+    if mel < min_log_mel {
+        mel * f_sp
+    } else {
+        min_log_hz * (logstep * (mel - min_log_mel)).exp()
+    }
 }
 
 fn mel_filterbank(
@@ -199,36 +257,36 @@ fn mel_filterbank(
     fmax: f32,
 ) -> Vec<f32> {
     let n_freqs = n_fft / 2 + 1;
-    let mel_min = hz_to_mel(fmin);
-    let mel_max = hz_to_mel(fmax.min(sample_rate as f32 / 2.0));
+    let nyquist = sample_rate as f32 / 2.0;
+    let mel_min = hz_to_mel_slaney(fmin.max(0.0));
+    let mel_max = hz_to_mel_slaney(fmax.min(nyquist).max(fmin));
 
     let mel_points: Vec<f32> = (0..(n_mels + 2))
         .map(|i| mel_min + (mel_max - mel_min) * i as f32 / (n_mels + 1) as f32)
         .collect();
 
-    let hz_points: Vec<f32> = mel_points.into_iter().map(mel_to_hz).collect();
-    let bins: Vec<usize> = hz_points
-        .iter()
-        .map(|hz| {
-            (((n_fft + 1) as f32 * *hz / sample_rate as f32).floor() as isize).max(0) as usize
-        })
+    let hz_points: Vec<f32> = mel_points.into_iter().map(mel_to_hz_slaney).collect();
+    let fft_freqs: Vec<f32> = (0..n_freqs)
+        .map(|i| nyquist * i as f32 / (n_freqs.saturating_sub(1).max(1)) as f32)
         .collect();
 
     let mut fb = vec![0f32; n_mels * n_freqs];
     for m in 0..n_mels {
-        let left = bins[m].min(n_freqs.saturating_sub(1));
-        let center = bins[m + 1].min(n_freqs.saturating_sub(1));
-        let right = bins[m + 2].min(n_freqs.saturating_sub(1));
+        let left = hz_points[m];
+        let center = hz_points[m + 1];
+        let right = hz_points[m + 2];
+        let lower_width = (center - left).max(1e-12);
+        let upper_width = (right - center).max(1e-12);
+        let enorm = if right > left {
+            2.0 / (right - left)
+        } else {
+            0.0
+        };
 
-        if center > left {
-            for k in left..center {
-                fb[m * n_freqs + k] = (k - left) as f32 / (center - left) as f32;
-            }
-        }
-        if right > center {
-            for k in center..right {
-                fb[m * n_freqs + k] = (right - k) as f32 / (right - center) as f32;
-            }
+        for (k, &freq) in fft_freqs.iter().enumerate() {
+            let lower = (freq - left) / lower_width;
+            let upper = (right - freq) / upper_width;
+            fb[m * n_freqs + k] = lower.min(upper).max(0.0) * enorm;
         }
     }
 

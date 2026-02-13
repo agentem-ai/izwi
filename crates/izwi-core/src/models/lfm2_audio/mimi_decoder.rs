@@ -83,6 +83,19 @@ impl MimiDecoder {
 }
 
 fn ensure_candle_checkpoint(source: &Path) -> Result<PathBuf> {
+    let preconverted = [
+        "tokenizer-e351c8d8-checkpoint125.candle.v4.safetensors",
+        "tokenizer-e351c8d8-checkpoint125.candle.v3.safetensors",
+        "tokenizer-e351c8d8-checkpoint125.candle.v2.safetensors",
+        "tokenizer-e351c8d8-checkpoint125.candle.safetensors",
+    ];
+    for name in preconverted {
+        let candidate = source.with_file_name(name);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
     let target = source.with_file_name("tokenizer-e351c8d8-checkpoint125.candle.v4.safetensors");
     if target.exists() {
         return Ok(target);
