@@ -66,7 +66,8 @@ impl MimiDecoder {
             flat.extend_from_slice(row);
         }
 
-        let codes = Tensor::from_vec(flat, (1, n_codebooks, frames), &self.device)?.to_dtype(DType::U32)?;
+        let codes =
+            Tensor::from_vec(flat, (1, n_codebooks, frames), &self.device)?.to_dtype(DType::U32)?;
 
         let mut model = self
             .model
@@ -82,7 +83,7 @@ impl MimiDecoder {
 }
 
 fn ensure_candle_checkpoint(source: &Path) -> Result<PathBuf> {
-    let target = source.with_file_name("tokenizer-e351c8d8-checkpoint125.candle.safetensors");
+    let target = source.with_file_name("tokenizer-e351c8d8-checkpoint125.candle.v4.safetensors");
     if target.exists() {
         return Ok(target);
     }
@@ -163,20 +164,24 @@ fn ensure_candle_checkpoint(source: &Path) -> Result<PathBuf> {
         views.insert(tensor.name.clone(), view);
     }
 
-    serialize_to_file(views, &None, &target)
-        .map_err(|e| Error::ModelLoadError(format!("Failed writing converted Mimi checkpoint: {e}")))?;
+    serialize_to_file(views, &None, &target).map_err(|e| {
+        Error::ModelLoadError(format!("Failed writing converted Mimi checkpoint: {e}"))
+    })?;
 
     Ok(target)
 }
 
 fn remap_tensor_name(name: &str) -> String {
-    name.replace(".model.", ".layers.")
+    let mut mapped = name
+        .replace(".model.", ".layers.")
+        .replace(".transformer.layers.", ".layers.")
         .replace(".norm1.", ".input_layernorm.")
         .replace(".norm2.", ".post_attention_layernorm.")
         .replace(".linear1.", ".mlp.fc1.")
         .replace(".linear2.", ".mlp.fc2.")
         .replace(".layer_scale_1.", ".self_attn_layer_scale.")
         .replace(".layer_scale_2.", ".mlp_layer_scale.")
+        .replace(".self_attn.out_proj.", ".self_attn.o_proj.")
         .replace(
             "quantizer.rvq_first.",
             "quantizer.semantic_residual_vector_quantizer.",
@@ -185,9 +190,19 @@ fn remap_tensor_name(name: &str) -> String {
             "quantizer.rvq_rest.",
             "quantizer.acoustic_residual_vector_quantizer.",
         )
+        .replace(".vq.layers.", ".layers.")
         .replace("._codebook.embedding_sum", ".codebook.embed_sum")
         .replace("._codebook.cluster_usage", ".codebook.cluster_usage")
-        .replace("._codebook._initialized", ".codebook.initialized")
+        .replace("._codebook._initialized", ".codebook.initialized");
+
+    while mapped.contains(".convtr.") {
+        mapped = mapped.replace(".convtr.", ".conv.");
+    }
+    while mapped.contains(".conv.conv.") {
+        mapped = mapped.replace(".conv.conv.", ".conv.");
+    }
+
+    mapped
 }
 
 fn dtype_size(dtype: Dtype) -> Result<usize> {
@@ -196,5 +211,10 @@ fn dtype_size(dtype: Dtype) -> Result<usize> {
         Dtype::U16 | Dtype::I16 | Dtype::BF16 | Dtype::F16 => 2,
         Dtype::U32 | Dtype::I32 | Dtype::F32 => 4,
         Dtype::U64 | Dtype::I64 | Dtype::F64 => 8,
+        _ => {
+            return Err(Error::ModelLoadError(format!(
+                "Unsupported safetensors dtype in Mimi checkpoint: {dtype:?}"
+            )))
+        }
     })
 }

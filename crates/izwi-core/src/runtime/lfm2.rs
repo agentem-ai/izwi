@@ -1,13 +1,12 @@
 //! LFM2 runtime helpers (ASR, TTS, and speech-to-speech).
 
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
-use crate::models::chat_types::{ChatMessage, ChatRole};
 use crate::models::lfm2_audio::{lfm2_tts_voice_prompt, Lfm2AudioModel, LFM2_DEFAULT_S2S_PROMPT};
-use crate::models::qwen3_tts::{Qwen3TtsModel, TtsGenerationParams};
+use crate::runtime::audio_io::{base64_decode, decode_wav_bytes};
 use crate::runtime::service::InferenceEngine;
 use crate::runtime::types::{
     AsrTranscription, AudioChunk, GenerationRequest, GenerationResult, SpeechToSpeechGeneration,
@@ -43,52 +42,6 @@ impl InferenceEngine {
         Ok(model)
     }
 
-    async fn ensure_lfm2_tts_fallback_loaded(&self, variant: ModelVariant) -> Result<()> {
-        {
-            let loaded_variant = *self.lfm2_fallback_tts_variant.read().await;
-            let model_guard = self.lfm2_fallback_tts_model.read().await;
-            if loaded_variant == Some(variant) && model_guard.is_some() {
-                return Ok(());
-            }
-        }
-
-        let model_path = self
-            .model_manager
-            .get_model_info(variant)
-            .await
-            .and_then(|i| i.local_path)
-            .ok_or_else(|| {
-                Error::ModelNotFound(format!(
-                    "LFM2 native runtime fallback TTS model '{}' is not downloaded",
-                    variant
-                ))
-            })?;
-
-        info!(
-            "Loading LFM2 native fallback TTS model {} from {:?}",
-            variant, model_path
-        );
-
-        let device = self.device.clone();
-        let model = tokio::task::spawn_blocking(move || Qwen3TtsModel::load(&model_path, device))
-            .await
-            .map_err(|err| {
-                Error::ModelLoadError(format!("LFM2 fallback TTS task failed: {}", err))
-            })??;
-
-        {
-            let mut model_guard = self.lfm2_fallback_tts_model.write().await;
-            *model_guard = Some(model);
-        }
-        {
-            let mut variant_guard = self.lfm2_fallback_tts_variant.write().await;
-            *variant_guard = Some(variant);
-        }
-
-        self.model_manager.mark_loaded(variant).await;
-        Ok(())
-    }
-
     pub async fn lfm2_asr_transcribe_streaming<F>(
         &self,
         audio_base64: &str,
@@ -99,13 +52,30 @@ impl InferenceEngine {
         F: FnMut(String) + Send + 'static,
     {
         let model = self.get_or_load_lfm2_model().await?;
-        self.asr_transcribe_with_variant_streaming(
-            model.asr_fallback_variant(),
-            audio_base64,
-            language,
-            on_delta,
-        )
+        let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
+        let samples_len = samples.len();
+        let text = tokio::task::spawn_blocking({
+            let model = model.clone();
+            let language = language.map(|s| s.to_string());
+            move || {
+                let mut callback = on_delta;
+                let mut emit = |delta: &str| callback(delta.to_string());
+                model.transcribe_with_callback(
+                    &samples,
+                    sample_rate,
+                    language.as_deref(),
+                    &mut emit,
+                )
+            }
+        })
         .await
+        .map_err(|e| Error::InferenceError(format!("LFM2 ASR task failed: {}", e)))??;
+
+        Ok(AsrTranscription {
+            text,
+            language: language.map(|s| s.to_string()),
+            duration_secs: samples_len as f32 / sample_rate as f32,
+        })
     }
 
     pub async fn lfm2_tts_generate(&self, request: GenerationRequest) -> Result<GenerationResult> {
@@ -116,49 +86,32 @@ impl InferenceEngine {
         }
 
         let model = self.get_or_load_lfm2_model().await?;
-        let fallback_variant = model.tts_fallback_variant();
-        self.ensure_lfm2_tts_fallback_loaded(fallback_variant)
-            .await?;
-
         let started = std::time::Instant::now();
         let request_id = request.id.clone();
-        let voice_instruction =
-            lfm2_tts_voice_prompt(request.config.speaker.as_deref()).to_string();
+        let voice_instruction = request.voice_description.clone().unwrap_or_else(|| {
+            lfm2_tts_voice_prompt(request.config.speaker.as_deref()).to_string()
+        });
 
         let samples = tokio::task::spawn_blocking({
-            let tts_store = self.lfm2_fallback_tts_model.clone();
+            let model = model.clone();
             let text = request.text.clone();
-            let language = request.language.clone();
+            let speaker_prompt = voice_instruction.clone();
             let temperature = request.config.temperature;
-            let top_k = if request.config.top_k == 0 {
-                50
+            let top_k = (request.config.top_k > 0).then_some(request.config.top_k);
+            let max_new_tokens = if request.config.max_tokens == 0 {
+                768
             } else {
-                request.config.top_k
+                request.config.max_tokens
             };
             move || {
-                let rt = tokio::runtime::Handle::try_current().map_err(|_| {
-                    Error::InferenceError(
-                        "No async runtime available for LFM2 fallback TTS".to_string(),
-                    )
-                })?;
-                let model_guard = rt.block_on(async { tts_store.read().await });
-                let model = model_guard.as_ref().ok_or_else(|| {
-                    Error::InferenceError("LFM2 fallback TTS model was not initialized".to_string())
-                })?;
-
-                let params = TtsGenerationParams {
-                    temperature,
-                    top_p: 1.0,
-                    top_k,
-                    repetition_penalty: 1.05,
-                    max_frames: 512,
-                };
-
-                model.generate_with_text_params(
+                let mut sink = |_delta: &str| {};
+                model.synthesize_with_callback(
                     &text,
-                    language.as_deref(),
-                    Some(voice_instruction.as_str()),
-                    &params,
+                    &speaker_prompt,
+                    Some(temperature),
+                    top_k,
+                    max_new_tokens,
+                    &mut sink,
                 )
             }
         })
@@ -208,62 +161,45 @@ impl InferenceEngine {
         system_prompt: Option<&str>,
         temperature: Option<f32>,
         top_k: Option<usize>,
-        mut on_delta: F,
+        on_delta: F,
     ) -> Result<SpeechToSpeechGeneration>
     where
         F: FnMut(String) + Send + 'static,
     {
         let started = std::time::Instant::now();
-
-        let transcription = self
-            .lfm2_asr_transcribe_streaming(audio_base64, language, |_delta| {})
-            .await?;
-
         let model = self.get_or_load_lfm2_model().await?;
-        let prompt = system_prompt.unwrap_or(LFM2_DEFAULT_S2S_PROMPT);
-        let messages = vec![
-            ChatMessage {
-                role: ChatRole::System,
-                content: prompt.to_string(),
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                content: transcription.text.clone(),
-            },
-        ];
+        let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
+        let prompt = system_prompt.unwrap_or(LFM2_DEFAULT_S2S_PROMPT).to_string();
+        if let Some(lang) = language {
+            info!("LFM2 S2S language hint: {}", lang);
+        }
 
-        let response_text = match self
-            .chat_generate(model.chat_fallback_variant(), messages, 256)
-            .await
-        {
-            Ok(chat) if !chat.text.trim().is_empty() => chat.text,
-            Ok(_) => transcription.text.clone(),
-            Err(err) => {
-                warn!("LFM2 fallback chat failed: {}", err);
-                transcription.text.clone()
+        let (text, output_samples) = tokio::task::spawn_blocking({
+            let model = model.clone();
+            move || {
+                let mut callback = on_delta;
+                let mut emit = |delta: &str| callback(delta.to_string());
+                model.speech_to_speech_with_callback(
+                    &samples,
+                    sample_rate,
+                    Some(prompt.as_str()),
+                    temperature,
+                    top_k,
+                    1024,
+                    &mut emit,
+                )
             }
-        };
-
-        if !response_text.trim().is_empty() {
-            on_delta(response_text.clone());
-        }
-
-        let mut tts_request = GenerationRequest::new(response_text.clone());
-        tts_request.language = language.map(|value| value.to_string());
-        if let Some(value) = temperature {
-            tts_request.config.temperature = value;
-        }
-        if let Some(value) = top_k {
-            tts_request.config.top_k = value;
-        }
-
-        let tts_output = self.lfm2_tts_generate(tts_request).await?;
+        })
+        .await
+        .map_err(|e| {
+            Error::InferenceError(format!("LFM2 speech-to-speech task failed: {}", e))
+        })??;
 
         Ok(SpeechToSpeechGeneration {
-            text: response_text,
-            samples: tts_output.samples,
-            sample_rate: tts_output.sample_rate,
-            input_transcription: Some(transcription.text),
+            text,
+            samples: output_samples,
+            sample_rate: 24_000,
+            input_transcription: None,
             generation_time_ms: started.elapsed().as_secs_f64() * 1000.0,
         })
     }

@@ -19,7 +19,7 @@ use depthformer::Depthformer;
 use lfm_backbone::{LfmBackbone, LfmCache};
 use mimi_decoder::MimiDecoder;
 use preprocessor::{resample_linear, Lfm2AudioPreprocessor};
-use tokenizer::{mel_to_embed_len, ChatState, Lfm2Tokenizer, LfmModality};
+use tokenizer::{ChatState, Lfm2Tokenizer, LfmModality};
 use tracing::info;
 
 use crate::error::{Error, Result};
@@ -84,10 +84,9 @@ impl Lfm2AudioModel {
     pub fn load(model_dir: &Path, device: DeviceProfile) -> Result<Self> {
         validate_model_dir(model_dir)?;
 
-        let cfg: Lfm2AudioConfig = serde_json::from_str(
-            std::fs::read_to_string(model_dir.join("config.json"))?.as_str(),
-        )
-        .map_err(|e| Error::ModelLoadError(format!("Invalid LFM2 config.json: {e}")))?;
+        let cfg: Lfm2AudioConfig =
+            serde_json::from_str(std::fs::read_to_string(model_dir.join("config.json"))?.as_str())
+                .map_err(|e| Error::ModelLoadError(format!("Invalid LFM2 config.json: {e}")))?;
 
         let dtype = match device.kind {
             crate::models::device::DeviceKind::Cuda if device.capabilities.supports_bf16 => {
@@ -97,7 +96,11 @@ impl Lfm2AudioModel {
         };
 
         let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[model_dir.join("model.safetensors")], dtype, &device.device)?
+            VarBuilder::from_mmaped_safetensors(
+                &[model_dir.join("model.safetensors")],
+                dtype,
+                &device.device,
+            )?
         };
 
         let tokenizer = Lfm2Tokenizer::load(model_dir)?;
@@ -146,12 +149,13 @@ impl Lfm2AudioModel {
     ) -> Result<String> {
         let mel = self.prepare_audio_mel(audio, sample_rate)?;
 
-        let mut state = ChatState::new(&self.tokenizer, self.cfg.codebooks, self.preprocessor.features());
-        state.new_turn(&self.tokenizer, "system")?;
-        state.add_text(
+        let mut state = ChatState::new(
             &self.tokenizer,
-            "Transcribe the user speech into text.",
-        )?;
+            self.cfg.codebooks,
+            self.preprocessor.features(),
+        );
+        state.new_turn(&self.tokenizer, "system")?;
+        state.add_text(&self.tokenizer, "Transcribe the user speech into text.")?;
         state.end_turn(&self.tokenizer)?;
 
         state.new_turn(&self.tokenizer, "user")?;
@@ -195,7 +199,11 @@ impl Lfm2AudioModel {
         max_new_tokens: usize,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<Vec<f32>> {
-        let mut state = ChatState::new(&self.tokenizer, self.cfg.codebooks, self.preprocessor.features());
+        let mut state = ChatState::new(
+            &self.tokenizer,
+            self.cfg.codebooks,
+            self.preprocessor.features(),
+        );
         state.new_turn(&self.tokenizer, "system")?;
         state.add_text(&self.tokenizer, speaker_prompt)?;
         state.end_turn(&self.tokenizer)?;
@@ -254,7 +262,11 @@ impl Lfm2AudioModel {
     ) -> Result<(String, Vec<f32>)> {
         let mel = self.prepare_audio_mel(audio, sample_rate)?;
 
-        let mut state = ChatState::new(&self.tokenizer, self.cfg.codebooks, self.preprocessor.features());
+        let mut state = ChatState::new(
+            &self.tokenizer,
+            self.cfg.codebooks,
+            self.preprocessor.features(),
+        );
         state.new_turn(&self.tokenizer, "system")?;
         state.add_text(
             &self.tokenizer,
@@ -384,7 +396,9 @@ impl Lfm2AudioModel {
                 x if x == LfmModality::AudioIn as u32 => {
                     let row = audio_in_rows
                         .get(audio_in_i)
-                        .ok_or_else(|| Error::InferenceError("audio_in/modality mismatch".to_string()))?
+                        .ok_or_else(|| {
+                            Error::InferenceError("audio_in/modality mismatch".to_string())
+                        })?
                         .clone();
                     rows.push(row);
                     audio_in_i += 1;
@@ -392,7 +406,9 @@ impl Lfm2AudioModel {
                 x if x == LfmModality::AudioOut as u32 => {
                     let row = audio_out_rows
                         .get(audio_out_i)
-                        .ok_or_else(|| Error::InferenceError("audio_out/modality mismatch".to_string()))?
+                        .ok_or_else(|| {
+                            Error::InferenceError("audio_out/modality mismatch".to_string())
+                        })?
                         .clone();
                     rows.push(row);
                     audio_out_i += 1;
@@ -459,12 +475,9 @@ impl Lfm2AudioModel {
                     in_emb = self.lfm.embed_tokens(token)?;
                 }
                 LfmModality::AudioOut => {
-                    let frame = self.depthformer.sample_audio_frame(
-                        &last,
-                        temperature,
-                        top_k,
-                        rng,
-                    )?;
+                    let frame =
+                        self.depthformer
+                            .sample_audio_frame(&last, temperature, top_k, rng)?;
                     let mut frame = frame;
                     if frame.first().copied() == Some(END_OF_AUDIO_TOKEN) {
                         for t in &mut frame {
@@ -543,12 +556,9 @@ impl Lfm2AudioModel {
                     in_emb = self.lfm.embed_tokens(token)?;
                 }
                 LfmModality::AudioOut => {
-                    let mut frame = self.depthformer.sample_audio_frame(
-                        &last,
-                        temperature,
-                        top_k,
-                        rng,
-                    )?;
+                    let mut frame =
+                        self.depthformer
+                            .sample_audio_frame(&last, temperature, top_k, rng)?;
 
                     if modality_left == 0 && !text_done {
                         current_modality = LfmModality::Text;

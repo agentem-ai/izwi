@@ -3,7 +3,7 @@ use candle_nn::{Embedding, Linear, Module, RmsNorm, VarBuilder};
 
 use crate::error::{Error, Result};
 
-use super::config::{DepthformerConfig, Lfm2AudioConfig};
+use super::config::Lfm2AudioConfig;
 
 const AUDIO_VOCAB_SIZE: usize = 2049;
 
@@ -93,7 +93,11 @@ impl Mha {
         let packed = self.qkv_proj.forward(x)?;
         let q = packed.narrow(2, 0, dim)?;
         let k = packed.narrow(2, dim, self.head_dim * self.gqa_dim)?;
-        let v = packed.narrow(2, dim + self.head_dim * self.gqa_dim, self.head_dim * self.gqa_dim)?;
+        let v = packed.narrow(
+            2,
+            dim + self.head_dim * self.gqa_dim,
+            self.head_dim * self.gqa_dim,
+        )?;
 
         let q = q
             .reshape((b, t, self.num_heads, self.head_dim))?
@@ -108,7 +112,10 @@ impl Mha {
         let q = apply_rms_head_norm(&self.q_norm, &q)?;
         let k = apply_rms_head_norm(&self.k_norm, &k)?;
 
-        let cache_len = cache.as_ref().map(|(k, _)| k.dim(2).unwrap_or(0)).unwrap_or(0);
+        let cache_len = cache
+            .as_ref()
+            .map(|(k, _)| k.dim(2).unwrap_or(0))
+            .unwrap_or(0);
 
         let q = apply_rope(&q, &self.cos, &self.sin, cache_len)?;
         let k = apply_rope(&k, &self.cos, &self.sin, cache_len)?;
@@ -136,7 +143,8 @@ impl Mha {
         let v = v.reshape((b * self.num_heads, total_t, self.head_dim))?;
 
         let mut scores = q.matmul(&k.transpose(1, 2)?)?;
-        let scale = Tensor::new(vec![(self.head_dim as f32).sqrt()], scores.device())?.reshape((1, 1, 1))?;
+        let scale = Tensor::new(vec![(self.head_dim as f32).sqrt()], scores.device())?
+            .reshape((1, 1, 1))?;
         scores = scores.broadcast_div(&scale)?;
 
         // Causal mask (right aligned for cached decoding).
@@ -162,23 +170,28 @@ struct Glu {
 }
 
 impl Glu {
-    fn load(dim: usize, vb: VarBuilder) -> Result<Self> {
-        let ff = vb
-            .pp("feed_forward")
-            .get((1, 1), "w1.weight")
-            .ok()
-            .and_then(|_| None);
-        let _ = ff;
-        let w1 = candle_nn::linear_no_bias(dim, 2816, vb.pp("feed_forward.w1"))?;
-        let w2 = candle_nn::linear_no_bias(2816, dim, vb.pp("feed_forward.w2"))?;
-        let w3 = candle_nn::linear_no_bias(dim, 2816, vb.pp("feed_forward.w3"))?;
+    fn load(vb: VarBuilder) -> Result<Self> {
+        let w1 = vb
+            .pp("feed_forward.w1")
+            .get_unchecked_dtype("weight", vb.dtype())?;
+        let w2 = vb
+            .pp("feed_forward.w2")
+            .get_unchecked_dtype("weight", vb.dtype())?;
+        let w3 = vb
+            .pp("feed_forward.w3")
+            .get_unchecked_dtype("weight", vb.dtype())?;
+
+        let w1 = Linear::new(w1, None);
+        let w2 = Linear::new(w2, None);
+        let w3 = Linear::new(w3, None);
         Ok(Self { w1, w2, w3 })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let w1 = self.w1.forward(x)?;
         let w3 = self.w3.forward(x)?;
-        self.w2.forward(&(candle_nn::ops::silu(&w1)? * w3)?)
+        self.w2
+            .forward(&(candle_nn::ops::silu(&w1)? * w3)?)
             .map_err(Error::from)
     }
 }
@@ -195,7 +208,7 @@ impl StandardBlock {
         let operator_norm = candle_nn::rms_norm(dim, 1e-5, vb.pp("operator_norm"))?;
         let operator = Mha::load(dim, vb.pp("operator"))?;
         let ffn_norm = candle_nn::rms_norm(dim, 1e-5, vb.pp("ffn_norm"))?;
-        let ff = Glu::load(dim, vb)?;
+        let ff = Glu::load(vb)?;
 
         Ok(Self {
             operator_norm,
@@ -222,6 +235,7 @@ pub struct Depthformer {
     pub codebooks: usize,
     pub audio_vocab_size: usize,
     pub codebook_offsets: Tensor,
+    dim: usize,
     audio_embedding: SharedEmbedding,
     depth_linear: Linear,
     depth_embeddings: Vec<SharedEmbedding>,
@@ -234,7 +248,11 @@ impl Depthformer {
         let dim = cfg.depthformer.dim;
         let hidden = cfg.lfm.hidden_size;
 
-        let audio_embedding = SharedEmbedding::load(AUDIO_VOCAB_SIZE * codebooks, hidden, vb.pp("audio_embedding"))?;
+        let audio_embedding = SharedEmbedding::load(
+            AUDIO_VOCAB_SIZE * codebooks,
+            hidden,
+            vb.pp("audio_embedding"),
+        )?;
         let depth_linear = candle_nn::linear(hidden, dim * codebooks, vb.pp("depth_linear"))?;
 
         let mut depth_embeddings = Vec::with_capacity(codebooks);
@@ -248,7 +266,10 @@ impl Depthformer {
 
         let mut layers = Vec::with_capacity(cfg.depthformer.layers);
         for i in 0..cfg.depthformer.layers {
-            layers.push(StandardBlock::load(dim, vb.pp(format!("depthformer.layers.{i}")))?);
+            layers.push(StandardBlock::load(
+                dim,
+                vb.pp(format!("depthformer.layers.{i}")),
+            )?);
         }
 
         let offsets: Vec<u32> = (0..codebooks as u32)
@@ -260,6 +281,7 @@ impl Depthformer {
             codebooks,
             audio_vocab_size: AUDIO_VOCAB_SIZE,
             codebook_offsets,
+            dim,
             audio_embedding,
             depth_linear,
             depth_embeddings,
@@ -271,7 +293,9 @@ impl Depthformer {
         let offsets = self.codebook_offsets.to_dtype(DType::U32)?;
         let tokens = frame_tokens.broadcast_add(&offsets)?;
         let emb = self.audio_embedding.embed(&tokens)?; // [C, H]
-        emb.sum(0)?.reshape((1, 1, emb.dim(1)?)).map_err(Error::from)
+        emb.sum(0)?
+            .reshape((1, 1, emb.dim(1)?))
+            .map_err(Error::from)
     }
 
     pub fn sample_audio_frame(
@@ -283,16 +307,18 @@ impl Depthformer {
     ) -> Result<Vec<u32>> {
         let greedy = temperature.unwrap_or(0.0) <= 0.0 || top_k == Some(1);
 
+        let emb = if embedding.dims().len() == 1 {
+            embedding.reshape((1, embedding.dim(0)?))?
+        } else {
+            embedding.clone()
+        };
+
         let depth_in = self
             .depth_linear
-            .forward(embedding)?
-            .reshape((self.codebooks, self.depth_embeddings[0].embedding.embedding().dim(1)?))?;
+            .forward(&emb)?
+            .reshape((self.codebooks, self.dim))?;
 
-        let mut token_embed = Tensor::zeros(
-            self.depth_embeddings[0].embedding.embedding().dim(1)?,
-            depth_in.dtype(),
-            depth_in.device(),
-        )?;
+        let mut token_embed = Tensor::zeros(self.dim, depth_in.dtype(), depth_in.device())?;
 
         let mut out = Vec::with_capacity(self.codebooks);
         let mut cache = DepthformerCache::new(self.layers.len());
@@ -307,7 +333,12 @@ impl Depthformer {
                 x = y;
             }
 
-            let logits = self.depth_embeddings[i].logits(&x.squeeze(0)?.squeeze(0)?)?;
+            let logits = self.depth_embeddings[i].logits(&x.squeeze(0)?)?;
+            let logits = if logits.dims().len() > 1 {
+                logits.squeeze(0)?
+            } else {
+                logits
+            };
             let token = super::sample_token(&logits, greedy, temperature, top_k, rng)?;
             out.push(token);
 
@@ -372,5 +403,5 @@ fn causal_mask(q_len: usize, kv_len: usize, device: &candle_core::Device) -> Res
             }
         }
     }
-    Tensor::from_vec(mask, (1, 1, q_len, kv_len), device).map_err(Error::from)
+    Tensor::from_vec(mask, (1, q_len, kv_len), device).map_err(Error::from)
 }

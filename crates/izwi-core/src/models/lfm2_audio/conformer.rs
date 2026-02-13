@@ -1,6 +1,9 @@
 use candle_core::{IndexOp, Tensor};
 use candle_nn::ops;
-use candle_nn::{batch_norm, conv1d, layer_norm, Conv1d, Conv1dConfig, Conv2d, Conv2dConfig, LayerNorm, Linear, Module, ModuleT, VarBuilder};
+use candle_nn::{
+    batch_norm, conv1d, layer_norm, Conv1d, Conv1dConfig, Conv2d, Conv2dConfig, LayerNorm, Linear,
+    Module, ModuleT, VarBuilder,
+};
 
 use crate::error::{Error, Result};
 use crate::models::mlx_compat;
@@ -110,7 +113,10 @@ impl ConvSubsamplingDw {
         x = x.relu()?;
 
         let (b, c, t, f) = x.dims4()?;
-        let x = x.transpose(1, 2)?.reshape((b, t, c * f))?.apply(&self.out)?;
+        let x = x
+            .transpose(1, 2)?
+            .reshape((b, t, c * f))?
+            .apply(&self.out)?;
 
         let encoded_len = subsampled_len_3x(feature_frames).min(t);
         Ok((x, encoded_len))
@@ -395,26 +401,31 @@ fn swish(x: &Tensor) -> Result<Tensor> {
         .map_err(|e| Error::InferenceError(e.to_string()))
 }
 
-fn build_rel_positional_embedding(seq_len: usize, d_model: usize, device: &candle_core::Device) -> Result<Tensor> {
+fn build_rel_positional_embedding(
+    seq_len: usize,
+    d_model: usize,
+    device: &candle_core::Device,
+) -> Result<Tensor> {
     let total = seq_len.saturating_mul(2).saturating_sub(1);
     let start = -(seq_len as isize - 1);
-    let positions: Vec<f32> = (0..total).map(|i| (start + i as isize) as f32).collect();
-
     let half = d_model / 2;
-    let mut inv_freq = Vec::with_capacity(half);
-    for i in 0..half {
-        let exponent = (2.0 * (i / 2) as f32) / d_model as f32;
-        inv_freq.push(1.0f32 / 10_000f32.powf(exponent));
+    let mut out = vec![0f32; total * d_model];
+
+    for p in 0..total {
+        let pos = (start + p as isize) as f32;
+        for i in 0..half {
+            let exponent = (2.0 * (i / 2) as f32) / d_model as f32;
+            let inv = 1.0f32 / 10_000f32.powf(exponent);
+            let angle = pos * inv;
+            let base = i * 2;
+            if base < d_model {
+                out[p * d_model + base] = angle.sin();
+            }
+            if base + 1 < d_model {
+                out[p * d_model + base + 1] = angle.cos();
+            }
+        }
     }
 
-    let pos = Tensor::from_vec(positions, (total, 1), device)?;
-    let inv = Tensor::from_vec(inv_freq, (1, half), device)?;
-    let angle = pos.broadcast_mul(&inv)?;
-
-    let sin = angle.sin()?;
-    let cos = angle.cos()?;
-
-    let even = sin.i((.., ..;2))?;
-    let odd = cos.i((.., 1..;2))?;
-    Tensor::cat(&[even, odd], 1).map_err(Error::from)
+    Tensor::from_vec(out, (total, d_model), device).map_err(Error::from)
 }

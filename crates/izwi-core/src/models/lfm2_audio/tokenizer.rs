@@ -29,9 +29,8 @@ pub struct Lfm2Tokenizer {
 impl Lfm2Tokenizer {
     pub fn load(model_dir: &Path) -> Result<Self> {
         let path = model_dir.join("tokenizer.json");
-        let inner = Tokenizer::from_file(path).map_err(|e| {
-            Error::ModelLoadError(format!("Failed to load LFM2 tokenizer: {e}"))
-        })?;
+        let inner = Tokenizer::from_file(path)
+            .map_err(|e| Error::ModelLoadError(format!("Failed to load LFM2 tokenizer: {e}")))?;
 
         let lookup = |tok: &str| -> Result<u32> {
             inner.token_to_id(tok).ok_or_else(|| {

@@ -37,7 +37,13 @@ impl Lfm2AudioPreprocessor {
         let offset = (cfg.n_fft - win_length) / 2;
         padded_window[offset..offset + win_length].copy_from_slice(&window);
 
-        let fb = mel_filterbank(cfg.sample_rate, cfg.n_fft, n_mels, 0.0, cfg.sample_rate as f32 / 2.0);
+        let fb = mel_filterbank(
+            cfg.sample_rate,
+            cfg.n_fft,
+            n_mels,
+            0.0,
+            cfg.sample_rate as f32 / 2.0,
+        );
 
         Ok(Self {
             cfg,
@@ -185,7 +191,13 @@ fn mel_to_hz(mel: f32) -> f32 {
     700.0 * (10f32.powf(mel / 2595.0) - 1.0)
 }
 
-fn mel_filterbank(sample_rate: usize, n_fft: usize, n_mels: usize, fmin: f32, fmax: f32) -> Vec<f32> {
+fn mel_filterbank(
+    sample_rate: usize,
+    n_fft: usize,
+    n_mels: usize,
+    fmin: f32,
+    fmax: f32,
+) -> Vec<f32> {
     let n_freqs = n_fft / 2 + 1;
     let mel_min = hz_to_mel(fmin);
     let mel_max = hz_to_mel(fmax.min(sample_rate as f32 / 2.0));
@@ -197,7 +209,9 @@ fn mel_filterbank(sample_rate: usize, n_fft: usize, n_mels: usize, fmin: f32, fm
     let hz_points: Vec<f32> = mel_points.into_iter().map(mel_to_hz).collect();
     let bins: Vec<usize> = hz_points
         .iter()
-        .map(|hz| (((n_fft + 1) as f32 * *hz / sample_rate as f32).floor() as isize).max(0) as usize)
+        .map(|hz| {
+            (((n_fft + 1) as f32 * *hz / sample_rate as f32).floor() as isize).max(0) as usize
+        })
         .collect();
 
     let mut fb = vec![0f32; n_mels * n_freqs];

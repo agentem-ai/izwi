@@ -290,8 +290,9 @@ impl ModelRegistry {
         let model = cell
             .get_or_try_init({
                 let model_dir = model_dir.to_path_buf();
+                let device = self.device.clone();
                 move || async move {
-                    tokio::task::spawn_blocking(move || Lfm2AudioModel::load(&model_dir))
+                    tokio::task::spawn_blocking(move || Lfm2AudioModel::load(&model_dir, device))
                         .await
                         .map_err(|e| Error::ModelLoadError(e.to_string()))?
                         .map(Arc::new)

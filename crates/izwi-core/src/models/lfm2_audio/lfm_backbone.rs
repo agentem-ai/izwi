@@ -1,4 +1,4 @@
-use candle_core::{DType, IndexOp, Result as CandleResult, Tensor};
+use candle_core::{DType, Result as CandleResult, Tensor};
 use candle_nn::{Conv1d, Conv1dConfig, Linear, Module, RmsNorm, VarBuilder};
 
 use crate::error::{Error, Result};
@@ -12,8 +12,13 @@ pub struct LfmCache {
 
 #[derive(Debug, Clone)]
 enum LayerCache {
-    Attention { k: Option<Tensor>, v: Option<Tensor> },
-    ShortConv { state: Option<Tensor> },
+    Attention {
+        k: Option<Tensor>,
+        v: Option<Tensor>,
+    },
+    ShortConv {
+        state: Option<Tensor>,
+    },
 }
 
 impl LfmCache {
@@ -54,10 +59,20 @@ struct Mlp {
 }
 
 impl Mlp {
-    fn load(hidden: usize, ff: usize, vb: VarBuilder) -> Result<Self> {
-        let w1 = candle_nn::linear_no_bias(hidden, ff, vb.pp("feed_forward.w1"))?;
-        let w2 = candle_nn::linear_no_bias(ff, hidden, vb.pp("feed_forward.w2"))?;
-        let w3 = candle_nn::linear_no_bias(hidden, ff, vb.pp("feed_forward.w3"))?;
+    fn load(vb: VarBuilder) -> Result<Self> {
+        let w1 = vb
+            .pp("feed_forward.w1")
+            .get_unchecked_dtype("weight", vb.dtype())?;
+        let w2 = vb
+            .pp("feed_forward.w2")
+            .get_unchecked_dtype("weight", vb.dtype())?;
+        let w3 = vb
+            .pp("feed_forward.w3")
+            .get_unchecked_dtype("weight", vb.dtype())?;
+
+        let w1 = Linear::new(w1, None);
+        let w2 = Linear::new(w2, None);
+        let w3 = Linear::new(w3, None);
         Ok(Self { w1, w2, w3 })
     }
 
@@ -65,7 +80,7 @@ impl Mlp {
         let w1 = self.w1.forward(xs)?;
         let w3 = self.w3.forward(xs)?;
         let gate = candle_nn::ops::silu(&w1)?;
-        self.w2.forward(&(gate * w3)?)
+        Ok(self.w2.forward(&(gate * w3)?)?)
     }
 }
 
@@ -240,9 +255,13 @@ impl ShortConvLayer {
 
         let mut conv_out = if seq_len == 1 {
             let mut state = match cache {
-                LayerCache::ShortConv { state } => state.clone().unwrap_or_else(|| {
-                    Tensor::zeros((b, hidden, self.l_cache), bx.dtype(), bx.device()).unwrap()
-                }),
+                LayerCache::ShortConv { state } => {
+                    if let Some(state) = state.clone() {
+                        state
+                    } else {
+                        Tensor::zeros((b, hidden, self.l_cache), bx.dtype(), bx.device())?
+                    }
+                }
                 LayerCache::Attention { .. } => {
                     return Err(Error::InferenceError(
                         "Invalid LFM cache type for conv layer".to_string(),
@@ -285,7 +304,8 @@ impl ShortConvLayer {
                 let mut cache_src = bx.narrow(2, start, cur_len - start)?;
                 if cache_src.dims3()?.2 < self.l_cache {
                     let pad = self.l_cache - cache_src.dims3()?.2;
-                    let zeros = Tensor::zeros((b, hidden, pad), cache_src.dtype(), cache_src.device())?;
+                    let zeros =
+                        Tensor::zeros((b, hidden, pad), cache_src.dtype(), cache_src.device())?;
                     cache_src = Tensor::cat(&[zeros, cache_src], 2)?;
                 }
                 if let LayerCache::ShortConv { state: slot } = cache {
@@ -332,15 +352,21 @@ impl LfmBackbone {
         for layer_idx in 0..cfg.num_hidden_layers {
             let layer_vb = vb.pp(format!("layers.{layer_idx}"));
 
-            let operator_norm = candle_nn::rms_norm(hidden, cfg.norm_eps, layer_vb.pp("operator_norm"))?;
+            let operator_norm =
+                candle_nn::rms_norm(hidden, cfg.norm_eps, layer_vb.pp("operator_norm"))?;
             let ffn_norm = candle_nn::rms_norm(hidden, cfg.norm_eps, layer_vb.pp("ffn_norm"))?;
-            let mlp = Mlp::load(hidden, cfg.intermediate_size, layer_vb.clone())?;
+            let mlp = Mlp::load(layer_vb.clone())?;
 
-            let kind = if cfg.layer_types.get(layer_idx).map(|s| s.as_str()) == Some("full_attention") {
-                LayerKind::Attention(AttentionLayer::load(&cfg, layer_idx, layer_vb.clone())?)
-            } else {
-                LayerKind::ShortConv(ShortConvLayer::load(hidden, cfg.conv_l_cache, layer_vb.clone())?)
-            };
+            let kind =
+                if cfg.layer_types.get(layer_idx).map(|s| s.as_str()) == Some("full_attention") {
+                    LayerKind::Attention(AttentionLayer::load(&cfg, layer_idx, layer_vb.clone())?)
+                } else {
+                    LayerKind::ShortConv(ShortConvLayer::load(
+                        hidden,
+                        cfg.conv_l_cache,
+                        layer_vb.clone(),
+                    )?)
+                };
 
             layers.push(LayerWeights {
                 operator_norm,
@@ -371,8 +397,8 @@ impl LfmBackbone {
     }
 
     pub fn embed_tokens(&self, token: u32) -> Result<Tensor> {
-        let token = Tensor::new(vec![token], self.embed_tokens_weight().device())?
-            .reshape((1, 1))?;
+        let token =
+            Tensor::new(vec![token], self.embed_tokens_weight().device())?.reshape((1, 1))?;
         self.embed_tokens.forward(&token).map_err(Error::from)
     }
 
@@ -395,10 +421,15 @@ impl LfmBackbone {
             let residual = hidden.clone();
             let normed = layer.operator_norm.forward(&hidden)?;
             hidden = match &layer.kind {
-                LayerKind::Attention(attn) => {
-                    attn.forward(&normed, &mut cache.layers[layer_idx], index_pos, mask.as_ref())?
+                LayerKind::Attention(attn) => attn.forward(
+                    &normed,
+                    &mut cache.layers[layer_idx],
+                    index_pos,
+                    mask.as_ref(),
+                )?,
+                LayerKind::ShortConv(conv) => {
+                    conv.forward(&normed, &mut cache.layers[layer_idx])?
                 }
-                LayerKind::ShortConv(conv) => conv.forward(&normed, &mut cache.layers[layer_idx])?,
             };
             hidden = (hidden + residual)?;
 
