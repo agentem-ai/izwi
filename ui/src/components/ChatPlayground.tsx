@@ -261,7 +261,7 @@ export function ChatPlayground({
   };
 
   const renderModelSelector = () => (
-    <div className="relative" ref={modelMenuRef}>
+    <div className="relative z-40" ref={modelMenuRef}>
       <button
         onClick={() => setIsModelMenuOpen((prev) => !prev)}
         className={clsx(
@@ -284,7 +284,7 @@ export function ChatPlayground({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 6, scale: 0.98 }}
             transition={{ duration: 0.16 }}
-            className="absolute right-0 bottom-11 w-[300px] max-w-[80vw] rounded-2xl border border-[#32353a] bg-[#16181c] p-2 shadow-2xl z-20"
+            className="absolute right-0 bottom-11 w-[300px] max-w-[80vw] rounded-2xl border border-[#32353a] bg-[#16181c] p-2 shadow-2xl z-[90]"
           >
             <div className="max-h-64 overflow-y-auto pr-1 space-y-1">
               {modelOptions.map((option) => (
@@ -328,7 +328,7 @@ export function ChatPlayground({
         centered ? "border-[#3b3c3f]" : "border-[#303236]",
       )}
     >
-      <div className="rounded-[32px] overflow-hidden bg-[linear-gradient(180deg,#1d1e21,#17181b)]">
+      <div className="rounded-[32px] overflow-visible bg-[linear-gradient(180deg,#1d1e21,#17181b)]">
         <textarea
           ref={textareaRef}
           value={input}

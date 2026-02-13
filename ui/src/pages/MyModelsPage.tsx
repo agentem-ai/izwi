@@ -733,7 +733,7 @@ export function MyModelsPage({
                         {onCancelDownload && (
                           <button
                             onClick={() => onCancelDownload(model.variant)}
-                            className="flex items-center gap-1 px-2 py-1 rounded bg-[#2a1616] border border-[#4a2020] text-[11px] text-red-300 hover:bg-[#3a1c1c] transition-colors"
+                            className="flex items-center gap-1 px-2 py-1 rounded bg-[var(--danger-bg)] border border-[var(--danger-border)] text-[11px] text-[var(--danger-text)] hover:bg-[var(--danger-bg-hover)] transition-colors"
                           >
                             <X className="w-3 h-3" />
                             Cancel
