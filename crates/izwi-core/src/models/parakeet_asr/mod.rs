@@ -114,22 +114,33 @@ impl ParakeetAsrModel {
         let (features, feature_frames) = self.preprocessor.compute_features(&mono_16khz)?;
         let (encoded, encoded_len) = self.network.encode(&features, feature_frames)?;
 
-        let token_ids = self.network.decode_tdt_greedy(
+        let mut token_ids = Vec::<usize>::new();
+        let mut assembled = String::new();
+
+        let mut on_token = |token_id: usize| {
+            token_ids.push(token_id);
+            let decoded = decode_tokens(&token_ids, &self.tokenizer_vocab);
+            let delta = text_delta(&assembled, &decoded);
+            if !delta.is_empty() {
+                on_delta(delta.as_str());
+            }
+            assembled = decoded;
+        };
+
+        self.network.decode_tdt_greedy(
             &encoded,
             encoded_len,
             self.blank_idx,
             self.num_durations,
             self.max_symbols,
+            &mut on_token,
         )?;
 
-        let text = decode_tokens(&token_ids, &self.tokenizer_vocab);
-
-        for ch in text.chars() {
-            let mut buf = [0u8; 4];
-            on_delta(ch.encode_utf8(&mut buf));
+        if assembled.is_empty() {
+            assembled = decode_tokens(&token_ids, &self.tokenizer_vocab);
         }
 
-        Ok(text)
+        Ok(assembled)
     }
 }
 
@@ -194,10 +205,10 @@ impl ParakeetNetwork {
         blank_idx: usize,
         num_durations: usize,
         max_symbols: usize,
-    ) -> Result<Vec<usize>> {
+        on_token: &mut dyn FnMut(usize),
+    ) -> Result<()> {
         let encoded = encoded.i((0, ..encoded_len, ..))?; // [T, D]
 
-        let mut ids = Vec::new();
         let mut predictor_state = self.predictor.initial_state(1, encoded.device())?;
         let mut predictor_out =
             self.predictor
@@ -276,14 +287,26 @@ impl ParakeetNetwork {
                 continue;
             }
 
-            ids.push(label);
+            on_token(label);
             predictor_out = self
                 .predictor
                 .step(label, &mut predictor_state, encoded.device())?;
         }
 
-        Ok(ids)
+        Ok(())
     }
+}
+
+fn text_delta(previous: &str, current: &str) -> String {
+    if let Some(delta) = current.strip_prefix(previous) {
+        return delta.to_string();
+    }
+    let common = previous
+        .chars()
+        .zip(current.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    current.chars().skip(common).collect()
 }
 
 struct ConvSubsamplingDw {

@@ -252,6 +252,7 @@ async fn transcriptions_stream(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
+        .header("X-Accel-Buffering", "no")
         .body(Body::from_stream(stream))
         .unwrap())
 }
