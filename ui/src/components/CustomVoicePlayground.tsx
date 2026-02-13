@@ -12,7 +12,7 @@ import {
   Settings2,
 } from "lucide-react";
 import { api, TTSGenerationStats } from "../api";
-import { SPEAKERS } from "../types";
+import { LFM2_SPEAKERS, QWEN_SPEAKERS } from "../types";
 import { GenerationStats } from "./GenerationStats";
 import clsx from "clsx";
 
@@ -132,8 +132,14 @@ export function CustomVoicePlayground({
   const streamSampleRateRef = useRef(24000);
   const streamSamplesRef = useRef<Float32Array[]>([]);
   const modelMenuRef = useRef<HTMLDivElement>(null);
+  const isLfm2Model = selectedModel?.toLowerCase().includes("lfm2-audio") ?? false;
+  const availableSpeakers = useMemo(
+    () => (isLfm2Model ? LFM2_SPEAKERS : QWEN_SPEAKERS),
+    [isLfm2Model],
+  );
+  const defaultSpeaker = isLfm2Model ? "US Female" : "Vivian";
 
-  const selectedSpeaker = SPEAKERS.find((s) => s.id === speaker);
+  const selectedSpeaker = availableSpeakers.find((s) => s.id === speaker);
 
   const selectedOption = useMemo(() => {
     if (!selectedModel) {
@@ -141,6 +147,12 @@ export function CustomVoicePlayground({
     }
     return modelOptions.find((option) => option.value === selectedModel) || null;
   }, [selectedModel, modelOptions]);
+
+  useEffect(() => {
+    if (!availableSpeakers.some((candidate) => candidate.id === speaker)) {
+      setSpeaker(defaultSpeaker);
+    }
+  }, [availableSpeakers, defaultSpeaker, speaker]);
 
   useEffect(() => {
     const onPointerDown = (event: MouseEvent) => {
@@ -358,18 +370,18 @@ export function CustomVoicePlayground({
 
   const getStatusTone = (option: ModelOption): string => {
     if (option.isReady) {
-      return "text-emerald-400 bg-emerald-500/10";
+      return "text-[var(--text-primary)] bg-[var(--bg-surface-3)] border border-[var(--border-strong)]";
     }
     if (
       option.statusLabel.toLowerCase().includes("downloading") ||
       option.statusLabel.toLowerCase().includes("loading")
     ) {
-      return "text-amber-400 bg-amber-500/10";
+      return "text-[var(--text-secondary)] bg-[var(--bg-surface-3)] border border-[var(--border-strong)]";
     }
     if (option.statusLabel.toLowerCase().includes("error")) {
-      return "text-red-400 bg-red-500/10";
+      return "text-[var(--danger-text)] bg-[var(--danger-bg)] border border-[var(--danger-border)]";
     }
-    return "text-gray-400 bg-white/5";
+    return "text-[var(--text-muted)] bg-[var(--bg-surface-2)] border border-[var(--border-strong)]";
   };
 
   const handleOpenModels = () => {
@@ -384,8 +396,8 @@ export function CustomVoicePlayground({
         className={clsx(
           "h-9 w-full px-3 rounded-lg border inline-flex items-center justify-between gap-2 text-xs transition-colors",
           selectedOption?.isReady
-            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-            : "border-white/20 bg-[#1a1a1a] text-gray-300 hover:border-white/30",
+            ? "border-[var(--border-strong)] bg-[var(--bg-surface-3)] text-[var(--text-primary)]"
+            : "border-[var(--border-strong)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface-3)]",
         )}
       >
         <span className="flex-1 min-w-0 truncate text-left">
@@ -401,7 +413,7 @@ export function CustomVoicePlayground({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.15 }}
-            className="absolute left-0 right-0 top-full mt-2 rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] p-1.5 shadow-2xl z-50"
+            className="absolute left-0 right-0 top-full mt-2 rounded-xl border border-[var(--border-strong)] bg-[var(--bg-surface-1)] p-1.5 shadow-2xl z-50"
           >
             <div className="max-h-64 overflow-y-auto pr-1 space-y-0.5">
               {modelOptions.map((option) => (
@@ -414,11 +426,11 @@ export function CustomVoicePlayground({
                   className={clsx(
                     "w-full text-left rounded-lg px-3 py-2 transition-colors",
                     selectedOption?.value === option.value
-                      ? "bg-white/10"
-                      : "hover:bg-white/5",
+                      ? "bg-[var(--bg-surface-3)]"
+                      : "hover:bg-[var(--bg-surface-2)]",
                   )}
                 >
-                  <div className="text-xs text-gray-200 truncate">
+                  <div className="text-xs text-[var(--text-primary)] truncate">
                     {option.label}
                   </div>
                   <span
@@ -443,11 +455,11 @@ export function CustomVoicePlayground({
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded bg-[#1a1a1a] border border-[#2a2a2a]">
-            <Volume2 className="w-5 h-5 text-gray-400" />
+          <div className="p-2 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)]">
+            <Volume2 className="w-5 h-5 text-[var(--text-muted)]" />
           </div>
           <div>
-            <h2 className="text-sm font-medium text-white">Text to Speech</h2>
+            <h2 className="text-sm font-medium text-[var(--text-primary)]">Text to Speech</h2>
           </div>
         </div>
 
@@ -455,17 +467,17 @@ export function CustomVoicePlayground({
           <div className="relative">
             <button
               onClick={() => setShowSpeakerSelect(!showSpeakerSelect)}
-              className="flex w-56 sm:w-64 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
+              className="flex w-56 sm:w-64 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)] hover:bg-[var(--bg-surface-3)] text-sm"
             >
               <div className="speaker-avatar w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium">
                 {speaker.charAt(0)}
               </div>
-              <span className="text-white flex-1 min-w-0 truncate text-left">
+              <span className="text-[var(--text-primary)] flex-1 min-w-0 truncate text-left">
                 {selectedSpeaker?.name || speaker}
               </span>
               <ChevronDown
                 className={clsx(
-                  "w-3.5 h-3.5 text-gray-500 transition-transform",
+                  "w-3.5 h-3.5 text-[var(--text-subtle)] transition-transform",
                   showSpeakerSelect && "rotate-180",
                 )}
               />
@@ -477,9 +489,9 @@ export function CustomVoicePlayground({
                   initial={{ opacity: 0, y: -5 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -5 }}
-                  className="absolute left-0 right-0 top-full mt-1 max-h-80 overflow-y-auto p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
+                  className="absolute left-0 right-0 top-full mt-1 max-h-80 overflow-y-auto p-1 rounded bg-[var(--bg-surface-1)] border border-[var(--border-strong)] shadow-xl z-50"
                 >
-                  {SPEAKERS.map((s) => (
+                  {availableSpeakers.map((s) => (
                     <button
                       key={s.id}
                       onClick={() => {
@@ -488,7 +500,9 @@ export function CustomVoicePlayground({
                       }}
                       className={clsx(
                         "w-full px-3 py-2 rounded text-left transition-colors flex items-center gap-3",
-                        speaker === s.id ? "bg-white/10" : "hover:bg-[#2a2a2a]",
+                        speaker === s.id
+                          ? "bg-[var(--bg-surface-3)]"
+                          : "hover:bg-[var(--bg-surface-2)]",
                       )}
                     >
                       <div className="speaker-avatar w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium flex-shrink-0">
@@ -498,16 +512,18 @@ export function CustomVoicePlayground({
                         <div
                           className={clsx(
                             "text-sm font-medium",
-                            speaker === s.id ? "text-white" : "text-gray-300",
+                            speaker === s.id
+                              ? "text-[var(--text-primary)]"
+                              : "text-[var(--text-secondary)]",
                           )}
                         >
                           {s.name}
                         </div>
-                        <div className="text-[10px] text-gray-500 truncate">
+                        <div className="text-[10px] text-[var(--text-subtle)] truncate">
                           {s.description}
                         </div>
                       </div>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#2a2a2a] text-gray-500">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface-3)] text-[var(--text-subtle)]">
                         {s.language}
                       </span>
                     </button>
@@ -519,24 +535,19 @@ export function CustomVoicePlayground({
         </div>
       </div>
 
-      <div className="mb-4 rounded-xl border border-[#2b2b2b] bg-[#171717] p-4">
+      <div className="mb-4 rounded-xl border border-[var(--border-strong)] bg-[var(--bg-surface-2)] p-4">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
-            <div className="text-[11px] text-gray-500 uppercase tracking-wide">
+            <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">
               Active Model
             </div>
-            <div className="mt-1 text-sm text-white truncate">
+            <div className="mt-1 text-sm text-[var(--text-primary)] truncate">
               {modelLabel ?? "No model selected"}
             </div>
-            <div
-              className={clsx(
-                "mt-1 text-xs",
-                selectedModelReady ? "text-emerald-400" : "text-amber-400",
-              )}
-            >
+            <div className="mt-1 text-xs text-[var(--text-secondary)]">
               {selectedModelReady
                 ? "Loaded and ready"
-                : "Open Models and load a CustomVoice model"}
+                : "Open Models and load the selected TTS model"}
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -567,15 +578,15 @@ export function CustomVoicePlayground({
             className="textarea text-sm"
           />
           <div className="absolute bottom-2 right-2">
-            <span className="text-xs text-gray-600">{text.length}</span>
+            <span className="text-xs text-[var(--text-subtle)]">{text.length}</span>
           </div>
         </div>
 
-        <div className="flex items-center justify-between rounded-lg border border-[#2a2a2a] bg-[#171717] px-3 py-2">
+        <div className="flex items-center justify-between rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-2">
           {/* Instruct toggle */}
           <button
             onClick={() => setShowInstruct(!showInstruct)}
-            className="flex items-center gap-2 text-xs text-gray-500 hover:text-white transition-colors"
+            className="flex items-center gap-2 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
           >
             <MessageSquare className="w-3.5 h-3.5" />
             {showInstruct ? "Hide" : "Add"} speaking instructions
@@ -595,7 +606,7 @@ export function CustomVoicePlayground({
               className="app-checkbox w-4 h-4"
               disabled={generating}
             />
-            <span className="text-xs text-gray-400 flex items-center gap-1">
+            <span className="text-xs text-[var(--text-secondary)] flex items-center gap-1">
               <Radio className="w-3 h-3" />
               Stream
             </span>
@@ -610,8 +621,8 @@ export function CustomVoicePlayground({
               exit={{ opacity: 0, height: 0 }}
               className="overflow-hidden"
             >
-              <div className="p-3 rounded-lg bg-[#161616] border border-[#2a2a2a]">
-                <label className="block text-xs text-gray-500 mb-1.5">
+              <div className="p-3 rounded-lg bg-[var(--bg-surface-2)] border border-[var(--border-strong)]">
+                <label className="block text-xs text-[var(--text-muted)] mb-1.5">
                   Speaking Style Instructions
                 </label>
                 <input
@@ -621,7 +632,7 @@ export function CustomVoicePlayground({
                   placeholder="e.g., 'Speak with excitement' or 'Very calm and soothing'"
                   className="input text-sm"
                 />
-                <p className="text-[10px] text-gray-400 mt-1.5">
+                <p className="text-[10px] text-[var(--text-secondary)] mt-1.5">
                   Optional: Guide the emotional tone and speaking style
                 </p>
               </div>
@@ -644,8 +655,8 @@ export function CustomVoicePlayground({
         </AnimatePresence>
 
         {isStreaming && (
-          <div className="p-2 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          <div className="p-2 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)] text-[var(--text-secondary)] text-xs flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-secondary)] animate-pulse" />
             Streaming audio chunks...
           </div>
         )}
@@ -694,8 +705,8 @@ export function CustomVoicePlayground({
         </div>
 
         {!selectedModelReady && (
-          <p className="text-xs text-gray-400">
-            Load a CustomVoice model to generate speech
+          <p className="text-xs text-[var(--text-secondary)]">
+            Load a compatible Qwen3 CustomVoice or LFM2 model to generate speech
           </p>
         )}
       </div>
@@ -709,7 +720,7 @@ export function CustomVoicePlayground({
             exit={{ opacity: 0, y: 10 }}
             className="mt-4 space-y-3"
           >
-            <div className="p-3 rounded bg-[#1a1a1a] border border-[#2a2a2a]">
+            <div className="p-3 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)]">
               <audio
                 ref={audioRef}
                 src={audioUrl}
