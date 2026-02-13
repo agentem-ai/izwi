@@ -7,6 +7,7 @@ mod models;
 mod tts;
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post},
     Router,
 };
@@ -17,6 +18,12 @@ use crate::state::AppState;
 
 /// Create the main API router
 pub fn create_router(state: AppState) -> Router {
+    let max_upload_mb = std::env::var("IZWI_MAX_UPLOAD_MB")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(64);
+    let max_upload_bytes = max_upload_mb.saturating_mul(1024 * 1024);
+
     let v1_routes = Router::new()
         // Health check
         .route("/health", get(health::health_check))
@@ -25,7 +32,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/models/:model", get(models::get_model_openai))
         // OpenAI-compatible audio and chat endpoints
         .route("/audio/speech", post(tts::speech))
-        .route("/audio/transcriptions", post(asr::transcriptions))
+        .route(
+            "/audio/transcriptions",
+            post(asr::transcriptions).layer(DefaultBodyLimit::max(max_upload_bytes)),
+        )
         .route("/chat/completions", post(chat::completions))
         // Admin model management endpoints for local runtime operations
         .route("/admin/models", get(models::list_models))

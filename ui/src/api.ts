@@ -167,7 +167,9 @@ export interface STTResponse {
 }
 
 export interface ASRTranscribeRequest {
-  audio_base64: string;
+  audio_base64?: string;
+  audio_file?: Blob;
+  audio_filename?: string;
   model_id?: string;
   language?: string;
 }
@@ -244,6 +246,8 @@ interface OpenAiChatChunk {
     finish_reason: string | null;
   }>;
 }
+
+type AsrResponseFormat = "json" | "verbose_json";
 
 class ApiClient {
   readonly baseUrl: string;
@@ -505,18 +509,10 @@ class ApiClient {
   async asrTranscribe(
     request: ASRTranscribeRequest,
   ): Promise<ASRTranscribeResponse> {
-    const response = await fetch(`${this.baseUrl}/audio/transcriptions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        audio_base64: request.audio_base64,
-        model: request.model_id,
-        language: request.language,
-        response_format: "verbose_json",
-      }),
-    });
+    const response = await fetch(
+      `${this.baseUrl}/audio/transcriptions`,
+      this.buildAsrRequestInit(request, "verbose_json", false),
+    );
 
     if (!response.ok) {
       const error = await response
@@ -552,17 +548,7 @@ class ApiClient {
     const startStream = async () => {
       try {
         const response = await fetch(`${this.baseUrl}/audio/transcriptions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            audio_base64: request.audio_base64,
-            model: request.model_id,
-            language: request.language,
-            response_format: "json",
-            stream: true,
-          }),
+          ...this.buildAsrRequestInit(request, "json", true),
           signal: abortController.signal,
         });
 
@@ -662,6 +648,47 @@ class ApiClient {
 
     startStream();
     return abortController;
+  }
+
+  private buildAsrRequestInit(
+    request: ASRTranscribeRequest,
+    responseFormat: AsrResponseFormat,
+    stream: boolean,
+  ): RequestInit {
+    if (request.audio_file) {
+      const form = new FormData();
+      form.append(
+        "file",
+        request.audio_file,
+        request.audio_filename || "audio.wav",
+      );
+      if (request.model_id) form.append("model", request.model_id);
+      if (request.language) form.append("language", request.language);
+      form.append("response_format", responseFormat);
+      if (stream) form.append("stream", "true");
+      return {
+        method: "POST",
+        body: form,
+      };
+    }
+
+    if (!request.audio_base64) {
+      throw new Error("Missing audio input");
+    }
+
+    return {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        audio_base64: request.audio_base64,
+        model: request.model_id,
+        language: request.language,
+        response_format: responseFormat,
+        stream,
+      }),
+    };
   }
 
   // ========================================================================

@@ -157,19 +157,6 @@ function requiresManualDownload(variant: string): boolean {
   return variant === "Gemma-3-1b-it";
 }
 
-async function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result as string;
-      const base64 = result.split(",")[1];
-      resolve(base64);
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
-}
-
 function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
   const bytesPerSample = 2;
   const blockAlign = bytesPerSample;
@@ -634,7 +621,7 @@ export function VoicePage({
   }, []);
 
   const streamUserTranscription = useCallback(
-    (audioBase64: string, modelId: string): Promise<string> =>
+    (audioBlob: Blob, modelId: string): Promise<string> =>
       new Promise((resolve, reject) => {
         const entryId = makeTranscriptEntryId("user");
         let assembledText = "";
@@ -655,7 +642,8 @@ export function VoicePage({
 
         asrStreamAbortRef.current = api.asrTranscribeStream(
           {
-            audio_base64: audioBase64,
+            audio_file: audioBlob,
+            audio_filename: "voice-turn.wav",
             model_id: modelId,
             language: "Auto",
           },
@@ -965,9 +953,8 @@ export function VoicePage({
         setRuntimeStatus("processing");
         const wavBlob = await transcodeToWav(audioBlob, 16000);
         if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
-        const audioBase64 = await blobToBase64(wavBlob);
         const userText = await streamUserTranscription(
-          audioBase64,
+          wavBlob,
           selectedAsrModel,
         );
 
