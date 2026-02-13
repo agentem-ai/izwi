@@ -7,6 +7,7 @@ pub mod gemma3_chat;
 pub mod gguf_loader;
 pub mod metal_memory;
 pub mod mlx_compat;
+pub mod parakeet_asr;
 pub mod qwen3;
 pub mod qwen3_asr;
 pub mod qwen3_chat;

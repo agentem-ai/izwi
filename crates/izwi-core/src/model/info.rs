@@ -78,6 +78,12 @@ pub enum ModelVariant {
     /// Qwen3-ASR 1.7B model (MLX bf16)
     #[serde(rename = "Qwen3-ASR-1.7B-bf16")]
     Qwen3Asr17BBf16,
+    /// Parakeet TDT 0.6B v2 ASR model (.nemo)
+    #[serde(rename = "Parakeet-TDT-0.6B-v2")]
+    ParakeetTdt06BV2,
+    /// Parakeet TDT 0.6B v3 ASR model (.nemo)
+    #[serde(rename = "Parakeet-TDT-0.6B-v3")]
+    ParakeetTdt06BV3,
     /// Qwen3 0.6B text model (MLX 4-bit)
     #[serde(rename = "Qwen3-0.6B-4bit")]
     Qwen306B4Bit,
@@ -135,6 +141,8 @@ impl ModelVariant {
             Self::Qwen3Asr17B4Bit => "mlx-community/Qwen3-ASR-1.7B-4bit",
             Self::Qwen3Asr17B8Bit => "mlx-community/Qwen3-ASR-1.7B-8bit",
             Self::Qwen3Asr17BBf16 => "mlx-community/Qwen3-ASR-1.7B-bf16",
+            Self::ParakeetTdt06BV2 => "nvidia/parakeet-tdt-0.6b-v2",
+            Self::ParakeetTdt06BV3 => "nvidia/parakeet-tdt-0.6b-v3",
             Self::Qwen306B4Bit => "mlx-community/Qwen3-0.6B-4bit",
             Self::Gemma31BIt => "google/gemma-3-1b-it",
             Self::Gemma34BIt => "google/gemma-3-4b-it",
@@ -170,6 +178,8 @@ impl ModelVariant {
             Self::Qwen3Asr17B4Bit => "Qwen3-ASR 1.7B 4-bit",
             Self::Qwen3Asr17B8Bit => "Qwen3-ASR 1.7B 8-bit",
             Self::Qwen3Asr17BBf16 => "Qwen3-ASR 1.7B bf16",
+            Self::ParakeetTdt06BV2 => "Parakeet TDT 0.6B v2",
+            Self::ParakeetTdt06BV3 => "Parakeet TDT 0.6B v3",
             Self::Qwen306B4Bit => "Qwen3 0.6B 4-bit",
             Self::Gemma31BIt => "Gemma 3 1B Instruct",
             Self::Gemma34BIt => "Gemma 3 4B Instruct",
@@ -205,6 +215,8 @@ impl ModelVariant {
             Self::Qwen3Asr17B4Bit => "Qwen3-ASR-1.7B-4bit",
             Self::Qwen3Asr17B8Bit => "Qwen3-ASR-1.7B-8bit",
             Self::Qwen3Asr17BBf16 => "Qwen3-ASR-1.7B-bf16",
+            Self::ParakeetTdt06BV2 => "Parakeet-TDT-0.6B-v2",
+            Self::ParakeetTdt06BV3 => "Parakeet-TDT-0.6B-v3",
             Self::Qwen306B4Bit => "Qwen3-0.6B-4bit",
             Self::Gemma31BIt => "Gemma-3-1b-it",
             Self::Gemma34BIt => "Gemma-3-4b-it",
@@ -240,6 +252,8 @@ impl ModelVariant {
             Self::Qwen3Asr17B4Bit => 1_607_633_106,     // ~1.50 GB
             Self::Qwen3Asr17B8Bit => 2_467_859_030,     // ~2.30 GB
             Self::Qwen3Asr17BBf16 => 4_080_710_353,     // ~3.80 GB
+            Self::ParakeetTdt06BV2 => 4_926_457_088,    // ~4.59 GB
+            Self::ParakeetTdt06BV3 => 10_036_761_167,   // ~9.35 GB
             Self::Qwen306B4Bit => 900_000_000,          // ~0.84 GB (est)
             Self::Gemma31BIt => 2_200_000_000,          // ~2.05 GB (est)
             Self::Gemma34BIt => 8_600_000_000,          // ~8.01 GB (est)
@@ -275,6 +289,8 @@ impl ModelVariant {
             | Self::Qwen3Asr17B4Bit
             | Self::Qwen3Asr17B8Bit
             | Self::Qwen3Asr17BBf16 => 6.0,
+            Self::ParakeetTdt06BV2 => 8.0,
+            Self::ParakeetTdt06BV3 => 12.0,
             Self::Qwen306B4Bit => 2.0,
             Self::Gemma31BIt => 3.5,
             Self::Gemma34BIt => 11.0,
@@ -305,6 +321,8 @@ impl ModelVariant {
                 | Self::Qwen3Asr17B4Bit
                 | Self::Qwen3Asr17B8Bit
                 | Self::Qwen3Asr17BBf16
+                | Self::ParakeetTdt06BV2
+                | Self::ParakeetTdt06BV3
         )
     }
 
@@ -346,6 +364,11 @@ impl ModelVariant {
         matches!(self, Self::VoxtralMini4BRealtime2602)
     }
 
+    /// Whether this is a Parakeet ASR model.
+    pub fn is_parakeet(&self) -> bool {
+        matches!(self, Self::ParakeetTdt06BV2 | Self::ParakeetTdt06BV3)
+    }
+
     /// Whether this is a quantized mlx-community model (uses GGUF format)
     pub fn is_quantized(&self) -> bool {
         matches!(
@@ -375,6 +398,7 @@ impl ModelVariant {
             Self::Qwen306B4Bit | Self::Gemma31BIt => true,
             Self::Gemma34BIt => false,
             Self::Lfm2Audio15B | Self::VoxtralMini4BRealtime2602 => false,
+            Self::ParakeetTdt06BV2 | Self::ParakeetTdt06BV3 => true,
             _ => !self.is_quantized(),
         }
     }
@@ -406,6 +430,8 @@ impl ModelVariant {
             Self::Qwen3Asr17B4Bit,
             Self::Qwen3Asr17B8Bit,
             Self::Qwen3Asr17BBf16,
+            Self::ParakeetTdt06BV2,
+            Self::ParakeetTdt06BV3,
             Self::Qwen306B4Bit,
             Self::Gemma31BIt,
             Self::Gemma34BIt,

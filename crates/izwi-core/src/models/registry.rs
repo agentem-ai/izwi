@@ -12,9 +12,48 @@ use crate::model::ModelVariant;
 use super::chat_types::ChatMessage;
 use super::device::DeviceProfile;
 use super::gemma3_chat::Gemma3ChatModel;
+use super::parakeet_asr::ParakeetAsrModel;
 use super::qwen3_asr::Qwen3AsrModel;
 use super::qwen3_chat::{ChatGenerationOutput, Qwen3ChatModel};
 use super::voxtral::VoxtralRealtimeModel;
+
+pub enum NativeAsrModel {
+    Qwen3(Qwen3AsrModel),
+    Parakeet(ParakeetAsrModel),
+}
+
+impl NativeAsrModel {
+    pub fn transcribe_with_callback(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String> {
+        match self {
+            Self::Qwen3(model) => {
+                model.transcribe_with_callback(audio, sample_rate, language, on_delta)
+            }
+            Self::Parakeet(model) => {
+                model.transcribe_with_callback(audio, sample_rate, language, on_delta)
+            }
+        }
+    }
+
+    pub fn force_align(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        reference_text: &str,
+    ) -> Result<Vec<(String, u32, u32)>> {
+        match self {
+            Self::Qwen3(model) => model.force_align(audio, sample_rate, reference_text),
+            Self::Parakeet(_) => Err(Error::InvalidInput(
+                "Forced alignment is only available for Qwen3-ForcedAligner models".to_string(),
+            )),
+        }
+    }
+}
 
 pub enum NativeChatModel {
     Qwen3(Qwen3ChatModel),
@@ -62,7 +101,7 @@ impl NativeChatModel {
 pub struct ModelRegistry {
     models_dir: PathBuf,
     device: DeviceProfile,
-    asr_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<Qwen3AsrModel>>>>>>,
+    asr_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<NativeAsrModel>>>>>>,
     chat_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<NativeChatModel>>>>>>,
     voxtral_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<VoxtralRealtimeModel>>>>>>,
 }
@@ -90,7 +129,7 @@ impl ModelRegistry {
         &self,
         variant: ModelVariant,
         model_dir: &Path,
-    ) -> Result<Arc<Qwen3AsrModel>> {
+    ) -> Result<Arc<NativeAsrModel>> {
         if !variant.is_asr() && !variant.is_forced_aligner() {
             return Err(Error::InvalidInput(format!(
                 "Model variant {variant} is not an ASR or ForcedAligner model"
@@ -112,10 +151,17 @@ impl ModelRegistry {
                 let model_dir = model_dir.to_path_buf();
                 let device = self.device.clone();
                 move || async move {
-                    tokio::task::spawn_blocking(move || Qwen3AsrModel::load(&model_dir, device))
-                        .await
-                        .map_err(|e| Error::ModelLoadError(e.to_string()))?
-                        .map(Arc::new)
+                    tokio::task::spawn_blocking(move || {
+                        let model = if variant.is_parakeet() {
+                            NativeAsrModel::Parakeet(ParakeetAsrModel::load(&model_dir, variant)?)
+                        } else {
+                            NativeAsrModel::Qwen3(Qwen3AsrModel::load(&model_dir, device)?)
+                        };
+                        Ok::<NativeAsrModel, Error>(model)
+                    })
+                    .await
+                    .map_err(|e| Error::ModelLoadError(e.to_string()))?
+                    .map(Arc::new)
                 }
             })
             .await?;
@@ -217,7 +263,7 @@ impl ModelRegistry {
         Ok(model.clone())
     }
 
-    pub async fn get_asr(&self, variant: ModelVariant) -> Option<Arc<Qwen3AsrModel>> {
+    pub async fn get_asr(&self, variant: ModelVariant) -> Option<Arc<NativeAsrModel>> {
         let guard = self.asr_models.read().await;
         guard.get(&variant).and_then(|cell| cell.get().cloned())
     }

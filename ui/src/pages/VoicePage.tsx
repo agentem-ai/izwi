@@ -96,7 +96,11 @@ function formatBytes(bytes: number): string {
 }
 
 function isAsrVariant(variant: string): boolean {
-  return variant.includes("Qwen3-ASR") || variant.includes("Voxtral");
+  return (
+    variant.includes("Qwen3-ASR") ||
+    variant.includes("Parakeet-TDT") ||
+    variant.includes("Voxtral")
+  );
 }
 
 function isTextVariant(variant: string): boolean {
@@ -118,6 +122,10 @@ function formatModelVariantLabel(variant: string): string {
 
   if (normalized.startsWith("Qwen3-ASR-")) {
     return normalized.replace("Qwen3-ASR-", "ASR ");
+  }
+
+  if (normalized.startsWith("Parakeet-TDT-")) {
+    return normalized.replace("Parakeet-TDT-", "Parakeet ");
   }
 
   if (normalized.startsWith("Qwen3-TTS-12Hz-")) {

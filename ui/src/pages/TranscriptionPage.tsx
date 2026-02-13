@@ -79,6 +79,8 @@ export function TranscriptionPage({
   const preferredModelOrder = [
     "Qwen3-ASR-0.6B-4bit",
     "Qwen3-ASR-0.6B",
+    "Parakeet-TDT-0.6B-v3",
+    "Parakeet-TDT-0.6B-v2",
     "Qwen3-ASR-1.7B-4bit",
     "Qwen3-ASR-1.7B",
   ];

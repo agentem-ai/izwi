@@ -363,6 +363,15 @@ impl ModelDownloader {
         }
 
         if variant.is_asr() {
+            if variant.is_parakeet() {
+                let nemo_file = match variant {
+                    ModelVariant::ParakeetTdt06BV2 => "parakeet-tdt-0.6b-v2.nemo",
+                    ModelVariant::ParakeetTdt06BV3 => "parakeet-tdt-0.6b-v3.nemo",
+                    _ => unreachable!("checked by is_parakeet"),
+                };
+                return path.join(nemo_file).exists();
+            }
+
             // Qwen3-ASR requires config.json, vocab.json, chat_template.json, and model weights
             let has_config = path.join("config.json").exists();
             let has_vocab = path.join("vocab.json").exists();
@@ -821,6 +830,15 @@ impl ModelDownloader {
 
         // Qwen3-ASR models
         if variant.is_asr() {
+            if variant.is_parakeet() {
+                let nemo_file = match variant {
+                    ModelVariant::ParakeetTdt06BV2 => "parakeet-tdt-0.6b-v2.nemo",
+                    ModelVariant::ParakeetTdt06BV3 => "parakeet-tdt-0.6b-v3.nemo",
+                    _ => unreachable!("checked by is_parakeet"),
+                };
+                return vec![nemo_file.to_string(), "README.md".to_string()];
+            }
+
             let mut files = vec![
                 "config.json".to_string(),
                 "chat_template.json".to_string(),
@@ -1078,6 +1096,12 @@ impl ModelDownloader {
                     ModelVariant::VoxtralMini4BRealtime2602 => 8_900_000_000,
                     _ => 1_500_000_000,
                 }
+            }
+        } else if file.ends_with(".nemo") {
+            match variant {
+                ModelVariant::ParakeetTdt06BV2 => 4_926_457_088,
+                ModelVariant::ParakeetTdt06BV3 => 10_036_761_167,
+                _ => 4_000_000_000,
             }
         } else if file.contains("tokenizer") && file.contains("safetensors") {
             300_000_000

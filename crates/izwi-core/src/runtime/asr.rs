@@ -165,3 +165,107 @@ impl InferenceEngine {
         Ok(alignments)
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::config::EngineConfig;
+    use base64::Engine;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Mutex, OnceLock};
+    use uuid::Uuid;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn create_test_wav(path: &std::path::Path) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for _ in 0..16_000 {
+            writer.write_sample::<i16>(0).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[tokio::test]
+    async fn parakeet_engine_lifecycle_with_external_runner() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        let root = std::env::temp_dir().join(format!("izwi-parakeet-runtime-{}", Uuid::new_v4()));
+        let model_dir = root.join("Parakeet-TDT-0.6B-v2");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("parakeet-tdt-0.6b-v2.nemo"), b"mock-nemo").unwrap();
+
+        let runner_path = root.join("mock-runner.sh");
+        let runner_script = r#"#!/bin/sh
+set -eu
+model=""
+audio=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --model)
+      model="$2"
+      shift 2
+      ;;
+    --audio)
+      audio="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [ ! -f "$model" ] || [ ! -f "$audio" ]; then
+  echo "missing model or audio file" >&2
+  exit 1
+fi
+printf '{"text":"parakeet runtime transcription"}\n'
+"#;
+        std::fs::write(&runner_path, runner_script).unwrap();
+        let mut perms = std::fs::metadata(&runner_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&runner_path, perms).unwrap();
+
+        unsafe {
+            std::env::set_var("IZWI_PARAKEET_RUNNER", &runner_path);
+        }
+
+        let mut config = EngineConfig::default();
+        config.models_dir = root.clone();
+        config.use_metal = false;
+
+        let engine = InferenceEngine::new(config).unwrap();
+        engine
+            .load_model(ModelVariant::ParakeetTdt06BV2)
+            .await
+            .unwrap();
+
+        let wav_path = root.join("sample.wav");
+        create_test_wav(&wav_path);
+        let audio_bytes = std::fs::read(&wav_path).unwrap();
+        let audio_base64 = base64::engine::general_purpose::STANDARD.encode(audio_bytes);
+
+        let result = engine
+            .asr_transcribe(
+                &audio_base64,
+                Some("nvidia/parakeet-tdt-0.6b-v2"),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.text, "parakeet runtime transcription");
+
+        unsafe {
+            std::env::remove_var("IZWI_PARAKEET_RUNNER");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

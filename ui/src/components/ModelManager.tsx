@@ -287,6 +287,20 @@ const MODEL_DETAILS: Record<
     size: "3.8 GB",
     quantization: "bf16",
   },
+  "Parakeet-TDT-0.6B-v2": {
+    shortName: "Parakeet v2",
+    fullName: "Parakeet-TDT 0.6B v2",
+    description: "English FastConformer-TDT ASR model distributed as .nemo",
+    features: ["English ASR", "Word timestamps", ".nemo checkpoint"],
+    size: "4.6 GB",
+  },
+  "Parakeet-TDT-0.6B-v3": {
+    shortName: "Parakeet v3",
+    fullName: "Parakeet-TDT 0.6B v3",
+    description: "Multilingual FastConformer-TDT ASR model distributed as .nemo",
+    features: ["Multilingual ASR", "Word timestamps", ".nemo checkpoint"],
+    size: "9.3 GB",
+  },
   "Voxtral-Mini-4B-Realtime-2602": {
     shortName: "Voxtral 4B",
     fullName: "Voxtral Mini 4B Realtime",

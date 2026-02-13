@@ -8,6 +8,7 @@ use crate::model::ModelVariant;
 pub enum ModelFamily {
     Qwen3Tts,
     Qwen3Asr,
+    ParakeetAsr,
     Qwen3Chat,
     Gemma3Chat,
     Qwen3ForcedAligner,
@@ -94,6 +95,7 @@ impl ModelVariant {
             Lfm2Audio15B => ModelFamily::Lfm2Audio,
             Qwen3Asr06B | Qwen3Asr06B4Bit | Qwen3Asr06B8Bit | Qwen3Asr06BBf16 | Qwen3Asr17B
             | Qwen3Asr17B4Bit | Qwen3Asr17B8Bit | Qwen3Asr17BBf16 => ModelFamily::Qwen3Asr,
+            ParakeetTdt06BV2 | ParakeetTdt06BV3 => ModelFamily::ParakeetAsr,
             Qwen306B4Bit => ModelFamily::Qwen3Chat,
             Gemma31BIt | Gemma34BIt => ModelFamily::Gemma3Chat,
             Qwen3ForcedAligner06B => ModelFamily::Qwen3ForcedAligner,
@@ -104,7 +106,7 @@ impl ModelVariant {
     pub fn primary_task(&self) -> ModelTask {
         match self.family() {
             ModelFamily::Qwen3Tts => ModelTask::Tts,
-            ModelFamily::Qwen3Asr => ModelTask::Asr,
+            ModelFamily::Qwen3Asr | ModelFamily::ParakeetAsr => ModelTask::Asr,
             ModelFamily::Qwen3Chat | ModelFamily::Gemma3Chat => ModelTask::Chat,
             ModelFamily::Qwen3ForcedAligner => ModelTask::ForcedAlign,
             ModelFamily::Voxtral => ModelTask::AudioChat,
@@ -179,6 +181,12 @@ pub fn resolve_asr_model_variant(input: Option<&str>) -> ModelVariant {
             let normalized = normalize_identifier(raw);
             if normalized.contains("voxtral") {
                 VoxtralMini4BRealtime2602
+            } else if normalized.contains("parakeet") {
+                if normalized.contains("v3") {
+                    ParakeetTdt06BV3
+                } else {
+                    ParakeetTdt06BV2
+                }
             } else if normalized.contains("17") {
                 Qwen3Asr17B
             } else {
@@ -193,6 +201,13 @@ fn resolve_by_heuristic(normalized: &str) -> Option<ModelVariant> {
 
     if normalized.contains("voxtral") {
         return Some(VoxtralMini4BRealtime2602);
+    }
+
+    if normalized.contains("parakeet") && normalized.contains("tdt") {
+        if normalized.contains("v3") {
+            return Some(ParakeetTdt06BV3);
+        }
+        return Some(ParakeetTdt06BV2);
     }
 
     if normalized.contains("forcedaligner") {
@@ -355,5 +370,17 @@ mod tests {
     fn parse_chat_accepts_gemma() {
         let parsed = parse_chat_model_variant(Some("google/gemma-3-1b-it")).unwrap();
         assert_eq!(parsed, ModelVariant::Gemma31BIt);
+    }
+
+    #[test]
+    fn parse_parakeet_by_repo_tail() {
+        let parsed = parse_model_variant("parakeet-tdt-0.6b-v3").unwrap();
+        assert_eq!(parsed, ModelVariant::ParakeetTdt06BV3);
+    }
+
+    #[test]
+    fn resolve_asr_accepts_parakeet() {
+        let resolved = resolve_asr_model_variant(Some("nvidia/parakeet-tdt-0.6b-v2"));
+        assert_eq!(resolved, ModelVariant::ParakeetTdt06BV2);
     }
 }

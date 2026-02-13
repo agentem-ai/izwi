@@ -266,6 +266,22 @@ const MODEL_DETAILS: Record<
     capabilities: ["Transcription", "BF16"],
     size: "3.8 GB",
   },
+  "Parakeet-TDT-0.6B-v2": {
+    shortName: "Parakeet v2",
+    fullName: "Parakeet-TDT 0.6B v2",
+    description: "English FastConformer-TDT ASR model in .nemo format",
+    category: "asr",
+    capabilities: ["Transcription", "Word timestamps"],
+    size: "4.6 GB",
+  },
+  "Parakeet-TDT-0.6B-v3": {
+    shortName: "Parakeet v3",
+    fullName: "Parakeet-TDT 0.6B v3",
+    description: "Multilingual FastConformer-TDT ASR model in .nemo format",
+    category: "asr",
+    capabilities: ["Transcription", "25 EU languages"],
+    size: "9.3 GB",
+  },
   // Voxtral
   "Voxtral-Mini-4B-Realtime-2602": {
     shortName: "Voxtral 4B",
