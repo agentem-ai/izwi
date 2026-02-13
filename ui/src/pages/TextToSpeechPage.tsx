@@ -155,7 +155,9 @@ export function TextToSpeechPage({
   return (
     <div className="max-w-6xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-xl font-semibold text-white">Text to Speech</h1>
+        <h1 className="text-xl font-semibold text-[var(--text-primary)]">
+          Text to Speech
+        </h1>
       </div>
 
       <CustomVoicePlayground

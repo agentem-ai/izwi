@@ -544,7 +544,14 @@ export function CustomVoicePlayground({
             <div className="mt-1 text-sm text-[var(--text-primary)] truncate">
               {modelLabel ?? "No model selected"}
             </div>
-            <div className="mt-1 text-xs text-[var(--text-secondary)]">
+            <div
+              className={clsx(
+                "mt-1 text-xs",
+                selectedModelReady
+                  ? "text-[var(--text-primary)]"
+                  : "text-[var(--text-secondary)]",
+              )}
+            >
               {selectedModelReady
                 ? "Loaded and ready"
                 : "Open Models and load the selected TTS model"}
