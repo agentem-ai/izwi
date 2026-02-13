@@ -825,6 +825,12 @@ impl ModelDownloader {
                 "special_tokens_map.json".to_string(),
                 "tokenizer-e351c8d8-checkpoint125.safetensors".to_string(),
                 "chat_template.jinja".to_string(),
+                // Present on newer checkpoints such as LFM2.5; missing files are skipped.
+                "audio_detokenizer/config.json".to_string(),
+                "audio_detokenizer/model.safetensors".to_string(),
+                "audio_detokenizer/special_tokens_map.json".to_string(),
+                "audio_detokenizer/tokenizer.json".to_string(),
+                "audio_detokenizer/tokenizer_config.json".to_string(),
             ];
         }
 
@@ -1092,7 +1098,7 @@ impl ModelDownloader {
                     ModelVariant::Qwen306B4Bit => 800_000_000,
                     ModelVariant::Gemma31BIt => 2_100_000_000,
                     ModelVariant::Gemma34BIt => 2_400_000_000,
-                    ModelVariant::Lfm2Audio15B => 2_900_000_000,
+                    ModelVariant::Lfm2Audio15B | ModelVariant::Lfm25Audio15B => 2_900_000_000,
                     ModelVariant::VoxtralMini4BRealtime2602 => 8_900_000_000,
                     _ => 1_500_000_000,
                 }

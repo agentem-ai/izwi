@@ -17,7 +17,7 @@ import {
 import clsx from "clsx";
 
 import { api, ChatMessage, ModelInfo } from "../api";
-import { SPEAKERS, VIEW_CONFIGS } from "../types";
+import { isLfmAudioVariant, SPEAKERS, VIEW_CONFIGS } from "../types";
 import {
   Select,
   SelectContent,
@@ -100,12 +100,12 @@ function isAsrVariant(variant: string): boolean {
     variant.includes("Qwen3-ASR") ||
     variant.includes("Parakeet-TDT") ||
     variant.includes("Voxtral") ||
-    variant === "LFM2-Audio-1.5B"
+    isLfmAudioVariant(variant)
   );
 }
 
 function isLfm2Variant(variant: string): boolean {
-  return variant === "LFM2-Audio-1.5B";
+  return isLfmAudioVariant(variant);
 }
 
 function isTextVariant(variant: string): boolean {
@@ -151,8 +151,10 @@ function formatModelVariantLabel(variant: string): string {
       .replace("Gemma-3-4b-it", "Gemma 3 4B Instruct");
   }
 
-  if (normalized === "LFM2-Audio-1.5B") {
-    return "LFM2 Audio 1.5B";
+  if (isLfmAudioVariant(normalized)) {
+    return normalized
+      .replace("LFM2.5-Audio-", "LFM2.5 Audio ")
+      .replace("LFM2-Audio-", "LFM2 Audio ");
   }
 
   return normalized.replace(/-/g, " ");

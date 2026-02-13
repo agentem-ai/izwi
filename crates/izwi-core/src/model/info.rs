@@ -54,6 +54,9 @@ pub enum ModelVariant {
     /// LFM2-Audio 1.5B model from Liquid AI
     #[serde(rename = "LFM2-Audio-1.5B")]
     Lfm2Audio15B,
+    /// LFM2.5-Audio 1.5B model from Liquid AI
+    #[serde(rename = "LFM2.5-Audio-1.5B")]
+    Lfm25Audio15B,
     /// Qwen3-ASR 0.6B model
     #[serde(rename = "Qwen3-ASR-0.6B")]
     Qwen3Asr06B,
@@ -133,6 +136,7 @@ impl ModelVariant {
             }
             Self::Qwen3TtsTokenizer12Hz => "Qwen/Qwen3-TTS-Tokenizer-12Hz",
             Self::Lfm2Audio15B => "LiquidAI/LFM2-Audio-1.5B",
+            Self::Lfm25Audio15B => "LiquidAI/LFM2.5-Audio-1.5B",
             Self::Qwen3Asr06B => "Qwen/Qwen3-ASR-0.6B",
             Self::Qwen3Asr06B4Bit => "mlx-community/Qwen3-ASR-0.6B-4bit",
             Self::Qwen3Asr06B8Bit => "mlx-community/Qwen3-ASR-0.6B-8bit",
@@ -170,6 +174,7 @@ impl ModelVariant {
             Self::Qwen3Tts12Hz17BVoiceDesignBf16 => "Qwen3-TTS 1.7B VoiceDesign bf16",
             Self::Qwen3TtsTokenizer12Hz => "Qwen3-TTS Tokenizer 12Hz",
             Self::Lfm2Audio15B => "LFM2-Audio 1.5B",
+            Self::Lfm25Audio15B => "LFM2.5-Audio 1.5B",
             Self::Qwen3Asr06B => "Qwen3-ASR 0.6B",
             Self::Qwen3Asr06B4Bit => "Qwen3-ASR 0.6B 4-bit",
             Self::Qwen3Asr06B8Bit => "Qwen3-ASR 0.6B 8-bit",
@@ -207,6 +212,7 @@ impl ModelVariant {
             Self::Qwen3Tts12Hz17BVoiceDesignBf16 => "Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
             Self::Qwen3TtsTokenizer12Hz => "Qwen3-TTS-Tokenizer-12Hz",
             Self::Lfm2Audio15B => "LFM2-Audio-1.5B",
+            Self::Lfm25Audio15B => "LFM2.5-Audio-1.5B",
             Self::Qwen3Asr06B => "Qwen3-ASR-0.6B",
             Self::Qwen3Asr06B4Bit => "Qwen3-ASR-0.6B-4bit",
             Self::Qwen3Asr06B8Bit => "Qwen3-ASR-0.6B-8bit",
@@ -244,6 +250,7 @@ impl ModelVariant {
             Self::Qwen3Tts12Hz17BVoiceDesignBf16 => 4_520_194_992, // ~4.21 GB
             Self::Qwen3TtsTokenizer12Hz => 682_300_739, // ~0.64 GB
             Self::Lfm2Audio15B => 3_000_000_000,        // ~2.79 GB (est)
+            Self::Lfm25Audio15B => 3_200_000_000,       // ~2.98 GB (est)
             Self::Qwen3Asr06B => 1_880_619_678,         // ~1.75 GB
             Self::Qwen3Asr06B4Bit => 712_781_279,       // ~0.66 GB
             Self::Qwen3Asr06B8Bit => 1_010_773_761,     // ~0.94 GB
@@ -280,7 +287,7 @@ impl ModelVariant {
             | Self::Qwen3Tts12Hz17BVoiceDesign8Bit
             | Self::Qwen3Tts12Hz17BVoiceDesignBf16 => 6.0,
             Self::Qwen3TtsTokenizer12Hz => 1.0,
-            Self::Lfm2Audio15B => 6.0,
+            Self::Lfm2Audio15B | Self::Lfm25Audio15B => 6.0,
             Self::Qwen3Asr06B
             | Self::Qwen3Asr06B4Bit
             | Self::Qwen3Asr06B8Bit
@@ -306,7 +313,7 @@ impl ModelVariant {
 
     /// Whether this is an LFM2-Audio model
     pub fn is_lfm2(&self) -> bool {
-        matches!(self, Self::Lfm2Audio15B)
+        matches!(self, Self::Lfm2Audio15B | Self::Lfm25Audio15B)
     }
 
     /// Whether this is a Qwen3-ASR model
@@ -397,7 +404,7 @@ impl ModelVariant {
         match self {
             Self::Qwen306B4Bit | Self::Gemma31BIt => true,
             Self::Gemma34BIt => false,
-            Self::Lfm2Audio15B => true,
+            Self::Lfm2Audio15B | Self::Lfm25Audio15B => true,
             Self::VoxtralMini4BRealtime2602 => false,
             Self::ParakeetTdt06BV2 | Self::ParakeetTdt06BV3 => true,
             _ => !self.is_quantized(),
@@ -423,6 +430,7 @@ impl ModelVariant {
             Self::Qwen3Tts12Hz17BVoiceDesignBf16,
             Self::Qwen3TtsTokenizer12Hz,
             Self::Lfm2Audio15B,
+            Self::Lfm25Audio15B,
             Self::Qwen3Asr06B,
             Self::Qwen3Asr06B4Bit,
             Self::Qwen3Asr06B8Bit,

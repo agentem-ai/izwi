@@ -92,7 +92,7 @@ impl ModelVariant {
             | Qwen3Tts12Hz17BVoiceDesign8Bit
             | Qwen3Tts12Hz17BVoiceDesignBf16 => ModelFamily::Qwen3Tts,
             Qwen3TtsTokenizer12Hz => ModelFamily::Tokenizer,
-            Lfm2Audio15B => ModelFamily::Lfm2Audio,
+            Lfm2Audio15B | Lfm25Audio15B => ModelFamily::Lfm2Audio,
             Qwen3Asr06B | Qwen3Asr06B4Bit | Qwen3Asr06B8Bit | Qwen3Asr06BBf16 | Qwen3Asr17B
             | Qwen3Asr17B4Bit | Qwen3Asr17B8Bit | Qwen3Asr17BBf16 => ModelFamily::Qwen3Asr,
             ParakeetTdt06BV2 | ParakeetTdt06BV3 => ModelFamily::ParakeetAsr,
@@ -181,8 +181,8 @@ pub fn resolve_asr_model_variant(input: Option<&str>) -> ModelVariant {
             let normalized = normalize_identifier(raw);
             if normalized.contains("voxtral") {
                 VoxtralMini4BRealtime2602
-            } else if normalized.contains("lfm2") && normalized.contains("audio") {
-                Lfm2Audio15B
+            } else if let Some(lfm2_variant) = resolve_lfm2_audio_variant(&normalized) {
+                lfm2_variant
             } else if normalized.contains("parakeet") {
                 if normalized.contains("v3") {
                     ParakeetTdt06BV3
@@ -292,7 +292,25 @@ fn resolve_by_heuristic(normalized: &str) -> Option<ModelVariant> {
         }
     }
 
-    if normalized.contains("lfm2") && normalized.contains("audio") {
+    if let Some(lfm2_variant) = resolve_lfm2_audio_variant(normalized) {
+        return Some(lfm2_variant);
+    }
+
+    None
+}
+
+fn resolve_lfm2_audio_variant(normalized: &str) -> Option<ModelVariant> {
+    use ModelVariant::*;
+
+    if !normalized.contains("audio") {
+        return None;
+    }
+
+    if normalized.contains("lfm25") || normalized.contains("lfm2dot5") {
+        return Some(Lfm25Audio15B);
+    }
+
+    if normalized.contains("lfm2") {
         return Some(Lfm2Audio15B);
     }
 
@@ -369,9 +387,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_tts_accepts_lfm25_audio() {
+        let parsed = parse_tts_model_variant("LFM2.5-Audio-1.5B").unwrap();
+        assert_eq!(parsed, ModelVariant::Lfm25Audio15B);
+    }
+
+    #[test]
     fn resolve_asr_accepts_lfm2_audio() {
         let resolved = resolve_asr_model_variant(Some("LFM2-Audio-1.5B"));
         assert_eq!(resolved, ModelVariant::Lfm2Audio15B);
+    }
+
+    #[test]
+    fn resolve_asr_accepts_lfm25_audio() {
+        let resolved = resolve_asr_model_variant(Some("LFM2.5-Audio-1.5B"));
+        assert_eq!(resolved, ModelVariant::Lfm25Audio15B);
     }
 
     #[test]

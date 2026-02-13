@@ -199,6 +199,14 @@ const MODEL_DETAILS: Record<
     features: ["TTS", "ASR", "Audio-to-audio chat", "4 voice styles"],
     size: "3.0 GB",
   },
+  "LFM2.5-Audio-1.5B": {
+    shortName: "LFM2.5 1.5B",
+    fullName: "LFM2.5-Audio 1.5B by Liquid AI",
+    description:
+      "Improved LFM2 audio model for TTS, ASR, and audio-to-audio generation",
+    features: ["TTS", "ASR", "Audio-to-audio chat", "4 voice styles"],
+    size: "3.2 GB",
+  },
   "Qwen3-0.6B-4bit": {
     shortName: "Qwen3 Chat 0.6B",
     fullName: "Qwen3 0.6B (MLX 4-bit)",

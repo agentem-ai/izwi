@@ -12,7 +12,7 @@ import {
   Settings2,
 } from "lucide-react";
 import { api, TTSGenerationStats } from "../api";
-import { LFM2_SPEAKERS, QWEN_SPEAKERS } from "../types";
+import { isLfmAudioVariant, LFM2_SPEAKERS, QWEN_SPEAKERS } from "../types";
 import { GenerationStats } from "./GenerationStats";
 import clsx from "clsx";
 
@@ -132,7 +132,7 @@ export function CustomVoicePlayground({
   const streamSampleRateRef = useRef(24000);
   const streamSamplesRef = useRef<Float32Array[]>([]);
   const modelMenuRef = useRef<HTMLDivElement>(null);
-  const isLfm2Model = selectedModel?.toLowerCase().includes("lfm2-audio") ?? false;
+  const isLfm2Model = selectedModel ? isLfmAudioVariant(selectedModel) : false;
   const availableSpeakers = useMemo(
     () => (isLfm2Model ? LFM2_SPEAKERS : QWEN_SPEAKERS),
     [isLfm2Model],
