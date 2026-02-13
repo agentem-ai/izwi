@@ -111,6 +111,46 @@ export function VoiceCloningPage({
     setIsModelModalOpen(true);
   };
 
+  const getStatusLabel = (status: ModelInfo["status"]): string => {
+    switch (status) {
+      case "ready":
+        return "Loaded";
+      case "loading":
+        return "Loading";
+      case "downloading":
+        return "Downloading";
+      case "downloaded":
+        return "Downloaded";
+      case "not_downloaded":
+        return "Not downloaded";
+      case "error":
+        return "Error";
+      default:
+        return status;
+    }
+  };
+
+  const modelOptions = routeModels.map((model) => ({
+    value: model.variant,
+    label: model.variant,
+    statusLabel: getStatusLabel(model.status),
+    isReady: model.status === "ready",
+  }));
+
+  const handleModelSelect = (variant: string) => {
+    const model = routeModels.find((m) => m.variant === variant);
+    if (!model) {
+      return;
+    }
+
+    onSelect(variant);
+
+    if (model.status !== "ready") {
+      setModalIntentModel(variant);
+      setIsModelModalOpen(true);
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto">
       <div className="mb-6">
@@ -121,6 +161,8 @@ export function VoiceCloningPage({
         selectedModel={resolvedSelectedModel}
         selectedModelReady={selectedModelReady}
         modelLabel={selectedModelInfo?.variant ?? null}
+        modelOptions={modelOptions}
+        onSelectModel={handleModelSelect}
         onOpenModelManager={openModelManager}
         onModelRequired={() => {
           setModalIntentModel(resolvedSelectedModel);
