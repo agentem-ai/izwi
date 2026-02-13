@@ -378,20 +378,20 @@ export function CustomVoicePlayground({
   };
 
   const renderModelSelector = () => (
-    <div className="relative" ref={modelMenuRef}>
+    <div className="relative inline-block w-[280px] max-w-[85vw]" ref={modelMenuRef}>
       <button
         onClick={() => setIsModelMenuOpen((prev) => !prev)}
         className={clsx(
-          "h-9 px-3 rounded-lg border inline-flex items-center gap-2 text-xs transition-colors",
+          "h-9 w-full px-3 rounded-lg border inline-flex items-center justify-between gap-2 text-xs transition-colors",
           selectedOption?.isReady
             ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
             : "border-white/20 bg-[#1a1a1a] text-gray-300 hover:border-white/30",
         )}
       >
-        <span className="max-w-[170px] truncate">
+        <span className="flex-1 min-w-0 truncate text-left">
           {selectedOption?.label || "Select model"}
         </span>
-        <ChevronDown className={clsx("w-3.5 h-3.5 transition-transform", isModelMenuOpen && "rotate-180")} />
+        <ChevronDown className={clsx("w-3.5 h-3.5 shrink-0 transition-transform", isModelMenuOpen && "rotate-180")} />
       </button>
 
       <AnimatePresence>
@@ -401,7 +401,7 @@ export function CustomVoicePlayground({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.15 }}
-            className="absolute right-0 top-full mt-2 w-[280px] max-w-[85vw] rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] p-1.5 shadow-2xl z-50"
+            className="absolute left-0 right-0 top-full mt-2 rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] p-1.5 shadow-2xl z-50"
           >
             <div className="max-h-64 overflow-y-auto pr-1 space-y-0.5">
               {modelOptions.map((option) => (
@@ -455,12 +455,12 @@ export function CustomVoicePlayground({
           <div className="relative">
             <button
               onClick={() => setShowSpeakerSelect(!showSpeakerSelect)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
+              className="flex w-56 sm:w-64 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
             >
               <div className="speaker-avatar w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium">
                 {speaker.charAt(0)}
               </div>
-              <span className="text-white">
+              <span className="text-white flex-1 min-w-0 truncate text-left">
                 {selectedSpeaker?.name || speaker}
               </span>
               <ChevronDown
@@ -477,7 +477,7 @@ export function CustomVoicePlayground({
                   initial={{ opacity: 0, y: -5 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -5 }}
-                  className="absolute right-0 mt-1 w-56 sm:w-64 max-h-80 overflow-y-auto p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
+                  className="absolute left-0 right-0 top-full mt-1 max-h-80 overflow-y-auto p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
                 >
                   {SPEAKERS.map((s) => (
                     <button

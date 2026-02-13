@@ -261,20 +261,20 @@ export function ChatPlayground({
   };
 
   const renderModelSelector = () => (
-    <div className="relative z-40" ref={modelMenuRef}>
+    <div className="relative z-40 inline-block w-[300px] max-w-[80vw]" ref={modelMenuRef}>
       <button
         onClick={() => setIsModelMenuOpen((prev) => !prev)}
         className={clsx(
-          "h-9 px-3 rounded-xl border inline-flex items-center gap-2 text-xs transition-colors",
+          "h-9 w-full px-3 rounded-xl border inline-flex items-center justify-between gap-2 text-xs transition-colors",
           selectedOption?.isReady
             ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
             : "border-white/20 bg-[#1a1a1a] text-gray-300 hover:border-white/30",
         )}
       >
-        <span className="max-w-[170px] truncate">
+        <span className="flex-1 min-w-0 truncate text-left">
           {selectedOption?.label || "Select model"}
         </span>
-        <ChevronDown className="w-3.5 h-3.5 opacity-80" />
+        <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-80" />
       </button>
 
       <AnimatePresence>
@@ -284,7 +284,7 @@ export function ChatPlayground({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 6, scale: 0.98 }}
             transition={{ duration: 0.16 }}
-            className="absolute right-0 bottom-11 w-[300px] max-w-[80vw] rounded-2xl border border-[#2a2a2a] bg-[#1a1a1a] p-2 shadow-2xl z-[90]"
+            className="absolute left-0 right-0 bottom-11 rounded-2xl border border-[#2a2a2a] bg-[#1a1a1a] p-2 shadow-2xl z-[90]"
           >
             <div className="max-h-64 overflow-y-auto pr-1 space-y-1">
               {modelOptions.map((option) => (

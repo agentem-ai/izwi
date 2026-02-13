@@ -175,20 +175,20 @@ export function VoiceDesignPlayground({
   };
 
   const renderModelSelector = () => (
-    <div className="relative" ref={modelMenuRef}>
+    <div className="relative inline-block w-[280px] max-w-[85vw]" ref={modelMenuRef}>
       <button
         onClick={() => setIsModelMenuOpen((prev) => !prev)}
         className={clsx(
-          "h-9 px-3 rounded-lg border inline-flex items-center gap-2 text-xs transition-colors",
+          "h-9 w-full px-3 rounded-lg border inline-flex items-center justify-between gap-2 text-xs transition-colors",
           selectedOption?.isReady
             ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
             : "border-white/20 bg-[#1a1a1a] text-gray-300 hover:border-white/30",
         )}
       >
-        <span className="max-w-[170px] truncate">
+        <span className="flex-1 min-w-0 truncate text-left">
           {selectedOption?.label || "Select model"}
         </span>
-        <ChevronDown className={clsx("w-3.5 h-3.5 transition-transform", isModelMenuOpen && "rotate-180")} />
+        <ChevronDown className={clsx("w-3.5 h-3.5 shrink-0 transition-transform", isModelMenuOpen && "rotate-180")} />
       </button>
 
       <AnimatePresence>
@@ -198,7 +198,7 @@ export function VoiceDesignPlayground({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.15 }}
-            className="absolute right-0 top-full mt-2 w-[280px] max-w-[85vw] rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] p-1.5 shadow-2xl z-50"
+            className="absolute left-0 right-0 top-full mt-2 rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] p-1.5 shadow-2xl z-50"
           >
             <div className="max-h-64 overflow-y-auto pr-1 space-y-0.5">
               {modelOptions.map((option) => (
@@ -252,10 +252,10 @@ export function VoiceDesignPlayground({
           <div className="relative">
             <button
               onClick={() => setShowLanguageSelect(!showLanguageSelect)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
+              className="flex w-52 sm:w-56 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
             >
               <Globe className="w-3.5 h-3.5 text-gray-500" />
-              <span className="text-white">
+              <span className="text-white flex-1 min-w-0 truncate text-left">
                 {LANGUAGES.find((l) => l.id === language)?.name || language}
               </span>
               <ChevronDown
@@ -272,7 +272,7 @@ export function VoiceDesignPlayground({
                   initial={{ opacity: 0, y: -5 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -5 }}
-                  className="absolute right-0 mt-1 w-40 sm:w-44 max-h-64 overflow-y-auto p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
+                  className="absolute left-0 right-0 top-full mt-1 max-h-64 overflow-y-auto p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
                 >
                   {LANGUAGES.map((lang) => (
                     <button
