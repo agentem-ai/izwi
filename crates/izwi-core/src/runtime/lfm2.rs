@@ -97,7 +97,11 @@ impl InferenceEngine {
             let text = request.text.clone();
             let speaker_prompt = voice_instruction.clone();
             let temperature = request.config.temperature;
-            let top_k = (request.config.top_k > 0).then_some(request.config.top_k);
+            let top_k = if request.config.top_k > 0 {
+                Some(request.config.top_k)
+            } else {
+                Some(64)
+            };
             let max_new_tokens = if request.config.max_tokens == 0 {
                 768
             } else {

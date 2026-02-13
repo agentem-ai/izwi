@@ -18,7 +18,7 @@ use conformer::ConformerEncoder;
 use depthformer::Depthformer;
 use lfm_backbone::{LfmBackbone, LfmCache};
 use mimi_decoder::MimiDecoder;
-use preprocessor::{resample_linear, Lfm2AudioPreprocessor};
+use preprocessor::{resample_audio, Lfm2AudioPreprocessor};
 use tokenizer::{ChatState, Lfm2Tokenizer, LfmModality};
 use tracing::info;
 
@@ -33,6 +33,7 @@ const TTS_UK_MALE_PROMPT: &str = "Perform TTS. Use the UK male voice.";
 const TTS_UK_FEMALE_PROMPT: &str = "Perform TTS. Use the UK female voice.";
 
 const END_OF_AUDIO_TOKEN: u32 = 2048;
+const ASR_SYSTEM_PROMPT: &str = "Perform ASR.";
 
 pub struct Lfm2AudioModel {
     model_dir: PathBuf,
@@ -155,7 +156,7 @@ impl Lfm2AudioModel {
             self.preprocessor.features(),
         );
         state.new_turn(&self.tokenizer, "system")?;
-        state.add_text(&self.tokenizer, "Transcribe the user speech into text.")?;
+        state.add_text(&self.tokenizer, ASR_SYSTEM_PROMPT)?;
         state.end_turn(&self.tokenizer)?;
 
         state.new_turn(&self.tokenizer, "user")?;
@@ -173,6 +174,8 @@ impl Lfm2AudioModel {
             512,
             None,
             Some(1),
+            None,
+            None,
             &mut rng,
             &mut |token| {
                 tokens.push(token);
@@ -219,9 +222,11 @@ impl Lfm2AudioModel {
         let mut audio_frames: Vec<Vec<u32>> = vec![Vec::new(); self.cfg.codebooks];
         let mut rng = SimpleRng::new();
 
-        self.generate_interleaved(
+        self.generate_sequential(
             &state,
             max_new_tokens.max(256),
+            None,
+            None,
             temperature,
             top_k,
             &mut rng,
@@ -288,6 +293,8 @@ impl Lfm2AudioModel {
         self.generate_interleaved(
             &state,
             max_new_tokens.max(768),
+            None,
+            None,
             temperature,
             top_k,
             &mut rng,
@@ -326,7 +333,7 @@ impl Lfm2AudioModel {
         let mono = if sample_rate == target_sr {
             audio.to_vec()
         } else {
-            resample_linear(audio, sample_rate, target_sr)
+            resample_audio(audio, sample_rate, target_sr)?
         };
 
         let (mel, frames) = self.preprocessor.compute_features(&mono)?;
@@ -434,8 +441,10 @@ impl Lfm2AudioModel {
         &self,
         state: &ChatState,
         max_new_tokens: usize,
-        temperature: Option<f32>,
-        top_k: Option<usize>,
+        text_temperature: Option<f32>,
+        text_top_k: Option<usize>,
+        audio_temperature: Option<f32>,
+        audio_top_k: Option<usize>,
         rng: &mut SimpleRng,
         on_text: &mut dyn FnMut(u32),
         on_audio: &mut dyn FnMut(&[u32]),
@@ -456,9 +465,9 @@ impl Lfm2AudioModel {
                         .squeeze(0)?;
                     let token = sample_token(
                         &logits,
-                        temperature.unwrap_or(0.0) <= 0.0 || top_k == Some(1),
-                        temperature,
-                        top_k,
+                        text_temperature.unwrap_or(0.0) <= 0.0 || text_top_k == Some(1),
+                        text_temperature,
+                        text_top_k,
                         rng,
                     )?;
 
@@ -475,9 +484,12 @@ impl Lfm2AudioModel {
                     in_emb = self.lfm.embed_tokens(token)?;
                 }
                 LfmModality::AudioOut => {
-                    let frame =
-                        self.depthformer
-                            .sample_audio_frame(&last, temperature, top_k, rng)?;
+                    let frame = self.depthformer.sample_audio_frame(
+                        &last,
+                        audio_temperature,
+                        audio_top_k,
+                        rng,
+                    )?;
                     let mut frame = frame;
                     if frame.first().copied() == Some(END_OF_AUDIO_TOKEN) {
                         for t in &mut frame {
@@ -506,8 +518,10 @@ impl Lfm2AudioModel {
         &self,
         state: &ChatState,
         max_new_tokens: usize,
-        temperature: Option<f32>,
-        top_k: Option<usize>,
+        text_temperature: Option<f32>,
+        text_top_k: Option<usize>,
+        audio_temperature: Option<f32>,
+        audio_top_k: Option<usize>,
         rng: &mut SimpleRng,
         on_text: &mut dyn FnMut(u32),
         on_audio: &mut dyn FnMut(&[u32]),
@@ -532,9 +546,9 @@ impl Lfm2AudioModel {
                         .squeeze(0)?;
                     let token = sample_token(
                         &logits,
-                        temperature.unwrap_or(0.0) <= 0.0 || top_k == Some(1),
-                        temperature,
-                        top_k,
+                        text_temperature.unwrap_or(0.0) <= 0.0 || text_top_k == Some(1),
+                        text_temperature,
+                        text_top_k,
                         rng,
                     )?;
 
@@ -556,9 +570,12 @@ impl Lfm2AudioModel {
                     in_emb = self.lfm.embed_tokens(token)?;
                 }
                 LfmModality::AudioOut => {
-                    let mut frame =
-                        self.depthformer
-                            .sample_audio_frame(&last, temperature, top_k, rng)?;
+                    let mut frame = self.depthformer.sample_audio_frame(
+                        &last,
+                        audio_temperature,
+                        audio_top_k,
+                        rng,
+                    )?;
 
                     if modality_left == 0 && !text_done {
                         current_modality = LfmModality::Text;
