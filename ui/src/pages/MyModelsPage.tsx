@@ -390,22 +390,11 @@ export function MyModelsPage({
         return true;
       })
       .sort((a, b) => {
-        // Sort: loaded first, then downloaded, then not downloaded
-        const statusOrder = {
-          ready: 0,
-          loading: 1,
-          downloaded: 2,
-          downloading: 3,
-          not_downloaded: 4,
-          error: 5,
-        };
-        const statusDiff = statusOrder[a.status] - statusOrder[b.status];
-        if (statusDiff !== 0) return statusDiff;
-
-        // Then sort by size
+        // Stable sort independent of status so cards do not jump while downloading/loading.
         const sizeA = parseSize(MODEL_DETAILS[a.variant]?.size || "0");
         const sizeB = parseSize(MODEL_DETAILS[b.variant]?.size || "0");
-        return sizeA - sizeB;
+        if (sizeA !== sizeB) return sizeA - sizeB;
+        return a.variant.localeCompare(b.variant);
       });
   }, [models, searchQuery, statusFilter, categoryFilter]);
 
