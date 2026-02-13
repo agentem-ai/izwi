@@ -95,7 +95,7 @@ function getStatusTone(option: ModelOption): string {
     option.statusLabel.toLowerCase().includes("downloading") ||
     option.statusLabel.toLowerCase().includes("loading")
   ) {
-    return "text-sky-300 bg-sky-500/10 border-sky-500/25";
+    return "text-amber-300 bg-amber-500/10 border-amber-500/25";
   }
   if (option.statusLabel.toLowerCase().includes("error")) {
     return "text-red-300 bg-red-500/10 border-red-500/25";
@@ -268,7 +268,7 @@ export function ChatPlayground({
           "h-9 px-3 rounded-xl border inline-flex items-center gap-2 text-xs transition-colors",
           selectedOption?.isReady
             ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-            : "border-[#3a5f82] bg-[#1f2328] text-gray-100 hover:border-[#4e89c2]",
+            : "border-white/20 bg-[#1a1a1a] text-gray-300 hover:border-white/30",
         )}
       >
         <span className="max-w-[170px] truncate">
@@ -284,7 +284,7 @@ export function ChatPlayground({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 6, scale: 0.98 }}
             transition={{ duration: 0.16 }}
-            className="absolute right-0 bottom-11 w-[300px] max-w-[80vw] rounded-2xl border border-[#32353a] bg-[#16181c] p-2 shadow-2xl z-[90]"
+            className="absolute right-0 bottom-11 w-[300px] max-w-[80vw] rounded-2xl border border-[#2a2a2a] bg-[#1a1a1a] p-2 shadow-2xl z-[90]"
           >
             <div className="max-h-64 overflow-y-auto pr-1 space-y-1">
               {modelOptions.map((option) => (

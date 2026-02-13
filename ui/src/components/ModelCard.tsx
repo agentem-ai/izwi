@@ -48,10 +48,10 @@ export function ModelCard({
 
   const statusColors = {
     not_downloaded: "bg-gray-600",
-    downloading: "bg-yellow-500",
-    downloaded: "bg-blue-500",
-    loading: "bg-yellow-500",
-    ready: "bg-green-500",
+    downloading: "bg-amber-500",
+    downloaded: "bg-gray-500",
+    loading: "bg-amber-500",
+    ready: "bg-emerald-500",
     error: "bg-red-500",
   };
 

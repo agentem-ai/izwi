@@ -358,18 +358,18 @@ export function CustomVoicePlayground({
 
   const getStatusTone = (option: ModelOption): string => {
     if (option.isReady) {
-      return "text-emerald-300 bg-emerald-500/10 border-emerald-500/25";
+      return "text-emerald-400 bg-emerald-500/10";
     }
     if (
       option.statusLabel.toLowerCase().includes("downloading") ||
       option.statusLabel.toLowerCase().includes("loading")
     ) {
-      return "text-sky-300 bg-sky-500/10 border-sky-500/25";
+      return "text-amber-400 bg-amber-500/10";
     }
     if (option.statusLabel.toLowerCase().includes("error")) {
-      return "text-red-300 bg-red-500/10 border-red-500/25";
+      return "text-red-400 bg-red-500/10";
     }
-    return "text-gray-300 bg-white/5 border-white/15";
+    return "text-gray-400 bg-white/5";
   };
 
   const handleOpenModels = () => {
@@ -378,32 +378,32 @@ export function CustomVoicePlayground({
   };
 
   const renderModelSelector = () => (
-    <div className="relative z-40" ref={modelMenuRef}>
+    <div className="relative" ref={modelMenuRef}>
       <button
         onClick={() => setIsModelMenuOpen((prev) => !prev)}
         className={clsx(
-          "h-9 px-3 rounded-xl border inline-flex items-center gap-2 text-xs transition-colors",
+          "h-9 px-3 rounded-lg border inline-flex items-center gap-2 text-xs transition-colors",
           selectedOption?.isReady
             ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-            : "border-[#3a5f82] bg-[#1f2328] text-gray-100 hover:border-[#4e89c2]",
+            : "border-white/20 bg-[#1a1a1a] text-gray-300 hover:border-white/30",
         )}
       >
         <span className="max-w-[170px] truncate">
           {selectedOption?.label || "Select model"}
         </span>
-        <ChevronDown className="w-3.5 h-3.5 opacity-80" />
+        <ChevronDown className={clsx("w-3.5 h-3.5 transition-transform", isModelMenuOpen && "rotate-180")} />
       </button>
 
       <AnimatePresence>
         {isModelMenuOpen && (
           <motion.div
-            initial={{ opacity: 0, y: 6, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 6, scale: 0.98 }}
-            transition={{ duration: 0.16 }}
-            className="absolute right-0 bottom-11 w-[300px] max-w-[80vw] rounded-2xl border border-[#32353a] bg-[#16181c] p-2 shadow-2xl z-[90]"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: 0.15 }}
+            className="absolute right-0 top-full mt-2 w-[280px] max-w-[85vw] rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] p-1.5 shadow-2xl z-50"
           >
-            <div className="max-h-64 overflow-y-auto pr-1 space-y-1">
+            <div className="max-h-64 overflow-y-auto pr-1 space-y-0.5">
               {modelOptions.map((option) => (
                 <button
                   key={option.value}
@@ -412,18 +412,18 @@ export function CustomVoicePlayground({
                     setIsModelMenuOpen(false);
                   }}
                   className={clsx(
-                    "w-full text-left rounded-xl px-2.5 py-2 transition-colors border",
+                    "w-full text-left rounded-lg px-3 py-2 transition-colors",
                     selectedOption?.value === option.value
-                      ? "bg-[#24272c] border-[#464a52]"
-                      : "bg-transparent border-transparent hover:bg-[#202328]",
+                      ? "bg-white/10"
+                      : "hover:bg-white/5",
                   )}
                 >
-                  <div className="text-xs text-gray-100 truncate">
+                  <div className="text-xs text-gray-200 truncate">
                     {option.label}
                   </div>
                   <span
                     className={clsx(
-                      "mt-1 inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px]",
+                      "mt-1 inline-flex items-center rounded px-1.5 py-0.5 text-[10px]",
                       getStatusTone(option),
                     )}
                   >
@@ -519,9 +519,9 @@ export function CustomVoicePlayground({
         </div>
       </div>
 
-      <div className="mb-4 rounded-xl border border-[#2b2b2b] bg-[#171717] p-3">
-        <div className="flex items-center justify-between gap-2">
-          <div>
+      <div className="mb-4 rounded-xl border border-[#2b2b2b] bg-[#171717] p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
             <div className="text-[11px] text-gray-500 uppercase tracking-wide">
               Active Model
             </div>
@@ -531,7 +531,7 @@ export function CustomVoicePlayground({
             <div
               className={clsx(
                 "mt-1 text-xs",
-                selectedModelReady ? "text-emerald-300" : "text-amber-300",
+                selectedModelReady ? "text-emerald-400" : "text-amber-400",
               )}
             >
               {selectedModelReady
@@ -539,7 +539,7 @@ export function CustomVoicePlayground({
                 : "Open Models and load a CustomVoice model"}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             {modelOptions.length > 0 && renderModelSelector()}
             {onOpenModelManager && (
               <button

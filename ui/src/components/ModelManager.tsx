@@ -454,8 +454,8 @@ export function ModelManager({
                     <div
                       className={clsx(
                         "w-2 h-2 rounded-full",
-                        isReady && "bg-green-500",
-                        isDownloaded && "bg-blue-500",
+                        isReady && "bg-emerald-500",
+                        isDownloaded && "bg-gray-500",
                         model.status === "not_downloaded" && "bg-gray-600",
                       )}
                     />

@@ -1231,7 +1231,7 @@ export function VoicePage({
         return "bg-emerald-500/15 border-emerald-500/40 text-emerald-300";
       case "loading":
       case "downloading":
-        return "bg-sky-500/15 border-sky-500/40 text-sky-300";
+        return "bg-amber-500/15 border-amber-500/40 text-amber-300";
       case "downloaded":
         return "bg-white/10 border-white/20 text-gray-300";
       case "error":
