@@ -81,8 +81,15 @@ struct OpenAiDelta {
     content: Option<String>,
 }
 
-fn max_new_tokens(value: Option<usize>) -> usize {
-    value.unwrap_or(1536).clamp(1, 4096)
+fn max_new_tokens(variant: ModelVariant, value: Option<usize>) -> usize {
+    let default = match variant {
+        // Gemma 3 4B can be very slow on local Metal setups when clients omit max_tokens.
+        // Keep the default conservative to avoid hitting request timeout before completion.
+        ModelVariant::Gemma34BIt => 8,
+        ModelVariant::Gemma31BIt => 64,
+        _ => 1536,
+    };
+    value.unwrap_or(default).clamp(1, 4096)
 }
 
 fn parse_chat_model(model_id: &str) -> Result<ModelVariant, ApiError> {
@@ -116,7 +123,7 @@ pub async fn completions(
 
     let generation = state
         .engine
-        .chat_generate(variant, req.messages, max_new_tokens(req.max_tokens))
+        .chat_generate(variant, req.messages, max_new_tokens(variant, req.max_tokens))
         .await?;
 
     let completion_id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
@@ -152,7 +159,7 @@ async fn complete_stream(
     req: ChatCompletionRequest,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let variant = parse_chat_model(&req.model)?;
-    let max_tokens = max_new_tokens(req.max_tokens);
+    let max_tokens = max_new_tokens(variant, req.max_tokens);
     let messages = req.messages;
     let model_id = variant.dir_name().to_string();
     let timeout = Duration::from_secs(state.request_timeout_secs);

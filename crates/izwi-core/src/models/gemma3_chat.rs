@@ -89,16 +89,6 @@ struct GemmaDefaults {
     head_dim: usize,
 }
 
-fn max_position_embeddings_cap_for_variant(variant: ModelVariant) -> usize {
-    match variant {
-        // 4B has shown severe memory pressure/timeouts on Metal when large
-        // KV caches are preallocated from oversized context settings.
-        ModelVariant::Gemma34BIt => 8_192,
-        ModelVariant::Gemma31BIt => 32_768,
-        _ => 32_768,
-    }
-}
-
 fn defaults_for_variant(variant: ModelVariant) -> GemmaDefaults {
     match variant {
         ModelVariant::Gemma31BIt => GemmaDefaults {
@@ -134,9 +124,12 @@ fn parse_gemma3_config(
     tokenizer_vocab_size: usize,
     checkpoint_vocab_size: Option<usize>,
 ) -> Result<Gemma3Config> {
-    let max_position_embeddings_cap = max_position_embeddings_cap_for_variant(variant);
     let root_value: Value = serde_json::from_str(config_str)?;
-    let source = root_value.get("text_config").cloned().unwrap_or(root_value);
+    let has_text_config = root_value.get("text_config").is_some();
+    let source = root_value
+        .get("text_config")
+        .cloned()
+        .unwrap_or_else(|| root_value.clone());
 
     let mut object: BTreeMap<String, Value> = source
         .as_object()
@@ -163,6 +156,13 @@ fn parse_gemma3_config(
         "intermediate_size",
         Value::from(defaults.intermediate_size as u64),
     );
+    // MLX gemma3.py applies these multimodal defaults for Gemma 3 4B configs
+    // when they are omitted from text_config.
+    if has_text_config {
+        set_default("num_attention_heads", Value::from(8u64));
+        set_default("num_key_value_heads", Value::from(4u64));
+    }
+
     set_default(
         "num_attention_heads",
         Value::from(defaults.num_attention_heads as u64),
@@ -181,15 +181,21 @@ fn parse_gemma3_config(
     set_default("rope_local_base_freq", Value::from(10_000f64));
     set_default(
         "query_pre_attn_scalar",
-        Value::from(defaults.head_dim as u64),
+        Value::from(256u64),
     );
-    set_default("sliding_window", Value::from(1024u64));
+    set_default("sliding_window", Value::from(512u64));
     set_default("sliding_window_pattern", Value::from(6u64));
     set_default(
         "max_position_embeddings",
-        Value::from(max_position_embeddings_cap as u64),
+        Value::from(32_768u64),
     );
-    let resolved_vocab_size = checkpoint_vocab_size.unwrap_or(tokenizer_vocab_size);
+    let resolved_vocab_size = checkpoint_vocab_size.unwrap_or_else(|| {
+        if has_text_config {
+            262_208
+        } else {
+            tokenizer_vocab_size
+        }
+    });
     if let Some(config_vocab_size) = object.get("vocab_size").and_then(|value| value.as_u64()) {
         if config_vocab_size as usize != resolved_vocab_size {
             info!(
@@ -199,24 +205,6 @@ fn parse_gemma3_config(
         }
     }
     object.insert("vocab_size".to_string(), Value::from(resolved_vocab_size as u64));
-    let resolved_max_position_embeddings = object
-        .get("max_position_embeddings")
-        .and_then(|value| value.as_u64())
-        .map(|value| value as usize)
-        .unwrap_or(max_position_embeddings_cap);
-    let capped_max_position_embeddings =
-        resolved_max_position_embeddings.min(max_position_embeddings_cap);
-    if capped_max_position_embeddings != resolved_max_position_embeddings {
-        info!(
-            "Capping Gemma {} max_position_embeddings from {} to {} to avoid excessive KV cache allocation",
-            variant.dir_name(),
-            resolved_max_position_embeddings, capped_max_position_embeddings
-        );
-    }
-    object.insert(
-        "max_position_embeddings".to_string(),
-        Value::from(capped_max_position_embeddings as u64),
-    );
 
     let config =
         serde_json::from_value::<Gemma3Config>(Value::Object(object.into_iter().collect()))
@@ -431,6 +419,19 @@ impl Gemma3ChatModel {
             tokenizer.vocab_size,
             inferred_vocab_size,
         )?;
+        info!(
+            "Gemma {} config resolved: layers={}, heads={}, kv_heads={}, head_dim={}, hidden_size={}, sliding_window={}, sliding_window_pattern={}, max_position_embeddings={}, dtype={:?}",
+            variant.dir_name(),
+            config.num_hidden_layers,
+            config.num_attention_heads,
+            config.num_key_value_heads,
+            config.head_dim,
+            config.hidden_size,
+            config.sliding_window,
+            config.sliding_window_pattern,
+            config.max_position_embeddings,
+            dtype
+        );
 
         let vb = if use_language_model_prefix {
             vb_base.pp("language_model")
@@ -481,6 +482,7 @@ impl Gemma3ChatModel {
 
         let mut generated_ids = Vec::new();
         let mut assembled = String::new();
+        let mut stagnant_steps = 0usize;
 
         let mut model = self
             .text_model
@@ -488,9 +490,8 @@ impl Gemma3ChatModel {
             .map_err(|_| Error::InferenceError("Gemma model mutex poisoned".to_string()))?;
         model.clear_kv_cache();
 
-        // Feed the prompt token-by-token to keep KV-cache updates contiguous on Metal.
-        // Some Gemma 3 checkpoints can hit Candle `slice_set` errors when pre-filling
-        // with long prompt tensors in a single forward pass.
+        // Keep prefill token-by-token to avoid known Candle slice_set issues
+        // with some Metal execution paths on Gemma.
         for &token in prompt_ids.iter().skip(1) {
             model
                 .forward(&input_ids, seqlen_offset)
@@ -503,9 +504,13 @@ impl Gemma3ChatModel {
             let logits = model
                 .forward(&input_ids, seqlen_offset)
                 .map_err(Error::from)?;
-            let next = select_next_token(&logits)?;
+            let next = select_next_token(&logits, self.tokenizer.vocab_size)?;
 
-            if next == self.tokenizer.specials.end_of_turn || next == self.tokenizer.specials.eos {
+            if next == self.tokenizer.specials.end_of_turn
+                || next == self.tokenizer.specials.eos
+                || next == self.tokenizer.specials.start_of_turn
+                || self.tokenizer.specials.bos.is_some_and(|bos| next == bos)
+            {
                 break;
             }
 
@@ -517,7 +522,15 @@ impl Gemma3ChatModel {
                 let mut buf = [0u8; 4];
                 on_delta(ch.encode_utf8(&mut buf));
             }
-            assembled = decoded;
+            if decoded == assembled {
+                stagnant_steps += 1;
+                if stagnant_steps >= 4 {
+                    break;
+                }
+            } else {
+                stagnant_steps = 0;
+                assembled = decoded;
+            }
 
             seqlen_offset += 1;
             input_ids = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
@@ -627,29 +640,36 @@ fn strip_think_blocks(input: &str) -> String {
     output.trim().to_string()
 }
 
-fn argmax(logits: &Tensor) -> Result<u32> {
+fn argmax(logits: &Tensor, vocab_limit: usize) -> Result<u32> {
     let values = logits.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+    let capped = vocab_limit.min(values.len());
+    if capped == 0 {
+        return Err(Error::InferenceError(
+            "No valid logits in constrained vocabulary".to_string(),
+        ));
+    }
     let (idx, _) = values
         .iter()
+        .take(capped)
         .enumerate()
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
         .ok_or_else(|| Error::InferenceError("Empty logits".to_string()))?;
     Ok(idx as u32)
 }
 
-fn select_next_token(logits: &Tensor) -> Result<u32> {
+fn select_next_token(logits: &Tensor, vocab_limit: usize) -> Result<u32> {
     match logits.rank() {
         // [vocab]
-        1 => argmax(logits),
+        1 => argmax(logits, vocab_limit),
         // [seq, vocab]
         2 => {
             let seq_len = logits.dim(0)?;
-            argmax(&logits.i(seq_len.saturating_sub(1))?)
+            argmax(&logits.i(seq_len.saturating_sub(1))?, vocab_limit)
         }
         // [batch, seq, vocab]
         3 => {
             let seq_len = logits.dim(1)?;
-            argmax(&logits.i((0, seq_len.saturating_sub(1)))?)
+            argmax(&logits.i((0, seq_len.saturating_sub(1)))?, vocab_limit)
         }
         _ => Err(Error::InferenceError(format!(
             "Unexpected Gemma logits rank: {} with dims {:?}",
