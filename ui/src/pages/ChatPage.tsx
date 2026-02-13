@@ -39,15 +39,6 @@ interface ChatPageProps {
   onError: (message: string) => void;
 }
 
-const STATUS_ORDER: Record<ModelInfo["status"], number> = {
-  ready: 0,
-  loading: 1,
-  downloading: 2,
-  downloaded: 3,
-  not_downloaded: 4,
-  error: 5,
-};
-
 function getChatModelName(variant: string): string {
   if (variant === "Qwen3-0.6B-4bit") {
     return withQwen3Prefix("Chat 0.6B 4-bit", variant);
@@ -133,13 +124,7 @@ export function ChatPage({
     () =>
       models
         .filter((model) => viewConfig.modelFilter(model.variant))
-        .sort((a, b) => {
-          const orderDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
-          if (orderDiff !== 0) {
-            return orderDiff;
-          }
-          return a.variant.localeCompare(b.variant);
-        }),
+        .sort((a, b) => a.variant.localeCompare(b.variant)),
     [models, viewConfig],
   );
 

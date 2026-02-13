@@ -59,15 +59,6 @@ export function TranscriptionPage({
     null,
   );
 
-  const STATUS_ORDER: Record<ModelInfo["status"], number> = {
-    ready: 0,
-    loading: 1,
-    downloading: 2,
-    downloaded: 3,
-    not_downloaded: 4,
-    error: 5,
-  };
-
   const formatBytes = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -81,13 +72,7 @@ export function TranscriptionPage({
       models
         .filter((model) => !model.variant.includes("Tokenizer"))
         .filter((model) => viewConfig.modelFilter(model.variant))
-        .sort((a, b) => {
-          const orderDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
-          if (orderDiff !== 0) {
-            return orderDiff;
-          }
-          return a.variant.localeCompare(b.variant);
-        }),
+        .sort((a, b) => a.variant.localeCompare(b.variant)),
     [models, viewConfig],
   );
 

@@ -367,22 +367,9 @@ export function VoicePage({
   );
 
   const sortedModels = useMemo(() => {
-    const statusOrder: Record<ModelInfo["status"], number> = {
-      ready: 0,
-      loading: 1,
-      downloaded: 2,
-      downloading: 3,
-      not_downloaded: 4,
-      error: 5,
-    };
-
     return [...models]
       .filter((m) => !m.variant.includes("Tokenizer"))
-      .sort((a, b) => {
-        const order = statusOrder[a.status] - statusOrder[b.status];
-        if (order !== 0) return order;
-        return a.variant.localeCompare(b.variant);
-      });
+      .sort((a, b) => a.variant.localeCompare(b.variant));
   }, [models]);
 
   const asrModels = useMemo(
