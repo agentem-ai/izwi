@@ -23,6 +23,10 @@ struct TranscriptionRequest {
     language: Option<String>,
     response_format: Option<String>,
     stream: bool,
+    // Accepted for compatibility; currently not used by runtime.
+    _prompt: Option<String>,
+    _temperature: Option<f32>,
+    _timestamp_granularities: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -115,8 +119,16 @@ pub async fn transcriptions(
             .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
             .body(Body::from(output.text))
             .unwrap()),
+        "srt" => Ok(Response::builder()
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .body(Body::from(format_srt(&output.text, output.duration_secs)))
+            .unwrap()),
+        "vtt" => Ok(Response::builder()
+            .header(header::CONTENT_TYPE, "text/vtt; charset=utf-8")
+            .body(Body::from(format_vtt(&output.text, output.duration_secs)))
+            .unwrap()),
         other => Err(ApiError::bad_request(format!(
-            "Unsupported response_format: {}. Supported: json, verbose_json, text",
+            "Unsupported response_format: {}. Supported: json, verbose_json, text, srt, vtt",
             other
         ))),
     }
@@ -252,7 +264,6 @@ async fn transcriptions_stream(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
-        .header("X-Accel-Buffering", "no")
         .body(Body::from_stream(stream))
         .unwrap())
 }
@@ -268,6 +279,12 @@ struct JsonRequestBody {
     response_format: Option<String>,
     #[serde(default)]
     stream: Option<bool>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    temperature: Option<f32>,
+    #[serde(default)]
+    timestamp_granularities: Option<Vec<String>>,
 }
 
 async fn parse_transcription_request(req: Request) -> Result<TranscriptionRequest, ApiError> {
@@ -290,6 +307,9 @@ async fn parse_transcription_request(req: Request) -> Result<TranscriptionReques
             language: payload.language,
             response_format: payload.response_format,
             stream: payload.stream.unwrap_or(false),
+            _prompt: payload.prompt,
+            _temperature: payload.temperature,
+            _timestamp_granularities: payload.timestamp_granularities,
         });
     }
 
@@ -309,12 +329,10 @@ async fn parse_transcription_request(req: Request) -> Result<TranscriptionReques
             let name = field.name().unwrap_or_default().to_string();
             match name.as_str() {
                 "file" | "audio" => {
-                    let bytes = field.bytes().await.map_err(|e| {
-                        ApiError::bad_request(format!(
-                            "Failed reading multipart '{}' field: {}",
-                            name, e
-                        ))
-                    })?;
+                    let bytes = field
+                        .bytes()
+                        .await
+                        .map_err(|e| multipart_field_error(&name, &e.to_string()))?;
                     if !bytes.is_empty() {
                         out.audio_base64 =
                             Some(base64::engine::general_purpose::STANDARD.encode(&bytes));
@@ -361,6 +379,36 @@ async fn parse_transcription_request(req: Request) -> Result<TranscriptionReques
                         out.response_format = Some(text.trim().to_string());
                     }
                 }
+                "prompt" => {
+                    let text = field.text().await.map_err(|e| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'prompt' field: {e}"
+                        ))
+                    })?;
+                    if !text.trim().is_empty() {
+                        out._prompt = Some(text.trim().to_string());
+                    }
+                }
+                "temperature" => {
+                    let text = field.text().await.map_err(|e| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'temperature' field: {e}"
+                        ))
+                    })?;
+                    out._temperature = text.trim().parse::<f32>().ok();
+                }
+                "timestamp_granularities[]" => {
+                    let text = field.text().await.map_err(|e| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'timestamp_granularities[]' field: {e}"
+                        ))
+                    })?;
+                    if !text.trim().is_empty() {
+                        out._timestamp_granularities
+                            .get_or_insert_with(Vec::new)
+                            .push(text.trim().to_string());
+                    }
+                }
                 "stream" => {
                     let text = field.text().await.map_err(|e| {
                         ApiError::bad_request(format!(
@@ -383,4 +431,67 @@ async fn parse_transcription_request(req: Request) -> Result<TranscriptionReques
         status: StatusCode::UNSUPPORTED_MEDIA_TYPE,
         message: "Expected `Content-Type: application/json` or `multipart/form-data`".to_string(),
     })
+}
+
+fn multipart_field_error(field_name: &str, raw: &str) -> ApiError {
+    let lowered = raw.to_ascii_lowercase();
+    if lowered.contains("multipart/form-data") {
+        return ApiError::bad_request(format!(
+            "Failed reading multipart '{}' field: {}. \
+This is commonly caused by oversized uploads or malformed multipart boundaries. \
+Ensure `Content-Type` includes a valid boundary (let your HTTP client set it automatically for FormData) and keep payload under 64 MiB.",
+            field_name, raw
+        ));
+    }
+
+    ApiError::bad_request(format!(
+        "Failed reading multipart '{}' field: {}",
+        field_name, raw
+    ))
+}
+
+fn format_srt(text: &str, duration_secs: f32) -> String {
+    format!(
+        "1\n{} --> {}\n{}\n",
+        secs_to_srt(0.0),
+        secs_to_srt(duration_secs.max(0.1)),
+        text.trim()
+    )
+}
+
+fn format_vtt(text: &str, duration_secs: f32) -> String {
+    format!(
+        "WEBVTT\n\n{} --> {}\n{}\n",
+        secs_to_vtt(0.0),
+        secs_to_vtt(duration_secs.max(0.1)),
+        text.trim()
+    )
+}
+
+fn secs_to_srt(secs: f32) -> String {
+    let total_ms = (secs.max(0.0) * 1000.0).round() as u64;
+    let ms = total_ms % 1000;
+    let total_sec = total_ms / 1000;
+    let s = total_sec % 60;
+    let total_min = total_sec / 60;
+    let m = total_min % 60;
+    let h = total_min / 60;
+    format!("{h:02}:{m:02}:{s:02},{ms:03}")
+}
+
+fn secs_to_vtt(secs: f32) -> String {
+    secs_to_srt(secs).replace(',', ".")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_srt_and_vtt() {
+        let srt = format_srt("hello", 1.23);
+        let vtt = format_vtt("hello", 1.23);
+        assert!(srt.contains("-->"));
+        assert!(vtt.starts_with("WEBVTT"));
+    }
 }

@@ -82,6 +82,11 @@ This avoids duplicated parsing logic in each API endpoint.
 ## API Surface
 
 ### OpenAI-Compatible Runtime Endpoints
+- `POST /v1/responses`
+- `GET /v1/responses/:response_id`
+- `DELETE /v1/responses/:response_id`
+- `POST /v1/responses/:response_id/cancel`
+- `GET /v1/responses/:response_id/input_items`
 - `POST /v1/audio/speech`
 - `POST /v1/audio/transcriptions`
 - `POST /v1/chat/completions`

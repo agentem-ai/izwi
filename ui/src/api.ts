@@ -78,6 +78,38 @@ export interface ChatStreamCallbacks {
 }
 
 // ============================================================================
+// Responses API Types
+// ============================================================================
+
+export interface ResponsesCreateRequest {
+  model_id?: string;
+  input: string;
+  instructions?: string;
+  max_output_tokens?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ResponsesObject {
+  id: string;
+  status: string;
+  model: string;
+  output_text: string;
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  };
+}
+
+export interface ResponsesStreamCallbacks {
+  onCreated?: (response: ResponsesObject) => void;
+  onDelta?: (delta: string) => void;
+  onCompleted?: (response: ResponsesObject) => void;
+  onError?: (error: string) => void;
+  onDone?: () => void;
+}
+
+// ============================================================================
 // Unified TTS Types
 // ============================================================================
 
@@ -247,6 +279,25 @@ interface OpenAiChatChunk {
   }>;
 }
 
+interface OpenAiResponseObject {
+  id: string;
+  status: string;
+  model: string;
+  output?: Array<{
+    type: string;
+    role: string;
+    content?: Array<{
+      type: string;
+      text?: string;
+    }>;
+  }>;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+  };
+}
+
 type AsrResponseFormat = "json" | "verbose_json";
 
 class ApiClient {
@@ -273,6 +324,25 @@ class ApiClient {
     }
 
     return response.json();
+  }
+
+  private mapResponseObject(payload: OpenAiResponseObject): ResponsesObject {
+    const firstOutputText =
+      payload.output?.[0]?.content
+        ?.map((part) => part.text ?? "")
+        .join("") ?? "";
+
+    return {
+      id: payload.id,
+      status: payload.status,
+      model: payload.model,
+      output_text: firstOutputText,
+      usage: {
+        input_tokens: payload.usage?.input_tokens ?? 0,
+        output_tokens: payload.usage?.output_tokens ?? 0,
+        total_tokens: payload.usage?.total_tokens ?? 0,
+      },
+    };
   }
 
   // ========================================================================
@@ -817,6 +887,140 @@ class ApiClient {
 
     startStream();
     return abortController;
+  }
+
+  // ========================================================================
+  // OpenAI-compatible Responses API
+  // ========================================================================
+
+  async createResponse(request: ResponsesCreateRequest): Promise<ResponsesObject> {
+    const payload = await this.request<OpenAiResponseObject>("/responses", {
+      method: "POST",
+      body: JSON.stringify({
+        model: request.model_id ?? "Qwen3-0.6B-4bit",
+        input: request.input,
+        instructions: request.instructions,
+        max_output_tokens: request.max_output_tokens,
+        metadata: request.metadata,
+      }),
+    });
+
+    return this.mapResponseObject(payload);
+  }
+
+  createResponseStream(
+    request: ResponsesCreateRequest,
+    callbacks: ResponsesStreamCallbacks,
+  ): AbortController {
+    const abortController = new AbortController();
+
+    const startStream = async () => {
+      try {
+        const response = await fetch(`${this.baseUrl}/responses`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: request.model_id ?? "Qwen3-0.6B-4bit",
+            input: request.input,
+            instructions: request.instructions,
+            max_output_tokens: request.max_output_tokens,
+            metadata: request.metadata,
+            stream: true,
+          }),
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) {
+          const error = await response
+            .json()
+            .catch(() => ({ error: { message: "Responses streaming failed" } }));
+          callbacks.onError?.(error.error?.message || "Responses streaming failed");
+          callbacks.onDone?.();
+          return;
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          callbacks.onError?.("No response body");
+          callbacks.onDone?.();
+          return;
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (!data) continue;
+
+            if (data === "[DONE]") {
+              callbacks.onDone?.();
+              return;
+            }
+
+            try {
+              const event = JSON.parse(data) as {
+                type: string;
+                response?: OpenAiResponseObject;
+                delta?: string;
+                error?: { message?: string };
+              };
+
+              if (event.type === "response.created" && event.response) {
+                callbacks.onCreated?.(this.mapResponseObject(event.response));
+              } else if (event.type === "response.output_text.delta") {
+                callbacks.onDelta?.(event.delta ?? "");
+              } else if (event.type === "response.completed" && event.response) {
+                callbacks.onCompleted?.(this.mapResponseObject(event.response));
+              } else if (event.type === "response.failed") {
+                callbacks.onError?.(event.error?.message ?? "Responses request failed");
+              }
+            } catch {
+              // Skip malformed SSE payloads.
+            }
+          }
+        }
+
+        callbacks.onDone?.();
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") {
+          callbacks.onError?.(
+            error instanceof Error ? error.message : "Responses stream error",
+          );
+        }
+        callbacks.onDone?.();
+      }
+    };
+
+    startStream();
+    return abortController;
+  }
+
+  async getResponse(id: string): Promise<ResponsesObject> {
+    const payload = await this.request<OpenAiResponseObject>(`/responses/${id}`);
+    return this.mapResponseObject(payload);
+  }
+
+  async cancelResponse(id: string): Promise<ResponsesObject> {
+    const payload = await this.request<OpenAiResponseObject>(`/responses/${id}/cancel`, {
+      method: "POST",
+    });
+    return this.mapResponseObject(payload);
+  }
+
+  async deleteResponse(id: string): Promise<{ id: string; object: string; deleted: boolean }> {
+    return this.request(`/responses/${id}`, { method: "DELETE" });
   }
 
   // ========================================================================

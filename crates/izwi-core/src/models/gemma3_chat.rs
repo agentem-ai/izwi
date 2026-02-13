@@ -179,16 +179,10 @@ fn parse_gemma3_config(
     set_default("rms_norm_eps", Value::from(1e-6f64));
     set_default("rope_theta", Value::from(1_000_000f64));
     set_default("rope_local_base_freq", Value::from(10_000f64));
-    set_default(
-        "query_pre_attn_scalar",
-        Value::from(256u64),
-    );
+    set_default("query_pre_attn_scalar", Value::from(256u64));
     set_default("sliding_window", Value::from(512u64));
     set_default("sliding_window_pattern", Value::from(6u64));
-    set_default(
-        "max_position_embeddings",
-        Value::from(32_768u64),
-    );
+    set_default("max_position_embeddings", Value::from(32_768u64));
     let resolved_vocab_size = checkpoint_vocab_size.unwrap_or_else(|| {
         if has_text_config {
             262_208
@@ -204,7 +198,10 @@ fn parse_gemma3_config(
             );
         }
     }
-    object.insert("vocab_size".to_string(), Value::from(resolved_vocab_size as u64));
+    object.insert(
+        "vocab_size".to_string(),
+        Value::from(resolved_vocab_size as u64),
+    );
 
     let config =
         serde_json::from_value::<Gemma3Config>(Value::Object(object.into_iter().collect()))
@@ -349,21 +346,19 @@ impl Gemma3ChatModel {
                 inferred_vocab_size =
                     infer_embed_vocab_size_from_safetensors(&shard_path, embed_tensor_name)?;
             } else {
-                let fallback_tensor_name = if embed_tensor_name
-                    == "language_model.model.embed_tokens.weight"
-                {
-                    "model.embed_tokens.weight"
-                } else {
-                    "language_model.model.embed_tokens.weight"
-                };
-                if let Some(shard_name) =
-                    weight_map.get(fallback_tensor_name).and_then(|v| v.as_str())
+                let fallback_tensor_name =
+                    if embed_tensor_name == "language_model.model.embed_tokens.weight" {
+                        "model.embed_tokens.weight"
+                    } else {
+                        "language_model.model.embed_tokens.weight"
+                    };
+                if let Some(shard_name) = weight_map
+                    .get(fallback_tensor_name)
+                    .and_then(|v| v.as_str())
                 {
                     let shard_path = model_dir.join(shard_name);
-                    inferred_vocab_size = infer_embed_vocab_size_from_safetensors(
-                        &shard_path,
-                        fallback_tensor_name,
-                    )?;
+                    inferred_vocab_size =
+                        infer_embed_vocab_size_from_safetensors(&shard_path, fallback_tensor_name)?;
                     if fallback_tensor_name.starts_with("language_model.") {
                         use_language_model_prefix = true;
                     }
@@ -476,8 +471,7 @@ impl Gemma3ChatModel {
                 "Gemma prompt produced no tokens".to_string(),
             ));
         }
-        let mut input_ids =
-            Tensor::from_vec(vec![prompt_ids[0]], (1, 1), &self.device.device)?;
+        let mut input_ids = Tensor::from_vec(vec![prompt_ids[0]], (1, 1), &self.device.device)?;
         let mut seqlen_offset = 0usize;
 
         let mut generated_ids = Vec::new();

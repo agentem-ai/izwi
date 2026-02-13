@@ -14,17 +14,65 @@ use tokio::sync::mpsc;
 
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::models::chat_types::ChatMessage;
+use izwi_core::models::chat_types::{ChatMessage, ChatRole};
 use izwi_core::{parse_chat_model_variant, ModelVariant};
 
-#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
-    pub messages: Vec<ChatMessage>,
+    pub messages: Vec<OpenAiInboundMessage>,
     #[serde(default)]
     pub max_tokens: Option<usize>,
     #[serde(default)]
+    pub max_completion_tokens: Option<usize>,
+    #[serde(default)]
     pub stream: Option<bool>,
+    #[serde(default)]
+    pub stream_options: Option<ChatCompletionStreamOptions>,
+    #[serde(default)]
+    pub n: Option<usize>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default)]
+    pub presence_penalty: Option<f32>,
+    #[serde(default)]
+    pub stop: Option<serde_json::Value>,
+    #[serde(default)]
+    pub user: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatCompletionStreamOptions {
+    #[serde(default)]
+    pub include_usage: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenAiInboundMessage {
+    pub role: String,
+    pub content: OpenAiInboundContent,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum OpenAiInboundContent {
+    Text(String),
+    Parts(Vec<OpenAiInboundContentPart>),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenAiInboundContentPart {
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub input_text: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,6 +83,7 @@ struct OpenAiChatCompletionResponse {
     model: String,
     choices: Vec<OpenAiChoice>,
     usage: OpenAiUsage,
+    izwi_generation_time_ms: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -50,7 +99,7 @@ struct OpenAiAssistantMessage {
     content: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct OpenAiUsage {
     prompt_tokens: usize,
     completion_tokens: usize,
@@ -64,6 +113,8 @@ struct OpenAiChatChunk {
     created: u64,
     model: String,
     choices: Vec<OpenAiChunkChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<OpenAiUsage>,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,7 +132,13 @@ struct OpenAiDelta {
     content: Option<String>,
 }
 
-fn max_new_tokens(variant: ModelVariant, value: Option<usize>) -> usize {
+fn max_new_tokens(
+    variant: ModelVariant,
+    max_completion_tokens: Option<usize>,
+    max_tokens: Option<usize>,
+) -> usize {
+    let requested = max_completion_tokens.or(max_tokens);
+
     let default = match variant {
         // Gemma 3 4B can be very slow on local Metal setups when clients omit max_tokens.
         // Keep the default conservative to avoid hitting request timeout before completion.
@@ -89,7 +146,8 @@ fn max_new_tokens(variant: ModelVariant, value: Option<usize>) -> usize {
         ModelVariant::Gemma31BIt => 64,
         _ => 1536,
     };
-    value.unwrap_or(default).clamp(1, 4096)
+
+    requested.unwrap_or(default).clamp(1, 4096)
 }
 
 fn parse_chat_model(model_id: &str) -> Result<ModelVariant, ApiError> {
@@ -103,18 +161,70 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn to_core_messages(messages: Vec<OpenAiInboundMessage>) -> Result<Vec<ChatMessage>, ApiError> {
+    messages
+        .into_iter()
+        .map(|message| {
+            let role = parse_role(&message.role)?;
+            let content = flatten_content(message.content);
+            if content.trim().is_empty() {
+                return Err(ApiError::bad_request(
+                    "Chat message content cannot be empty",
+                ));
+            }
+            Ok(ChatMessage { role, content })
+        })
+        .collect()
+}
+
+fn parse_role(raw: &str) -> Result<ChatRole, ApiError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "system" => Ok(ChatRole::System),
+        "user" => Ok(ChatRole::User),
+        "assistant" => Ok(ChatRole::Assistant),
+        other => Err(ApiError::bad_request(format!(
+            "Unsupported chat message role: {}",
+            other
+        ))),
+    }
+}
+
+fn flatten_content(content: OpenAiInboundContent) -> String {
+    match content {
+        OpenAiInboundContent::Text(text) => text,
+        OpenAiInboundContent::Parts(parts) => parts
+            .into_iter()
+            .filter_map(|part| {
+                if part.kind.as_deref() == Some("text") {
+                    part.text.or(part.input_text)
+                } else {
+                    part.text.or(part.input_text)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
 pub async fn completions(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Result<Response, ApiError> {
-    if req.messages.is_empty() {
+    if req.n.unwrap_or(1) != 1 {
+        return Err(ApiError::bad_request(
+            "This server currently supports only `n=1` for chat completions",
+        ));
+    }
+
+    let messages = to_core_messages(req.messages.clone())?;
+    if messages.is_empty() {
         return Err(ApiError::bad_request(
             "Chat request must include at least one message",
         ));
     }
 
     if req.stream.unwrap_or(false) {
-        let stream_response = complete_stream(state, req).await?;
+        let stream_response = complete_stream(state, req, messages).await?;
         return Ok(stream_response.into_response());
     }
 
@@ -123,7 +233,11 @@ pub async fn completions(
 
     let generation = state
         .engine
-        .chat_generate(variant, req.messages, max_new_tokens(variant, req.max_tokens))
+        .chat_generate(
+            variant,
+            messages,
+            max_new_tokens(variant, req.max_completion_tokens, req.max_tokens),
+        )
         .await?;
 
     let completion_id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
@@ -149,6 +263,7 @@ pub async fn completions(
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
         },
+        izwi_generation_time_ms: generation.generation_time_ms,
     };
 
     Ok(Json(response).into_response())
@@ -157,10 +272,15 @@ pub async fn completions(
 async fn complete_stream(
     state: AppState,
     req: ChatCompletionRequest,
+    messages: Vec<ChatMessage>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let variant = parse_chat_model(&req.model)?;
-    let max_tokens = max_new_tokens(variant, req.max_tokens);
-    let messages = req.messages;
+    let include_usage = req
+        .stream_options
+        .as_ref()
+        .and_then(|opts| opts.include_usage)
+        .unwrap_or(false);
+    let max_tokens = max_new_tokens(variant, req.max_completion_tokens, req.max_tokens);
     let model_id = variant.dir_name().to_string();
     let timeout = Duration::from_secs(state.request_timeout_secs);
 
@@ -204,6 +324,7 @@ async fn complete_stream(
                 },
                 finish_reason: None,
             }],
+            usage: None,
         };
         let _ = event_tx.send(serde_json::to_string(&start_chunk).unwrap_or_default());
 
@@ -224,6 +345,7 @@ async fn complete_stream(
                             },
                             finish_reason: None,
                         }],
+                        usage: None,
                     };
                     let _ = delta_tx.send(serde_json::to_string(&chunk).unwrap_or_default());
                 })
@@ -232,7 +354,7 @@ async fn complete_stream(
         .await;
 
         match result {
-            Ok(Ok(_generation)) => {
+            Ok(Ok(generation)) => {
                 let final_chunk = OpenAiChatChunk {
                     id: completion_id,
                     object: "chat.completion.chunk",
@@ -246,6 +368,11 @@ async fn complete_stream(
                         },
                         finish_reason: Some("stop"),
                     }],
+                    usage: include_usage.then_some(OpenAiUsage {
+                        prompt_tokens: 0,
+                        completion_tokens: generation.tokens_generated,
+                        total_tokens: generation.tokens_generated,
+                    }),
                 };
                 let _ = event_tx.send(serde_json::to_string(&final_chunk).unwrap_or_default());
             }
@@ -286,4 +413,27 @@ async fn complete_stream(
     };
 
     Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flattens_text_parts_content() {
+        let flattened = flatten_content(OpenAiInboundContent::Parts(vec![
+            OpenAiInboundContentPart {
+                kind: Some("text".to_string()),
+                text: Some("hello".to_string()),
+                input_text: None,
+            },
+            OpenAiInboundContentPart {
+                kind: Some("input_text".to_string()),
+                text: None,
+                input_text: Some("world".to_string()),
+            },
+        ]));
+
+        assert_eq!(flattened, "hello\nworld");
+    }
 }

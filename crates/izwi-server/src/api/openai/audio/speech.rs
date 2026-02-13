@@ -29,7 +29,7 @@ pub struct SpeechRequest {
     /// OpenAI-style voice selection.
     #[serde(default)]
     pub voice: Option<String>,
-    /// OpenAI response format (`wav` and `pcm` currently supported).
+    /// OpenAI response format (`wav` and `pcm` currently supported by local runtime).
     #[serde(default)]
     pub response_format: Option<String>,
     /// OpenAI speed.
@@ -44,6 +44,9 @@ pub struct SpeechRequest {
     /// Optional max token budget.
     #[serde(default)]
     pub max_tokens: Option<usize>,
+    /// Alias for max output tokens in newer APIs.
+    #[serde(default)]
+    pub max_output_tokens: Option<usize>,
     /// If true, stream chunked audio from same endpoint.
     #[serde(default)]
     pub stream: Option<bool>,
@@ -117,7 +120,7 @@ pub async fn speech(
         if let Some(speed) = req.speed {
             gen_config.speed = speed;
         }
-        if let Some(max_tokens) = req.max_tokens {
+        if let Some(max_tokens) = req.max_output_tokens.or(req.max_tokens) {
             gen_config.max_tokens = max_tokens;
         }
         gen_config.speaker = req.voice.clone();
@@ -176,7 +179,7 @@ async fn stream_speech(state: AppState, req: SpeechRequest) -> Result<Response<B
     if let Some(speed) = req.speed {
         gen_config.speed = speed;
     }
-    if let Some(max_tokens) = req.max_tokens {
+    if let Some(max_tokens) = req.max_output_tokens.or(req.max_tokens) {
         gen_config.max_tokens = max_tokens;
     }
     gen_config.speaker = req.voice.clone();
@@ -438,11 +441,15 @@ async fn stream_speech(state: AppState, req: SpeechRequest) -> Result<Response<B
 fn parse_response_format(format: &str) -> Result<AudioFormat, ApiError> {
     match format.to_ascii_lowercase().as_str() {
         "wav" => Ok(AudioFormat::Wav),
-        "pcm" => Ok(AudioFormat::RawI16),
+        "pcm" | "pcm16" | "pcm_i16" | "raw_i16" => Ok(AudioFormat::RawI16),
         "raw_f32" | "pcm_f32" => Ok(AudioFormat::RawF32),
-        "raw_i16" | "pcm_i16" => Ok(AudioFormat::RawI16),
+        // Accepted OpenAI names that are not yet supported by local encoder.
+        "mp3" | "opus" | "aac" | "flac" => Err(ApiError::bad_request(format!(
+            "Unsupported response_format: {}. This runtime currently supports wav and pcm",
+            format
+        ))),
         unsupported => Err(ApiError::bad_request(format!(
-            "Unsupported response_format: {}. Supported formats: wav, pcm, raw_f32, raw_i16",
+            "Unsupported response_format: {}. Supported formats: wav, pcm",
             unsupported
         ))),
     }

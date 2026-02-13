@@ -1,8 +1,29 @@
 //! Application state management with high-concurrency optimizations
 
 use izwi_core::InferenceEngine;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
+use tokio::sync::{RwLock, Semaphore};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredResponseInputItem {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredResponseRecord {
+    pub id: String,
+    pub created_at: u64,
+    pub status: String,
+    pub model: String,
+    pub input_items: Vec<StoredResponseInputItem>,
+    pub output_text: Option<String>,
+    pub output_tokens: usize,
+    pub error: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+}
 
 /// Shared application state with fine-grained locking and backpressure
 #[derive(Clone)]
@@ -13,6 +34,8 @@ pub struct AppState {
     pub request_semaphore: Arc<Semaphore>,
     /// Request timeout configuration (seconds)
     pub request_timeout_secs: u64,
+    /// In-memory store for OpenAI-compatible `/v1/responses` objects.
+    pub response_store: Arc<RwLock<HashMap<String, StoredResponseRecord>>>,
 }
 
 impl AppState {
@@ -33,6 +56,7 @@ impl AppState {
             engine: Arc::new(engine),
             request_semaphore: Arc::new(Semaphore::new(max_concurrent)),
             request_timeout_secs: timeout,
+            response_store: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
