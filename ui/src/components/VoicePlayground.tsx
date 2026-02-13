@@ -151,10 +151,10 @@ export function VoicePlayground({
         <div className="relative">
           <button
             onClick={() => setShowSpeakerSelect(!showSpeakerSelect)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
+            className="flex w-36 sm:w-40 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
           >
             <Volume2 className="w-3.5 h-3.5 text-gray-500" />
-            <span className="text-white">{speaker}</span>
+            <span className="text-white flex-1 min-w-0 truncate text-left">{speaker}</span>
             <ChevronDown
               className={clsx(
                 "w-3.5 h-3.5 text-gray-500 transition-transform",
@@ -169,7 +169,7 @@ export function VoicePlayground({
                 initial={{ opacity: 0, y: -5 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -5 }}
-                className="absolute right-0 mt-1 w-36 sm:w-40 p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
+                className="absolute left-0 right-0 top-full mt-1 p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
               >
                 {SPEAKERS.map((s) => (
                   <button

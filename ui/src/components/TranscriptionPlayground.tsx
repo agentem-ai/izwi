@@ -455,20 +455,20 @@ export function TranscriptionPlayground({
   };
 
   const renderModelSelector = () => (
-    <div className="relative" ref={modelMenuRef}>
+    <div className="relative w-full" ref={modelMenuRef}>
       <button
         onClick={() => setIsModelMenuOpen((prev) => !prev)}
         className={clsx(
-          "h-9 px-3 rounded-lg border inline-flex items-center gap-2 text-xs transition-colors",
+          "h-9 px-3 rounded-lg border w-full flex items-center justify-between gap-2 text-xs transition-colors",
           selectedOption?.isReady
             ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
             : "border-white/20 bg-[#1a1a1a] text-gray-300 hover:border-white/30",
         )}
       >
-        <span className="max-w-[170px] truncate">
+        <span className="flex-1 min-w-0 truncate text-left">
           {selectedOption?.label || "Select model"}
         </span>
-        <ChevronDown className={clsx("w-3.5 h-3.5 transition-transform", isModelMenuOpen && "rotate-180")} />
+        <ChevronDown className={clsx("w-3.5 h-3.5 transition-transform shrink-0", isModelMenuOpen && "rotate-180")} />
       </button>
 
       <AnimatePresence>
@@ -478,7 +478,7 @@ export function TranscriptionPlayground({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.15 }}
-            className="absolute right-0 top-full mt-2 w-[280px] max-w-[85vw] rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] p-1.5 shadow-2xl z-50"
+            className="absolute left-0 right-0 top-full mt-2 rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] p-1.5 shadow-2xl z-50"
           >
             <div className="max-h-64 overflow-y-auto pr-1 space-y-0.5">
               {modelOptions.map((option) => (
@@ -518,7 +518,8 @@ export function TranscriptionPlayground({
   return (
     <div className="grid xl:grid-cols-[360px,1fr] gap-4 lg:gap-6">
       <div className="card p-4 sm:p-5 space-y-4">
-        <div className="flex items-start justify-between gap-3">
+        {/* Header with Models button */}
+        <div className="flex items-center justify-between gap-3">
           <div>
             <div className="inline-flex items-center gap-2 text-xs text-gray-400">
               <FileAudio className="w-3.5 h-3.5" />
@@ -528,39 +529,41 @@ export function TranscriptionPlayground({
               Audio Input
             </h2>
           </div>
+          {onOpenModelManager && (
+            <button
+              onClick={handleOpenModels}
+              className="btn btn-secondary text-xs"
+            >
+              <Settings2 className="w-4 h-4" />
+              Models
+            </button>
+          )}
         </div>
 
-        <div className="rounded-xl border border-[#2b2b2b] bg-[#171717] p-4">
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0 flex-1">
-              <div className="text-[11px] text-gray-500 uppercase tracking-wide">
-                Active Model
-              </div>
-              <div className="mt-1 text-sm text-white truncate">
-                {modelLabel ?? "No model selected"}
-              </div>
-              <div
-                className={clsx(
-                  "mt-1 text-xs",
-                  selectedModelReady ? "text-emerald-400" : "text-amber-400",
-                )}
-              >
-                {selectedModelReady
-                  ? "Loaded and ready"
-                  : "Select and load a transcription model"}
-              </div>
+        {/* Model selector */}
+        <div className="rounded-xl border border-[#2b2b2b] bg-[#171717] p-4 space-y-3">
+          {/* Dropdown on top */}
+          <div>
+            <div className="text-[11px] text-gray-500 uppercase tracking-wide mb-2">
+              Active Model
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {modelOptions.length > 0 && renderModelSelector()}
-              {onOpenModelManager && (
-                <button
-                  onClick={handleOpenModels}
-                  className="btn btn-secondary text-xs"
-                >
-                  <Settings2 className="w-4 h-4" />
-                  Models
-                </button>
+            {modelOptions.length > 0 && renderModelSelector()}
+          </div>
+          
+          {/* Selected model info below */}
+          <div className="pt-2 border-t border-[#2a2a2a]">
+            <div className="text-sm text-white truncate">
+              {modelLabel ?? "No model selected"}
+            </div>
+            <div
+              className={clsx(
+                "mt-1 text-xs",
+                selectedModelReady ? "text-emerald-400" : "text-amber-400",
               )}
+            >
+              {selectedModelReady
+                ? "Loaded and ready"
+                : "Select and load a transcription model"}
             </div>
           </div>
         </div>
@@ -652,7 +655,7 @@ export function TranscriptionPlayground({
               onValueChange={setSelectedLanguage}
               disabled={isProcessing}
             >
-              <SelectTrigger className="h-[34px] w-[170px] border-[#2a2a2a] bg-[#171717] text-xs text-gray-300">
+              <SelectTrigger className="h-[34px] w-[190px] sm:w-[220px] border-[#2a2a2a] bg-[#171717] text-xs text-gray-300">
                 <SelectValue placeholder="Language" />
               </SelectTrigger>
               <SelectContent>

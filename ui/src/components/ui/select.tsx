@@ -69,9 +69,10 @@ const SelectContent = React.forwardRef<
     <SelectPrimitive.Content
       ref={ref}
       className={clsx(
-        "relative z-50 max-h-80 min-w-[8rem] overflow-hidden rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-1)] text-[var(--text-primary)] shadow-md animate-in fade-in-0 zoom-in-95",
+        "relative z-50 max-h-80 overflow-hidden rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-1)] text-[var(--text-primary)] shadow-md animate-in fade-in-0 zoom-in-95",
         position === "popper" &&
-          "data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1",
+          "w-[var(--radix-select-trigger-width)] data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1",
+        position !== "popper" && "min-w-[8rem]",
         className,
       )}
       position={position}
@@ -81,8 +82,7 @@ const SelectContent = React.forwardRef<
       <SelectPrimitive.Viewport
         className={clsx(
           "p-1",
-          position === "popper" &&
-            "w-full min-w-[var(--radix-select-trigger-width)]",
+          position === "popper" && "w-full",
         )}
       >
         {children}
