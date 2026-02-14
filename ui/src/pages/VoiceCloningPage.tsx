@@ -43,6 +43,7 @@ export function VoiceCloningPage({
   const viewConfig = VIEW_CONFIGS["voice-clone"];
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [modalIntentModel, setModalIntentModel] = useState<string | null>(null);
+  const [autoCloseOnIntentReady, setAutoCloseOnIntentReady] = useState(false);
 
   const routeModels = useMemo(
     () =>
@@ -95,7 +96,7 @@ export function VoiceCloningPage({
   const selectedModelReady = selectedModelInfo?.status === "ready";
 
   useEffect(() => {
-    if (!isModelModalOpen || !modalIntentModel) {
+    if (!isModelModalOpen || !modalIntentModel || !autoCloseOnIntentReady) {
       return;
     }
     const targetModel = routeModels.find(
@@ -103,11 +104,18 @@ export function VoiceCloningPage({
     );
     if (targetModel?.status === "ready") {
       setIsModelModalOpen(false);
+      setAutoCloseOnIntentReady(false);
     }
-  }, [isModelModalOpen, modalIntentModel, routeModels]);
+  }, [autoCloseOnIntentReady, isModelModalOpen, modalIntentModel, routeModels]);
+
+  const closeModelModal = () => {
+    setIsModelModalOpen(false);
+    setAutoCloseOnIntentReady(false);
+  };
 
   const openModelManager = () => {
     setModalIntentModel(resolvedSelectedModel);
+    setAutoCloseOnIntentReady(false);
     setIsModelModalOpen(true);
   };
 
@@ -147,6 +155,7 @@ export function VoiceCloningPage({
 
     if (model.status !== "ready") {
       setModalIntentModel(variant);
+      setAutoCloseOnIntentReady(true);
       setIsModelModalOpen(true);
     }
   };
@@ -166,6 +175,7 @@ export function VoiceCloningPage({
         onOpenModelManager={openModelManager}
         onModelRequired={() => {
           setModalIntentModel(resolvedSelectedModel);
+          setAutoCloseOnIntentReady(true);
           setIsModelModalOpen(true);
           onError("Select and load a Base model to clone voices.");
         }}
@@ -173,7 +183,7 @@ export function VoiceCloningPage({
 
       <RouteModelModal
         isOpen={isModelModalOpen}
-        onClose={() => setIsModelModalOpen(false)}
+        onClose={closeModelModal}
         title="Voice Cloning Models"
         description="Manage Base models for this route."
         models={routeModels}

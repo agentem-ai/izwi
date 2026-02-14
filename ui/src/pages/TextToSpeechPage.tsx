@@ -43,6 +43,7 @@ export function TextToSpeechPage({
   const viewConfig = VIEW_CONFIGS["custom-voice"];
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [modalIntentModel, setModalIntentModel] = useState<string | null>(null);
+  const [autoCloseOnIntentReady, setAutoCloseOnIntentReady] = useState(false);
 
   const routeModels = useMemo(
     () =>
@@ -97,7 +98,7 @@ export function TextToSpeechPage({
   const selectedModelReady = selectedModelInfo?.status === "ready";
 
   useEffect(() => {
-    if (!isModelModalOpen || !modalIntentModel) {
+    if (!isModelModalOpen || !modalIntentModel || !autoCloseOnIntentReady) {
       return;
     }
     const targetModel = routeModels.find(
@@ -105,11 +106,18 @@ export function TextToSpeechPage({
     );
     if (targetModel?.status === "ready") {
       setIsModelModalOpen(false);
+      setAutoCloseOnIntentReady(false);
     }
-  }, [isModelModalOpen, modalIntentModel, routeModels]);
+  }, [autoCloseOnIntentReady, isModelModalOpen, modalIntentModel, routeModels]);
+
+  const closeModelModal = () => {
+    setIsModelModalOpen(false);
+    setAutoCloseOnIntentReady(false);
+  };
 
   const openModelManager = () => {
     setModalIntentModel(resolvedSelectedModel);
+    setAutoCloseOnIntentReady(false);
     setIsModelModalOpen(true);
   };
 
@@ -149,6 +157,7 @@ export function TextToSpeechPage({
 
     if (model.status !== "ready") {
       setModalIntentModel(variant);
+      setAutoCloseOnIntentReady(true);
       setIsModelModalOpen(true);
     }
   };
@@ -170,6 +179,7 @@ export function TextToSpeechPage({
         onOpenModelManager={openModelManager}
         onModelRequired={() => {
           setModalIntentModel(resolvedSelectedModel);
+          setAutoCloseOnIntentReady(true);
           setIsModelModalOpen(true);
           onError(
             "Select and load a CustomVoice or LFM2 model to generate speech.",
@@ -179,7 +189,7 @@ export function TextToSpeechPage({
 
       <RouteModelModal
         isOpen={isModelModalOpen}
-        onClose={() => setIsModelModalOpen(false)}
+        onClose={closeModelModal}
         title="Text-to-Speech Models"
         description="Manage CustomVoice and LFM2 models for this route."
         models={routeModels}
