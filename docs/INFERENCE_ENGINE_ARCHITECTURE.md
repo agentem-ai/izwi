@@ -9,7 +9,8 @@ This repository now uses a runtime-centric structure that mirrors patterns used 
 - A clear **runtime orchestration layer** (`runtime/`) for request lifecycle.
 - A dedicated **model catalog layer** (`catalog/`) for variant metadata/capabilities/parsing.
 - A **backend routing layer** (`backends/`) that decides execution backend per model.
-- A **model family namespace** (`families/`) for native architecture implementations.
+- A **model family namespace** (`families/`) as a stable API surface over native implementations.
+- A split native model layout under `models/`: **shared infra** (`shared/`) and **family implementations** (`architectures/`).
 - A **codec namespace** (`codecs/`) for audio encode/decode surfaces.
 - A strict canonical module surface with deprecated compatibility shims removed.
 
@@ -45,7 +46,11 @@ crates/izwi-core/src/
 ├── codecs/
 │   └── mod.rs                 # codec namespace wrappers over audio module
 ├── model/                     # existing model manager/download implementation
-├── models/                    # existing native family implementations
+├── models/
+│   ├── mod.rs                 # model namespace + compatibility re-exports
+│   ├── registry.rs            # native model instance registry/load-once cache
+│   ├── shared/                # shared infra (device/weights/attention/memory/chat types)
+│   └── architectures/         # concrete model families (qwen3, gemma3, lfm2, etc.)
 └── engine/                    # existing vLLM-style experimental engine core
 ```
 
@@ -114,11 +119,12 @@ The previous `/api/v1/tts/*`, `/api/v1/asr/*`, and shimmed compatibility paths w
 4. Add runtime-level integration tests for per-model backend dispatch.
 
 ### Add New Model Families
-1. Add family implementation under `models/`.
-2. Export under `families/` namespace.
-3. Add `ModelVariant` entries + capability mapping in `catalog/variant.rs`.
-4. Add load/unload route in `runtime/model_router.rs`.
-5. Add task handlers (if new task type) under `runtime/`.
+1. Add family implementation under `models/architectures/<family>/`.
+2. Reuse/add shared primitives under `models/shared/` when cross-family.
+3. Export the family via `models/architectures/mod.rs`, then expose it in `models/mod.rs` (including compatibility alias if needed).
+4. Wire load/caching in `models/registry.rs`.
+5. Add `ModelVariant` entries + capability mapping in `catalog/variant.rs`.
+6. Add load/unload routing in `runtime/model_router.rs` and task handlers in `runtime/` (if needed).
 
 ### Add Additional Audio Codecs
 1. Implement codec components under `audio/`.
