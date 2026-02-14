@@ -18,10 +18,6 @@ impl InferenceEngine {
             self.model_registry.unload_chat(variant).await;
         } else if variant.is_lfm2() {
             self.model_registry.unload_lfm2(variant).await;
-            let mut lfm2_tts_guard = self.lfm2_fallback_tts_model.write().await;
-            *lfm2_tts_guard = None;
-            let mut lfm2_tts_variant_guard = self.lfm2_fallback_tts_variant.write().await;
-            *lfm2_tts_variant_guard = None;
             let mut path_guard = self.loaded_model_path.write().await;
             *path_guard = None;
             let mut variant_guard = self.loaded_tts_variant.write().await;
@@ -31,12 +27,6 @@ impl InferenceEngine {
         } else if variant.is_tts() {
             let mut model_guard = self.tts_model.write().await;
             *model_guard = None;
-            if *self.lfm2_fallback_tts_variant.read().await == Some(variant) {
-                let mut lfm2_tts_guard = self.lfm2_fallback_tts_model.write().await;
-                *lfm2_tts_guard = None;
-                let mut lfm2_tts_variant_guard = self.lfm2_fallback_tts_variant.write().await;
-                *lfm2_tts_variant_guard = None;
-            }
             let mut path_guard = self.loaded_model_path.write().await;
             *path_guard = None;
             let mut variant_guard = self.loaded_tts_variant.write().await;
@@ -96,10 +86,6 @@ impl InferenceEngine {
             // Clear legacy Qwen TTS slot and mark active TTS variant.
             let mut model_guard = self.tts_model.write().await;
             *model_guard = None;
-            let mut lfm2_tts_guard = self.lfm2_fallback_tts_model.write().await;
-            *lfm2_tts_guard = None;
-            let mut lfm2_tts_variant_guard = self.lfm2_fallback_tts_variant.write().await;
-            *lfm2_tts_variant_guard = None;
             let mut path_guard = self.loaded_model_path.write().await;
             *path_guard = Some(model_path);
             let mut variant_guard = self.loaded_tts_variant.write().await;
@@ -136,10 +122,12 @@ impl InferenceEngine {
             }
 
             info!("Loading native TTS model from {:?}", model_path);
-            let tts_model = Qwen3TtsModel::load(&model_path, self.device.clone())?;
+            let tts_model =
+                Qwen3TtsModel::load(&model_path, self.device.clone(), self.config.kv_page_size)?;
 
             let mut model_guard = self.tts_model.write().await;
             *model_guard = Some(tts_model);
+
             let mut path_guard = self.loaded_model_path.write().await;
             *path_guard = Some(model_path);
             let mut variant_guard = self.loaded_tts_variant.write().await;

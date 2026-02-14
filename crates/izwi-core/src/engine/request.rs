@@ -9,6 +9,8 @@ use super::config::EngineCoreConfig;
 use super::output::StreamingOutput;
 use super::types::{GenerationParams, ModelType, Priority, RequestId, TaskType, TokenId};
 use crate::error::{Error, Result};
+use crate::model::ModelVariant;
+use crate::models::chat_types::ChatMessage;
 
 /// Status of a request in the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,8 +36,14 @@ pub struct EngineCoreRequest {
     pub task_type: TaskType,
     /// Model type to use
     pub model_type: ModelType,
+    /// Specific model variant to route to.
+    pub model_variant: Option<ModelVariant>,
     /// Input text (for TTS)
     pub text: Option<String>,
+    /// Chat input messages.
+    pub chat_messages: Option<Vec<ChatMessage>>,
+    /// Optional language hint for multilingual generation.
+    pub language: Option<String>,
     /// Input audio (base64 encoded, for ASR/chat)
     pub audio_input: Option<String>,
     /// Reference audio for voice cloning (base64 encoded)
@@ -44,6 +52,8 @@ pub struct EngineCoreRequest {
     pub reference_text: Option<String>,
     /// Voice description for voice design
     pub voice_description: Option<String>,
+    /// Optional system prompt (e.g. speech-to-speech system instruction).
+    pub system_prompt: Option<String>,
     /// Generation parameters
     pub params: GenerationParams,
     /// Request priority
@@ -66,11 +76,15 @@ impl EngineCoreRequest {
             id: Uuid::new_v4().to_string(),
             task_type: TaskType::TTS,
             model_type: ModelType::Qwen3TTS,
+            model_variant: None,
             text: Some(text.into()),
+            chat_messages: None,
+            language: None,
             audio_input: None,
             reference_audio: None,
             reference_text: None,
             voice_description: None,
+            system_prompt: None,
             params: GenerationParams::default(),
             priority: Priority::Normal,
             arrival_time: Instant::now(),
@@ -86,11 +100,63 @@ impl EngineCoreRequest {
             id: Uuid::new_v4().to_string(),
             task_type: TaskType::ASR,
             model_type: ModelType::Qwen3TTS,
+            model_variant: None,
             text: None,
+            chat_messages: None,
+            language: None,
             audio_input: Some(audio_base64.into()),
             reference_audio: None,
             reference_text: None,
             voice_description: None,
+            system_prompt: None,
+            params: GenerationParams::default(),
+            priority: Priority::Normal,
+            arrival_time: Instant::now(),
+            prompt_tokens: Vec::new(),
+            streaming: false,
+            streaming_tx: None,
+        }
+    }
+
+    /// Create a new chat request.
+    pub fn chat(messages: Vec<ChatMessage>) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            task_type: TaskType::Chat,
+            model_type: ModelType::Qwen3TTS,
+            model_variant: None,
+            text: None,
+            chat_messages: Some(messages),
+            language: None,
+            audio_input: None,
+            reference_audio: None,
+            reference_text: None,
+            voice_description: None,
+            system_prompt: None,
+            params: GenerationParams::default(),
+            priority: Priority::Normal,
+            arrival_time: Instant::now(),
+            prompt_tokens: Vec::new(),
+            streaming: false,
+            streaming_tx: None,
+        }
+    }
+
+    /// Create a new speech-to-speech request.
+    pub fn speech_to_speech(audio_base64: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            task_type: TaskType::SpeechToSpeech,
+            model_type: ModelType::Qwen3TTS,
+            model_variant: None,
+            text: None,
+            chat_messages: None,
+            language: None,
+            audio_input: Some(audio_base64.into()),
+            reference_audio: None,
+            reference_text: None,
+            voice_description: None,
+            system_prompt: None,
             params: GenerationParams::default(),
             priority: Priority::Normal,
             arrival_time: Instant::now(),
@@ -103,6 +169,12 @@ impl EngineCoreRequest {
     /// Set model type.
     pub fn with_model_type(mut self, model_type: ModelType) -> Self {
         self.model_type = model_type;
+        self
+    }
+
+    /// Set model variant.
+    pub fn with_model_variant(mut self, model_variant: ModelVariant) -> Self {
+        self.model_variant = Some(model_variant);
         self
     }
 
@@ -140,6 +212,18 @@ impl EngineCoreRequest {
     /// Set voice description.
     pub fn with_voice_description(mut self, description: impl Into<String>) -> Self {
         self.voice_description = Some(description.into());
+        self
+    }
+
+    /// Set language hint.
+    pub fn with_language(mut self, language: impl Into<String>) -> Self {
+        self.language = Some(language.into());
+        self
+    }
+
+    /// Set speech-to-speech system prompt.
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
         self
     }
 
@@ -188,6 +272,25 @@ impl RequestProcessor {
                     ));
                 }
             }
+            TaskType::Chat => {
+                if request
+                    .chat_messages
+                    .as_ref()
+                    .map(|m| m.is_empty())
+                    .unwrap_or(true)
+                {
+                    return Err(Error::InvalidInput(
+                        "Chat request requires at least one message".into(),
+                    ));
+                }
+            }
+            TaskType::SpeechToSpeech => {
+                if request.audio_input.is_none() {
+                    return Err(Error::InvalidInput(
+                        "Speech-to-speech request requires audio input".into(),
+                    ));
+                }
+            }
         }
 
         // Validate and clamp parameters
@@ -200,9 +303,11 @@ impl RequestProcessor {
 
         // Tokenize text input (simplified - actual tokenization would be more complex)
         if let Some(text) = &request.text {
-            // For now, use a simple approximation. In production, this would use
-            // the actual tokenizer for the model.
             let estimated_tokens = (text.len() / 4).max(1);
+            request.prompt_tokens = (0..estimated_tokens as u32).collect();
+        } else if let Some(messages) = &request.chat_messages {
+            let estimated_tokens =
+                (messages.iter().map(|m| m.content.len()).sum::<usize>() / 4).max(1);
             request.prompt_tokens = (0..estimated_tokens as u32).collect();
         }
 
@@ -255,6 +360,20 @@ impl RequestBuilder {
         }
     }
 
+    /// Create a new chat request builder.
+    pub fn chat(messages: Vec<ChatMessage>) -> Self {
+        Self {
+            request: EngineCoreRequest::chat(messages),
+        }
+    }
+
+    /// Create a new speech-to-speech request builder.
+    pub fn speech_to_speech(audio_base64: impl Into<String>) -> Self {
+        Self {
+            request: EngineCoreRequest::speech_to_speech(audio_base64),
+        }
+    }
+
     /// Set the request ID.
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.request.id = id.into();
@@ -264,6 +383,12 @@ impl RequestBuilder {
     /// Set the model type.
     pub fn model(mut self, model_type: ModelType) -> Self {
         self.request.model_type = model_type;
+        self
+    }
+
+    /// Set model variant.
+    pub fn model_variant(mut self, model_variant: ModelVariant) -> Self {
+        self.request.model_variant = Some(model_variant);
         self
     }
 
@@ -349,6 +474,24 @@ impl RequestBuilder {
     /// Set text input (for chat).
     pub fn text_input(mut self, text: impl Into<String>) -> Self {
         self.request.text = Some(text.into());
+        self
+    }
+
+    /// Set chat messages.
+    pub fn chat_messages(mut self, messages: Vec<ChatMessage>) -> Self {
+        self.request.chat_messages = Some(messages);
+        self
+    }
+
+    /// Set language hint.
+    pub fn language(mut self, language: impl Into<String>) -> Self {
+        self.request.language = Some(language.into());
+        self
+    }
+
+    /// Set speech-to-speech system prompt.
+    pub fn system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.request.system_prompt = Some(prompt.into());
         self
     }
 

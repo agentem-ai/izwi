@@ -26,6 +26,10 @@ pub struct EngineConfig {
     #[serde(default = "default_kv_cache_dtype")]
     pub kv_cache_dtype: String,
 
+    /// Number of tokens per KV page for decode-time paged cache.
+    #[serde(default = "default_kv_page_size")]
+    pub kv_page_size: usize,
+
     /// Enable Metal GPU acceleration
     #[serde(default = "default_use_metal")]
     pub use_metal: bool,
@@ -43,6 +47,7 @@ impl Default for EngineConfig {
             max_sequence_length: default_max_sequence_length(),
             chunk_size: default_chunk_size(),
             kv_cache_dtype: default_kv_cache_dtype(),
+            kv_page_size: default_kv_page_size(),
             use_metal: default_use_metal(),
             num_threads: default_num_threads(),
         }
@@ -77,6 +82,14 @@ fn default_chunk_size() -> usize {
 
 fn default_kv_cache_dtype() -> String {
     "float16".to_string()
+}
+
+fn default_kv_page_size() -> usize {
+    std::env::var("IZWI_KV_PAGE_SIZE")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(64)
 }
 
 fn default_use_metal() -> bool {

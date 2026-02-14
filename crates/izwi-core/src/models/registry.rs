@@ -308,8 +308,18 @@ impl ModelRegistry {
         guard.get(&variant).and_then(|cell| cell.get().cloned())
     }
 
+    pub fn try_get_asr(&self, variant: ModelVariant) -> Option<Arc<NativeAsrModel>> {
+        let guard = self.asr_models.try_read().ok()?;
+        guard.get(&variant).and_then(|cell| cell.get().cloned())
+    }
+
     pub async fn get_chat(&self, variant: ModelVariant) -> Option<Arc<NativeChatModel>> {
         let guard = self.chat_models.read().await;
+        guard.get(&variant).and_then(|cell| cell.get().cloned())
+    }
+
+    pub fn try_get_chat(&self, variant: ModelVariant) -> Option<Arc<NativeChatModel>> {
+        let guard = self.chat_models.try_read().ok()?;
         guard.get(&variant).and_then(|cell| cell.get().cloned())
     }
 
@@ -318,8 +328,18 @@ impl ModelRegistry {
         guard.get(&variant).and_then(|cell| cell.get().cloned())
     }
 
+    pub fn try_get_voxtral(&self, variant: ModelVariant) -> Option<Arc<VoxtralRealtimeModel>> {
+        let guard = self.voxtral_models.try_read().ok()?;
+        guard.get(&variant).and_then(|cell| cell.get().cloned())
+    }
+
     pub async fn get_lfm2(&self, variant: ModelVariant) -> Option<Arc<Lfm2AudioModel>> {
         let guard = self.lfm2_models.read().await;
+        guard.get(&variant).and_then(|cell| cell.get().cloned())
+    }
+
+    pub fn try_get_lfm2(&self, variant: ModelVariant) -> Option<Arc<Lfm2AudioModel>> {
+        let guard = self.lfm2_models.try_read().ok()?;
         guard.get(&variant).and_then(|cell| cell.get().cloned())
     }
 

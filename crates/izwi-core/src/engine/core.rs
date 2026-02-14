@@ -103,6 +103,12 @@ pub struct EngineCore {
 impl EngineCore {
     /// Create a new engine core.
     pub fn new(config: EngineCoreConfig) -> Result<Self> {
+        let worker_config = WorkerConfig::from(&config);
+        Self::new_with_worker(config, worker_config)
+    }
+
+    /// Create a new engine core with an explicit worker configuration.
+    pub fn new_with_worker(config: EngineCoreConfig, worker_config: WorkerConfig) -> Result<Self> {
         info!("Creating engine core");
 
         // Create scheduler
@@ -113,7 +119,6 @@ impl EngineCore {
         let kv_cache = KvCacheBackend::new(&config)?;
 
         // Create executor
-        let worker_config = WorkerConfig::from(&config);
         let executor = UnifiedExecutor::new_native(worker_config);
 
         // Create output processor

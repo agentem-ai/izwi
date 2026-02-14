@@ -1,23 +1,24 @@
 //! Model executor - handles forward pass execution.
-//!
-//! This module provides executor abstractions for model inference.
-//! Since native Rust models are now used, actual inference is handled
-//! directly by the InferenceEngine. This module provides compatibility
-//! types and helpers.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{debug, info};
 
 use super::config::EngineCoreConfig;
 use super::request::EngineCoreRequest;
 use super::scheduler::ScheduledRequest;
-use super::types::{AudioOutput, ModelType};
+use super::types::{AudioOutput, ModelType, TaskType};
 use crate::error::{Error, Result};
+use crate::model::ModelVariant;
+use crate::models::chat_types::ChatMessage;
+use crate::models::lfm2_audio::{lfm2_tts_voice_prompt, LFM2_DEFAULT_S2S_PROMPT};
+use crate::models::qwen3_tts::{Qwen3TtsModel, SpeakerReference, TtsGenerationParams};
+use crate::models::DeviceSelector;
+use crate::models::ModelRegistry;
 
 /// Configuration for the model executor.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WorkerConfig {
     /// Model type
     pub model_type: ModelType,
@@ -29,6 +30,33 @@ pub struct WorkerConfig {
     pub dtype: String,
     /// Number of threads
     pub num_threads: usize,
+    /// Decode-time KV cache page size.
+    pub kv_page_size: usize,
+    /// Optional shared model handle provided by higher-level runtime.
+    pub shared_tts_model: Option<Arc<RwLock<Option<Qwen3TtsModel>>>>,
+    /// Optional shared model registry for non-TTS tasks (ASR/Chat/LFM2).
+    pub model_registry: Option<Arc<ModelRegistry>>,
+}
+
+impl std::fmt::Debug for WorkerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerConfig")
+            .field("model_type", &self.model_type)
+            .field("models_dir", &self.models_dir)
+            .field("device", &self.device)
+            .field("dtype", &self.dtype)
+            .field("num_threads", &self.num_threads)
+            .field("kv_page_size", &self.kv_page_size)
+            .field(
+                "shared_tts_model",
+                &self.shared_tts_model.as_ref().map(|_| "<shared>"),
+            )
+            .field(
+                "model_registry",
+                &self.model_registry.as_ref().map(|_| "<shared>"),
+            )
+            .finish()
+    }
 }
 
 impl Default for WorkerConfig {
@@ -46,6 +74,9 @@ impl Default for WorkerConfig {
             },
             dtype: "float32".to_string(),
             num_threads: 4,
+            kv_page_size: 64,
+            shared_tts_model: None,
+            model_registry: None,
         }
     }
 }
@@ -62,6 +93,9 @@ impl From<&EngineCoreConfig> for WorkerConfig {
             },
             dtype: "float32".to_string(),
             num_threads: config.num_threads,
+            kv_page_size: config.block_size.max(1),
+            shared_tts_model: None,
+            model_registry: None,
         }
     }
 }
@@ -100,8 +134,6 @@ impl ExecutorOutput {
 }
 
 /// Model executor trait - abstracts the model inference backend.
-/// Note: Actual TTS/ASR inference is now handled directly by InferenceEngine.
-/// This trait is kept for compatibility and potential future use.
 pub trait ModelExecutor: Send + Sync {
     /// Execute prefill pass for newly admitted or in-progress prefill requests.
     fn execute_prefill(
@@ -154,12 +186,10 @@ pub trait ModelExecutor: Send + Sync {
     fn shutdown(&mut self) -> Result<()>;
 }
 
-/// Stub executor that delegates to InferenceEngine.
-/// Since native Rust models are used, the actual inference happens
-/// in InferenceEngine. This executor serves as a compatibility layer.
 pub struct NativeExecutor {
     config: WorkerConfig,
     initialized: bool,
+    loaded_tts_model: Option<Arc<Qwen3TtsModel>>,
 }
 
 impl NativeExecutor {
@@ -168,53 +198,430 @@ impl NativeExecutor {
         Self {
             config,
             initialized: false,
+            loaded_tts_model: None,
         }
+    }
+
+    fn with_model<T>(&self, f: impl FnOnce(&Qwen3TtsModel) -> Result<T>) -> Result<T> {
+        if let Some(shared_model) = &self.config.shared_tts_model {
+            let guard = shared_model.try_read().map_err(|_| {
+                Error::InferenceError("Shared TTS model is busy (try again)".to_string())
+            })?;
+            let model = guard
+                .as_ref()
+                .ok_or_else(|| Error::InferenceError("No TTS model loaded".to_string()))?;
+            return f(model);
+        }
+
+        let model = self
+            .loaded_tts_model
+            .as_deref()
+            .ok_or_else(|| Error::InferenceError("Executor model not initialized".to_string()))?;
+        f(model)
+    }
+
+    fn with_registry<T>(&self, f: impl FnOnce(&ModelRegistry) -> Result<T>) -> Result<T> {
+        let registry =
+            self.config.model_registry.as_ref().ok_or_else(|| {
+                Error::InferenceError("Model registry is not configured".to_string())
+            })?;
+        f(registry)
+    }
+
+    fn run_blocking<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::block_in_place(f)
+        } else {
+            f()
+        }
+    }
+
+    fn find_request<'a>(
+        requests: &'a [&EngineCoreRequest],
+        scheduled: &ScheduledRequest,
+    ) -> Option<&'a EngineCoreRequest> {
+        requests
+            .iter()
+            .copied()
+            .find(|r| r.id == scheduled.request_id)
+    }
+
+    fn to_tts_params(request: &EngineCoreRequest) -> TtsGenerationParams {
+        TtsGenerationParams {
+            temperature: request.params.temperature.max(0.0),
+            top_p: request.params.top_p.clamp(0.0, 1.0),
+            top_k: if request.params.top_k == 0 {
+                50
+            } else {
+                request.params.top_k
+            },
+            repetition_penalty: request.params.repetition_penalty.max(1.0),
+            max_frames: if request.params.max_tokens == 0 {
+                512
+            } else {
+                request.params.max_tokens.clamp(16, 8192)
+            },
+        }
+    }
+
+    fn synthesize_qwen_tts(model: &Qwen3TtsModel, request: &EngineCoreRequest) -> Result<Vec<f32>> {
+        let text = request
+            .text
+            .as_deref()
+            .ok_or_else(|| Error::InvalidInput("TTS request missing text".to_string()))?;
+        let params = Self::to_tts_params(request);
+        let language = request.language.as_deref();
+
+        if request.reference_audio.is_some() || request.reference_text.is_some() {
+            let ref_audio = request.reference_audio.as_deref().ok_or_else(|| {
+                Error::InvalidInput(
+                    "reference_audio and reference_text must both be provided".to_string(),
+                )
+            })?;
+            let ref_text = request.reference_text.as_deref().ok_or_else(|| {
+                Error::InvalidInput(
+                    "reference_audio and reference_text must both be provided".to_string(),
+                )
+            })?;
+            if ref_text.trim().is_empty() {
+                return Err(Error::InvalidInput(
+                    "reference_text cannot be empty".to_string(),
+                ));
+            }
+
+            let (audio_samples, sample_rate) = decode_audio_base64_with_rate(ref_audio)?;
+            let reference = SpeakerReference {
+                audio_samples,
+                text: ref_text.to_string(),
+                sample_rate,
+            };
+            return model.generate_with_voice_clone(text, &reference, language);
+        }
+
+        let available_speakers = model.available_speakers();
+        let requested_speaker = request
+            .params
+            .speaker
+            .as_deref()
+            .or(request.params.voice.as_deref())
+            .filter(|s| !s.trim().is_empty());
+
+        if available_speakers.is_empty() {
+            return model.generate_with_text_params(
+                text,
+                language,
+                request.voice_description.as_deref(),
+                &params,
+            );
+        }
+
+        let speaker_to_use = requested_speaker.unwrap_or_else(|| available_speakers[0].as_str());
+        model.generate_with_speaker_params(
+            text,
+            speaker_to_use,
+            language,
+            request.voice_description.as_deref(),
+            &params,
+        )
+    }
+
+    fn resolve_variant(request: &EngineCoreRequest) -> Result<ModelVariant> {
+        request.model_variant.ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "Request {} is missing model variant routing information",
+                request.id
+            ))
+        })
+    }
+
+    fn transcribe_request(&self, request: &EngineCoreRequest) -> Result<ExecutorOutput> {
+        let variant = Self::resolve_variant(request)?;
+        let audio_b64 = request
+            .audio_input
+            .as_deref()
+            .ok_or_else(|| Error::InvalidInput("ASR request missing audio input".to_string()))?;
+        let (samples, sample_rate) = decode_audio_base64_with_rate(audio_b64)?;
+        let samples_len = samples.len();
+        let language = request.language.as_deref();
+
+        let text = Self::run_blocking(|| {
+            if variant.is_voxtral() {
+                let model = self.with_registry(|registry| {
+                    registry.try_get_voxtral(variant).ok_or_else(|| {
+                        Error::ModelNotFound(format!(
+                            "Voxtral model {variant} is not loaded in registry"
+                        ))
+                    })
+                })?;
+                return model.transcribe(&samples, sample_rate, language);
+            }
+
+            if variant.is_lfm2() {
+                let model = self.with_registry(|registry| {
+                    registry.try_get_lfm2(variant).ok_or_else(|| {
+                        Error::ModelNotFound(format!("LFM2 model {variant} is not loaded"))
+                    })
+                })?;
+                let mut sink = |_delta: &str| {};
+                return model.transcribe_with_callback(&samples, sample_rate, language, &mut sink);
+            }
+
+            let model = self.with_registry(|registry| {
+                registry.try_get_asr(variant).ok_or_else(|| {
+                    Error::ModelNotFound(format!("ASR model {variant} is not loaded"))
+                })
+            })?;
+            let mut sink = |_delta: &str| {};
+            model.transcribe_with_callback(&samples, sample_rate, language, &mut sink)
+        })?;
+
+        Ok(ExecutorOutput {
+            request_id: request.id.clone(),
+            audio: Some(AudioOutput {
+                samples: Vec::new(),
+                sample_rate,
+                duration_secs: samples_len as f32 / sample_rate as f32,
+            }),
+            text: Some(text),
+            tokens_processed: request.num_prompt_tokens(),
+            tokens_generated: (samples_len / 256).max(1),
+            finished: true,
+            error: None,
+        })
+    }
+
+    fn chat_messages(request: &EngineCoreRequest) -> Result<&[ChatMessage]> {
+        request
+            .chat_messages
+            .as_deref()
+            .ok_or_else(|| Error::InvalidInput("Chat request missing messages".to_string()))
+    }
+
+    fn chat_request(&self, request: &EngineCoreRequest) -> Result<ExecutorOutput> {
+        let variant = Self::resolve_variant(request)?;
+        let messages = Self::chat_messages(request)?;
+        let max_new_tokens = request.params.max_tokens.max(1);
+
+        let output = Self::run_blocking(|| {
+            let model = self.with_registry(|registry| {
+                registry.try_get_chat(variant).ok_or_else(|| {
+                    Error::ModelNotFound(format!("Chat model {variant} is not loaded"))
+                })
+            })?;
+            model.generate(messages, max_new_tokens)
+        })?;
+
+        Ok(ExecutorOutput {
+            request_id: request.id.clone(),
+            audio: Some(AudioOutput::empty(24_000)),
+            text: Some(output.text),
+            tokens_processed: request.num_prompt_tokens(),
+            tokens_generated: output.tokens_generated.max(1),
+            finished: true,
+            error: None,
+        })
+    }
+
+    fn lfm2_tts_request(&self, request: &EngineCoreRequest) -> Result<ExecutorOutput> {
+        let variant = Self::resolve_variant(request)?;
+        let text = request
+            .text
+            .as_deref()
+            .ok_or_else(|| Error::InvalidInput("LFM2 TTS request missing text".to_string()))?;
+        if request.reference_audio.is_some() || request.reference_text.is_some() {
+            return Err(Error::InvalidInput(
+                "LFM2 does not support reference-audio voice cloning".to_string(),
+            ));
+        }
+
+        let speaker = request
+            .params
+            .speaker
+            .as_deref()
+            .or(request.params.voice.as_deref());
+        let voice_instruction = request
+            .voice_description
+            .clone()
+            .unwrap_or_else(|| lfm2_tts_voice_prompt(speaker).to_string());
+
+        let using_generic_defaults =
+            request.params.top_k == 0 && (request.params.temperature - 0.7).abs() < f32::EPSILON;
+        let temperature = if using_generic_defaults {
+            0.8
+        } else {
+            request.params.temperature
+        };
+        let top_k = if request.params.top_k > 0 {
+            request.params.top_k
+        } else {
+            64
+        };
+        let max_new_tokens = request.params.max_tokens.max(1);
+
+        let samples = Self::run_blocking(|| {
+            let model = self.with_registry(|registry| {
+                registry.try_get_lfm2(variant).ok_or_else(|| {
+                    Error::ModelNotFound(format!("LFM2 model {variant} is not loaded"))
+                })
+            })?;
+            let mut sink = |_delta: &str| {};
+            model.synthesize_with_callback(
+                text,
+                &voice_instruction,
+                Some(temperature),
+                Some(top_k),
+                max_new_tokens,
+                &mut sink,
+            )
+        })?;
+
+        Ok(ExecutorOutput {
+            request_id: request.id.clone(),
+            audio: Some(AudioOutput::new(samples.clone(), 24_000)),
+            text: None,
+            tokens_processed: request.num_prompt_tokens(),
+            tokens_generated: (samples.len() / 256).max(1),
+            finished: true,
+            error: None,
+        })
+    }
+
+    fn speech_to_speech_request(&self, request: &EngineCoreRequest) -> Result<ExecutorOutput> {
+        let variant = Self::resolve_variant(request)?;
+        let audio_b64 = request.audio_input.as_deref().ok_or_else(|| {
+            Error::InvalidInput("Speech-to-speech request missing audio input".to_string())
+        })?;
+        let (samples, sample_rate) = decode_audio_base64_with_rate(audio_b64)?;
+        let system_prompt = request
+            .system_prompt
+            .as_deref()
+            .unwrap_or(LFM2_DEFAULT_S2S_PROMPT);
+        let resolved_temperature = request.params.audio_temperature.unwrap_or(1.0);
+        let resolved_top_k = request.params.audio_top_k.unwrap_or_else(|| {
+            if request.params.top_k > 0 {
+                request.params.top_k
+            } else {
+                4
+            }
+        });
+        let max_new_tokens = request.params.max_tokens.max(1);
+
+        let (text, output_samples) = Self::run_blocking(|| {
+            let model = self.with_registry(|registry| {
+                registry.try_get_lfm2(variant).ok_or_else(|| {
+                    Error::ModelNotFound(format!("LFM2 model {variant} is not loaded"))
+                })
+            })?;
+            let mut sink = |_delta: &str| {};
+            model.speech_to_speech_with_callback(
+                &samples,
+                sample_rate,
+                Some(system_prompt),
+                Some(resolved_temperature),
+                Some(resolved_top_k),
+                max_new_tokens,
+                &mut sink,
+            )
+        })?;
+
+        Ok(ExecutorOutput {
+            request_id: request.id.clone(),
+            audio: Some(AudioOutput::new(output_samples.clone(), 24_000)),
+            text: Some(text),
+            tokens_processed: request.num_prompt_tokens(),
+            tokens_generated: (output_samples.len() / 256).max(1),
+            finished: true,
+            error: None,
+        })
+    }
+
+    fn execute_requests(
+        &self,
+        requests: &[&EngineCoreRequest],
+        scheduled: &[ScheduledRequest],
+    ) -> Result<Vec<ExecutorOutput>> {
+        let mut outputs = Vec::with_capacity(scheduled.len());
+
+        for scheduled_req in scheduled {
+            let Some(request) = Self::find_request(requests, scheduled_req) else {
+                outputs.push(ExecutorOutput::error(
+                    scheduled_req.request_id.clone(),
+                    "Scheduled request not found in batch",
+                ));
+                continue;
+            };
+
+            let result = match request.task_type {
+                TaskType::TTS => {
+                    let variant = request.model_variant;
+                    if variant.map(|v| v.is_lfm2()).unwrap_or(false) {
+                        self.lfm2_tts_request(request)
+                    } else {
+                        self.with_model(|model| {
+                            let prompt_tokens = request.num_prompt_tokens();
+                            let samples =
+                                Self::run_blocking(|| Self::synthesize_qwen_tts(model, request))?;
+                            Ok(ExecutorOutput {
+                                request_id: request.id.clone(),
+                                audio: Some(AudioOutput::new(samples.clone(), 24_000)),
+                                text: None,
+                                tokens_processed: prompt_tokens,
+                                tokens_generated: (samples.len() / 256).max(1),
+                                finished: true,
+                                error: None,
+                            })
+                        })
+                    }
+                }
+                TaskType::ASR => self.transcribe_request(request),
+                TaskType::Chat => self.chat_request(request),
+                TaskType::SpeechToSpeech => self.speech_to_speech_request(request),
+            };
+
+            match result {
+                Ok(output) => outputs.push(output),
+                Err(err) => {
+                    outputs.push(ExecutorOutput::error(request.id.clone(), err.to_string()))
+                }
+            }
+        }
+
+        Ok(outputs)
     }
 }
 
 impl ModelExecutor for NativeExecutor {
     fn execute_prefill(
         &self,
-        _requests: &[&EngineCoreRequest],
-        _scheduled: &[ScheduledRequest],
+        requests: &[&EngineCoreRequest],
+        scheduled: &[ScheduledRequest],
     ) -> Result<Vec<ExecutorOutput>> {
         if !self.initialized {
             return Err(Error::InferenceError("Executor not initialized".into()));
         }
-
-        Err(Error::InferenceError(
-            "Use InferenceEngine for native TTS/ASR execution".into(),
-        ))
+        self.execute_requests(requests, scheduled)
     }
 
     fn execute_decode(
         &self,
-        _requests: &[&EngineCoreRequest],
-        _scheduled: &[ScheduledRequest],
+        requests: &[&EngineCoreRequest],
+        scheduled: &[ScheduledRequest],
     ) -> Result<Vec<ExecutorOutput>> {
         if !self.initialized {
             return Err(Error::InferenceError("Executor not initialized".into()));
         }
-
-        Err(Error::InferenceError(
-            "Use InferenceEngine for native TTS/ASR execution".into(),
-        ))
+        self.execute_requests(requests, scheduled)
     }
 
     fn execute(
         &self,
-        _requests: &[&EngineCoreRequest],
-        _scheduled: &[ScheduledRequest],
+        requests: &[&EngineCoreRequest],
+        scheduled: &[ScheduledRequest],
     ) -> Result<Vec<ExecutorOutput>> {
         if !self.initialized {
             return Err(Error::InferenceError("Executor not initialized".into()));
         }
-
-        // Native TTS execution is handled directly by InferenceEngine
-        // This stub returns an error directing users to use InferenceEngine
-        Err(Error::InferenceError(
-            "Use InferenceEngine for native TTS/ASR execution".into(),
-        ))
+        self.execute_requests(requests, scheduled)
     }
 
     fn is_ready(&self) -> bool {
@@ -223,6 +630,25 @@ impl ModelExecutor for NativeExecutor {
 
     fn initialize(&mut self) -> Result<()> {
         info!("Initializing native executor");
+        if self.config.shared_tts_model.is_none() {
+            let device = if self.config.device.eq_ignore_ascii_case("mps") {
+                DeviceSelector::detect_with_preference(Some("metal"))?
+            } else {
+                DeviceSelector::detect_with_preference(Some("cpu"))?
+            };
+            let model = Qwen3TtsModel::load(
+                &self.config.models_dir,
+                device,
+                self.config.kv_page_size.max(1),
+            )?;
+            self.loaded_tts_model = Some(Arc::new(model));
+            debug!(
+                "Native executor loaded TTS model from {:?}",
+                self.config.models_dir
+            );
+        } else {
+            debug!("Native executor will use shared TTS model handle");
+        }
         self.initialized = true;
         Ok(())
     }
@@ -230,6 +656,7 @@ impl ModelExecutor for NativeExecutor {
     fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down native executor");
         self.initialized = false;
+        self.loaded_tts_model = None;
         Ok(())
     }
 }
@@ -298,6 +725,11 @@ impl UnifiedExecutor {
 
 /// Decode base64-encoded audio to samples.
 pub fn decode_audio_base64(audio_b64: &str, _sample_rate: u32) -> Result<Vec<f32>> {
+    let (samples, _) = decode_audio_base64_with_rate(audio_b64)?;
+    Ok(samples)
+}
+
+fn decode_audio_base64_with_rate(audio_b64: &str) -> Result<(Vec<f32>, u32)> {
     use base64::Engine;
     use std::io::Cursor;
 
@@ -320,6 +752,7 @@ pub fn decode_audio_base64(audio_b64: &str, _sample_rate: u32) -> Result<Vec<f32
         .map_err(|e| Error::InferenceError(format!("Failed to parse WAV: {}", e)))?;
 
     let spec = reader.spec();
+    let sample_rate = spec.sample_rate;
 
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => {
@@ -333,7 +766,7 @@ pub fn decode_audio_base64(audio_b64: &str, _sample_rate: u32) -> Result<Vec<f32
         hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
     };
 
-    Ok(samples)
+    Ok((samples, sample_rate))
 }
 
 #[cfg(test)]
