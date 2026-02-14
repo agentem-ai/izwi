@@ -11,7 +11,6 @@ mod lfm2;
 mod model_router;
 mod service;
 mod tts;
-mod tts_batcher;
 mod types;
 
 pub use service::InferenceEngine;

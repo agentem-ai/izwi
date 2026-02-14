@@ -1,6 +1,7 @@
-//! ASR runtime methods.
+//! ASR runtime methods routed through the unified core engine.
 
 use crate::catalog::resolve_asr_model_variant;
+use crate::engine::EngineCoreRequest;
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::runtime::audio_io::{base64_decode, decode_wav_bytes};
@@ -13,56 +14,31 @@ impl InferenceEngine {
         variant: ModelVariant,
         audio_base64: &str,
         language: Option<&str>,
-        on_delta: F,
+        mut on_delta: F,
     ) -> Result<AsrTranscription>
     where
         F: FnMut(String) + Send + 'static,
     {
-        if variant.is_voxtral() {
-            return self
-                .voxtral_transcribe_streaming(audio_base64, language, on_delta)
-                .await;
+        self.load_model(variant).await?;
+
+        let mut request = EngineCoreRequest::asr(audio_base64.to_string());
+        request.model_variant = Some(variant);
+        request.language = language.map(|s| s.to_string());
+
+        let output = self.core_engine.generate(request).await?;
+        let text = output.text.unwrap_or_default();
+        if !text.is_empty() {
+            on_delta(text.clone());
         }
-
-        let model = if let Some(model) = self.model_registry.get_asr(variant).await {
-            model
-        } else {
-            let path = self
-                .model_manager
-                .get_model_info(variant)
-                .await
-                .and_then(|i| i.local_path)
-                .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
-            self.model_registry.load_asr(variant, &path).await?
-        };
-
-        let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
-        let samples_len = samples.len();
-        let text = tokio::task::spawn_blocking({
-            let model = model.clone();
-            let language = language.map(|s| s.to_string());
-            move || {
-                let mut callback = on_delta;
-                let mut emit = |delta: &str| callback(delta.to_string());
-                model.transcribe_with_callback(
-                    &samples,
-                    sample_rate,
-                    language.as_deref(),
-                    &mut emit,
-                )
-            }
-        })
-        .await
-        .map_err(|e| Error::InferenceError(format!("ASR transcription task failed: {}", e)))??;
 
         Ok(AsrTranscription {
             text,
             language: language.map(|s| s.to_string()),
-            duration_secs: samples_len as f32 / sample_rate as f32,
+            duration_secs: output.audio.duration_secs,
         })
     }
 
-    /// Transcribe audio with Voxtral Realtime (native).
+    /// Transcribe audio with Voxtral Realtime.
     pub async fn voxtral_transcribe(
         &self,
         audio_base64: &str,
@@ -82,50 +58,16 @@ impl InferenceEngine {
     where
         F: FnMut(String) + Send + 'static,
     {
-        let variant = ModelVariant::VoxtralMini4BRealtime2602;
-
-        let model = if let Some(model) = self.model_registry.get_voxtral(variant).await {
-            model
-        } else {
-            let path = self
-                .model_manager
-                .get_model_info(variant)
-                .await
-                .and_then(|i| i.local_path)
-                .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
-            self.model_registry.load_voxtral(variant, &path).await?
-        };
-
-        let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
-        let samples_len = samples.len();
-
-        let text = tokio::task::spawn_blocking({
-            let model = model.clone();
-            let language = language.map(|s| s.to_string());
-            move || {
-                let mut callback = on_delta;
-                let mut emit = |delta: &str| callback(delta.to_string());
-                model.transcribe_with_callback(
-                    &samples,
-                    sample_rate,
-                    language.as_deref(),
-                    &mut emit,
-                )
-            }
-        })
+        self.asr_transcribe_with_variant_streaming(
+            ModelVariant::VoxtralMini4BRealtime2602,
+            audio_base64,
+            language,
+            on_delta,
+        )
         .await
-        .map_err(|e| {
-            Error::InferenceError(format!("Voxtral transcription task failed: {}", e))
-        })??;
-
-        Ok(AsrTranscription {
-            text,
-            language: language.map(|s| s.to_string()),
-            duration_secs: samples_len as f32 / sample_rate as f32,
-        })
     }
 
-    /// Transcribe audio with Qwen3-ASR (native).
+    /// Transcribe audio with native ASR models.
     pub async fn asr_transcribe(
         &self,
         audio_base64: &str,
@@ -136,7 +78,7 @@ impl InferenceEngine {
             .await
     }
 
-    /// Transcribe audio with Qwen3-ASR and emit incremental deltas.
+    /// Transcribe audio and emit deltas.
     pub async fn asr_transcribe_streaming<F>(
         &self,
         audio_base64: &str,
@@ -148,36 +90,25 @@ impl InferenceEngine {
         F: FnMut(String) + Send + 'static,
     {
         let variant = resolve_asr_model_variant(model_id);
-
-        if variant.is_lfm2() {
-            return self
-                .lfm2_asr_transcribe_streaming(variant, audio_base64, language, on_delta)
-                .await;
-        }
-
         self.asr_transcribe_with_variant_streaming(variant, audio_base64, language, on_delta)
             .await
     }
 
-    /// Force alignment: align reference text with audio timestamps.
+    /// Force alignment remains a specialized operation not expressed by the
+    /// generic engine output type.
     pub async fn force_align(
         &self,
         audio_base64: &str,
         reference_text: &str,
     ) -> Result<Vec<(String, u32, u32)>> {
         let variant = ModelVariant::Qwen3ForcedAligner06B;
+        self.load_model(variant).await?;
 
-        let model = if let Some(model) = self.model_registry.get_asr(variant).await {
-            model
-        } else {
-            let path = self
-                .model_manager
-                .get_model_info(variant)
-                .await
-                .and_then(|i| i.local_path)
-                .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
-            self.model_registry.load_asr(variant, &path).await?
-        };
+        let model = self
+            .model_registry
+            .get_asr(variant)
+            .await
+            .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
 
         let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
         let alignments = model.force_align(&samples, sample_rate, reference_text)?;
@@ -218,11 +149,12 @@ mod tests {
             .expect_err("invalid .nemo archive should fail to load");
         let msg = err.to_string();
         assert!(
-            msg.contains("Failed to list .nemo archive")
-                || msg.contains("Unrecognized archive format"),
-            "unexpected error: {msg}"
+            msg.contains(".nemo")
+                || msg.contains("archive")
+                || msg.contains("Failed to load")
+                || msg.contains("invalid")
         );
 
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

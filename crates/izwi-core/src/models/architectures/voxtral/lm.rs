@@ -11,6 +11,7 @@ use crate::error::{Error, Result};
 use crate::models::qwen3::{
     build_mrope_cache, build_rope_cache, causal_mask, repeat_kv, Qwen3Cache, Qwen3Config,
 };
+use crate::models::shared::attention::paged::paged_decode_attention;
 
 pub struct VoxtralLM {
     embed_tokens: Embedding,
@@ -261,14 +262,30 @@ impl VoxtralAttention {
         q = self.apply_rope(q, start_pos, position_ids)?;
         k = self.apply_rope(k, start_pos, position_ids)?;
 
+        let k = repeat_kv(&k, self.num_heads, self.num_kv_heads)?;
+        let v = repeat_kv(&v, self.num_heads, self.num_kv_heads)?;
+
         let (k, v) = if let Some(cache) = cache {
-            cache.append(layer_idx, k, v)?
+            cache.append(layer_idx, k, v)?;
+
+            if seq_len == 1 && start_pos > 0 {
+                if let Some((k_pages, v_pages)) = cache.pages(layer_idx) {
+                    let out = paged_decode_attention(
+                        &q,
+                        k_pages,
+                        v_pages,
+                        self.num_heads,
+                        self.head_dim,
+                    )?;
+                    let out = out.reshape((bsz, seq_len, self.num_heads * self.head_dim))?;
+                    return self.o_proj.forward(&out).map_err(Error::from);
+                }
+            }
+
+            cache.materialize(layer_idx)?
         } else {
             (k, v)
         };
-
-        let k = repeat_kv(&k, self.num_heads, self.num_kv_heads)?;
-        let v = repeat_kv(&v, self.num_heads, self.num_kv_heads)?;
 
         let q = q.transpose(1, 2)?;
         let k = k.transpose(1, 2)?;

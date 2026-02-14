@@ -13,44 +13,64 @@ use crate::models::batched_attention::{
 };
 use crate::models::mlx_compat;
 use crate::models::qwen3_tts::config::CodePredictorConfig;
+use crate::models::shared::attention::paged::{
+    append_to_pages, default_kv_page_size, materialize_pages, paged_decode_attention,
+};
 
 /// KV Cache for the code predictor
 pub struct CodePredictorCache {
-    k: Vec<Option<Tensor>>,
-    v: Vec<Option<Tensor>>,
+    k_pages: Vec<Vec<Tensor>>,
+    v_pages: Vec<Vec<Tensor>>,
+    page_size: usize,
 }
 
 impl CodePredictorCache {
     /// Create a new cache
     pub fn new(num_layers: usize) -> Self {
+        Self::with_page_size(num_layers, default_kv_page_size())
+    }
+
+    /// Create a new cache with explicit page size.
+    pub fn with_page_size(num_layers: usize, page_size: usize) -> Self {
         Self {
-            k: vec![None; num_layers],
-            v: vec![None; num_layers],
+            k_pages: vec![Vec::new(); num_layers],
+            v_pages: vec![Vec::new(); num_layers],
+            page_size: page_size.max(1),
         }
     }
 
     /// Append new k, v to cache
-    fn append(&mut self, layer: usize, k: Tensor, v: Tensor) -> Result<(Tensor, Tensor)> {
-        let k = if let Some(prev) = &self.k[layer] {
-            Tensor::cat(&[prev, &k], 1)?
+    fn append(&mut self, layer: usize, k: Tensor, v: Tensor) -> Result<()> {
+        append_to_pages(self.page_size, &mut self.k_pages[layer], &k)?;
+        append_to_pages(self.page_size, &mut self.v_pages[layer], &v)?;
+        Ok(())
+    }
+
+    fn pages(&self, layer: usize) -> Option<(&[Tensor], &[Tensor])> {
+        let k = self.k_pages.get(layer)?;
+        let v = self.v_pages.get(layer)?;
+        if k.is_empty() || v.is_empty() {
+            None
         } else {
-            k
-        };
-        let v = if let Some(prev) = &self.v[layer] {
-            Tensor::cat(&[prev, &v], 1)?
-        } else {
-            v
-        };
-        self.k[layer] = Some(k.clone());
-        self.v[layer] = Some(v.clone());
-        Ok((k, v))
+            Some((k.as_slice(), v.as_slice()))
+        }
+    }
+
+    fn materialize(&self, layer: usize) -> Result<(Tensor, Tensor)> {
+        let k = self.k_pages.get(layer).ok_or_else(|| {
+            Error::InferenceError(format!("Invalid CodePredictorCache layer index: {layer}"))
+        })?;
+        let v = self.v_pages.get(layer).ok_or_else(|| {
+            Error::InferenceError(format!("Invalid CodePredictorCache layer index: {layer}"))
+        })?;
+        Ok((materialize_pages(k)?, materialize_pages(v)?))
     }
 
     /// Clear the cache
     pub fn clear(&mut self) {
-        for i in 0..self.k.len() {
-            self.k[i] = None;
-            self.v[i] = None;
+        for i in 0..self.k_pages.len() {
+            self.k_pages[i].clear();
+            self.v_pages[i].clear();
         }
     }
 }
@@ -446,14 +466,31 @@ impl Attention {
         q = self.apply_rope(q, start_pos)?;
         k = self.apply_rope(k, start_pos)?;
 
+        let k = repeat_kv(&k, self.num_heads, self.num_kv_heads)?;
+        let v = repeat_kv(&v, self.num_heads, self.num_kv_heads)?;
+
         let (k, v) = if let Some(cache) = cache {
-            cache.append(layer_idx, k, v)?
+            cache.append(layer_idx, k, v)?;
+
+            // Decode path hot loop: for single-token decode, avoid rematerializing full KV.
+            if seq_len == 1 && start_pos > 0 {
+                if let Some((k_pages, v_pages)) = cache.pages(layer_idx) {
+                    let out = paged_decode_attention(
+                        &q,
+                        k_pages,
+                        v_pages,
+                        self.num_heads,
+                        self.head_dim,
+                    )?;
+                    let out = out.reshape((bsz, seq_len, self.num_heads * self.head_dim))?;
+                    return self.o_proj.forward(&out).map_err(Error::from);
+                }
+            }
+
+            cache.materialize(layer_idx)?
         } else {
             (k, v)
         };
-
-        let k = repeat_kv(&k, self.num_heads, self.num_kv_heads)?;
-        let v = repeat_kv(&v, self.num_heads, self.num_kv_heads)?;
 
         if use_batched {
             let q = q.reshape((bsz, seq_len, self.num_heads * self.head_dim))?;

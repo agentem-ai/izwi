@@ -8,12 +8,12 @@ use tokio::sync::{broadcast, RwLock};
 use crate::audio::{AudioCodec, AudioEncoder, StreamingConfig};
 use crate::backends::{BackendRouter, ExecutionBackend};
 use crate::config::EngineConfig;
+use crate::engine::{Engine as CoreEngine, EngineCoreConfig, WorkerConfig};
 use crate::error::{Error, Result};
 use crate::model::download::DownloadProgress;
 use crate::model::{ModelInfo, ModelManager, ModelVariant};
 use crate::models::qwen3_tts::Qwen3TtsModel;
 use crate::models::{DeviceProfile, DeviceSelector, ModelRegistry};
-use crate::runtime::tts_batcher::TtsBatcher;
 use crate::tokenizer::Tokenizer;
 
 /// Main inference engine runtime.
@@ -27,11 +27,9 @@ pub struct InferenceEngine {
     #[allow(dead_code)]
     pub(crate) streaming_config: StreamingConfig,
     pub(crate) tts_model: Arc<RwLock<Option<Qwen3TtsModel>>>,
-    pub(crate) tts_batcher: Option<TtsBatcher>,
+    pub(crate) core_engine: Arc<CoreEngine>,
     pub(crate) loaded_model_path: RwLock<Option<PathBuf>>,
     pub(crate) loaded_tts_variant: RwLock<Option<ModelVariant>>,
-    pub(crate) lfm2_fallback_tts_model: Arc<RwLock<Option<Qwen3TtsModel>>>,
-    pub(crate) lfm2_fallback_tts_variant: RwLock<Option<ModelVariant>>,
     pub(crate) device: DeviceProfile,
 }
 
@@ -57,18 +55,31 @@ impl InferenceEngine {
         ));
 
         let tts_model = Arc::new(RwLock::new(None));
-        let lfm2_fallback_tts_model = Arc::new(RwLock::new(None));
-        let tts_batcher = if config.max_batch_size > 1 {
-            Some(TtsBatcher::new(config.clone(), tts_model.clone()))
-        } else {
-            None
-        };
-
         let default_backend = if device.kind.is_metal() {
             ExecutionBackend::CandleMetal
         } else {
             ExecutionBackend::CandleNative
         };
+
+        let mut core_config = EngineCoreConfig::for_qwen3_tts();
+        core_config.models_dir = config.models_dir.clone();
+        core_config.max_batch_size = config.max_batch_size.max(1);
+        core_config.max_seq_len = config.max_sequence_length.max(1);
+        core_config.use_metal = config.use_metal;
+        core_config.num_threads = config.num_threads.max(1);
+        core_config.block_size = config.kv_page_size.max(1);
+
+        let mut worker_config = WorkerConfig::from(&core_config);
+        worker_config.models_dir = config.models_dir.clone();
+        worker_config.kv_page_size = config.kv_page_size.max(1);
+        worker_config.shared_tts_model = Some(tts_model.clone());
+        worker_config.model_registry = Some(model_registry.clone());
+        worker_config.device = if config.use_metal {
+            "mps".to_string()
+        } else {
+            "cpu".to_string()
+        };
+        let core_engine = Arc::new(CoreEngine::new_with_worker(core_config, worker_config)?);
 
         Ok(Self {
             config,
@@ -79,11 +90,9 @@ impl InferenceEngine {
             codec: RwLock::new(AudioCodec::new()),
             streaming_config: StreamingConfig::default(),
             tts_model,
-            tts_batcher,
+            core_engine,
             loaded_model_path: RwLock::new(None),
             loaded_tts_variant: RwLock::new(None),
-            lfm2_fallback_tts_model,
-            lfm2_fallback_tts_variant: RwLock::new(None),
             device,
         })
     }

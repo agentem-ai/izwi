@@ -77,9 +77,15 @@ pub struct Engine {
 impl Engine {
     /// Create a new inference engine with the given configuration.
     pub fn new(config: EngineCoreConfig) -> Result<Self> {
+        let worker_config = WorkerConfig::from(&config);
+        Self::new_with_worker(config, worker_config)
+    }
+
+    /// Create a new inference engine with explicit worker configuration.
+    pub fn new_with_worker(config: EngineCoreConfig, worker_config: WorkerConfig) -> Result<Self> {
         info!("Initializing inference engine");
 
-        let core = EngineCore::new(config.clone())?;
+        let core = EngineCore::new_with_worker(config.clone(), worker_config)?;
         let request_processor = RequestProcessor::new(config.clone());
         let output_processor = OutputProcessor::new(config.sample_rate);
 

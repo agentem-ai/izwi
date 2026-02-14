@@ -312,6 +312,10 @@ pub enum TaskType {
     TTS,
     /// Automatic speech recognition
     ASR,
+    /// Text chat generation.
+    Chat,
+    /// Speech-to-speech generation.
+    SpeechToSpeech,
 }
 
 impl Default for TaskType {
