@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -8,6 +8,21 @@ use safetensors::tensor::{serialize_to_file, Dtype, TensorView};
 use safetensors::SafeTensors;
 
 use crate::error::{Error, Result};
+
+const MIMI_SOURCE_CHECKPOINT: &str = "tokenizer-e351c8d8-checkpoint125.safetensors";
+const MIMI_CONVERTED_CHECKPOINT: &str = "tokenizer-e351c8d8-checkpoint125.candle.v5.safetensors";
+const MIMI_FORCE_REBUILD_ENV: &str = "IZWI_LFM2_REBUILD_MIMI";
+
+const REQUIRED_MIMI_KEYS: &[&str] = &[
+    "encoder.layers.0.conv.weight",
+    "decoder.layers.0.conv.weight",
+    "encoder_transformer.layers.0.self_attn.q_proj.weight",
+    "decoder_transformer.layers.0.self_attn.q_proj.weight",
+    "quantizer.semantic_residual_vector_quantizer.layers.0.codebook.embed_sum",
+    "quantizer.acoustic_residual_vector_quantizer.layers.0.codebook.embed_sum",
+    "downsample.conv.weight",
+    "upsample.conv.weight",
+];
 
 #[derive(Debug)]
 struct OwnedTensor {
@@ -24,7 +39,7 @@ pub struct MimiDecoder {
 
 impl MimiDecoder {
     pub fn load(model_dir: &Path, device: &Device) -> Result<Self> {
-        let source = model_dir.join("tokenizer-e351c8d8-checkpoint125.safetensors");
+        let source = model_dir.join(MIMI_SOURCE_CHECKPOINT);
         if !source.exists() {
             return Err(Error::ModelLoadError(format!(
                 "Missing LFM2 Mimi tokenizer checkpoint: {}",
@@ -142,22 +157,20 @@ fn normalize_decoded_audio(samples: &mut [f32]) {
 }
 
 fn ensure_candle_checkpoint(source: &Path) -> Result<PathBuf> {
-    let preconverted = [
-        "tokenizer-e351c8d8-checkpoint125.candle.v4.safetensors",
-        "tokenizer-e351c8d8-checkpoint125.candle.v3.safetensors",
-        "tokenizer-e351c8d8-checkpoint125.candle.v2.safetensors",
-        "tokenizer-e351c8d8-checkpoint125.candle.safetensors",
-    ];
-    for name in preconverted {
-        let candidate = source.with_file_name(name);
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
+    let target = source.with_file_name(MIMI_CONVERTED_CHECKPOINT);
+    let force_rebuild = env_flag_enabled(MIMI_FORCE_REBUILD_ENV);
 
-    let target = source.with_file_name("tokenizer-e351c8d8-checkpoint125.candle.v4.safetensors");
-    if target.exists() {
-        return Ok(target);
+    if target.exists() && !force_rebuild {
+        let bytes = std::fs::read(&target).map_err(|e| {
+            Error::ModelLoadError(format!(
+                "Failed to read converted Mimi checkpoint {}: {}",
+                target.display(),
+                e
+            ))
+        })?;
+        if converted_checkpoint_is_valid(&bytes)? {
+            return Ok(target);
+        }
     }
 
     let bytes = std::fs::read(source).map_err(|e| {
@@ -227,8 +240,22 @@ fn ensure_candle_checkpoint(source: &Path) -> Result<PathBuf> {
         });
     }
 
+    let missing = missing_required_keys(owned.iter().map(|tensor| tensor.name.as_str()));
+    if !missing.is_empty() {
+        return Err(Error::ModelLoadError(format!(
+            "Converted Mimi checkpoint is missing required tensors: {}",
+            missing.join(", ")
+        )));
+    }
+
     let mut views = BTreeMap::new();
     for tensor in &owned {
+        if views.contains_key(&tensor.name) {
+            return Err(Error::ModelLoadError(format!(
+                "Duplicate converted tensor name in Mimi checkpoint: {}",
+                tensor.name
+            )));
+        }
         let view = TensorView::new(tensor.dtype, tensor.shape.clone(), tensor.data.as_slice())
             .map_err(|e| {
                 Error::ModelLoadError(format!("Failed to build tensor view {}: {e}", tensor.name))
@@ -241,6 +268,42 @@ fn ensure_candle_checkpoint(source: &Path) -> Result<PathBuf> {
     })?;
 
     Ok(target)
+}
+
+fn converted_checkpoint_is_valid(bytes: &[u8]) -> Result<bool> {
+    let safetensors = SafeTensors::deserialize(bytes)
+        .map_err(|e| Error::ModelLoadError(format!("Invalid safetensors file: {e}")))?;
+    let missing = missing_required_keys(safetensors.names());
+    Ok(missing.is_empty())
+}
+
+fn missing_required_keys<I, S>(names: I) -> Vec<&'static str>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let name_set: HashSet<String> = names
+        .into_iter()
+        .map(|name| name.as_ref().to_string())
+        .collect();
+    REQUIRED_MIMI_KEYS
+        .iter()
+        .copied()
+        .filter(|key| !name_set.contains(*key))
+        .collect()
+}
+
+fn env_flag_enabled(var_name: &str) -> bool {
+    std::env::var(var_name)
+        .map(|value| is_truthy(value.as_str()))
+        .unwrap_or(false)
+}
+
+fn is_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn remap_tensor_name(name: &str) -> String {
@@ -293,7 +356,7 @@ fn dtype_size(dtype: Dtype) -> Result<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_decoded_audio;
+    use super::{is_truthy, missing_required_keys, normalize_decoded_audio};
 
     #[test]
     fn normalize_decoded_audio_sanitizes_invalid_and_hot_samples() {
@@ -313,5 +376,24 @@ mod tests {
         for (lhs, rhs) in samples.iter().zip(before.iter()) {
             assert!((lhs - rhs).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn truthy_env_values_are_parsed() {
+        assert!(is_truthy("1"));
+        assert!(is_truthy("true"));
+        assert!(is_truthy("yes"));
+        assert!(is_truthy("on"));
+        assert!(is_truthy(" TRUE "));
+        assert!(!is_truthy("0"));
+        assert!(!is_truthy("false"));
+        assert!(!is_truthy(""));
+    }
+
+    #[test]
+    fn missing_required_keys_detects_missing_entries() {
+        let missing =
+            missing_required_keys(["encoder.layers.0.conv.weight", "upsample.conv.weight"]);
+        assert!(missing.contains(&"decoder.layers.0.conv.weight"));
     }
 }

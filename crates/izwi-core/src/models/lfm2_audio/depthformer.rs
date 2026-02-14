@@ -372,7 +372,9 @@ fn apply_rope(x: &Tensor, cos: &Tensor, sin: &Tensor, start: usize) -> Result<Te
     let (_b, _h, t, _d) = x.dims4()?;
     let cos = cos.narrow(0, start, t)?;
     let sin = sin.narrow(0, start, t)?;
-    candle_nn::rotary_emb::rope(&x.contiguous()?, &cos, &sin).map_err(Error::from)
+    // LFM2 Depthformer uses interleaved rotary embeddings (complex-pair layout),
+    // which maps to candle's rope_i implementation.
+    candle_nn::rotary_emb::rope_i(&x.contiguous()?, &cos, &sin).map_err(Error::from)
 }
 
 fn apply_rms_head_norm(norm: &RmsNorm, x: &Tensor) -> Result<Tensor> {
@@ -404,4 +406,45 @@ fn causal_mask(q_len: usize, kv_len: usize, device: &candle_core::Device) -> Res
         }
     }
     Tensor::from_vec(mask, (1, q_len, kv_len), device).map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_rope_matches_interleaved_reference() {
+        let device = candle_core::Device::Cpu;
+        let x = Tensor::from_vec(
+            (0..(2 * 3 * 4 * 8))
+                .map(|v| v as f32 / 32.0)
+                .collect::<Vec<_>>(),
+            (2, 3, 4, 8),
+            &device,
+        )
+        .expect("tensor");
+        let (cos, sin) = precompute_freqs_cis(8, 1_000_000.0, 32, &device).expect("rope cache");
+
+        let got = apply_rope(&x, &cos, &sin, 5).expect("apply_rope");
+        let ref_cos = cos.narrow(0, 5, 4).expect("narrow cos");
+        let ref_sin = sin.narrow(0, 5, 4).expect("narrow sin");
+        let expected =
+            candle_nn::rotary_emb::rope_i(&x.contiguous().expect("contig"), &ref_cos, &ref_sin)
+                .expect("rope_i");
+
+        let got = got
+            .flatten_all()
+            .expect("flatten got")
+            .to_vec1::<f32>()
+            .expect("vec got");
+        let expected = expected
+            .flatten_all()
+            .expect("flatten expected")
+            .to_vec1::<f32>()
+            .expect("vec expected");
+        assert_eq!(got.len(), expected.len());
+        for (lhs, rhs) in got.iter().zip(expected.iter()) {
+            assert!((lhs - rhs).abs() < 1e-5);
+        }
+    }
 }
