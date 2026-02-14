@@ -51,7 +51,7 @@ export function ModelCard({
     downloading: "bg-amber-500",
     downloaded: "bg-gray-500",
     loading: "bg-amber-500",
-    ready: "bg-emerald-500",
+    ready: "bg-white",
     error: "bg-red-500",
   };
 
@@ -96,7 +96,7 @@ export function ModelCard({
           <Loader2 className="w-4 h-4 text-yellow-500 animate-spin" />
         )}
         {model.status === "ready" && (
-          <Check className="w-4 h-4 text-green-500" />
+          <Check className="w-4 h-4 text-gray-300" />
         )}
       </div>
     );

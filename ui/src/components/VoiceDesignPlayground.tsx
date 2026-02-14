@@ -155,7 +155,7 @@ export function VoiceDesignPlayground({
 
   const getStatusTone = (option: ModelOption): string => {
     if (option.isReady) {
-      return "text-emerald-400 bg-emerald-500/10";
+      return "text-gray-300 bg-white/10";
     }
     if (
       option.statusLabel.toLowerCase().includes("downloading") ||
@@ -181,7 +181,7 @@ export function VoiceDesignPlayground({
         className={clsx(
           "h-9 w-full px-3 rounded-lg border inline-flex items-center justify-between gap-2 text-xs transition-colors",
           selectedOption?.isReady
-            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+            ? "border-white/20 bg-white/10 text-gray-300"
             : "border-white/20 bg-[#1a1a1a] text-gray-300 hover:border-white/30",
         )}
       >
@@ -310,7 +310,7 @@ export function VoiceDesignPlayground({
             <div
               className={clsx(
                 "mt-1 text-xs",
-                selectedModelReady ? "text-emerald-400" : "text-amber-400",
+                selectedModelReady ? "text-gray-300" : "text-amber-400",
               )}
             >
               {selectedModelReady

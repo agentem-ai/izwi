@@ -78,7 +78,7 @@ function getStatusLabel(status: ModelInfo["status"]): string {
 function getStatusClass(status: ModelInfo["status"]): string {
   switch (status) {
     case "ready":
-      return "bg-emerald-500/15 border-emerald-500/40 text-emerald-300";
+      return "bg-white/10 border-white/20 text-gray-300";
     case "loading":
     case "downloading":
       return "bg-amber-500/15 border-amber-500/40 text-amber-300";
@@ -399,7 +399,7 @@ export function ChatPage({
                                 {getStatusLabel(model.status)}
                               </span>
                               {isActiveModel && (
-                                <span className="inline-flex items-center gap-1 text-[11px] text-emerald-300">
+                                <span className="inline-flex items-center gap-1 text-[11px] text-gray-300">
                                   <CheckCircle2 className="w-3 h-3" />
                                   Active
                                 </span>

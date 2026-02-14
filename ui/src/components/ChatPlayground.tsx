@@ -89,7 +89,7 @@ function parseAssistantContent(content: string): ParsedAssistantContent {
 
 function getStatusTone(option: ModelOption): string {
   if (option.isReady) {
-    return "text-emerald-300 bg-emerald-500/10 border-emerald-500/25";
+    return "text-gray-300 bg-white/10 border-white/20";
   }
   if (
     option.statusLabel.toLowerCase().includes("downloading") ||
@@ -267,7 +267,7 @@ export function ChatPlayground({
         className={clsx(
           "h-9 w-full px-3 rounded-xl border inline-flex items-center justify-between gap-2 text-xs transition-colors",
           selectedOption?.isReady
-            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+            ? "border-white/20 bg-white/10 text-gray-300"
             : "border-white/20 bg-[#1a1a1a] text-gray-300 hover:border-white/30",
         )}
       >
@@ -408,7 +408,7 @@ export function ChatPlayground({
             <div className="mt-3 text-center text-xs min-h-[18px]">
               {selectedModel ? (
                 selectedModelReady ? (
-                  <span className="text-emerald-300">
+                  <span className="text-gray-300">
                     {modelLabel || selectedModel} is loaded and ready.
                   </span>
                 ) : (
