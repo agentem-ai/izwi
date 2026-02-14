@@ -266,8 +266,9 @@ impl EngineCore {
             return Ok(Vec::new());
         }
 
-        // Phase 2: Execute prefill/decode paths concurrently.
-        let decode_exec = async {
+        // Phase 2: Execute decode/prefill. On Metal we prefer sequential execution
+        // to reduce device contention and thermal spikes on local machines.
+        let run_decode = async {
             if decode_request_refs.is_empty() || decode_scheduled.is_empty() {
                 return Ok((Vec::new(), std::time::Duration::ZERO));
             }
@@ -278,7 +279,7 @@ impl EngineCore {
                 .await?;
             Ok::<_, Error>((outputs, started.elapsed()))
         };
-        let prefill_exec = async {
+        let run_prefill = async {
             if prefill_request_refs.is_empty() || prefill_scheduled.is_empty() {
                 return Ok((Vec::new(), std::time::Duration::ZERO));
             }
@@ -290,9 +291,30 @@ impl EngineCore {
             Ok::<_, Error>((outputs, started.elapsed()))
         };
 
-        let (decode_result, prefill_result) = tokio::join!(decode_exec, prefill_exec);
-        let (mut decode_outputs, decode_elapsed) = decode_result?;
-        let (mut prefill_outputs, prefill_elapsed) = prefill_result?;
+        let (mut decode_outputs, decode_elapsed, mut prefill_outputs, prefill_elapsed) =
+            if self.config.use_metal
+                && !decode_request_refs.is_empty()
+                && !prefill_request_refs.is_empty()
+            {
+                let (decode_outputs, decode_elapsed) = run_decode.await?;
+                let (prefill_outputs, prefill_elapsed) = run_prefill.await?;
+                (
+                    decode_outputs,
+                    decode_elapsed,
+                    prefill_outputs,
+                    prefill_elapsed,
+                )
+            } else {
+                let (decode_result, prefill_result) = tokio::join!(run_decode, run_prefill);
+                let (decode_outputs, decode_elapsed) = decode_result?;
+                let (prefill_outputs, prefill_elapsed) = prefill_result?;
+                (
+                    decode_outputs,
+                    decode_elapsed,
+                    prefill_outputs,
+                    prefill_elapsed,
+                )
+            };
 
         let decode_step_ms = decode_elapsed.as_secs_f64() * 1000.0;
         let prefill_step_ms = prefill_elapsed.as_secs_f64() * 1000.0;

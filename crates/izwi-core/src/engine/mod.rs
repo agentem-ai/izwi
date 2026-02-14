@@ -263,6 +263,12 @@ impl Engine {
         let core = self.core.read().await;
         core.running_request_count()
     }
+
+    /// Check if scheduler currently has runnable or queued work.
+    pub async fn has_pending_work(&self) -> bool {
+        let core = self.core.read().await;
+        core.has_pending_work()
+    }
 }
 
 #[cfg(test)]

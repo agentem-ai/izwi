@@ -358,7 +358,20 @@ impl Scheduler {
         self.refresh_queue_age_sample();
         self.update_dynamic_budget();
 
-        let total_budget = self.current_token_budget();
+        let mut total_budget = self.current_token_budget();
+        let kv_stats = kv_cache.stats();
+        let kv_utilization = if kv_stats.soft_max_blocks > 0 {
+            kv_stats.allocated_blocks as f64 / kv_stats.soft_max_blocks as f64
+        } else {
+            0.0
+        };
+        if kv_utilization > 0.95 {
+            total_budget = (total_budget.saturating_mul(45) / 100).max(1);
+        } else if kv_utilization > 0.90 {
+            total_budget = (total_budget.saturating_mul(65) / 100).max(1);
+        } else if kv_utilization > 0.80 {
+            total_budget = (total_budget.saturating_mul(80) / 100).max(1);
+        }
         let mut decode_budget = total_budget;
         let mut reserved_prefill_budget = 0;
         if self.config.enable_adaptive_batching && total_budget > 0 {
@@ -417,6 +430,9 @@ impl Scheduler {
                     .then_with(|| a.7.cmp(&b.7))
             });
         }
+        let has_decode_demand = !decode_candidates.is_empty();
+        let effective_prefill_chunk_threshold =
+            self.effective_prefill_chunk_threshold(kv_utilization, has_decode_demand);
 
         for (
             request_id,
@@ -547,10 +563,9 @@ impl Scheduler {
             }
 
             let mut num_tokens = remaining_prompt;
-            if self.config.enable_chunked_prefill
-                && num_tokens > self.config.chunked_prefill_threshold
+            if self.config.enable_chunked_prefill && num_tokens > effective_prefill_chunk_threshold
             {
-                num_tokens = self.config.chunked_prefill_threshold;
+                num_tokens = effective_prefill_chunk_threshold;
             }
             num_tokens = num_tokens.min(remaining_prefill_budget);
             if num_tokens == 0 {
@@ -642,10 +657,9 @@ impl Scheduler {
             let mut num_tokens = metadata.total_prompt_tokens;
 
             // Apply chunked prefill if enabled and prompt is long
-            if self.config.enable_chunked_prefill
-                && num_tokens > self.config.chunked_prefill_threshold
+            if self.config.enable_chunked_prefill && num_tokens > effective_prefill_chunk_threshold
             {
-                num_tokens = self.config.chunked_prefill_threshold;
+                num_tokens = effective_prefill_chunk_threshold;
             }
 
             // Limit by remaining budget
@@ -928,6 +942,34 @@ impl Scheduler {
         } else {
             max_tokens
         }
+    }
+
+    fn effective_prefill_chunk_threshold(
+        &self,
+        kv_utilization: f64,
+        has_decode_demand: bool,
+    ) -> usize {
+        let base = self.config.chunked_prefill_threshold.max(32);
+        let mut threshold = base;
+
+        // Under memory pressure, shrink prefill chunks to avoid large transient spikes.
+        if kv_utilization > 0.95 {
+            threshold = threshold.min((base / 4).max(32));
+        } else if kv_utilization > 0.85 {
+            threshold = threshold.min((base / 2).max(64));
+        }
+
+        // If decode is already active, avoid over-investing in prefill this step.
+        if has_decode_demand {
+            threshold = threshold.min((base / 2).max(64));
+        }
+
+        // Favor throughput for single-request, low-pressure execution.
+        if self.waiting_count() <= 1 && self.running.len() <= 1 && kv_utilization < 0.50 {
+            threshold = threshold.max(base).min(base.saturating_mul(2));
+        }
+
+        threshold.max(32)
     }
 
     fn update_dynamic_budget(&mut self) {
