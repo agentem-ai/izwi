@@ -441,6 +441,44 @@ impl LfmBackbone {
 
         self.norm.forward(&hidden).map_err(Error::from)
     }
+
+    pub fn forward_embeds(
+        &self,
+        inputs_embeds: &Tensor,
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        let (_b, seq_len, _d) = inputs_embeds.dims3()?;
+        let mut cache = LfmCache::new(&self.cfg);
+
+        let default_mask = if seq_len == 1 {
+            None
+        } else {
+            Some(causal_mask(seq_len, inputs_embeds.device())?)
+        };
+        let mask = attention_mask.or(default_mask.as_ref());
+
+        let mut hidden = inputs_embeds.clone();
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            let residual = hidden.clone();
+            let normed = layer.operator_norm.forward(&hidden)?;
+            hidden = match &layer.kind {
+                LayerKind::Attention(attn) => {
+                    attn.forward(&normed, &mut cache.layers[layer_idx], 0, mask)?
+                }
+                LayerKind::ShortConv(conv) => {
+                    conv.forward(&normed, &mut cache.layers[layer_idx])?
+                }
+            };
+            hidden = (hidden + residual)?;
+
+            let residual = hidden.clone();
+            let ff = layer.ffn_norm.forward(&hidden)?;
+            let ff = layer.mlp.forward(&ff)?;
+            hidden = (ff + residual)?;
+        }
+
+        self.norm.forward(&hidden).map_err(Error::from)
+    }
 }
 
 fn first_attention_kv_len(cache: &LfmCache) -> usize {

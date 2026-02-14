@@ -78,7 +78,66 @@ impl MimiDecoder {
             .decode(&codes)
             .map_err(|e| Error::InferenceError(format!("Mimi decode failed: {e}")))?;
         let wav = wav.squeeze(0)?.squeeze(0)?;
-        wav.to_vec1::<f32>().map_err(Error::from)
+        let mut samples = wav.to_vec1::<f32>().map_err(Error::from)?;
+        normalize_decoded_audio(&mut samples);
+        Ok(samples)
+    }
+}
+
+fn normalize_decoded_audio(samples: &mut [f32]) {
+    if samples.is_empty() {
+        return;
+    }
+
+    // Replace invalid values and remove DC offset introduced by detokenizer drift.
+    let mut sum = 0.0f64;
+    let mut finite_count = 0usize;
+    for sample in samples.iter_mut() {
+        if !sample.is_finite() {
+            *sample = 0.0;
+            continue;
+        }
+        sum += *sample as f64;
+        finite_count += 1;
+    }
+    if finite_count > 0 {
+        let mean = (sum / finite_count as f64) as f32;
+        for sample in samples.iter_mut() {
+            *sample -= mean;
+        }
+    }
+
+    // Guard against hard clipping in downstream PCM conversion.
+    let mut peak = 0.0f32;
+    for &sample in samples.iter() {
+        peak = peak.max(sample.abs());
+    }
+    if peak > 0.95 {
+        let scale = 0.95 / peak;
+        for sample in samples.iter_mut() {
+            *sample *= scale;
+        }
+    }
+
+    // Extremely hot decoded waveforms sound crackly even before clipping.
+    let power = samples
+        .iter()
+        .map(|&s| {
+            let s = s as f64;
+            s * s
+        })
+        .sum::<f64>();
+    let rms = (power / samples.len() as f64).sqrt() as f32;
+    let max_rms = 0.25f32;
+    if rms > max_rms {
+        let scale = max_rms / rms;
+        for sample in samples.iter_mut() {
+            *sample *= scale;
+        }
+    }
+
+    for sample in samples.iter_mut() {
+        *sample = sample.clamp(-1.0, 1.0);
     }
 }
 
@@ -230,4 +289,29 @@ fn dtype_size(dtype: Dtype) -> Result<usize> {
             )))
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_decoded_audio;
+
+    #[test]
+    fn normalize_decoded_audio_sanitizes_invalid_and_hot_samples() {
+        let mut samples = vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 4.0, -4.0, 0.5];
+        normalize_decoded_audio(&mut samples);
+
+        assert!(samples.iter().all(|v| v.is_finite()));
+        assert!(samples.iter().all(|v| v.abs() <= 1.0));
+    }
+
+    #[test]
+    fn normalize_decoded_audio_preserves_reasonable_levels() {
+        let mut samples = vec![0.05f32, -0.05, 0.1, -0.1];
+        let before = samples.clone();
+        normalize_decoded_audio(&mut samples);
+
+        for (lhs, rhs) in samples.iter().zip(before.iter()) {
+            assert!((lhs - rhs).abs() < 1e-6);
+        }
+    }
 }

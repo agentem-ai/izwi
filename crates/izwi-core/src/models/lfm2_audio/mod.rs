@@ -1,5 +1,6 @@
 //! Native Candle implementation for LiquidAI LFM2-Audio.
 
+mod audio_detokenizer;
 mod config;
 mod conformer;
 mod depthformer;
@@ -11,6 +12,7 @@ mod tokenizer;
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
+use audio_detokenizer::AudioDetokenizer;
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::{LayerNorm, Linear, Module, VarBuilder};
 use config::Lfm2AudioConfig;
@@ -35,6 +37,20 @@ const TTS_UK_FEMALE_PROMPT: &str = "Perform TTS. Use the UK female voice.";
 const END_OF_AUDIO_TOKEN: u32 = 2048;
 const ASR_SYSTEM_PROMPT: &str = "Perform ASR.";
 
+enum WaveDecoder {
+    Mimi(MimiDecoder),
+    Lfm25Detokenizer(AudioDetokenizer),
+}
+
+impl WaveDecoder {
+    fn decode_tokens(&self, codebooks: &[Vec<u32>]) -> Result<Vec<f32>> {
+        match self {
+            Self::Mimi(decoder) => decoder.decode_tokens(codebooks),
+            Self::Lfm25Detokenizer(decoder) => decoder.decode_tokens(codebooks),
+        }
+    }
+}
+
 pub struct Lfm2AudioModel {
     model_dir: PathBuf,
     device: DeviceProfile,
@@ -45,7 +61,7 @@ pub struct Lfm2AudioModel {
     audio_adapter: AudioAdapter,
     lfm: LfmBackbone,
     depthformer: Depthformer,
-    mimi: MimiDecoder,
+    wave_decoder: WaveDecoder,
 }
 
 struct AudioAdapter {
@@ -110,7 +126,23 @@ impl Lfm2AudioModel {
         let audio_adapter = AudioAdapter::load(vb.pp("audio_adapter"))?;
         let lfm = LfmBackbone::load(cfg.lfm.clone(), vb.pp("lfm"))?;
         let depthformer = Depthformer::load(&cfg, vb.clone())?;
-        let mimi = MimiDecoder::load(model_dir, &device.device)?;
+        let wave_decoder = if model_dir.join("audio_detokenizer").exists() {
+            match AudioDetokenizer::load(model_dir, &device.device) {
+                Ok(detokenizer) => {
+                    info!("Using native LFM2.5 audio detokenizer");
+                    WaveDecoder::Lfm25Detokenizer(detokenizer)
+                }
+                Err(err) => {
+                    info!(
+                        "Failed to load LFM2.5 audio detokenizer ({}), falling back to Mimi",
+                        err
+                    );
+                    WaveDecoder::Mimi(MimiDecoder::load(model_dir, &device.device)?)
+                }
+            }
+        } else {
+            WaveDecoder::Mimi(MimiDecoder::load(model_dir, &device.device)?)
+        };
 
         info!("Loaded native LFM2 model from {:?}", model_dir);
 
@@ -124,7 +156,7 @@ impl Lfm2AudioModel {
             audio_adapter,
             lfm,
             depthformer,
-            mimi,
+            wave_decoder,
         })
     }
 
@@ -257,7 +289,7 @@ impl Lfm2AudioModel {
             },
         )?;
 
-        self.mimi.decode_tokens(&audio_frames)
+        self.wave_decoder.decode_tokens(&audio_frames)
     }
 
     pub fn speech_to_speech_with_callback(
@@ -325,7 +357,7 @@ impl Lfm2AudioModel {
             },
         )?;
 
-        let wav = self.mimi.decode_tokens(&audio_frames)?;
+        let wav = self.wave_decoder.decode_tokens(&audio_frames)?;
         Ok((assembled.trim().to_string(), wav))
     }
 

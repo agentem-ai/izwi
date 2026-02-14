@@ -47,6 +47,9 @@ pub struct SpeechRequest {
     /// Alias for max output tokens in newer APIs.
     #[serde(default)]
     pub max_output_tokens: Option<usize>,
+    /// Optional top-k sampling for model-specific runtimes.
+    #[serde(default)]
+    pub top_k: Option<usize>,
     /// If true, stream chunked audio from same endpoint.
     #[serde(default)]
     pub stream: Option<bool>,
@@ -123,6 +126,9 @@ pub async fn speech(
         if let Some(max_tokens) = req.max_output_tokens.or(req.max_tokens) {
             gen_config.max_tokens = max_tokens;
         }
+        if let Some(top_k) = req.top_k {
+            gen_config.top_k = top_k;
+        }
         gen_config.speaker = req.voice.clone();
 
         let gen_request = GenerationRequest {
@@ -181,6 +187,9 @@ async fn stream_speech(state: AppState, req: SpeechRequest) -> Result<Response<B
     }
     if let Some(max_tokens) = req.max_output_tokens.or(req.max_tokens) {
         gen_config.max_tokens = max_tokens;
+    }
+    if let Some(top_k) = req.top_k {
+        gen_config.top_k = top_k;
     }
     gen_config.speaker = req.voice.clone();
 

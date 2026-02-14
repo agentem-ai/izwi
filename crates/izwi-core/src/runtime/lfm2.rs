@@ -122,7 +122,7 @@ impl InferenceEngine {
             let top_k = if request.config.top_k > 0 {
                 Some(request.config.top_k)
             } else {
-                Some(64)
+                Some(4)
             };
             let max_new_tokens = if request.config.max_tokens == 0 {
                 512
