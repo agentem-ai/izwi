@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use futures::FutureExt;
 use serde::Serialize;
-use tokio::sync::{broadcast, oneshot, Mutex, RwLock};
+use tokio::sync::{broadcast, oneshot, Mutex, Notify, RwLock};
 use tokio::task::yield_now;
 use tracing::{error, info_span};
 
@@ -254,6 +254,7 @@ pub struct RuntimeService {
     telemetry: Arc<RuntimeTelemetryCollector>,
     completion_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<Result<EngineOutput>>>>>,
     step_driver_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    step_driver_wakeup: Arc<Notify>,
     step_driver_started: AtomicBool,
     pub(crate) loaded_model_path: RwLock<Option<PathBuf>>,
     pub(crate) loaded_tts_variant: RwLock<Option<ModelVariant>>,
@@ -369,6 +370,7 @@ impl RuntimeService {
             telemetry: Arc::new(RuntimeTelemetryCollector::new(2048)),
             completion_waiters: Arc::new(Mutex::new(HashMap::new())),
             step_driver_task: Mutex::new(None),
+            step_driver_wakeup: Arc::new(Notify::new()),
             step_driver_started: AtomicBool::new(false),
             loaded_model_path: RwLock::new(None),
             loaded_tts_variant: RwLock::new(None),
@@ -458,7 +460,9 @@ impl RuntimeService {
         let engine = self.core_engine.clone();
         let waiters = self.completion_waiters.clone();
         let telemetry = self.telemetry.clone();
+        let wakeup = self.step_driver_wakeup.clone();
         let task = tokio::spawn(async move {
+            let mut idle_backoff_ms = 1u64;
             loop {
                 let step_result = std::panic::AssertUnwindSafe(engine.step())
                     .catch_unwind()
@@ -466,9 +470,20 @@ impl RuntimeService {
                 match step_result {
                     Ok(Ok(outputs)) => {
                         if outputs.is_empty() {
-                            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+                            if engine.has_pending_work().await {
+                                idle_backoff_ms = 1;
+                                tokio::task::yield_now().await;
+                                continue;
+                            }
+                            let sleep_for = tokio::time::Duration::from_millis(idle_backoff_ms);
+                            tokio::select! {
+                                _ = tokio::time::sleep(sleep_for) => {}
+                                _ = wakeup.notified() => {}
+                            }
+                            idle_backoff_ms = (idle_backoff_ms.saturating_mul(2)).min(50);
                             continue;
                         }
+                        idle_backoff_ms = 1;
 
                         for output in outputs {
                             if !output.is_finished {
@@ -567,6 +582,7 @@ impl RuntimeService {
             return Err(err);
         }
         self.telemetry.record_request_queued().await;
+        self.step_driver_wakeup.notify_one();
 
         let mut guard = PendingRequestGuard::new(
             request_id.clone(),
@@ -610,6 +626,7 @@ impl RuntimeService {
                 }
             };
         self.telemetry.record_request_queued().await;
+        self.step_driver_wakeup.notify_one();
         debug_assert_eq!(stream_request_id, request_id);
         let mut guard = PendingRequestGuard::new(
             stream_request_id.clone(),
