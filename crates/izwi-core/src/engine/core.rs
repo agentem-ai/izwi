@@ -84,6 +84,10 @@ impl KvCacheBackend {
         Ok(())
     }
 
+    fn compact_shared_prefixes(&mut self) {
+        self.inner_mut().compact_shared_prefixes();
+    }
+
     fn stats(&self) -> KVCacheStats {
         self.inner().stats()
     }
@@ -119,6 +123,8 @@ pub struct EngineCore {
     request_phase_timings: HashMap<RequestId, RequestPhaseTiming>,
     /// Whether the engine has been initialized
     initialized: bool,
+    /// Step counter for periodic cache housekeeping.
+    maintenance_steps: u64,
 }
 
 impl EngineCore {
@@ -158,6 +164,7 @@ impl EngineCore {
             request_start_times: HashMap::new(),
             request_phase_timings: HashMap::new(),
             initialized: false,
+            maintenance_steps: 0,
         })
     }
 
@@ -231,6 +238,10 @@ impl EngineCore {
 
         // Phase 1: Schedule
         self.kv_cache.maintenance()?;
+        self.maintenance_steps = self.maintenance_steps.saturating_add(1);
+        if self.maintenance_steps % 64 == 0 {
+            self.kv_cache.compact_shared_prefixes();
+        }
         let schedule_result = self.scheduler.schedule(self.kv_cache.inner_mut());
 
         if !schedule_result.has_work() {

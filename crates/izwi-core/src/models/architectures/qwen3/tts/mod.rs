@@ -82,6 +82,7 @@ struct ProgressiveStreamState<'a> {
     config: TtsStreamingConfig,
     emitted_frames: usize,
     emitted_samples: usize,
+    decode_raw_token_scratch: Vec<Vec<u32>>,
     on_chunk: &'a mut dyn FnMut(Vec<f32>) -> Result<()>,
 }
 
@@ -107,6 +108,7 @@ pub struct TtsDecodeState {
     stream_config: TtsStreamingConfig,
     emitted_frames: usize,
     emitted_samples: usize,
+    decode_raw_token_scratch: Vec<Vec<u32>>,
     finished: bool,
 }
 
@@ -339,6 +341,7 @@ impl Qwen3TtsModel {
             config: stream_config,
             emitted_frames: 0,
             emitted_samples: 0,
+            decode_raw_token_scratch: Vec::new(),
             on_chunk,
         };
 
@@ -668,6 +671,7 @@ impl Qwen3TtsModel {
             config: stream_config,
             emitted_frames: 0,
             emitted_samples: 0,
+            decode_raw_token_scratch: Vec::new(),
             on_chunk,
         };
 
@@ -807,6 +811,7 @@ impl Qwen3TtsModel {
             config: stream_config,
             emitted_frames: 0,
             emitted_samples: 0,
+            decode_raw_token_scratch: Vec::new(),
             on_chunk,
         };
 
@@ -1526,6 +1531,7 @@ impl Qwen3TtsModel {
             stream_config,
             emitted_frames: 0,
             emitted_samples: 0,
+            decode_raw_token_scratch: Vec::new(),
             finished: false,
         })
     }
@@ -1560,15 +1566,17 @@ impl Qwen3TtsModel {
             return Ok(Vec::new());
         }
 
-        let mut partial_tokens = Vec::with_capacity(state.all_code_groups.len());
         for group in &state.all_code_groups {
             if group.len() < target_frames {
                 return Ok(Vec::new());
             }
-            partial_tokens.push(group[..target_frames].to_vec());
         }
-
-        let decoded = self.codec_to_audio(&partial_tokens)?;
+        self.fill_raw_codec_scratch(
+            &state.all_code_groups,
+            target_frames,
+            &mut state.decode_raw_token_scratch,
+        )?;
+        let decoded = self.decode_raw_codec_tokens(&state.decode_raw_token_scratch)?;
         if decoded.len() <= state.emitted_samples {
             state.emitted_frames = target_frames;
             return Ok(Vec::new());
@@ -1611,15 +1619,18 @@ impl Qwen3TtsModel {
             return Ok(());
         }
 
-        let mut partial_tokens = Vec::with_capacity(codec_groups.len());
         for group in codec_groups {
             if group.len() < target_frames {
                 return Ok(());
             }
-            partial_tokens.push(group[..target_frames].to_vec());
         }
 
-        let decoded = self.codec_to_audio(&partial_tokens)?;
+        self.fill_raw_codec_scratch(
+            codec_groups,
+            target_frames,
+            &mut state.decode_raw_token_scratch,
+        )?;
+        let decoded = self.decode_raw_codec_tokens(&state.decode_raw_token_scratch)?;
         if decoded.len() <= state.emitted_samples {
             state.emitted_frames = target_frames;
             return Ok(());
@@ -1766,25 +1777,48 @@ impl Qwen3TtsModel {
 
     /// Convert codec tokens to audio waveform
     fn codec_to_audio(&self, codec_tokens: &[Vec<u32>]) -> Result<Vec<f32>> {
-        // Convert combined tokens back to raw codec indices for speech tokenizer
+        let target_frames = codec_tokens.first().map(|g| g.len()).unwrap_or(0);
+        let mut raw_codec_tokens: Vec<Vec<u32>> = Vec::new();
+        self.fill_raw_codec_scratch(codec_tokens, target_frames, &mut raw_codec_tokens)?;
+        self.decode_raw_codec_tokens(&raw_codec_tokens)
+    }
+
+    fn fill_raw_codec_scratch(
+        &self,
+        codec_tokens: &[Vec<u32>],
+        target_frames: usize,
+        scratch: &mut Vec<Vec<u32>>,
+    ) -> Result<()> {
+        if codec_tokens.is_empty() || target_frames == 0 {
+            scratch.clear();
+            return Ok(());
+        }
+
         let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
         let codec_vocab_size = self.tokenizer.codec_vocab_size() as u32;
 
-        let mut raw_codec_tokens: Vec<Vec<u32>> = Vec::new();
+        if scratch.len() != codec_tokens.len() {
+            scratch.resize_with(codec_tokens.len(), Vec::new);
+        }
 
         for (group_idx, group_tokens) in codec_tokens.iter().enumerate() {
-            let mut raw_tokens = Vec::new();
-            for &token in group_tokens {
-                // Convert combined token back to codec index
+            if group_tokens.len() < target_frames {
+                return Err(Error::InvalidInput(
+                    "Insufficient codec frames for requested decode slice".to_string(),
+                ));
+            }
+            let raw_tokens = &mut scratch[group_idx];
+            raw_tokens.clear();
+            raw_tokens.reserve(target_frames);
+
+            for &token in group_tokens.iter().take(target_frames) {
                 let codec_token = if group_idx == 0 {
-                    // First group: token - text_vocab_size
                     if token >= text_vocab_size {
                         token - text_vocab_size
                     } else {
-                        token // Already a codec token
+                        token
                     }
                 } else {
-                    // Other groups: (token - text_vocab_size) - (group_idx * codec_vocab_size)
                     let offset = text_vocab_size + (group_idx as u32 * codec_vocab_size);
                     if token >= offset {
                         token - offset
@@ -1794,11 +1828,15 @@ impl Qwen3TtsModel {
                 };
                 raw_tokens.push(codec_token);
             }
-            raw_codec_tokens.push(raw_tokens);
         }
+        Ok(())
+    }
 
-        // Decode through speech tokenizer
-        let mut audio = self.speech_tokenizer.decode(&raw_codec_tokens)?;
+    fn decode_raw_codec_tokens(&self, raw_codec_tokens: &[Vec<u32>]) -> Result<Vec<f32>> {
+        if raw_codec_tokens.is_empty() || raw_codec_tokens[0].is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut audio = self.speech_tokenizer.decode(raw_codec_tokens)?;
         normalize_audio(&mut audio);
         Ok(audio)
     }

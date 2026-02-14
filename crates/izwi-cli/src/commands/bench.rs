@@ -5,6 +5,29 @@ use crate::BenchCommands;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use indicatif::{ProgressBar, ProgressStyle};
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeTelemetrySnapshot {
+    requests_queued: u64,
+    requests_completed: u64,
+    requests_failed: u64,
+    requests_active: u64,
+    worker_restarts: u64,
+    worker_panics: u64,
+    queue_wait_ms_avg: f64,
+    queue_wait_ms_p50: f64,
+    queue_wait_ms_p95: f64,
+    prefill_ms_avg: f64,
+    prefill_ms_p50: f64,
+    prefill_ms_p95: f64,
+    decode_ms_avg: f64,
+    decode_ms_p50: f64,
+    decode_ms_p95: f64,
+    end_to_end_ms_avg: f64,
+    end_to_end_ms_p50: f64,
+    end_to_end_ms_p95: f64,
+}
 
 pub async fn execute(command: BenchCommands, server: &str, theme: &Theme) -> Result<()> {
     match command {
@@ -42,6 +65,7 @@ async fn bench_tts(
     }
 
     theme.step(1, 3, &format!("Benchmarking TTS with '{}'", model));
+    let metrics_before = fetch_runtime_metrics(server).await;
 
     if warmup {
         theme.info("Running warmup iteration...");
@@ -87,6 +111,7 @@ async fn bench_tts(
     println!("  P95:        {:.2} ms", p95);
     println!("  P99:        {:.2} ms", p99);
     println!("  Throughput: {:.2} req/s", 1000.0 / avg);
+    print_runtime_delta(metrics_before, fetch_runtime_metrics(server).await);
 
     Ok(())
 }
@@ -106,6 +131,7 @@ async fn bench_asr(
     }
 
     theme.step(1, 3, &format!("Benchmarking ASR with '{}'", model));
+    let metrics_before = fetch_runtime_metrics(server).await;
 
     // Use sample audio if no file provided
     let audio_file = file.unwrap_or_else(|| std::path::PathBuf::from("data/test.wav"));
@@ -148,6 +174,7 @@ async fn bench_asr(
     println!("\n{}", console::style("Results:").bold().underlined());
     println!("  Average:    {:.2} ms", avg);
     println!("  Throughput: {:.2} req/s", 1000.0 / avg);
+    print_runtime_delta(metrics_before, fetch_runtime_metrics(server).await);
 
     Ok(())
 }
@@ -283,4 +310,64 @@ fn percentile(data: &[f64], p: f64) -> f64 {
     sorted.sort_by(|a, b| a.total_cmp(b));
     let index = (p * (sorted.len() - 1) as f64) as usize;
     sorted[index]
+}
+
+async fn fetch_runtime_metrics(server: &str) -> Option<RuntimeTelemetrySnapshot> {
+    let client = http::client(Some(std::time::Duration::from_secs(3))).ok()?;
+    let response = client
+        .get(format!("{}/internal/metrics", server.trim_end_matches('/')))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    response.json::<RuntimeTelemetrySnapshot>().await.ok()
+}
+
+fn print_runtime_delta(
+    before: Option<RuntimeTelemetrySnapshot>,
+    after: Option<RuntimeTelemetrySnapshot>,
+) {
+    let (Some(before), Some(after)) = (before, after) else {
+        println!("\nRuntime telemetry delta: unavailable (/internal/metrics not reachable)");
+        return;
+    };
+
+    let completed_delta = after
+        .requests_completed
+        .saturating_sub(before.requests_completed);
+    let failed_delta = after.requests_failed.saturating_sub(before.requests_failed);
+    let queued_delta = after.requests_queued.saturating_sub(before.requests_queued);
+    let restart_delta = after.worker_restarts.saturating_sub(before.worker_restarts);
+    let panic_delta = after.worker_panics.saturating_sub(before.worker_panics);
+
+    println!(
+        "\n{}",
+        console::style("Runtime Telemetry Delta:")
+            .bold()
+            .underlined()
+    );
+    println!("  Queued:             {}", queued_delta);
+    println!("  Completed:          {}", completed_delta);
+    println!("  Failed:             {}", failed_delta);
+    println!("  Active (current):   {}", after.requests_active);
+    println!("  Worker restarts:    {}", restart_delta);
+    println!("  Worker panics:      {}", panic_delta);
+    println!(
+        "  Queue wait (avg/p50/p95): {:.2} / {:.2} / {:.2} ms",
+        after.queue_wait_ms_avg, after.queue_wait_ms_p50, after.queue_wait_ms_p95
+    );
+    println!(
+        "  Prefill (avg/p50/p95):    {:.2} / {:.2} / {:.2} ms",
+        after.prefill_ms_avg, after.prefill_ms_p50, after.prefill_ms_p95
+    );
+    println!(
+        "  Decode (avg/p50/p95):     {:.2} / {:.2} / {:.2} ms",
+        after.decode_ms_avg, after.decode_ms_p50, after.decode_ms_p95
+    );
+    println!(
+        "  End-to-end (avg/p50/p95): {:.2} / {:.2} / {:.2} ms",
+        after.end_to_end_ms_avg, after.end_to_end_ms_p50, after.end_to_end_ms_p95
+    );
 }

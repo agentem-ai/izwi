@@ -337,6 +337,17 @@ impl Attention {
         let k = k.transpose(1, 2)?;
         let v = v.transpose(1, 2)?;
         let total_len = k.dim(2)?;
+        if seq_len == 1 {
+            let scale = 1.0f32 / (self.head_dim as f32).sqrt();
+            if let Ok(sdpa_out) = ops::sdpa(&q, &k, &v, None, false, scale, 1.0) {
+                let out = sdpa_out.transpose(1, 2)?.reshape((
+                    bsz,
+                    seq_len,
+                    self.num_heads * self.head_dim,
+                ))?;
+                return self.o_proj.forward(&out).map_err(Error::from);
+            }
+        }
 
         // Reshape for batch matrix multiply
         let q = q.reshape((bsz * self.num_heads, seq_len, self.head_dim))?;
@@ -351,7 +362,7 @@ impl Attention {
         att = att.broadcast_div(&scale_t)?;
 
         // Apply causal mask
-        if seq_len > 1 || start_pos == 0 {
+        if seq_len > 1 {
             let mask = causal_mask(seq_len, total_len, start_pos, att.device(), att.dtype())?;
             att = att.broadcast_add(&mask)?;
         }
