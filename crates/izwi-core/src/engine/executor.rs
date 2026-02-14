@@ -2,10 +2,11 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info};
 
 use super::config::EngineCoreConfig;
+use super::output::StreamingOutput;
 use super::request::EngineCoreRequest;
 use super::scheduler::ScheduledRequest;
 use super::types::{AudioOutput, ModelType, TaskType};
@@ -13,7 +14,9 @@ use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::chat_types::ChatMessage;
 use crate::models::lfm2_audio::{lfm2_tts_voice_prompt, LFM2_DEFAULT_S2S_PROMPT};
-use crate::models::qwen3_tts::{Qwen3TtsModel, SpeakerReference, TtsGenerationParams};
+use crate::models::qwen3_tts::{
+    Qwen3TtsModel, SpeakerReference, TtsGenerationParams, TtsStreamingConfig,
+};
 use crate::models::DeviceSelector;
 use crate::models::ModelRegistry;
 
@@ -236,6 +239,64 @@ impl NativeExecutor {
         }
     }
 
+    fn stream_sender(request: &EngineCoreRequest) -> Option<mpsc::Sender<StreamingOutput>> {
+        if request.streaming {
+            request.streaming_tx.clone()
+        } else {
+            None
+        }
+    }
+
+    fn stream_text(
+        tx: &mpsc::Sender<StreamingOutput>,
+        request_id: &str,
+        sequence: &mut usize,
+        text: String,
+    ) -> Result<()> {
+        tx.blocking_send(StreamingOutput {
+            request_id: request_id.to_string(),
+            sequence: *sequence,
+            samples: Vec::new(),
+            sample_rate: 0,
+            is_final: false,
+            text: Some(text),
+            stats: None,
+        })
+        .map_err(|_| Error::InferenceError("Streaming output channel closed".to_string()))?;
+        *sequence += 1;
+        Ok(())
+    }
+
+    fn stream_audio(
+        tx: &mpsc::Sender<StreamingOutput>,
+        request_id: &str,
+        sequence: &mut usize,
+        samples: Vec<f32>,
+        sample_rate: u32,
+        is_final: bool,
+    ) -> Result<()> {
+        tx.blocking_send(StreamingOutput {
+            request_id: request_id.to_string(),
+            sequence: *sequence,
+            samples,
+            sample_rate,
+            is_final,
+            text: None,
+            stats: None,
+        })
+        .map_err(|_| Error::InferenceError("Streaming output channel closed".to_string()))?;
+        *sequence += 1;
+        Ok(())
+    }
+
+    fn stream_final_marker(
+        tx: &mpsc::Sender<StreamingOutput>,
+        request_id: &str,
+        sequence: &mut usize,
+    ) -> Result<()> {
+        Self::stream_audio(tx, request_id, sequence, Vec::new(), 0, true)
+    }
+
     fn find_request<'a>(
         requests: &'a [&EngineCoreRequest],
         scheduled: &ScheduledRequest,
@@ -325,6 +386,97 @@ impl NativeExecutor {
         )
     }
 
+    fn synthesize_qwen_tts_streaming(
+        model: &Qwen3TtsModel,
+        request: &EngineCoreRequest,
+        tx: &mpsc::Sender<StreamingOutput>,
+    ) -> Result<Vec<f32>> {
+        let text = request
+            .text
+            .as_deref()
+            .ok_or_else(|| Error::InvalidInput("TTS request missing text".to_string()))?;
+        let params = Self::to_tts_params(request);
+        let language = request.language.as_deref();
+        let stream_config = TtsStreamingConfig::default();
+
+        let mut sequence = 0usize;
+        let mut all_samples = Vec::new();
+        let mut emit_chunk = |samples: Vec<f32>| -> Result<()> {
+            if samples.is_empty() {
+                return Ok(());
+            }
+            all_samples.extend_from_slice(&samples);
+            Self::stream_audio(tx, &request.id, &mut sequence, samples, 24_000, false)
+        };
+
+        if request.reference_audio.is_some() || request.reference_text.is_some() {
+            let ref_audio = request.reference_audio.as_deref().ok_or_else(|| {
+                Error::InvalidInput(
+                    "reference_audio and reference_text must both be provided".to_string(),
+                )
+            })?;
+            let ref_text = request.reference_text.as_deref().ok_or_else(|| {
+                Error::InvalidInput(
+                    "reference_audio and reference_text must both be provided".to_string(),
+                )
+            })?;
+            if ref_text.trim().is_empty() {
+                return Err(Error::InvalidInput(
+                    "reference_text cannot be empty".to_string(),
+                ));
+            }
+
+            let (audio_samples, sample_rate) = decode_audio_base64_with_rate(ref_audio)?;
+            let reference = SpeakerReference {
+                audio_samples,
+                text: ref_text.to_string(),
+                sample_rate,
+            };
+            model.generate_with_voice_clone_streaming(
+                text,
+                &reference,
+                language,
+                &params,
+                stream_config,
+                &mut emit_chunk,
+            )?;
+        } else {
+            let available_speakers = model.available_speakers();
+            let requested_speaker = request
+                .params
+                .speaker
+                .as_deref()
+                .or(request.params.voice.as_deref())
+                .filter(|s| !s.trim().is_empty());
+
+            if available_speakers.is_empty() {
+                model.generate_with_text_params_streaming(
+                    text,
+                    language,
+                    request.voice_description.as_deref(),
+                    &params,
+                    stream_config,
+                    &mut emit_chunk,
+                )?;
+            } else {
+                let speaker_to_use =
+                    requested_speaker.unwrap_or_else(|| available_speakers[0].as_str());
+                model.generate_with_speaker_params_streaming(
+                    text,
+                    speaker_to_use,
+                    language,
+                    request.voice_description.as_deref(),
+                    &params,
+                    stream_config,
+                    &mut emit_chunk,
+                )?;
+            }
+        }
+
+        Self::stream_audio(tx, &request.id, &mut sequence, Vec::new(), 24_000, true)?;
+        Ok(all_samples)
+    }
+
     fn resolve_variant(request: &EngineCoreRequest) -> Result<ModelVariant> {
         request.model_variant.ok_or_else(|| {
             Error::InvalidInput(format!(
@@ -343,8 +495,10 @@ impl NativeExecutor {
         let (samples, sample_rate) = decode_audio_base64_with_rate(audio_b64)?;
         let samples_len = samples.len();
         let language = request.language.as_deref();
+        let stream_tx = Self::stream_sender(request);
 
         let text = Self::run_blocking(|| {
+            let mut sequence = 0usize;
             if variant.is_voxtral() {
                 let model = self.with_registry(|registry| {
                     registry.try_get_voxtral(variant).ok_or_else(|| {
@@ -353,6 +507,29 @@ impl NativeExecutor {
                         ))
                     })
                 })?;
+                if let Some(tx) = stream_tx.as_ref() {
+                    let mut stream_err: Option<Error> = None;
+                    let mut emit = |delta: &str| {
+                        if stream_err.is_none() {
+                            if let Err(err) =
+                                Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
+                            {
+                                stream_err = Some(err);
+                            }
+                        }
+                    };
+                    let text = model.transcribe_with_callback(
+                        &samples,
+                        sample_rate,
+                        language,
+                        &mut emit,
+                    )?;
+                    if let Some(err) = stream_err {
+                        return Err(err);
+                    }
+                    Self::stream_final_marker(tx, &request.id, &mut sequence)?;
+                    return Ok(text);
+                }
                 return model.transcribe(&samples, sample_rate, language);
             }
 
@@ -362,6 +539,29 @@ impl NativeExecutor {
                         Error::ModelNotFound(format!("LFM2 model {variant} is not loaded"))
                     })
                 })?;
+                if let Some(tx) = stream_tx.as_ref() {
+                    let mut stream_err: Option<Error> = None;
+                    let mut emit = |delta: &str| {
+                        if stream_err.is_none() {
+                            if let Err(err) =
+                                Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
+                            {
+                                stream_err = Some(err);
+                            }
+                        }
+                    };
+                    let text = model.transcribe_with_callback(
+                        &samples,
+                        sample_rate,
+                        language,
+                        &mut emit,
+                    )?;
+                    if let Some(err) = stream_err {
+                        return Err(err);
+                    }
+                    Self::stream_final_marker(tx, &request.id, &mut sequence)?;
+                    return Ok(text);
+                }
                 let mut sink = |_delta: &str| {};
                 return model.transcribe_with_callback(&samples, sample_rate, language, &mut sink);
             }
@@ -371,6 +571,25 @@ impl NativeExecutor {
                     Error::ModelNotFound(format!("ASR model {variant} is not loaded"))
                 })
             })?;
+            if let Some(tx) = stream_tx.as_ref() {
+                let mut stream_err: Option<Error> = None;
+                let mut emit = |delta: &str| {
+                    if stream_err.is_none() {
+                        if let Err(err) =
+                            Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
+                        {
+                            stream_err = Some(err);
+                        }
+                    }
+                };
+                let text =
+                    model.transcribe_with_callback(&samples, sample_rate, language, &mut emit)?;
+                if let Some(err) = stream_err {
+                    return Err(err);
+                }
+                Self::stream_final_marker(tx, &request.id, &mut sequence)?;
+                return Ok(text);
+            }
             let mut sink = |_delta: &str| {};
             model.transcribe_with_callback(&samples, sample_rate, language, &mut sink)
         })?;
@@ -401,6 +620,7 @@ impl NativeExecutor {
         let variant = Self::resolve_variant(request)?;
         let messages = Self::chat_messages(request)?;
         let max_new_tokens = request.params.max_tokens.max(1);
+        let stream_tx = Self::stream_sender(request);
 
         let output = Self::run_blocking(|| {
             let model = self.with_registry(|registry| {
@@ -408,7 +628,27 @@ impl NativeExecutor {
                     Error::ModelNotFound(format!("Chat model {variant} is not loaded"))
                 })
             })?;
-            model.generate(messages, max_new_tokens)
+            if let Some(tx) = stream_tx.as_ref() {
+                let mut sequence = 0usize;
+                let mut stream_err: Option<Error> = None;
+                let mut emit = |delta: &str| {
+                    if stream_err.is_none() {
+                        if let Err(err) =
+                            Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
+                        {
+                            stream_err = Some(err);
+                        }
+                    }
+                };
+                let output = model.generate_with_callback(messages, max_new_tokens, &mut emit)?;
+                if let Some(err) = stream_err {
+                    return Err(err);
+                }
+                Self::stream_final_marker(tx, &request.id, &mut sequence)?;
+                Ok(output)
+            } else {
+                model.generate(messages, max_new_tokens)
+            }
         })?;
 
         Ok(ExecutorOutput {
@@ -457,6 +697,7 @@ impl NativeExecutor {
             64
         };
         let max_new_tokens = request.params.max_tokens.max(1);
+        let stream_tx = Self::stream_sender(request);
 
         let samples = Self::run_blocking(|| {
             let model = self.with_registry(|registry| {
@@ -464,15 +705,62 @@ impl NativeExecutor {
                     Error::ModelNotFound(format!("LFM2 model {variant} is not loaded"))
                 })
             })?;
-            let mut sink = |_delta: &str| {};
-            model.synthesize_with_callback(
-                text,
-                &voice_instruction,
-                Some(temperature),
-                Some(top_k),
-                max_new_tokens,
-                &mut sink,
-            )
+            if let Some(tx) = stream_tx.as_ref() {
+                let mut sequence = 0usize;
+                let mut stream_err: Option<Error> = None;
+                let mut on_delta = |delta: &str| {
+                    if stream_err.is_none() {
+                        if let Err(err) =
+                            Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
+                        {
+                            stream_err = Some(err);
+                        }
+                    }
+                };
+
+                let samples = model.synthesize_with_callback(
+                    text,
+                    &voice_instruction,
+                    Some(temperature),
+                    Some(top_k),
+                    max_new_tokens,
+                    &mut on_delta,
+                )?;
+
+                if let Some(err) = stream_err {
+                    return Err(err);
+                }
+
+                if !samples.is_empty() {
+                    let chunk_size = 4_800usize;
+                    let total_chunks = samples.len().div_ceil(chunk_size);
+                    for (idx, chunk) in samples.chunks(chunk_size).enumerate() {
+                        let is_final = idx + 1 >= total_chunks;
+                        Self::stream_audio(
+                            tx,
+                            &request.id,
+                            &mut sequence,
+                            chunk.to_vec(),
+                            24_000,
+                            is_final,
+                        )?;
+                    }
+                } else {
+                    Self::stream_final_marker(tx, &request.id, &mut sequence)?;
+                }
+
+                Ok(samples)
+            } else {
+                let mut sink = |_delta: &str| {};
+                model.synthesize_with_callback(
+                    text,
+                    &voice_instruction,
+                    Some(temperature),
+                    Some(top_k),
+                    max_new_tokens,
+                    &mut sink,
+                )
+            }
         })?;
 
         Ok(ExecutorOutput {
@@ -505,6 +793,7 @@ impl NativeExecutor {
             }
         });
         let max_new_tokens = request.params.max_tokens.max(1);
+        let stream_tx = Self::stream_sender(request);
 
         let (text, output_samples) = Self::run_blocking(|| {
             let model = self.with_registry(|registry| {
@@ -512,16 +801,64 @@ impl NativeExecutor {
                     Error::ModelNotFound(format!("LFM2 model {variant} is not loaded"))
                 })
             })?;
-            let mut sink = |_delta: &str| {};
-            model.speech_to_speech_with_callback(
-                &samples,
-                sample_rate,
-                Some(system_prompt),
-                Some(resolved_temperature),
-                Some(resolved_top_k),
-                max_new_tokens,
-                &mut sink,
-            )
+            if let Some(tx) = stream_tx.as_ref() {
+                let mut sequence = 0usize;
+                let mut stream_err: Option<Error> = None;
+                let mut on_delta = |delta: &str| {
+                    if stream_err.is_none() {
+                        if let Err(err) =
+                            Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
+                        {
+                            stream_err = Some(err);
+                        }
+                    }
+                };
+
+                let (text, output_samples) = model.speech_to_speech_with_callback(
+                    &samples,
+                    sample_rate,
+                    Some(system_prompt),
+                    Some(resolved_temperature),
+                    Some(resolved_top_k),
+                    max_new_tokens,
+                    &mut on_delta,
+                )?;
+
+                if let Some(err) = stream_err {
+                    return Err(err);
+                }
+
+                if !output_samples.is_empty() {
+                    let chunk_size = 4_800usize;
+                    let total_chunks = output_samples.len().div_ceil(chunk_size);
+                    for (idx, chunk) in output_samples.chunks(chunk_size).enumerate() {
+                        let is_final = idx + 1 >= total_chunks;
+                        Self::stream_audio(
+                            tx,
+                            &request.id,
+                            &mut sequence,
+                            chunk.to_vec(),
+                            24_000,
+                            is_final,
+                        )?;
+                    }
+                } else {
+                    Self::stream_final_marker(tx, &request.id, &mut sequence)?;
+                }
+
+                Ok((text, output_samples))
+            } else {
+                let mut sink = |_delta: &str| {};
+                model.speech_to_speech_with_callback(
+                    &samples,
+                    sample_rate,
+                    Some(system_prompt),
+                    Some(resolved_temperature),
+                    Some(resolved_top_k),
+                    max_new_tokens,
+                    &mut sink,
+                )
+            }
         })?;
 
         Ok(ExecutorOutput {
@@ -557,10 +894,16 @@ impl NativeExecutor {
                     if variant.map(|v| v.is_lfm2()).unwrap_or(false) {
                         self.lfm2_tts_request(request)
                     } else {
+                        let stream_tx = Self::stream_sender(request);
                         self.with_model(|model| {
                             let prompt_tokens = request.num_prompt_tokens();
-                            let samples =
-                                Self::run_blocking(|| Self::synthesize_qwen_tts(model, request))?;
+                            let samples = if let Some(tx) = stream_tx.as_ref() {
+                                Self::run_blocking(|| {
+                                    Self::synthesize_qwen_tts_streaming(model, request, tx)
+                                })?
+                            } else {
+                                Self::run_blocking(|| Self::synthesize_qwen_tts(model, request))?
+                            };
                             Ok(ExecutorOutput {
                                 request_id: request.id.clone(),
                                 audio: Some(AudioOutput::new(samples.clone(), 24_000)),

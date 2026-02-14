@@ -101,7 +101,7 @@ pub async fn speech(
 
     let variant = parse_tts_model_variant(&req.model)
         .map_err(|err| ApiError::bad_request(format!("Unsupported TTS model: {}", err)))?;
-    state.engine.load_model(variant).await?;
+    state.runtime.load_model(variant).await?;
 
     if req.stream.unwrap_or(false) {
         return stream_speech(state, req).await;
@@ -141,12 +141,12 @@ pub async fn speech(
             voice_description: req.instructions.clone(),
         };
 
-        state.engine.generate(gen_request).await
+        state.runtime.generate(gen_request).await
     })
     .await
     .map_err(|_| ApiError::internal("Request timeout"))??;
 
-    let encoder = state.engine.audio_encoder().await;
+    let encoder = state.runtime.audio_encoder().await;
     let samples = result.samples.clone();
     let audio_bytes = tokio::task::spawn_blocking(move || encoder.encode(&samples, format))
         .await
@@ -207,7 +207,7 @@ async fn stream_speech(state: AppState, req: SpeechRequest) -> Result<Response<B
     let stream_audio_format = stream_audio_format_label(format);
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<String>();
 
-    let engine = state.engine.clone();
+    let engine = state.runtime.clone();
     let semaphore = state.request_semaphore.clone();
     let timeout = Duration::from_secs(state.request_timeout_secs);
     tokio::spawn(async move {

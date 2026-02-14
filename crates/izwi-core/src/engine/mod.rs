@@ -155,6 +155,7 @@ impl Engine {
 
         // Add request with streaming callback
         let mut streaming_request = request;
+        streaming_request.streaming = true;
         streaming_request.streaming_tx = Some(tx);
 
         self.add_request(streaming_request).await?;
@@ -240,6 +241,12 @@ impl Engine {
     pub async fn abort_request(&self, request_id: &RequestId) -> Result<bool> {
         let mut core = self.core.write().await;
         Ok(core.abort_request(request_id))
+    }
+
+    /// Check if a request is still tracked by the engine core.
+    pub async fn has_request(&self, request_id: &RequestId) -> bool {
+        let core = self.core.read().await;
+        core.has_request(request_id)
     }
 
     /// Get the number of pending requests.

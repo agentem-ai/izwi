@@ -232,7 +232,7 @@ pub async fn completions(
     let _permit = state.acquire_permit().await;
 
     let generation = state
-        .engine
+        .runtime
         .chat_generate(
             variant,
             messages,
@@ -288,7 +288,7 @@ async fn complete_stream(
     let created = now_unix_secs();
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<String>();
-    let engine = state.engine.clone();
+    let engine = state.runtime.clone();
     let semaphore = state.request_semaphore.clone();
     let completion_id_for_task = completion_id.clone();
     let model_id_for_task = model_id.clone();

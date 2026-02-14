@@ -45,7 +45,7 @@ pub async fn create_response(
     let _permit = state.acquire_permit().await;
 
     let output = state
-        .engine
+        .runtime
         .chat_generate(
             model_variant,
             messages,
@@ -192,7 +192,7 @@ async fn create_streaming_response(
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<String>();
     let semaphore = state.request_semaphore.clone();
-    let engine = state.engine.clone();
+    let engine = state.runtime.clone();
     let timeout = Duration::from_secs(state.request_timeout_secs);
     let store_state = state.clone();
 

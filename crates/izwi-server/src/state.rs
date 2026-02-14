@@ -1,6 +1,6 @@
 //! Application state management with high-concurrency optimizations
 
-use izwi_core::InferenceEngine;
+use izwi_core::RuntimeService;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,8 +28,8 @@ pub struct StoredResponseRecord {
 /// Shared application state with fine-grained locking and backpressure
 #[derive(Clone)]
 pub struct AppState {
-    /// Engine reference - using Arc for cheap clones
-    pub engine: Arc<InferenceEngine>,
+    /// Runtime service reference - using Arc for cheap clones
+    pub runtime: Arc<RuntimeService>,
     /// Concurrency limiter to prevent resource exhaustion
     pub request_semaphore: Arc<Semaphore>,
     /// Request timeout configuration (seconds)
@@ -39,7 +39,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(engine: InferenceEngine) -> Self {
+    pub fn new(runtime: RuntimeService) -> Self {
         // Limit concurrent requests to prevent overwhelming the system
         // Default: 100 concurrent requests (tunable based on hardware)
         let max_concurrent = std::env::var("MAX_CONCURRENT_REQUESTS")
@@ -53,7 +53,7 @@ impl AppState {
             .unwrap_or(300); // 5 minutes default
 
         Self {
-            engine: Arc::new(engine),
+            runtime: Arc::new(runtime),
             request_semaphore: Arc::new(Semaphore::new(max_concurrent)),
             request_timeout_secs: timeout,
             response_store: Arc::new(RwLock::new(HashMap::new())),

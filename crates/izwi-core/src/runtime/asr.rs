@@ -5,10 +5,10 @@ use crate::engine::EngineCoreRequest;
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::runtime::audio_io::{base64_decode, decode_wav_bytes};
-use crate::runtime::service::InferenceEngine;
+use crate::runtime::service::RuntimeService;
 use crate::runtime::types::AsrTranscription;
 
-impl InferenceEngine {
+impl RuntimeService {
     pub(crate) async fn asr_transcribe_with_variant_streaming<F>(
         &self,
         variant: ModelVariant,
@@ -25,11 +25,19 @@ impl InferenceEngine {
         request.model_variant = Some(variant);
         request.language = language.map(|s| s.to_string());
 
-        let output = self.core_engine.generate(request).await?;
-        let text = output.text.unwrap_or_default();
-        if !text.is_empty() {
-            on_delta(text.clone());
-        }
+        let mut streamed_text = String::new();
+        let output = self
+            .run_streaming_request(request, |chunk| {
+                if let Some(delta) = chunk.text {
+                    if !delta.is_empty() {
+                        streamed_text.push_str(&delta);
+                        on_delta(delta);
+                    }
+                }
+                std::future::ready(Ok(()))
+            })
+            .await?;
+        let text = output.text.unwrap_or(streamed_text);
 
         Ok(AsrTranscription {
             text,
@@ -142,7 +150,7 @@ mod tests {
         config.models_dir = root.clone();
         config.use_metal = false;
 
-        let engine = InferenceEngine::new(config).unwrap();
+        let engine = RuntimeService::new(config).unwrap();
         let err = engine
             .load_model(ModelVariant::ParakeetTdt06BV2)
             .await

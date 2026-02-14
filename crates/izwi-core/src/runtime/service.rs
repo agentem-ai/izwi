@@ -1,14 +1,19 @@
 //! Runtime service orchestrator.
 
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, RwLock};
+use tokio::task::yield_now;
 
 use crate::audio::{AudioCodec, AudioEncoder, StreamingConfig};
 use crate::backends::{BackendRouter, ExecutionBackend};
 use crate::config::EngineConfig;
-use crate::engine::{Engine as CoreEngine, EngineCoreConfig, WorkerConfig};
+use crate::engine::{
+    Engine as CoreEngine, EngineCoreConfig, EngineCoreRequest, EngineOutput, StreamingOutput,
+    WorkerConfig,
+};
 use crate::error::{Error, Result};
 use crate::model::download::DownloadProgress;
 use crate::model::{ModelInfo, ModelManager, ModelVariant};
@@ -17,7 +22,7 @@ use crate::models::{DeviceProfile, DeviceSelector, ModelRegistry};
 use crate::tokenizer::Tokenizer;
 
 /// Main inference engine runtime.
-pub struct InferenceEngine {
+pub struct RuntimeService {
     pub(crate) config: EngineConfig,
     pub(crate) backend_router: BackendRouter,
     pub(crate) model_manager: Arc<ModelManager>,
@@ -33,7 +38,7 @@ pub struct InferenceEngine {
     pub(crate) device: DeviceProfile,
 }
 
-impl InferenceEngine {
+impl RuntimeService {
     /// Create a new inference engine.
     pub fn new(config: EngineConfig) -> Result<Self> {
         let model_manager = Arc::new(ModelManager::new(config.clone())?);
@@ -157,5 +162,59 @@ impl InferenceEngine {
             .ok_or_else(|| Error::InferenceError("No TTS model loaded".to_string()))?;
 
         Ok(model.available_speakers().into_iter().cloned().collect())
+    }
+
+    pub(crate) async fn run_streaming_request<F, Fut>(
+        &self,
+        mut request: EngineCoreRequest,
+        mut on_chunk: F,
+    ) -> Result<EngineOutput>
+    where
+        F: FnMut(StreamingOutput) -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
+        request.streaming = true;
+        let request_id = request.id.clone();
+        let (stream_request_id, mut stream_rx) =
+            self.core_engine.generate_streaming(request).await?;
+        debug_assert_eq!(stream_request_id, request_id);
+
+        let step_engine = self.core_engine.clone();
+        let step_request_id = stream_request_id.clone();
+        let step_task = tokio::spawn(async move {
+            loop {
+                let outputs = step_engine.step().await?;
+                for output in outputs {
+                    if output.request_id == step_request_id && output.is_finished {
+                        return Ok(output);
+                    }
+                }
+
+                if !step_engine.has_request(&step_request_id).await {
+                    return Err(Error::InferenceError(format!(
+                        "Request {} ended without terminal output",
+                        step_request_id
+                    )));
+                }
+
+                yield_now().await;
+            }
+        });
+
+        while let Some(chunk) = stream_rx.recv().await {
+            if chunk.request_id != stream_request_id {
+                continue;
+            }
+
+            if let Err(err) = on_chunk(chunk).await {
+                let _ = self.core_engine.abort_request(&stream_request_id).await;
+                step_task.abort();
+                return Err(err);
+            }
+        }
+
+        step_task
+            .await
+            .map_err(|err| Error::InferenceError(format!("Streaming worker task failed: {err}")))?
     }
 }

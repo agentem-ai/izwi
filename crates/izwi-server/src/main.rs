@@ -8,7 +8,7 @@ mod api;
 mod error;
 mod state;
 
-use izwi_core::{EngineConfig, InferenceEngine};
+use izwi_core::{EngineConfig, RuntimeService};
 use state::AppState;
 
 #[tokio::main]
@@ -28,11 +28,11 @@ async fn main() -> anyhow::Result<()> {
     let config = EngineConfig::default();
     info!("Models directory: {:?}", config.models_dir);
 
-    // Create inference engine
-    let engine = InferenceEngine::new(config)?;
-    let state = AppState::new(engine);
+    // Create runtime service
+    let runtime = RuntimeService::new(config)?;
+    let state = AppState::new(runtime);
 
-    info!("Inference engine initialized");
+    info!("Runtime service initialized");
 
     // Build router
     let app = api::create_router(state.clone());

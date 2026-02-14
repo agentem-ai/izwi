@@ -24,7 +24,7 @@ pub struct ModelsResponse {
 /// List all available models
 pub async fn list_models(State(state): State<AppState>) -> Result<Json<ModelsResponse>, ApiError> {
     let mut models: Vec<ModelInfo> = state
-        .engine
+        .runtime
         .list_models()
         .await
         .into_iter()
@@ -42,7 +42,7 @@ pub async fn get_model_info(
     let variant = parse_variant(&variant)?;
 
     let info = state
-        .engine
+        .runtime
         .model_manager()
         .get_model_info(variant)
         .await
@@ -82,7 +82,7 @@ pub async fn download_model(
     info!("Starting non-blocking download for model: {}", variant);
 
     // Check if already downloading
-    if state.engine.is_download_active(variant).await {
+    if state.runtime.is_download_active(variant).await {
         return Ok(Json(DownloadResponse {
             status: "downloading",
             message: format!("Model {} is already being downloaded", variant),
@@ -90,7 +90,7 @@ pub async fn download_model(
     }
 
     // Spawn non-blocking download
-    state.engine.spawn_download(variant).await?;
+    state.runtime.spawn_download(variant).await?;
 
     Ok(Json(DownloadResponse {
         status: "started",
@@ -106,7 +106,7 @@ pub async fn load_model(
     let variant = parse_variant(&variant)?;
     info!("Loading model: {}", variant);
 
-    state.engine.load_model(variant).await?;
+    state.runtime.load_model(variant).await?;
 
     Ok(Json(DownloadResponse {
         status: "loaded",
@@ -122,7 +122,7 @@ pub async fn unload_model(
     let variant = parse_variant(&variant)?;
     info!("Unloading model: {}", variant);
 
-    state.engine.unload_model(variant).await?;
+    state.runtime.unload_model(variant).await?;
 
     Ok(Json(DownloadResponse {
         status: "unloaded",
@@ -139,10 +139,10 @@ pub async fn delete_model(
     info!("Deleting model: {}", variant);
 
     // First unload if loaded
-    let _ = state.engine.model_manager().unload_model(variant).await;
+    let _ = state.runtime.model_manager().unload_model(variant).await;
 
     // Delete the model files
-    state.engine.model_manager().delete_model(variant).await?;
+    state.runtime.model_manager().delete_model(variant).await?;
 
     Ok(Json(DownloadResponse {
         status: "deleted",
@@ -165,7 +165,7 @@ pub async fn download_progress_stream(
 
     // Get progress receiver from engine
     let mut progress_rx = state
-        .engine
+        .runtime
         .model_manager()
         .subscribe_progress(variant)
         .await
@@ -218,7 +218,7 @@ pub async fn download_progress_stream(
                     // Channel closed: the download task has exited. Emit one final state
                     // so clients do not see a silent stream cutoff.
                     let final_state = state
-                        .engine
+                        .runtime
                         .model_manager()
                         .get_download_state(variant)
                         .await;
@@ -308,7 +308,7 @@ pub async fn cancel_download(
     info!("Cancelling download for: {}", variant);
 
     // Check if download is active
-    if !state.engine.is_download_active(variant).await {
+    if !state.runtime.is_download_active(variant).await {
         return Ok(Json(DownloadResponse {
             status: "not_active",
             message: format!("No active download for {}", variant),
@@ -316,7 +316,7 @@ pub async fn cancel_download(
     }
 
     // Cancel the download
-    match state.engine.model_manager().cancel_download(variant).await {
+    match state.runtime.model_manager().cancel_download(variant).await {
         Ok(_) => Ok(Json(DownloadResponse {
             status: "cancelled",
             message: format!("Download of {} cancelled", variant),
