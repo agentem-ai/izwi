@@ -275,24 +275,68 @@ impl AudioTower {
 
     pub fn forward(&self, mel: &Tensor, feature_lens: Option<&[usize]>) -> Result<Tensor> {
         let bsz = mel.dim(0)?;
-        if bsz != 1 {
-            return Err(crate::error::Error::InvalidInput(
-                "Qwen3-ASR audio tower currently supports batch size 1".to_string(),
-            ));
-        }
-
-        let n_mels = mel.dim(2)?;
         let total_frames = mel.dim(3)?;
-        let mut input_len = feature_lens
-            .and_then(|lens| lens.first().copied())
-            .unwrap_or(total_frames);
-        input_len = input_len.min(total_frames);
-        if input_len == 0 {
+
+        if bsz == 1 {
+            let input_len = feature_lens
+                .and_then(|lens| lens.first().copied())
+                .unwrap_or(total_frames)
+                .min(total_frames);
+            if input_len == 0 {
+                return Err(crate::error::Error::InvalidInput(
+                    "Empty audio feature sequence".to_string(),
+                ));
+            }
+            let sample = mel.i((0, 0))?;
+            return self.forward_single_sample(&sample, input_len);
+        }
+
+        let mut outputs = Vec::with_capacity(bsz);
+        for sample_idx in 0..bsz {
+            let input_len = feature_lens
+                .and_then(|lens| lens.get(sample_idx).copied())
+                .unwrap_or(total_frames)
+                .min(total_frames);
+            if input_len == 0 {
+                return Err(crate::error::Error::InvalidInput(
+                    "Empty audio feature sequence".to_string(),
+                ));
+            }
+            let sample = mel.i((sample_idx, 0))?;
+            outputs.push(self.forward_single_sample(&sample, input_len)?);
+        }
+
+        if outputs.is_empty() {
             return Err(crate::error::Error::InvalidInput(
-                "Empty audio feature sequence".to_string(),
+                "No audio features available for ASR batch".to_string(),
             ));
         }
 
+        let mut max_seq_len = 0usize;
+        for output in &outputs {
+            max_seq_len = max_seq_len.max(output.dim(1)?);
+        }
+        let hidden = outputs[0].dim(2)?;
+        let mut padded = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let seq_len = output.dim(1)?;
+            if seq_len < max_seq_len {
+                let pad = Tensor::zeros(
+                    (1, max_seq_len - seq_len, hidden),
+                    output.dtype(),
+                    output.device(),
+                )?;
+                padded.push(Tensor::cat(&[output, pad], 1)?);
+            } else {
+                padded.push(output);
+            }
+        }
+        let refs: Vec<&Tensor> = padded.iter().collect();
+        Tensor::cat(&refs, 0).map_err(crate::error::Error::from)
+    }
+
+    fn forward_single_sample(&self, mel_sample: &Tensor, input_len: usize) -> Result<Tensor> {
+        let n_mels = mel_sample.dim(0)?;
         let n_window = self.cfg.n_window.unwrap_or(50);
         let n_window_infer = self.cfg.n_window_infer.unwrap_or(800);
         let chunk_input_len = n_window * 2;
@@ -303,7 +347,7 @@ impl AudioTower {
         }
 
         // Match upstream: split features into fixed-size chunks before CNN.
-        let feature_seq = mel.i((0, 0))?.transpose(0, 1)?; // [frames, n_mels]
+        let feature_seq = mel_sample.transpose(0, 1)?; // [frames, n_mels]
         let mut chunk_lengths = Vec::new();
         let mut remaining = input_len;
         while remaining > 0 {

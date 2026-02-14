@@ -12,7 +12,7 @@ use futures::FutureExt;
 use serde::Serialize;
 use tokio::sync::{broadcast, oneshot, Mutex, Notify, RwLock};
 use tokio::task::yield_now;
-use tracing::{error, info_span};
+use tracing::{debug, error, info_span};
 
 use crate::audio::{AudioCodec, AudioEncoder, StreamingConfig};
 use crate::backends::{BackendRouter, ExecutionBackend};
@@ -312,6 +312,7 @@ impl Drop for PendingRequestGuard {
 impl RuntimeService {
     /// Create a new inference engine.
     pub fn new(config: EngineConfig) -> Result<Self> {
+        configure_runtime_threading(config.num_threads.max(1));
         let model_manager = Arc::new(ModelManager::new(config.clone())?);
 
         let device = if cfg!(target_os = "macos") {
@@ -666,4 +667,20 @@ impl RuntimeService {
     pub async fn telemetry_prometheus(&self) -> String {
         self.telemetry.prometheus().await
     }
+}
+
+fn configure_runtime_threading(num_threads: usize) {
+    let value = num_threads.max(1).to_string();
+    for key in [
+        "RAYON_NUM_THREADS",
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ] {
+        if std::env::var(key).is_err() {
+            std::env::set_var(key, &value);
+        }
+    }
+    debug!("Configured runtime threading hints to {} threads", value);
 }

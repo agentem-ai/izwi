@@ -40,11 +40,20 @@ pub struct BatchedAttentionConfig {
 
 impl BatchedAttentionConfig {
     pub fn new(num_heads: usize, head_dim: usize) -> Self {
+        let use_flash_attention = std::env::var("IZWI_USE_FLASH_ATTENTION")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
         Self {
             num_heads,
             head_dim,
             scale: (head_dim as f64).sqrt(),
-            use_flash_attention: false, // Flash attention not yet available in Candle
+            use_flash_attention,
         }
     }
 }
@@ -80,11 +89,24 @@ pub fn batched_scaled_dot_product_attention(
         .reshape((bsz, seq_len, config.num_heads, config.head_dim))?
         .transpose(1, 2)?;
 
+    if config.use_flash_attention {
+        let scale = 1.0f32 / config.scale as f32;
+        if let Ok(sdpa_out) =
+            candle_nn::ops::sdpa(&q, &k, &v, input.attention_mask.as_ref(), false, scale, 1.0)
+        {
+            let output = sdpa_out
+                .transpose(1, 2)?
+                .reshape((bsz, seq_len, _hidden_size))?;
+            return Ok(output);
+        }
+    }
+
     // Compute attention scores: [batch, heads, seq, seq]
     let scale_tensor = Tensor::new(&[config.scale as f32], input.queries.device())?
         .to_dtype(input.queries.dtype())?;
 
-    let mut attn = q.matmul(&k.transpose(D::Minus2, D::Minus1)?)?;
+    let k_t = k.transpose(D::Minus2, D::Minus1)?.contiguous()?;
+    let mut attn = q.contiguous()?.matmul(&k_t)?;
     attn = attn.broadcast_div(&scale_tensor)?;
 
     // Apply attention mask if provided
@@ -96,7 +118,7 @@ pub fn batched_scaled_dot_product_attention(
     let attn = candle_nn::ops::softmax(&attn, D::Minus1)?;
 
     // Apply attention to values: [batch, heads, seq, head_dim]
-    let output = attn.matmul(&v)?;
+    let output = attn.contiguous()?.matmul(&v.contiguous()?)?;
 
     // Transpose and reshape back: [batch, seq, hidden_size]
     let output = output
