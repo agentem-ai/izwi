@@ -13,6 +13,11 @@ use crate::runtime::types::{
 };
 
 impl InferenceEngine {
+    const LFM2_TTS_DEFAULT_AUDIO_TEMPERATURE: f32 = 0.8;
+    const LFM2_TTS_DEFAULT_AUDIO_TOP_K: usize = 64;
+    const LFM2_S2S_DEFAULT_AUDIO_TEMPERATURE: f32 = 1.0;
+    const LFM2_S2S_DEFAULT_AUDIO_TOP_K: usize = 4;
+
     fn default_lfm2_variant() -> ModelVariant {
         ModelVariant::Lfm2Audio15B
     }
@@ -118,11 +123,19 @@ impl InferenceEngine {
             let model = model.clone();
             let text = request.text.clone();
             let speaker_prompt = voice_instruction.clone();
-            let temperature = request.config.temperature;
-            let top_k = if request.config.top_k > 0 {
-                Some(request.config.top_k)
+            // LFM2 TTS quality is sensitive to sampling settings.
+            // Follow upstream recommendation unless caller explicitly overrides.
+            let using_generic_defaults = request.config.top_k == 0
+                && (request.config.temperature - 0.7).abs() < f32::EPSILON;
+            let temperature = if using_generic_defaults {
+                Self::LFM2_TTS_DEFAULT_AUDIO_TEMPERATURE
             } else {
-                Some(4)
+                request.config.temperature
+            };
+            let top_k = if request.config.top_k > 0 {
+                request.config.top_k
+            } else {
+                Self::LFM2_TTS_DEFAULT_AUDIO_TOP_K
             };
             let max_new_tokens = if request.config.max_tokens == 0 {
                 512
@@ -135,7 +148,7 @@ impl InferenceEngine {
                     &text,
                     &speaker_prompt,
                     Some(temperature),
-                    top_k,
+                    Some(top_k),
                     max_new_tokens,
                     &mut sink,
                 )
@@ -200,6 +213,10 @@ impl InferenceEngine {
         if let Some(lang) = language {
             info!("LFM2 S2S language hint: {}", lang);
         }
+        let resolved_temperature = temperature.unwrap_or(Self::LFM2_S2S_DEFAULT_AUDIO_TEMPERATURE);
+        let resolved_top_k = top_k
+            .filter(|&v| v > 0)
+            .unwrap_or(Self::LFM2_S2S_DEFAULT_AUDIO_TOP_K);
 
         let (text, output_samples) = tokio::task::spawn_blocking({
             let model = model.clone();
@@ -210,8 +227,8 @@ impl InferenceEngine {
                     &samples,
                     sample_rate,
                     Some(prompt.as_str()),
-                    temperature,
-                    top_k,
+                    Some(resolved_temperature),
+                    Some(resolved_top_k),
                     1024,
                     &mut emit,
                 )

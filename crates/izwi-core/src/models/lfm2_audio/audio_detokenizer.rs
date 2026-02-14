@@ -223,15 +223,7 @@ impl AudioDetokenizer {
     }
 
     fn upsample_nearest(&self, x: &Tensor, factor: usize) -> Result<Tensor> {
-        if factor <= 1 {
-            return Ok(x.clone());
-        }
-        let (_b, t, _d) = x.dims3()?;
-        let indices: Vec<u32> = (0..t * factor).map(|i| (i / factor) as u32).collect();
-        let indices = Tensor::from_vec(indices, t * factor, x.device())?.to_dtype(DType::U32)?;
-        let x = x.transpose(1, 2)?; // [B, D, T]
-        let x = x.index_select(&indices, 2)?; // [B, D, T*factor]
-        x.transpose(1, 2).map_err(Error::from)
+        upsample_nearest_time(x, factor)
     }
 
     fn istft_from_detokenizer_spec(&self, spec: &Tensor) -> Result<Vec<f32>> {
@@ -332,4 +324,43 @@ fn hann_window(win_length: usize) -> Vec<f32> {
             0.5 - 0.5 * x.cos()
         })
         .collect()
+}
+
+fn upsample_nearest_time(x: &Tensor, factor: usize) -> Result<Tensor> {
+    if factor <= 1 {
+        return Ok(x.clone());
+    }
+    let (_b, t, _d) = x.dims3()?;
+    let indices: Vec<u32> = (0..t * factor).map(|i| (i / factor) as u32).collect();
+    let indices = Tensor::from_vec(indices, t * factor, x.device())?.to_dtype(DType::U32)?;
+
+    let x = x.transpose(1, 2)?.contiguous()?; // [B, D, T]
+    let x = x.index_select(&indices, 2)?; // [B, D, T*factor]
+    x.transpose(1, 2).map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::upsample_nearest_time;
+    use candle_core::{Device, Tensor};
+
+    #[test]
+    fn upsample_nearest_time_repeats_frames_without_contiguity_errors() {
+        let device = Device::Cpu;
+        let x = Tensor::from_vec(vec![1f32, 2., 3., 4.], (1, 2, 2), &device).unwrap();
+        let upsampled = upsample_nearest_time(&x, 3).unwrap();
+
+        let values = upsampled.to_vec3::<f32>().unwrap();
+        assert_eq!(
+            values,
+            vec![vec![
+                vec![1.0, 2.0],
+                vec![1.0, 2.0],
+                vec![1.0, 2.0],
+                vec![3.0, 4.0],
+                vec![3.0, 4.0],
+                vec![3.0, 4.0],
+            ]]
+        );
+    }
 }

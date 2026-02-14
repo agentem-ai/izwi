@@ -255,13 +255,12 @@ impl Lfm2AudioModel {
         let mut assembled = String::new();
         let mut audio_frames: Vec<Vec<u32>> = vec![Vec::new(); self.cfg.codebooks];
         let mut rng = SimpleRng::new();
-        let inferred_audio_frame_cap = text.chars().count().saturating_add(24).clamp(48, 480);
 
         self.generate_sequential(
             &state,
             max_new_tokens.max(256),
             true,
-            Some(inferred_audio_frame_cap),
+            None,
             None,
             None,
             temperature,
@@ -278,7 +277,7 @@ impl Lfm2AudioModel {
                 }
             },
             &mut |frame| {
-                if frame.first().copied() == Some(END_OF_AUDIO_TOKEN) {
+                if is_end_of_audio_frame(frame) {
                     return;
                 }
                 for (i, &tok) in frame.iter().enumerate() {
@@ -289,6 +288,7 @@ impl Lfm2AudioModel {
             },
         )?;
 
+        trim_audio_frames(&mut audio_frames);
         self.wave_decoder.decode_tokens(&audio_frames)
     }
 
@@ -346,7 +346,7 @@ impl Lfm2AudioModel {
                 }
             },
             &mut |frame| {
-                if frame.first().copied() == Some(END_OF_AUDIO_TOKEN) {
+                if is_end_of_audio_frame(frame) {
                     return;
                 }
                 for (i, &tok) in frame.iter().enumerate() {
@@ -357,6 +357,7 @@ impl Lfm2AudioModel {
             },
         )?;
 
+        trim_audio_frames(&mut audio_frames);
         let wav = self.wave_decoder.decode_tokens(&audio_frames)?;
         Ok((assembled.trim().to_string(), wav))
     }
@@ -531,7 +532,7 @@ impl Lfm2AudioModel {
                         rng,
                     )?;
                     let mut frame = frame;
-                    if frame.first().copied() == Some(END_OF_AUDIO_TOKEN) {
+                    if is_end_of_audio_frame(&frame) {
                         for t in &mut frame {
                             *t = END_OF_AUDIO_TOKEN;
                         }
@@ -632,7 +633,7 @@ impl Lfm2AudioModel {
                         modality_left = self.cfg.interleaved_n_text;
                     }
 
-                    if frame.first().copied() == Some(END_OF_AUDIO_TOKEN) {
+                    if is_end_of_audio_frame(&frame) {
                         for t in &mut frame {
                             *t = END_OF_AUDIO_TOKEN;
                         }
@@ -717,6 +718,31 @@ fn validate_model_dir(model_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn is_end_of_audio_frame(frame: &[u32]) -> bool {
+    frame.first().copied() == Some(END_OF_AUDIO_TOKEN)
+}
+
+fn trim_audio_frames(codebooks: &mut [Vec<u32>]) {
+    if codebooks.is_empty() || codebooks[0].is_empty() {
+        return;
+    }
+
+    let frames = codebooks[0].len();
+    let mut cut_at = frames;
+    for t in 0..frames {
+        if codebooks[0].get(t).copied() == Some(END_OF_AUDIO_TOKEN) {
+            cut_at = t;
+            break;
+        }
+    }
+
+    if cut_at < frames {
+        for codes in codebooks {
+            codes.truncate(cut_at);
+        }
+    }
 }
 
 fn text_delta(previous: &str, current: &str) -> String {
@@ -857,5 +883,27 @@ mod tests {
         assert_eq!(lfm2_tts_voice_prompt(Some("Serena")), TTS_US_FEMALE_PROMPT);
         assert_eq!(lfm2_tts_voice_prompt(Some("Dylan")), TTS_UK_MALE_PROMPT);
         assert_eq!(lfm2_tts_voice_prompt(Some("Vivian")), TTS_UK_FEMALE_PROMPT);
+    }
+
+    #[test]
+    fn detects_end_of_audio_when_first_codebook_marks_end() {
+        assert!(is_end_of_audio_frame(&[END_OF_AUDIO_TOKEN, 2, 3]));
+        assert!(!is_end_of_audio_frame(&[1, END_OF_AUDIO_TOKEN, 3]));
+        assert!(!is_end_of_audio_frame(&[1, 2, 3]));
+    }
+
+    #[test]
+    fn trims_audio_frames_using_first_codebook_end_marker() {
+        let mut codebooks = vec![
+            vec![10, 11, END_OF_AUDIO_TOKEN, 13],
+            vec![20, 21, 22, 23],
+            vec![30, END_OF_AUDIO_TOKEN, 32, 33],
+        ];
+
+        trim_audio_frames(&mut codebooks);
+
+        assert_eq!(codebooks[0], vec![10, 11]);
+        assert_eq!(codebooks[1], vec![20, 21]);
+        assert_eq!(codebooks[2], vec![30, END_OF_AUDIO_TOKEN]);
     }
 }
