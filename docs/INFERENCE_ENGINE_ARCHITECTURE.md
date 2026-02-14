@@ -29,7 +29,7 @@ This keeps current behavior intact while giving a clean foundation for native ML
 crates/izwi-core/src/
 ├── runtime/                   # Canonical request lifecycle orchestration
 │   ├── mod.rs
-│   ├── service.rs             # InferenceEngine struct + base lifecycle methods
+│   ├── service.rs             # RuntimeService struct + base lifecycle methods
 │   ├── model_router.rs        # load/unload + backend selection integration
 │   ├── tts.rs                 # TTS generation + streaming methods
 │   ├── asr.rs                 # ASR / Voxtral / forced alignment methods
@@ -58,7 +58,7 @@ crates/izwi-core/src/
 
 ### 1) API Layer (izwi-server)
 - Parses requests.
-- Uses shared `InferenceEngine` runtime.
+- Uses shared `RuntimeService` runtime.
 - Uses centralized catalog parsers for model IDs.
 
 ### 2) Runtime Layer (`runtime/`)

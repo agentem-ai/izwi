@@ -42,6 +42,10 @@ struct SpeechToSpeechResponse {
 struct SpeechToSpeechStreamEvent {
     event: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    sequence: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_final: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     delta: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
@@ -85,7 +89,7 @@ pub async fn speech_to_speech(
         .ok_or_else(|| ApiError::bad_request("Missing audio input (`file` or `audio_base64`)"))?;
 
     let variant = resolve_lfm2_variant(req.model.as_deref())?;
-    state.engine.load_model(variant).await?;
+    state.runtime.load_model(variant).await?;
 
     if req.stream {
         return stream_response(state, req, audio_base64).await;
@@ -96,7 +100,7 @@ pub async fn speech_to_speech(
 
     let result = tokio::time::timeout(timeout, async {
         state
-            .engine
+            .runtime
             .lfm2_speech_to_speech(
                 &audio_base64,
                 req.language.as_deref(),
@@ -138,7 +142,7 @@ async fn stream_response(
     let top_k = req.top_k;
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<String>();
-    let engine = state.engine.clone();
+    let engine = state.runtime.clone();
     let semaphore = state.request_semaphore.clone();
 
     tokio::spawn(async move {
@@ -148,6 +152,8 @@ async fn stream_response(
                 let _ = event_tx.send(
                     serde_json::to_string(&SpeechToSpeechStreamEvent {
                         event: "error",
+                        sequence: None,
+                        is_final: None,
                         delta: None,
                         text: None,
                         transcription: None,
@@ -161,6 +167,8 @@ async fn stream_response(
                 let _ = event_tx.send(
                     serde_json::to_string(&SpeechToSpeechStreamEvent {
                         event: "done",
+                        sequence: None,
+                        is_final: None,
                         delta: None,
                         text: None,
                         transcription: None,
@@ -178,6 +186,8 @@ async fn stream_response(
         let _ = event_tx.send(
             serde_json::to_string(&SpeechToSpeechStreamEvent {
                 event: "start",
+                sequence: None,
+                is_final: None,
                 delta: None,
                 text: None,
                 transcription: None,
@@ -190,6 +200,9 @@ async fn stream_response(
         );
 
         let delta_tx = event_tx.clone();
+        let audio_tx = event_tx.clone();
+        let stream_sample_rate = 24_000u32;
+        let stream_encoder = AudioEncoder::new(stream_sample_rate, 1);
         let result = tokio::time::timeout(timeout, async {
             engine
                 .lfm2_speech_to_speech_streaming(
@@ -202,6 +215,8 @@ async fn stream_response(
                         let _ = delta_tx.send(
                             serde_json::to_string(&SpeechToSpeechStreamEvent {
                                 event: "delta",
+                                sequence: None,
+                                is_final: None,
                                 delta: Some(delta),
                                 text: None,
                                 transcription: None,
@@ -212,6 +227,53 @@ async fn stream_response(
                             })
                             .unwrap_or_default(),
                         );
+                    },
+                    move |audio_chunk| {
+                        if audio_chunk.samples.is_empty() && !audio_chunk.is_final {
+                            return;
+                        }
+
+                        match stream_encoder.encode(&audio_chunk.samples, AudioFormat::RawI16) {
+                            Ok(bytes) => {
+                                let _ = audio_tx.send(
+                                    serde_json::to_string(&SpeechToSpeechStreamEvent {
+                                        event: "audio_chunk",
+                                        sequence: Some(audio_chunk.sequence),
+                                        is_final: Some(audio_chunk.is_final),
+                                        delta: None,
+                                        text: None,
+                                        transcription: None,
+                                        audio_base64: Some(
+                                            base64::engine::general_purpose::STANDARD.encode(bytes),
+                                        ),
+                                        sample_rate: Some(stream_sample_rate),
+                                        generation_time_ms: None,
+                                        error: None,
+                                    })
+                                    .unwrap_or_default(),
+                                );
+                            }
+                            Err(err) => {
+                                let _ = audio_tx.send(
+                                    serde_json::to_string(&SpeechToSpeechStreamEvent {
+                                        event: "error",
+                                        sequence: None,
+                                        is_final: None,
+                                        delta: None,
+                                        text: None,
+                                        transcription: None,
+                                        audio_base64: None,
+                                        sample_rate: None,
+                                        generation_time_ms: None,
+                                        error: Some(format!(
+                                            "Failed to encode audio chunk: {}",
+                                            err
+                                        )),
+                                    })
+                                    .unwrap_or_default(),
+                                );
+                            }
+                        }
                     },
                 )
                 .await
@@ -224,6 +286,8 @@ async fn stream_response(
                     let _ = event_tx.send(
                         serde_json::to_string(&SpeechToSpeechStreamEvent {
                             event: "final",
+                            sequence: None,
+                            is_final: None,
                             delta: None,
                             text: Some(output.text),
                             transcription: output.input_transcription,
@@ -239,6 +303,8 @@ async fn stream_response(
                     let _ = event_tx.send(
                         serde_json::to_string(&SpeechToSpeechStreamEvent {
                             event: "error",
+                            sequence: None,
+                            is_final: None,
                             delta: None,
                             text: None,
                             transcription: None,
@@ -255,6 +321,8 @@ async fn stream_response(
                 let _ = event_tx.send(
                     serde_json::to_string(&SpeechToSpeechStreamEvent {
                         event: "error",
+                        sequence: None,
+                        is_final: None,
                         delta: None,
                         text: None,
                         transcription: None,
@@ -270,6 +338,8 @@ async fn stream_response(
                 let _ = event_tx.send(
                     serde_json::to_string(&SpeechToSpeechStreamEvent {
                         event: "error",
+                        sequence: None,
+                        is_final: None,
                         delta: None,
                         text: None,
                         transcription: None,
@@ -286,6 +356,8 @@ async fn stream_response(
         let _ = event_tx.send(
             serde_json::to_string(&SpeechToSpeechStreamEvent {
                 event: "done",
+                sequence: None,
+                is_final: None,
                 delta: None,
                 text: None,
                 transcription: None,

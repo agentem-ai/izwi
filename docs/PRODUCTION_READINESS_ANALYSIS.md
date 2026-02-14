@@ -35,7 +35,7 @@ After analyzing both repositories, **izwi-audio** has a solid foundation with mo
 ├─────────────────────────────────────────────────────────────┤
 │  REST API Server (Axum)                                     │
 │       ↓                                                     │
-│  InferenceEngine (Runtime Service)                          │
+│  RuntimeService (Runtime Service)                          │
 │       ↓                                                     │
 │  ModelRouter → BackendRouter → ModelRegistry               │
 │       ↓                                                     │

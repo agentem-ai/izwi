@@ -5,10 +5,10 @@ use tracing::info;
 
 use crate::engine::{EngineCoreRequest, GenerationParams as CoreGenParams};
 use crate::error::{Error, Result};
-use crate::runtime::service::InferenceEngine;
+use crate::runtime::service::RuntimeService;
 use crate::runtime::types::{AudioChunk, GenerationConfig, GenerationRequest, GenerationResult};
 
-impl InferenceEngine {
+impl RuntimeService {
     /// Generate audio from text using the unified core engine.
     pub async fn generate(&self, request: GenerationRequest) -> Result<GenerationResult> {
         let loaded_variant = *self.loaded_tts_variant.read().await;
@@ -66,21 +66,35 @@ impl InferenceEngine {
             return self.lfm2_tts_generate_streaming(request, chunk_tx).await;
         }
 
-        let result = self.generate(request.clone()).await?;
-        if result.samples.is_empty() {
-            return Ok(());
-        }
+        let mut core_request = EngineCoreRequest::tts(request.text.clone());
+        core_request.id = request.id.clone();
+        core_request.model_variant = loaded_variant;
+        core_request.language = request.language.clone();
+        core_request.reference_audio = request.reference_audio.clone();
+        core_request.reference_text = request.reference_text.clone();
+        core_request.voice_description = request.voice_description.clone();
+        core_request.params = core_params_from_generation(&request.config);
 
-        let chunk_samples = (self.config.chunk_size.max(1) * 200).clamp(1200, 9600);
-        let total_chunks = result.samples.len().div_ceil(chunk_samples);
+        self.run_streaming_request(core_request, |stream_chunk| {
+            let tx = chunk_tx.clone();
+            async move {
+                if stream_chunk.samples.is_empty() && !stream_chunk.is_final {
+                    return Ok(());
+                }
 
-        for (index, samples) in result.samples.chunks(chunk_samples).enumerate() {
-            let mut chunk = AudioChunk::new(request.id.clone(), index, samples.to_vec());
-            chunk.is_final = index + 1 >= total_chunks;
-            chunk_tx.send(chunk).await.map_err(|_| {
-                Error::InferenceError("Streaming output channel closed".to_string())
-            })?;
-        }
+                let mut chunk = AudioChunk::new(
+                    stream_chunk.request_id.clone(),
+                    stream_chunk.sequence,
+                    stream_chunk.samples,
+                );
+                chunk.is_final = stream_chunk.is_final;
+                tx.send(chunk).await.map_err(|_| {
+                    Error::InferenceError("Streaming output channel closed".to_string())
+                })?;
+                Ok(())
+            }
+        })
+        .await?;
 
         info!("Streaming generation complete via core engine");
         Ok(())

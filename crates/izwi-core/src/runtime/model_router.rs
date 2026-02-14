@@ -6,10 +6,10 @@ use crate::backends::ExecutionBackend;
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::qwen3_tts::Qwen3TtsModel;
-use crate::runtime::service::InferenceEngine;
+use crate::runtime::service::RuntimeService;
 use crate::tokenizer::Tokenizer;
 
-impl InferenceEngine {
+impl RuntimeService {
     /// Unload a model from memory.
     pub async fn unload_model(&self, variant: ModelVariant) -> Result<()> {
         if variant.is_asr() || variant.is_forced_aligner() {

@@ -35,7 +35,7 @@ pub async fn list_models_openai(
 ) -> Result<Json<OpenAiModelsResponse>, ApiError> {
     let created = now_unix_secs();
     let data = state
-        .engine
+        .runtime
         .list_models()
         .await
         .into_iter()

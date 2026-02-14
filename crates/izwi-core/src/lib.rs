@@ -51,7 +51,7 @@ pub use error::{Error, Result};
 pub use runtime::{
     AsrTranscription, ChatGeneration, ChunkStats, GenerationRequest, GenerationResult,
 };
-pub use runtime::{AudioChunk, GenerationConfig, InferenceEngine, SpeechToSpeechGeneration};
+pub use runtime::{AudioChunk, GenerationConfig, RuntimeService, SpeechToSpeechGeneration};
 
 // Catalog/model metadata re-exports
 pub use catalog::{

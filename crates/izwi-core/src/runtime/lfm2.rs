@@ -5,12 +5,12 @@ use tokio::sync::mpsc;
 use crate::engine::{EngineCoreRequest, GenerationParams as CoreGenParams};
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
-use crate::runtime::service::InferenceEngine;
+use crate::runtime::service::RuntimeService;
 use crate::runtime::types::{
     AsrTranscription, AudioChunk, GenerationRequest, GenerationResult, SpeechToSpeechGeneration,
 };
 
-impl InferenceEngine {
+impl RuntimeService {
     const LFM2_TTS_DEFAULT_AUDIO_TEMPERATURE: f32 = 0.8;
     const LFM2_TTS_DEFAULT_AUDIO_TOP_K: usize = 64;
     const LFM2_S2S_DEFAULT_AUDIO_TEMPERATURE: f32 = 1.0;
@@ -29,44 +29,15 @@ impl InferenceEngine {
         Self::default_lfm2_variant()
     }
 
-    pub async fn lfm2_asr_transcribe_streaming<F>(
-        &self,
+    fn build_lfm2_tts_request(
+        request: &GenerationRequest,
         variant: ModelVariant,
-        audio_base64: &str,
-        language: Option<&str>,
-        mut on_delta: F,
-    ) -> Result<AsrTranscription>
-    where
-        F: FnMut(String) + Send + 'static,
-    {
-        self.load_model(variant).await?;
-
-        let mut request = EngineCoreRequest::asr(audio_base64.to_string());
-        request.model_variant = Some(variant);
-        request.language = language.map(|s| s.to_string());
-
-        let output = self.core_engine.generate(request).await?;
-        let text = output.text.unwrap_or_default();
-        if !text.is_empty() {
-            on_delta(text.clone());
-        }
-
-        Ok(AsrTranscription {
-            text,
-            language: language.map(|s| s.to_string()),
-            duration_secs: output.audio.duration_secs,
-        })
-    }
-
-    pub async fn lfm2_tts_generate(&self, request: GenerationRequest) -> Result<GenerationResult> {
+    ) -> Result<EngineCoreRequest> {
         if request.reference_audio.is_some() || request.reference_text.is_some() {
             return Err(Error::InvalidInput(
                 "LFM2 native runtime does not support reference-audio voice cloning".to_string(),
             ));
         }
-
-        let variant = self.resolve_active_lfm2_variant().await;
-        self.load_model(variant).await?;
 
         let using_generic_defaults =
             request.config.top_k == 0 && (request.config.temperature - 0.7).abs() < f32::EPSILON;
@@ -105,56 +76,17 @@ impl InferenceEngine {
             stop_token_ids: Vec::new(),
         };
 
-        let output = self.core_engine.generate(core_request).await?;
-        Ok(GenerationResult {
-            request_id: output.request_id,
-            samples: output.audio.samples,
-            sample_rate: output.audio.sample_rate,
-            total_tokens: output.num_tokens,
-            total_time_ms: output.generation_time.as_secs_f32() * 1000.0,
-        })
+        Ok(core_request)
     }
 
-    pub async fn lfm2_tts_generate_streaming(
-        &self,
-        request: GenerationRequest,
-        chunk_tx: mpsc::Sender<AudioChunk>,
-    ) -> Result<()> {
-        let result = self.lfm2_tts_generate(request.clone()).await?;
-
-        if result.samples.is_empty() {
-            return Ok(());
-        }
-
-        let chunk_samples = (self.config.chunk_size.max(1) * 200).clamp(1200, 9600);
-        let total_chunks = result.samples.len().div_ceil(chunk_samples);
-
-        for (index, samples) in result.samples.chunks(chunk_samples).enumerate() {
-            let mut chunk = AudioChunk::new(request.id.clone(), index, samples.to_vec());
-            chunk.is_final = index + 1 >= total_chunks;
-            chunk_tx.send(chunk).await.map_err(|_| {
-                Error::InferenceError("Streaming output channel closed".to_string())
-            })?;
-        }
-
-        Ok(())
-    }
-
-    pub async fn lfm2_speech_to_speech_streaming<F>(
-        &self,
+    fn build_lfm2_s2s_request(
         audio_base64: &str,
+        variant: ModelVariant,
         language: Option<&str>,
         system_prompt: Option<&str>,
         temperature: Option<f32>,
         top_k: Option<usize>,
-        mut on_delta: F,
-    ) -> Result<SpeechToSpeechGeneration>
-    where
-        F: FnMut(String) + Send + 'static,
-    {
-        let variant = self.resolve_active_lfm2_variant().await;
-        self.load_model(variant).await?;
-
+    ) -> EngineCoreRequest {
         let resolved_temperature = temperature.unwrap_or(Self::LFM2_S2S_DEFAULT_AUDIO_TEMPERATURE);
         let resolved_top_k = top_k
             .filter(|&v| v > 0)
@@ -178,12 +110,139 @@ impl InferenceEngine {
             stop_sequences: Vec::new(),
             stop_token_ids: Vec::new(),
         };
+        request
+    }
 
-        let output = self.core_engine.generate(request).await?;
-        let text = output.text.unwrap_or_default();
-        if !text.is_empty() {
-            on_delta(text.clone());
-        }
+    pub async fn lfm2_asr_transcribe_streaming<F>(
+        &self,
+        variant: ModelVariant,
+        audio_base64: &str,
+        language: Option<&str>,
+        mut on_delta: F,
+    ) -> Result<AsrTranscription>
+    where
+        F: FnMut(String) + Send + 'static,
+    {
+        self.load_model(variant).await?;
+
+        let mut request = EngineCoreRequest::asr(audio_base64.to_string());
+        request.model_variant = Some(variant);
+        request.language = language.map(|s| s.to_string());
+
+        let mut streamed_text = String::new();
+        let output = self
+            .run_streaming_request(request, |chunk| {
+                if let Some(delta) = chunk.text {
+                    if !delta.is_empty() {
+                        streamed_text.push_str(&delta);
+                        on_delta(delta);
+                    }
+                }
+                std::future::ready(Ok(()))
+            })
+            .await?;
+        let text = output.text.unwrap_or(streamed_text);
+
+        Ok(AsrTranscription {
+            text,
+            language: language.map(|s| s.to_string()),
+            duration_secs: output.audio.duration_secs,
+        })
+    }
+
+    pub async fn lfm2_tts_generate(&self, request: GenerationRequest) -> Result<GenerationResult> {
+        let variant = self.resolve_active_lfm2_variant().await;
+        self.load_model(variant).await?;
+        let core_request = Self::build_lfm2_tts_request(&request, variant)?;
+
+        let output = self.core_engine.generate(core_request).await?;
+        Ok(GenerationResult {
+            request_id: output.request_id,
+            samples: output.audio.samples,
+            sample_rate: output.audio.sample_rate,
+            total_tokens: output.num_tokens,
+            total_time_ms: output.generation_time.as_secs_f32() * 1000.0,
+        })
+    }
+
+    pub async fn lfm2_tts_generate_streaming(
+        &self,
+        request: GenerationRequest,
+        chunk_tx: mpsc::Sender<AudioChunk>,
+    ) -> Result<()> {
+        let variant = self.resolve_active_lfm2_variant().await;
+        self.load_model(variant).await?;
+        let core_request = Self::build_lfm2_tts_request(&request, variant)?;
+
+        self.run_streaming_request(core_request, |stream_chunk| {
+            let tx = chunk_tx.clone();
+            async move {
+                if stream_chunk.samples.is_empty() && !stream_chunk.is_final {
+                    return Ok(());
+                }
+
+                let mut chunk = AudioChunk::new(
+                    stream_chunk.request_id.clone(),
+                    stream_chunk.sequence,
+                    stream_chunk.samples,
+                );
+                chunk.is_final = stream_chunk.is_final;
+                tx.send(chunk).await.map_err(|_| {
+                    Error::InferenceError("Streaming output channel closed".to_string())
+                })?;
+                Ok(())
+            }
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn lfm2_speech_to_speech_streaming<F, G>(
+        &self,
+        audio_base64: &str,
+        language: Option<&str>,
+        system_prompt: Option<&str>,
+        temperature: Option<f32>,
+        top_k: Option<usize>,
+        mut on_delta: F,
+        mut on_audio_chunk: G,
+    ) -> Result<SpeechToSpeechGeneration>
+    where
+        F: FnMut(String) + Send + 'static,
+        G: FnMut(AudioChunk) + Send + 'static,
+    {
+        let variant = self.resolve_active_lfm2_variant().await;
+        self.load_model(variant).await?;
+        let request = Self::build_lfm2_s2s_request(
+            audio_base64,
+            variant,
+            language,
+            system_prompt,
+            temperature,
+            top_k,
+        );
+
+        let mut streamed_text = String::new();
+        let output = self
+            .run_streaming_request(request, |chunk| {
+                if !chunk.samples.is_empty() || chunk.is_final {
+                    let mut audio_chunk =
+                        AudioChunk::new(chunk.request_id.clone(), chunk.sequence, chunk.samples);
+                    audio_chunk.is_final = chunk.is_final;
+                    on_audio_chunk(audio_chunk);
+                }
+
+                if let Some(delta) = chunk.text {
+                    if !delta.is_empty() {
+                        streamed_text.push_str(&delta);
+                        on_delta(delta);
+                    }
+                }
+                std::future::ready(Ok(()))
+            })
+            .await?;
+        let text = output.text.unwrap_or(streamed_text);
 
         Ok(SpeechToSpeechGeneration {
             text,
@@ -209,6 +268,7 @@ impl InferenceEngine {
             temperature,
             top_k,
             |_delta| {},
+            |_chunk| {},
         )
         .await
     }

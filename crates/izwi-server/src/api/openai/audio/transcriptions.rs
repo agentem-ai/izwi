@@ -78,7 +78,7 @@ pub async fn transcriptions(
 
     let started = Instant::now();
     let output = state
-        .engine
+        .runtime
         .asr_transcribe(&audio_base64, req.model.as_deref(), req.language.as_deref())
         .await?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -144,7 +144,7 @@ async fn transcriptions_stream(
     let language = req.language;
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<String>();
-    let engine = state.engine.clone();
+    let engine = state.runtime.clone();
     let semaphore = state.request_semaphore.clone();
 
     tokio::spawn(async move {

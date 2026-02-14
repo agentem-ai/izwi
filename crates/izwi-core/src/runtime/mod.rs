@@ -13,7 +13,7 @@ mod service;
 mod tts;
 mod types;
 
-pub use service::InferenceEngine;
+pub use service::RuntimeService;
 pub use types::{
     AsrTranscription, AudioChunk, ChatGeneration, ChunkStats, GenerationConfig, GenerationRequest,
     GenerationResult, SpeechToSpeechGeneration,
