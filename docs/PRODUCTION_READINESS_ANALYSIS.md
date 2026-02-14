@@ -1,545 +1,157 @@
-# Izwi Audio vs Mini-SGLang: Production Readiness Analysis
+# Izwi Engine vs SGLang Docs: Production Readiness Analysis
+
+Last updated: 2026-02-14
+
+## Scope and Method
+This document is a code-accurate reassessment of izwi's engine against current SGLang documentation.
+
+- Izwi evidence comes from current source code under `crates/izwi-core` and `crates/izwi-server`.
+- SGLang baseline comes from official docs pages (links in References).
+- Goal: capture the real current state, not intended architecture.
 
 ## Executive Summary
-
-After analyzing both repositories, **izwi-audio** has a solid foundation with modern architecture patterns, but several critical gaps prevent it from being production-ready compared to **mini-sglang**. This document outlines the current state, key gaps, and a strategic roadmap for production readiness.
-
----
-
-## 1. Architecture Comparison
-
-### Mini-SGLang Architecture
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Mini-SGLang System                        │
-├─────────────────────────────────────────────────────────────┤
-│  API Server (FastAPI)                                       │
-│       ↓                                                     │
-│  Tokenizer Worker → ZeroMQ → Scheduler Worker (per GPU)    │
-│       ↓                          ↓                          │
-│  Detokenizer Worker ← NCCL ← Engine (CUDA kernels)         │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Key Design Principles:**
-- **Multi-process distributed architecture**: Separate processes for API, tokenization, scheduling, and compute
-- **ZeroMQ for control**: Lightweight message passing between components
-- **NCCL for tensor parallelism**: Efficient GPU-to-GPU communication
-- **Modular backends**: FlashAttention, FlashInfer, RadixCache pluggable
-- **~5,000 lines of Python**: Compact, readable, type-annotated codebase
-
-### Izwi-Audio Architecture
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Izwi-Audio System                         │
-├─────────────────────────────────────────────────────────────┤
-│  REST API Server (Axum)                                     │
-│       ↓                                                     │
-│  RuntimeService (Runtime Service)                          │
-│       ↓                                                     │
-│  ModelRouter → BackendRouter → ModelRegistry               │
-│       ↓                                                     │
-│  Qwen3TtsModel / Qwen3AsrModel (Candle/MLX)               │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Current Strengths:**
-- Modern Rust codebase with strong type safety
-- Runtime-centric architecture (runtime/, catalog/, backends/)
-- vLLM-style scheduler with continuous batching
-- Paged KV cache with prefix caching
-- Supports TTS, ASR, and Chat tasks
-- Metal GPU support for Apple Silicon
-- Good separation of concerns (API, runtime, models)
-
----
-
-## 2. Critical Gaps for Production Readiness
-
-### 2.1 Multi-Process Architecture (HIGH PRIORITY)
-
-**Mini-SGLang**: Uses separate processes for:
-- API Server (1 process)
-- Tokenizer Worker (1 process)
-- Scheduler Workers (N processes, one per GPU/TP rank)
-- Detokenizer Worker (1 process)
-
-**Izwi-Audio**: Single-process monolithic architecture
-
-**Impact:**
-- GIL contention in Python not applicable, but Rust async can still saturate
-- No process isolation - crash in model inference kills entire server
-- Cannot scale across multiple Metal GPUs
-- Tokenization blocks inference thread
-- No way to restart components independently
-
-**Recommendation:** Implement multi-process architecture:
-```rust
-// Proposed architecture
-┌─────────────────────────────────────────────────────────┐
-│ API Server Process (Axum)                               │
-│    ↓ IPC (gRPC/Unix sockets)                            │
-│ Tokenizer Process                                       │
-│    ↓ IPC                                                │
-│ Scheduler Process (per device)                          │
-│    ↓                                                    │
-│ Engine Process (Candle/MLX execution)                   │
-└─────────────────────────────────────────────────────────┘
-```
-
-### 2.2 Tensor Parallelism (HIGH PRIORITY)
-
-**Mini-SGLang**: Full tensor parallelism support with NCCL for multi-GPU
-
-**Izwi-Audio**: Limited to single-device execution
-
-**Current State:**
-- Device selection exists but no cross-device communication
-- No sharding of model weights across multiple Metal GPUs
-- Model loads entirely on one device
-
-**Recommendation:**
-1. Implement tensor parallelism for multi-GPU setups (Metal MPS)
-2. Weight sharding across devices
-3. All-reduce operations for distributed attention
-4. This is lower priority since Apple Silicon typically has unified memory on single SoC
-
-### 2.3 KV Cache Management (MEDIUM-HIGH PRIORITY)
-
-**Mini-SGLang**: Advanced KV cache features:
-- RadixCache for prefix reuse
-- PagedAttention-style block management
-- NaiveCacheManager for simple use cases
-
-**Izwi-Audio**: Good foundation but gaps:
-```rust
-// Current: Paged KV cache exists
-pub struct KVCacheManager {
-    block_allocator: BlockAllocator,
-    block_tables: HashMap<RequestId, Vec<BlockId>>,
-    prefix_cache: HashMap<u64, Vec<BlockId>>, // Basic prefix caching
-}
-```
-
-**Gaps:**
-1. No RadixCache (tree-based prefix matching)
-2. Limited prefix caching (only 128 token prefix hash)
-3. No automatic prefix detection from request batches
-4. No overlapping generation support (speculative decoding)
-
-**Recommendation:**
-```rust
-// Enhanced RadixCache
-pub struct RadixCache {
-    root: RadixNode,
-    block_manager: BlockManager,
-    eviction_policy: EvictionPolicy,
-}
-
-struct RadixNode {
-    tokens: Vec<u32>,
-    block_ids: Vec<BlockId>,
-    children: HashMap<u32, RadixNode>,
-    refcount: usize,
-}
-```
-
-### 2.4 Attention Backends (MEDIUM PRIORITY)
-
-**Mini-SGLang**: Multiple optimized backends:
-- FlashAttention 3
-- FlashInfer
-- Custom CUDA kernels via TVM FFI
-
-**Izwi-Audio**: Limited to Candle's native attention
-
-**Current:**
-- Uses Candle's standard attention implementation
-- No custom Metal kernels
-- No FlashAttention-style fused kernels
-
-**Recommendation for CPU/Metal:**
-1. Implement Metal Performance Shaders (MPS) attention kernels
-2. Use MLX's optimized attention primitives where possible
-3. Implement custom Metal compute shaders for:
-   - Fused QKV projection + attention
-   - Fused attention + output projection
-   - Memory-efficient attention variants
-
-### 2.5 Batching and Scheduling (MEDIUM PRIORITY)
-
-**Mini-SGLang**:
-- Continuous batching
-- Chunked prefill (split long prompts)
-- Overlap scheduling (hide CPU overhead)
-
-**Izwi-Audio**:
-- Good scheduler with FCFS and Priority modes
-- Adaptive batching based on latency targets
-- Chunked prefill partially implemented
-- VAD preemption for audio apps (unique feature!)
-
-**Gaps:**
-1. No overlap scheduling - CPU operations block GPU
-2. Limited chunked prefill integration
-3. No in-flight batching optimization
-
-### 2.6 Quantization and Optimization (MEDIUM PRIORITY)
-
-**Mini-SGLang**:
-- FP4, FP8, INT4, AWQ, GPTQ support
-- Dynamic quantization
-
-**Izwi-Audio**:
-- Supports 4-bit and 8-bit models
-- Uses Candle's quantization
-
-**Gaps:**
-1. No GPTQ/AWQ optimized kernels
-2. No dynamic quantization at runtime
-3. Limited Metal-optimized quantized operations
-
-### 2.7 Monitoring and Observability (HIGH PRIORITY)
-
-**Mini-SGLang**:
-- Comprehensive metrics collection
-- Benchmarking utilities
-- Performance profiling
-
-**Izwi-Audio**:
-- Basic metrics exists (`metrics.rs`)
-- Limited telemetry
-
-**Gaps:**
-1. No Prometheus/OpenTelemetry integration
-2. Limited request tracing
-3. No latency breakdown (tokenize/prefill/decode)
-4. Missing key metrics:
-   - KV cache hit rate
-   - Batch size distribution
-   - GPU/Metal utilization
-   - Queue depth over time
-
-### 2.8 Error Handling and Resilience (HIGH PRIORITY)
-
-**Mini-SGLang**:
-- Process-level isolation means crashes don't bring down system
-- Request-level error boundaries
-
-**Izwi-Audio**:
-- Good Rust error handling with `thiserror`
-- But: single process means any panic kills server
-
-**Gaps:**
-1. No request isolation (one bad request can corrupt state)
-2. No automatic recovery mechanisms
-3. Limited graceful degradation
-4. No circuit breaker patterns
-
----
-
-## 3. What's Already Production-Ready
-
-### Strengths of Current Implementation
-
-1. **Modern Rust Architecture**
-   - Type-safe, memory-safe
-   - Async/await throughout
-   - Good crate organization
-
-2. **Solid Scheduling Foundation**
-   - Continuous batching implemented
-   - Adaptive scheduling with latency targets
-   - Priority-based and FCFS policies
-   - VAD preemption (unique audio-first feature)
-
-3. **Model Management**
-   - Model registry with variant support
-   - Download and caching from HuggingFace
-   - Multi-format support (safetensors, GGUF)
-
-4. **Audio-Specific Features**
-   - Streaming audio generation (~97ms first packet)
-   - Voice cloning support
-   - Voice design capability
-   - ASR/TTS/Chat in one engine
-
-5. **API Compatibility**
-   - OpenAI-compatible endpoints
-   - REST API with proper error codes
-   - CLI tool for management
-
----
-
-## 4. Strategic Implementation Plan
-
-### Phase 1: Foundation (Weeks 1-3)
-**Goal:** Implement multi-process architecture and observability
-
-#### Week 1: Multi-Process Architecture
-- [ ] Implement process manager (`ProcessManager`)
-- [ ] Create IPC layer using Unix domain sockets + gRPC
-- [ ] Separate API server into standalone process
-- [ ] Move tokenization to dedicated process
-- [ ] Implement health checks between processes
-
-```rust
-// New crate: izwi-daemon
-pub struct ProcessManager {
-    api_server: ChildProcess,
-    tokenizer_worker: ChildProcess,
-    scheduler_workers: Vec<ChildProcess>,
-}
-```
-
-#### Week 2: Observability Stack
-- [ ] Prometheus metrics export
-- [ ] OpenTelemetry tracing integration
-- [ ] Structured logging with JSON output
-- [ ] Request tracing across process boundaries
-- [ ] Dashboard for key metrics
-
-```rust
-// Metrics to track
-pub struct EngineMetrics {
-    // Request metrics
-    pub requests_total: Counter,
-    pub request_duration: Histogram,
-    pub queue_wait_time: Histogram,
-    
-    // Inference metrics
-    pub time_to_first_token: Histogram,
-    pub decode_latency: Histogram,
-    pub prefill_tokens: Counter,
-    pub decode_tokens: Counter,
-    
-    // KV cache metrics
-    pub kv_cache_hit_rate: Gauge,
-    pub kv_cache_blocks_used: Gauge,
-    pub prefix_cache_hits: Counter,
-    
-    // System metrics
-    pub metal_memory_used: Gauge,
-    pub batch_size: Histogram,
-}
-```
-
-#### Week 3: Resilience and Error Handling
-- [ ] Process supervision with auto-restart
-- [ ] Request-level timeouts and cancellation
-- [ ] Circuit breaker for model inference
-- [ ] Graceful degradation modes
-- [ ] Request isolation (sandboxing)
-
-### Phase 2: Performance (Weeks 4-6)
-**Goal:** Advanced scheduling and KV cache optimization
-
-#### Week 4: RadixCache Implementation
-- [ ] Tree-based prefix cache
-- [ ] Automatic prefix detection
-- [ ] Reference counting for shared blocks
-- [ ] LRU eviction policy
-
-#### Week 5: Overlap Scheduling
-- [ ] Async tokenization pipeline
-- [ ] Decode stream overlapping
-- [ ] Prefetch next batch while current runs
-- [ ] CPU/GPU overlap optimization
-
-#### Week 6: Metal Optimization
-- [ ] Custom Metal kernels for attention
-- [ ] MPS-optimized matrix operations
-- [ ] Memory pool management
-- [ ] Unified memory optimization
-
-### Phase 3: Scale (Weeks 7-9)
-**Goal:** Multi-device and distributed inference
-
-#### Week 7: Tensor Parallelism
-- [ ] Model sharding across Metal devices
-- [ ] All-reduce communication primitives
-- [ ] Pipeline parallelism support
-
-#### Week 8: Advanced Batching
-- [ ] Speculative decoding
-- [ ] Prompt caching with embeddings
-- [ ] Dynamic batch size adjustment
-- [ ] Heterogeneous batch support
-
-#### Week 9: Production Hardening
-- [ ] Load testing and benchmarking
-- [ ] Resource limits and quotas
-- [ ] Rate limiting
-- [ ] Authentication/authorization
-- [ ] Request logging and audit
-
----
-
-## 5. Priority Recommendations
-
-### Immediate (Do First)
-1. ✅ **Multi-process architecture** - Critical for stability
-2. ✅ **Observability** - Can't run what you can't measure
-3. ✅ **Error isolation** - Prevent cascade failures
-
-### Short-term (Next Month)
-4. ✅ **RadixCache** - Major throughput improvement
-5. ✅ **Metal kernels** - Performance optimization
-6. ✅ **Overlap scheduling** - Hide latency
-
-### Medium-term (Next Quarter)
-7. **Tensor parallelism** - Multi-device support
-8. **Speculative decoding** - Latency reduction
-9. **Advanced quantization** - Memory efficiency
-
----
-
-## 6. Code Structure Recommendations
-
-### New Crate Layout
-```
-crates/
-├── izwi-core/              # Core types and traits
-├── izwi-runtime/           # Single-process runtime (current)
-├── izwi-daemon/            # Multi-process orchestration
-├── izwi-scheduler/         # Distributed scheduler
-├── izwi-tokenizer/         # Tokenization service
-├── izwi-server/            # API server
-├── izwi-cli/               # CLI tool
-├── izwi-backends/
-│   ├── candle-backend/     # Candle execution
-│   ├── mlx-backend/        # MLX execution
-│   └── metal-kernels/      # Custom Metal shaders
-└── izwi-metrics/           # Observability
-```
-
-### Key Traits to Implement
-```rust
-// Process isolation trait
-pub trait Worker: Send + Sync {
-    async fn start(&self) -> Result<WorkerHandle>;
-    async fn health_check(&self) -> HealthStatus;
-    async fn shutdown(&self) -> Result<()>;
-}
-
-// Backend abstraction
-pub trait InferenceBackend: Send + Sync {
-    async fn load_model(&self, model: ModelVariant) -> Result<()>;
-    async fn execute(&self, batch: Batch) -> Result<BatchOutput>;
-    fn memory_usage(&self) -> MemoryStats;
-}
-
-// Cache backend trait
-pub trait CacheBackend: Send + Sync {
-    fn get(&self, tokens: &[u32]) -> Option<Vec<BlockId>>;
-    fn insert(&self, tokens: &[u32], blocks: Vec<BlockId>);
-    fn evict(&self, num_blocks: usize) -> Vec<BlockId>;
-}
-```
-
----
-
-## 7. MLX-Specific Recommendations
-
-Since izwi-audio targets Apple Silicon with MLX:
-
-### Advantages of MLX
-1. Unified memory (CPU/GPU share address space)
-2. Lazy evaluation for graph optimization
-3. Native Swift/Objective-C++ integration
-4. Optimized for Apple Silicon
-
-### Implementation Strategy
-```rust
-// Use mlx-rs bindings when mature
-// Until then, create FFI layer
-pub struct MlxBackend {
-    device: MlxDevice,
-    graph: MlxGraph,
-}
-
-impl InferenceBackend for MlxBackend {
-    async fn execute(&self, batch: Batch) -> Result<BatchOutput> {
-        // Lazy graph construction
-        // Unified memory means no copies
-        // Compile and execute
-    }
-}
-```
-
-### Metal Kernel Priorities
-1. **FlashAttention-style fused attention** - Most impactful
-2. **Quantized matmul** - For 4-bit inference
-3. **RMSNorm fusion** - Reduce kernel launches
-4. **RoPE fusion** - Position embedding
-
----
-
-## 8. Testing Strategy
-
-### Unit Tests
-- Model loading and inference
-- Scheduler logic
-- Cache management
-- Tokenizer correctness
-
-### Integration Tests
-- End-to-end TTS/ASR pipeline
-- Multi-process communication
-- Error recovery scenarios
-
-### Load Tests
-- Concurrent request handling
-- Memory pressure scenarios
-- Long-running stability
-
-### Benchmarks
-- Compare with mini-sglang on Qwen3 models
-- Throughput (tokens/sec)
-- Latency percentiles (p50, p95, p99)
-- Memory efficiency
-
----
-
-## 9. Success Metrics
-
-### Performance Targets (vs Mini-SGLang)
-- **Latency**: Within 20% of mini-sglang on equivalent hardware
-- **Throughput**: 80%+ of mini-sglang throughput
-- **Memory**: Efficient unified memory usage on Metal
-- **Reliability**: 99.9% uptime with process supervision
-
-### Production Readiness Checklist
-- [ ] Multi-process architecture stable
-- [ ] Comprehensive metrics and alerting
-- [ ] Automatic recovery from failures
-- [ ] Resource limits and isolation
-- [ ] Security hardening
-- [ ] Documentation and runbooks
-- [ ] Load tested to 10x expected traffic
-- [ ] graceful degradation tested
-
----
-
-## 10. Conclusion
-
-**Izwi-audio** has excellent bones with its modern Rust architecture and audio-specific optimizations. The main gap is **infrastructure hardening** rather than core inference capabilities.
-
-**Key takeaways:**
-1. Multi-process architecture is the #1 priority for production
-2. Current scheduler is quite sophisticated (better than mini-sglang in some ways)
-3. Metal/MLX optimization will differentiate from CUDA-focused alternatives
-4. Audio-first features (VAD preemption, streaming) are unique advantages
-5. Strong type safety and Rust async provide good foundation
-
-**Estimated timeline to production-ready:** 6-9 weeks with focused effort on infrastructure (multi-process, observability, resilience), followed by ongoing performance optimization.
-
----
+Izwi now has a unified runtime path and a single core engine loop with real incremental streaming in key paths, but it is still a single-node, single-process engine tuned for local use rather than production-scale serving.
+
+What is strong today:
+- One runtime source of truth via `RuntimeService` and core `engine::Engine`.
+- Centralized engine step driver in runtime.
+- Continuous batching scheduler with chunked prefill, adaptive token budget, and preemption logic.
+- Incremental core-loop streaming for:
+  - Chat (Qwen3)
+  - ASR (Qwen3)
+  - Speech-to-speech (LFM2)
+
+What is still behind SGLang production baseline:
+- No multi-node/multi-process serving architecture.
+- No PD disaggregation, HiCache tiering, or quantized KV cache.
+- No production metrics/tracing endpoints equivalent to SGLang docs.
+- TTS still lacks true per-step decode state in the scheduler/executor loop.
+
+## Verified Izwi Engine State (Code)
+
+### 1) Unified runtime and engine flow
+- Server routes go through `RuntimeService` (`crates/izwi-server/src/state.rs`, `crates/izwi-server/src/api/openai/**`).
+- `RuntimeService` owns `core_engine: Arc<Engine>` and drives requests via `run_request` / `run_streaming_request`.
+- Central background step driver calls `engine.step()` and resolves completion waiters:
+  - `crates/izwi-core/src/runtime/service.rs:223`
+  - `crates/izwi-core/src/runtime/service.rs:305`
+  - `crates/izwi-core/src/runtime/service.rs:326`
+
+### 2) Core loop and scheduler
+- `EngineCore::step()` performs schedule -> execute -> process with decode/prefill split:
+  - `crates/izwi-core/src/engine/core.rs:187`
+- Scheduler supports adaptive batching, chunked prefill, preemption, and prefix-hash based reuse:
+  - `crates/izwi-core/src/engine/scheduler.rs:353`
+  - `crates/izwi-core/src/engine/scheduler.rs:523`
+  - `crates/izwi-core/src/engine/scheduler.rs:848`
+
+### 3) KV cache and paged attention
+- Engine-side KV manager exists with block allocation, residency, COW split, and soft-limit tuning:
+  - `crates/izwi-core/src/engine/kv_cache.rs:121`
+  - `crates/izwi-core/src/engine/kv_cache.rs:474`
+  - `crates/izwi-core/src/engine/kv_cache.rs:579`
+- Model-side paged attention helpers exist (`append_to_pages`, `paged_decode_attention`):
+  - `crates/izwi-core/src/models/shared/attention/paged.rs:22`
+  - `crates/izwi-core/src/models/shared/attention/paged.rs:77`
+
+### 4) True incremental streaming currently implemented
+- Chat incremental decode state (Qwen3):
+  - `crates/izwi-core/src/models/architectures/qwen3/chat.rs:195`
+  - `crates/izwi-core/src/engine/executor.rs:777`
+- ASR incremental decode state (Qwen3):
+  - `crates/izwi-core/src/models/architectures/qwen3/asr/mod.rs:259`
+  - `crates/izwi-core/src/engine/executor.rs:529`
+- S2S incremental decode state (LFM2):
+  - `crates/izwi-core/src/models/architectures/lfm2/audio/mod.rs:392`
+  - `crates/izwi-core/src/engine/executor.rs:1020`
+
+### 5) Important partials / limitations in current behavior
+- TTS paths are still monolithic executor calls (streamed chunks may be emitted during call, but not stepped statefully by scheduler fairness):
+  - `crates/izwi-core/src/engine/executor.rs:907`
+- ASR incremental state is Qwen3-only; other ASR backends use callback-based monolithic calls in executor pass:
+  - `crates/izwi-core/src/models/registry.rs:74`
+  - `crates/izwi-core/src/engine/executor.rs:649`
+- Preemption currently requeues request scheduling state; resume semantics are not equivalent to production-grade disaggregated resumable decoding:
+  - `crates/izwi-core/src/engine/scheduler.rs:885`
+
+## Capability Matrix: Izwi vs SGLang Docs
+
+| Capability | Izwi current state | SGLang docs baseline | Gap |
+|---|---|---|---|
+| Unified engine entrypoint | Implemented (`RuntimeService` + core `Engine`) | Implemented | Low |
+| Continuous batching scheduler | Implemented (adaptive token budget, chunked prefill, preemption) | Implemented | Medium (resume semantics) |
+| Incremental streaming from core loop | Partial (Chat Qwen3, ASR Qwen3, S2S LFM2) | Broad production support | Medium |
+| TTS step-state incremental decode | Not fully implemented | Production-grade streaming architectures | High |
+| Prefix cache | Basic prefix-hash + shared block reuse | Radix/advanced cache strategies | High |
+| KV cache quantization | Not implemented | Documented quantized KV cache support | High |
+| PD disaggregation | Not implemented | Documented feature | High |
+| HiCache / tiered cache | Not implemented | Documented feature | High |
+| Multi-node / large-scale parallel serving | Not implemented | Documented serving at scale (DP/EP/Multi-node) | High |
+| Attention backend pluggability | Limited (Candle + local paged helpers) | Multiple attention backend controls in server args/docs | Medium |
+| Production metrics endpointing | No dedicated production metrics endpointing stack | Documented production metrics guidance | High |
+| Production request tracing | Basic HTTP trace layer only | Documented production request tracing guidance | High |
+| Fault isolation (process-level) | Single-process runtime | Production systems commonly isolate workers/processes | High |
+
+## Industry-Standard Gaps Remaining (Prioritized)
+
+### P0 (must close for production confidence)
+1. True scheduler-integrated incremental TTS decode state.
+2. Strong preemption/resume semantics that preserve decode progress consistently across scheduler and executor state.
+3. Production observability surface: exportable metrics, latency phase breakdown (queue/prefill/decode), request-level tracing and correlation IDs.
+4. Worker/process isolation strategy so one model/runtime failure does not take down the whole serving stack.
+
+### P1 (major performance and scale enablers)
+5. KV cache architecture convergence: tighter coupling between engine KV manager and actual model-layer KV memory lifecycle.
+6. Advanced prefix cache strategy (radix/tree match, better reuse granularity than fixed short prefix hash).
+7. Overlap scheduling improvements for CPU/GPU work overlap and lower tail latency under concurrency.
+8. Quantized KV cache support for memory-bound workloads.
+
+### P2 (distributed production platform)
+9. PD disaggregation support.
+10. HiCache/tiered cache support.
+11. Multi-node parallel serving (data/model/expert parallel coordination where relevant).
+
+## Practical Roadmap (Updated)
+
+### Milestone 1: Engine Correctness + Streaming Completeness
+- Implement decode-stateful TTS execution in executor core loop.
+- Add preemption-safe request state contracts (scheduler + executor coherence tests).
+- Add regression tests for interruption/preemption/requeue across chat/asr/tts/s2s.
+
+### Milestone 2: Production Telemetry
+- Add metrics endpoint and structured engine telemetry export.
+- Add request correlation IDs and tracing spans across API -> runtime -> engine step -> model exec.
+- Publish TTFT/TPOT/queue-wait/KV-hit metrics.
+
+### Milestone 3: Cache and Scale Features
+- Upgrade prefix cache strategy.
+- Add quantized KV cache path.
+- Plan PD disaggregation and cache tiering architecture (HiCache-equivalent strategy for izwi workloads).
+
+## Performance Outlook After Remaining Work
+Expected improvements if P0+P1 are completed (estimate ranges, benchmark required):
+- Streaming TTS first-chunk latency: 20-50% better under load.
+- Mixed workload tail latency (p95/p99): 1.5-3x better from stronger resume + overlap behavior.
+- Concurrent capacity before memory pressure: materially higher with better cache reuse + KV quantization.
 
 ## References
 
-- [Mini-SGLang Repository](https://github.com/sgl-project/mini-sglang)
-- [Mini-SGLang Architecture Doc](https://github.com/sgl-project/mini-sglang/blob/main/docs/structures.md)
-- [SGLang Blog Post](https://lmsys.org/blog/2025-12-17-minisgl/)
-- [vLLM Paper](https://arxiv.org/abs/2309.06180)
-- [MLX Documentation](https://ml-explore.github.io/mlx/build/html/)
+### SGLang Docs
+- https://docs.sglang.ai/
+- https://docs.sglang.ai/advanced_features/pd_disaggregation.html
+- https://docs.sglang.ai/advanced_features/hicache_best_practices.html
+- https://docs.sglang.ai/advanced_features/quantized_kv_cache.html
+- https://docs.sglang.ai/references/launch_server.html
+- https://docs.sglang.ai/references/production_metrics.html
+- https://docs.sglang.ai/references/production_request_tracing.html
+
+### Izwi Code Evidence
+- `crates/izwi-core/src/runtime/service.rs`
+- `crates/izwi-core/src/engine/core.rs`
+- `crates/izwi-core/src/engine/executor.rs`
+- `crates/izwi-core/src/engine/scheduler.rs`
+- `crates/izwi-core/src/engine/kv_cache.rs`
+- `crates/izwi-core/src/models/shared/attention/paged.rs`
+- `crates/izwi-core/src/models/architectures/qwen3/chat.rs`
+- `crates/izwi-core/src/models/architectures/qwen3/asr/mod.rs`
+- `crates/izwi-core/src/models/architectures/lfm2/audio/mod.rs`

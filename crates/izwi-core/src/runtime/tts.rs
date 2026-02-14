@@ -21,6 +21,7 @@ impl RuntimeService {
 
         let mut core_request = EngineCoreRequest::tts(request.text.clone());
         core_request.id = request.id.clone();
+        core_request.correlation_id = request.correlation_id.clone();
         core_request.model_variant = loaded_variant;
         core_request.language = request.language.clone();
         core_request.reference_audio = request.reference_audio.clone();
@@ -68,6 +69,7 @@ impl RuntimeService {
 
         let mut core_request = EngineCoreRequest::tts(request.text.clone());
         core_request.id = request.id.clone();
+        core_request.correlation_id = request.correlation_id.clone();
         core_request.model_variant = loaded_variant;
         core_request.language = request.language.clone();
         core_request.reference_audio = request.reference_audio.clone();

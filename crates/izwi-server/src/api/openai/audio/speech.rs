@@ -2,7 +2,7 @@
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Extension, State},
     http::{header, StatusCode},
     response::Response,
     Json,
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::info;
 
+use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::AppState;
 use izwi_core::audio::AudioFormat;
@@ -95,6 +96,7 @@ struct SpeechStreamEvent {
 
 pub async fn speech(
     State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
     Json(req): Json<SpeechRequest>,
 ) -> Result<Response<Body>, ApiError> {
     info!("OpenAI speech request: {} chars", req.input.len());
@@ -104,7 +106,7 @@ pub async fn speech(
     state.runtime.load_model(variant).await?;
 
     if req.stream.unwrap_or(false) {
-        return stream_speech(state, req).await;
+        return stream_speech(state, req, ctx.correlation_id).await;
     }
 
     let _permit = state.acquire_permit().await;
@@ -133,6 +135,7 @@ pub async fn speech(
 
         let gen_request = GenerationRequest {
             id: uuid::Uuid::new_v4().to_string(),
+            correlation_id: Some(ctx.correlation_id.clone()),
             text: req.input.clone(),
             config: gen_config,
             language: req.language.clone(),
@@ -172,7 +175,11 @@ pub async fn speech(
         .unwrap())
 }
 
-async fn stream_speech(state: AppState, req: SpeechRequest) -> Result<Response<Body>, ApiError> {
+async fn stream_speech(
+    state: AppState,
+    req: SpeechRequest,
+    correlation_id: String,
+) -> Result<Response<Body>, ApiError> {
     let format = parse_response_format(req.response_format.as_deref().unwrap_or("pcm"))?;
 
     let mut gen_config = GenerationConfig {
@@ -195,6 +202,7 @@ async fn stream_speech(state: AppState, req: SpeechRequest) -> Result<Response<B
 
     let gen_request = GenerationRequest {
         id: uuid::Uuid::new_v4().to_string(),
+        correlation_id: Some(correlation_id),
         text: req.input.clone(),
         config: gen_config,
         language: req.language.clone(),

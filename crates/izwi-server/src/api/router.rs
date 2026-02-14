@@ -1,11 +1,27 @@
-use axum::Router;
+use axum::{extract::Request, middleware, Router};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
+use tracing::info_span;
 
+use crate::api::request_context::attach_request_context;
 use crate::state::AppState;
 
 /// Create the main API router.
 pub fn create_router(state: AppState) -> Router {
+    let trace_layer = TraceLayer::new_for_http().make_span_with(|request: &Request| {
+        let request_id = request
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-");
+        info_span!(
+            "http_request",
+            method = %request.method(),
+            uri = %request.uri(),
+            correlation_id = %request_id
+        )
+    });
+
     let v1_routes = Router::new()
         .merge(crate::api::internal::router())
         .merge(crate::api::openai::router())
@@ -18,7 +34,8 @@ pub fn create_router(state: AppState) -> Router {
             tower_http::services::ServeDir::new("ui/dist")
                 .fallback(tower_http::services::ServeFile::new("ui/dist/index.html")),
         )
-        .layer(TraceLayer::new_for_http())
+        .layer(trace_layer)
+        .layer(middleware::from_fn(attach_request_context))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

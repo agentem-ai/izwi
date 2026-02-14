@@ -17,7 +17,7 @@ use super::metal_kv_cache::{MetalKVCacheConfig, MetalKVCacheManager};
 use super::output::OutputProcessor;
 use super::request::{EngineCoreRequest, RequestStatus};
 use super::scheduler::{Scheduler, SchedulerConfig};
-use super::types::{EngineOutput, RequestId};
+use super::types::{EngineOutput, LatencyBreakdown, RequestId};
 use crate::error::{Error, Result};
 use crate::models::DeviceSelector;
 
@@ -80,6 +80,16 @@ impl KvCacheBackend {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct RequestPhaseTiming {
+    first_scheduled_at: Option<Instant>,
+    queue_wait_ms: f64,
+    prefill_ms: f64,
+    decode_ms: f64,
+    prefill_steps: u32,
+    decode_steps: u32,
+}
+
 /// The engine core - manages the inference loop.
 pub struct EngineCore {
     /// Configuration
@@ -96,6 +106,8 @@ pub struct EngineCore {
     requests: HashMap<RequestId, EngineCoreRequest>,
     /// Request start times (for timing)
     request_start_times: HashMap<RequestId, Instant>,
+    /// Per-request phase timing accumulated by scheduler steps.
+    request_phase_timings: HashMap<RequestId, RequestPhaseTiming>,
     /// Whether the engine has been initialized
     initialized: bool,
 }
@@ -135,6 +147,7 @@ impl EngineCore {
             output_processor,
             requests: HashMap::new(),
             request_start_times: HashMap::new(),
+            request_phase_timings: HashMap::new(),
             initialized: false,
         })
     }
@@ -183,8 +196,14 @@ impl EngineCore {
         self.requests.insert(request_id.clone(), request);
         self.request_start_times
             .insert(request_id.clone(), Instant::now());
+        self.request_phase_timings
+            .insert(request_id.clone(), RequestPhaseTiming::default());
 
-        debug!("Added request {} to engine core", request_id);
+        debug!(
+            request_id = %request_id,
+            correlation_id = ?self.requests.get(&request_id).and_then(|req| req.correlation_id.as_deref()),
+            "Added request to engine core"
+        );
 
         Ok(())
     }
@@ -205,15 +224,6 @@ impl EngineCore {
         self.kv_cache.maintenance()?;
         let schedule_result = self.scheduler.schedule(self.kv_cache.inner_mut());
 
-        if !schedule_result.preempted_requests.is_empty() {
-            let mut seen = HashSet::new();
-            for request_id in &schedule_result.preempted_requests {
-                if seen.insert(request_id.clone()) {
-                    self.executor.cleanup_request(request_id).await;
-                }
-            }
-        }
-
         if !schedule_result.has_work() {
             return Ok(Vec::new());
         }
@@ -226,6 +236,22 @@ impl EngineCore {
 
         let prefill_scheduled = schedule_result.prefill_requests.clone();
         let decode_scheduled = schedule_result.decode_requests.clone();
+        let now = Instant::now();
+
+        // Capture queue wait for first scheduling event.
+        for scheduled in decode_scheduled.iter().chain(prefill_scheduled.iter()) {
+            let request_id = &scheduled.request_id;
+            let timing = self
+                .request_phase_timings
+                .entry(request_id.clone())
+                .or_default();
+            if timing.first_scheduled_at.is_none() {
+                timing.first_scheduled_at = Some(now);
+                if let Some(started) = self.request_start_times.get(request_id) {
+                    timing.queue_wait_ms = started.elapsed().as_secs_f64() * 1000.0;
+                }
+            }
+        }
 
         let prefill_request_refs: Vec<&EngineCoreRequest> = prefill_scheduled
             .iter()
@@ -274,6 +300,28 @@ impl EngineCore {
             .iter()
             .map(|s| s.request_id.clone())
             .collect();
+        let prefill_ids: HashSet<RequestId> = prefill_scheduled
+            .iter()
+            .map(|s| s.request_id.clone())
+            .collect();
+
+        for request_id in &decode_ids {
+            let timing = self
+                .request_phase_timings
+                .entry(request_id.clone())
+                .or_default();
+            timing.decode_ms += decode_step_ms;
+            timing.decode_steps = timing.decode_steps.saturating_add(1);
+        }
+        for request_id in &prefill_ids {
+            let timing = self
+                .request_phase_timings
+                .entry(request_id.clone())
+                .or_default();
+            timing.prefill_ms += prefill_step_ms;
+            timing.prefill_steps = timing.prefill_steps.saturating_add(1);
+        }
+
         decode_outputs.append(&mut prefill_outputs);
         let executor_outputs = decode_outputs;
 
@@ -308,9 +356,26 @@ impl EngineCore {
             );
 
             // Process output
-            let engine_output =
+            let mut engine_output =
                 self.output_processor
                     .process(exec_output.clone(), sequence_id, generation_time);
+            if let Some(phase) = self.request_phase_timings.get(&request_id).cloned() {
+                engine_output.token_stats.prefill_time_ms = phase.prefill_ms as f32;
+                engine_output.token_stats.decode_time_ms = phase.decode_ms as f32;
+                if phase.decode_ms > 0.0 {
+                    engine_output.token_stats.tokens_per_second =
+                        (engine_output.token_stats.generated_tokens as f64 * 1000.0
+                            / phase.decode_ms) as f32;
+                }
+                engine_output.latency_breakdown = Some(LatencyBreakdown {
+                    queue_wait_ms: phase.queue_wait_ms,
+                    prefill_ms: phase.prefill_ms,
+                    decode_ms: phase.decode_ms,
+                    total_ms: generation_time.as_secs_f64() * 1000.0,
+                    prefill_steps: phase.prefill_steps,
+                    decode_steps: phase.decode_steps,
+                });
+            }
 
             // Update scheduler state
             if exec_output.finished {
@@ -319,6 +384,7 @@ impl EngineCore {
                     .finish_request(&request_id, self.kv_cache.inner_mut());
                 self.requests.remove(&request_id);
                 self.request_start_times.remove(&request_id);
+                self.request_phase_timings.remove(&request_id);
                 debug!("Finished request {}", request_id);
             }
 
@@ -352,6 +418,7 @@ impl EngineCore {
             self.executor.cleanup_request(request_id).await;
             self.requests.remove(request_id);
             self.request_start_times.remove(request_id);
+            self.request_phase_timings.remove(request_id);
             debug!("Aborted request {}", request_id);
             true
         } else {
@@ -502,7 +569,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_step_cleans_executor_state_for_preempted_request() {
+    async fn test_step_preserves_executor_state_for_preempted_request() {
         let cleanup_calls = Arc::new(Mutex::new(Vec::new()));
         let executor =
             UnifiedExecutor::new_for_test(Box::new(MockExecutor::new(cleanup_calls.clone())));
@@ -538,12 +605,12 @@ mod tests {
 
         let calls = cleanup_calls.lock().unwrap().clone();
         assert!(
-            calls.iter().any(|id| id == "low-priority"),
-            "preempted request must trigger executor cleanup to drop stale decode state"
+            !calls.iter().any(|id| id == "low-priority"),
+            "preempted request should preserve executor decode state for resume"
         );
         assert_eq!(
             core.get_request_status(&"low-priority".to_string()),
-            Some(RequestStatus::Waiting)
+            Some(RequestStatus::Running)
         );
     }
 }

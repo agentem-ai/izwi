@@ -14,6 +14,7 @@ impl RuntimeService {
         variant: ModelVariant,
         audio_base64: &str,
         language: Option<&str>,
+        correlation_id: Option<&str>,
         mut on_delta: F,
     ) -> Result<AsrTranscription>
     where
@@ -24,6 +25,7 @@ impl RuntimeService {
         let mut request = EngineCoreRequest::asr(audio_base64.to_string());
         request.model_variant = Some(variant);
         request.language = language.map(|s| s.to_string());
+        request.correlation_id = correlation_id.map(|s| s.to_string());
 
         let mut streamed_text = String::new();
         let output = self
@@ -70,6 +72,7 @@ impl RuntimeService {
             ModelVariant::VoxtralMini4BRealtime2602,
             audio_base64,
             language,
+            None,
             on_delta,
         )
         .await
@@ -82,8 +85,14 @@ impl RuntimeService {
         model_id: Option<&str>,
         language: Option<&str>,
     ) -> Result<AsrTranscription> {
-        self.asr_transcribe_streaming(audio_base64, model_id, language, |_delta| {})
-            .await
+        self.asr_transcribe_streaming_with_correlation(
+            audio_base64,
+            model_id,
+            language,
+            None,
+            |_delta| {},
+        )
+        .await
     }
 
     /// Transcribe audio and emit deltas.
@@ -97,9 +106,37 @@ impl RuntimeService {
     where
         F: FnMut(String) + Send + 'static,
     {
+        self.asr_transcribe_streaming_with_correlation(
+            audio_base64,
+            model_id,
+            language,
+            None,
+            on_delta,
+        )
+        .await
+    }
+
+    /// Transcribe audio and emit deltas with request correlation metadata.
+    pub async fn asr_transcribe_streaming_with_correlation<F>(
+        &self,
+        audio_base64: &str,
+        model_id: Option<&str>,
+        language: Option<&str>,
+        correlation_id: Option<&str>,
+        on_delta: F,
+    ) -> Result<AsrTranscription>
+    where
+        F: FnMut(String) + Send + 'static,
+    {
         let variant = resolve_asr_model_variant(model_id);
-        self.asr_transcribe_with_variant_streaming(variant, audio_base64, language, on_delta)
-            .await
+        self.asr_transcribe_with_variant_streaming(
+            variant,
+            audio_base64,
+            language,
+            correlation_id,
+            on_delta,
+        )
+        .await
     }
 
     /// Force alignment remains a specialized operation not expressed by the

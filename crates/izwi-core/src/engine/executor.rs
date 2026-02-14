@@ -18,7 +18,8 @@ use crate::models::lfm2_audio::{
     lfm2_tts_voice_prompt, SpeechToSpeechDecodeState, TtsDecodeState, LFM2_DEFAULT_S2S_PROMPT,
 };
 use crate::models::qwen3_tts::{
-    Qwen3TtsModel, SpeakerReference, TtsGenerationParams, TtsStreamingConfig,
+    Qwen3TtsModel, SpeakerReference, TtsDecodeState as QwenTtsDecodeState, TtsGenerationParams,
+    TtsStreamingConfig,
 };
 use crate::models::registry::{NativeAsrDecodeState, NativeChatDecodeState};
 use crate::models::DeviceSelector;
@@ -202,6 +203,7 @@ pub struct NativeExecutor {
     loaded_tts_model: Option<Arc<Qwen3TtsModel>>,
     chat_decode_states: Mutex<HashMap<String, ActiveChatDecode>>,
     asr_decode_states: Mutex<HashMap<String, ActiveAsrDecode>>,
+    qwen_tts_decode_states: Mutex<HashMap<String, ActiveQwenTtsDecode>>,
     lfm2_tts_decode_states: Mutex<HashMap<String, ActiveLfm2TtsDecode>>,
     speech_to_speech_decode_states: Mutex<HashMap<String, ActiveSpeechToSpeechDecode>>,
 }
@@ -233,6 +235,15 @@ struct ActiveSpeechToSpeechDecode {
     audio_samples_accum: Vec<f32>,
 }
 
+struct ActiveQwenTtsDecode {
+    variant: Option<ModelVariant>,
+    state: QwenTtsDecodeState,
+    prompt_accounted: bool,
+    last_frames_generated: usize,
+    stream_sequence: usize,
+    audio_samples_accum: Vec<f32>,
+}
+
 struct ActiveLfm2TtsDecode {
     variant: ModelVariant,
     state: TtsDecodeState,
@@ -251,6 +262,7 @@ impl NativeExecutor {
             loaded_tts_model: None,
             chat_decode_states: Mutex::new(HashMap::new()),
             asr_decode_states: Mutex::new(HashMap::new()),
+            qwen_tts_decode_states: Mutex::new(HashMap::new()),
             lfm2_tts_decode_states: Mutex::new(HashMap::new()),
             speech_to_speech_decode_states: Mutex::new(HashMap::new()),
         }
@@ -376,156 +388,179 @@ impl NativeExecutor {
         }
     }
 
-    fn synthesize_qwen_tts(model: &Qwen3TtsModel, request: &EngineCoreRequest) -> Result<Vec<f32>> {
-        let text = request
-            .text
-            .as_deref()
-            .ok_or_else(|| Error::InvalidInput("TTS request missing text".to_string()))?;
-        let params = Self::to_tts_params(request);
-        let language = request.language.as_deref();
-
-        if request.reference_audio.is_some() || request.reference_text.is_some() {
-            let ref_audio = request.reference_audio.as_deref().ok_or_else(|| {
-                Error::InvalidInput(
-                    "reference_audio and reference_text must both be provided".to_string(),
-                )
-            })?;
-            let ref_text = request.reference_text.as_deref().ok_or_else(|| {
-                Error::InvalidInput(
-                    "reference_audio and reference_text must both be provided".to_string(),
-                )
-            })?;
-            if ref_text.trim().is_empty() {
-                return Err(Error::InvalidInput(
-                    "reference_text cannot be empty".to_string(),
-                ));
-            }
-
-            let (audio_samples, sample_rate) = decode_audio_base64_with_rate(ref_audio)?;
-            let reference = SpeakerReference {
-                audio_samples,
-                text: ref_text.to_string(),
-                sample_rate,
-            };
-            return model.generate_with_voice_clone(text, &reference, language);
+    fn reference_from_request(request: &EngineCoreRequest) -> Result<Option<SpeakerReference>> {
+        if request.reference_audio.is_none() && request.reference_text.is_none() {
+            return Ok(None);
         }
 
-        let available_speakers = model.available_speakers();
-        let requested_speaker = request
-            .params
-            .speaker
-            .as_deref()
-            .or(request.params.voice.as_deref())
-            .filter(|s| !s.trim().is_empty());
-
-        if available_speakers.is_empty() {
-            return model.generate_with_text_params(
-                text,
-                language,
-                request.voice_description.as_deref(),
-                &params,
-            );
+        let ref_audio = request.reference_audio.as_deref().ok_or_else(|| {
+            Error::InvalidInput(
+                "reference_audio and reference_text must both be provided".to_string(),
+            )
+        })?;
+        let ref_text = request.reference_text.as_deref().ok_or_else(|| {
+            Error::InvalidInput(
+                "reference_audio and reference_text must both be provided".to_string(),
+            )
+        })?;
+        if ref_text.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "reference_text cannot be empty".to_string(),
+            ));
         }
 
-        let speaker_to_use = requested_speaker.unwrap_or_else(|| available_speakers[0].as_str());
-        model.generate_with_speaker_params(
-            text,
-            speaker_to_use,
-            language,
-            request.voice_description.as_deref(),
-            &params,
-        )
+        let (audio_samples, sample_rate) = decode_audio_base64_with_rate(ref_audio)?;
+        Ok(Some(SpeakerReference {
+            audio_samples,
+            text: ref_text.to_string(),
+            sample_rate,
+        }))
     }
 
-    fn synthesize_qwen_tts_streaming(
-        model: &Qwen3TtsModel,
+    fn qwen_tts_request(
+        &self,
         request: &EngineCoreRequest,
-        tx: &mpsc::Sender<StreamingOutput>,
-    ) -> Result<Vec<f32>> {
-        let text = request
-            .text
-            .as_deref()
-            .ok_or_else(|| Error::InvalidInput("TTS request missing text".to_string()))?;
+        scheduled: &ScheduledRequest,
+    ) -> Result<ExecutorOutput> {
+        let stream_tx = Self::stream_sender(request);
+        let variant = request.model_variant;
         let params = Self::to_tts_params(request);
         let language = request.language.as_deref();
-        let stream_config = TtsStreamingConfig::default();
 
-        let mut sequence = 0usize;
-        let mut all_samples = Vec::new();
-        let mut emit_chunk = |samples: Vec<f32>| -> Result<()> {
-            if samples.is_empty() {
-                return Ok(());
-            }
-            all_samples.extend_from_slice(&samples);
-            Self::stream_audio(tx, &request.id, &mut sequence, samples, 24_000, false)
-        };
-
-        if request.reference_audio.is_some() || request.reference_text.is_some() {
-            let ref_audio = request.reference_audio.as_deref().ok_or_else(|| {
-                Error::InvalidInput(
-                    "reference_audio and reference_text must both be provided".to_string(),
-                )
-            })?;
-            let ref_text = request.reference_text.as_deref().ok_or_else(|| {
-                Error::InvalidInput(
-                    "reference_audio and reference_text must both be provided".to_string(),
-                )
-            })?;
-            if ref_text.trim().is_empty() {
-                return Err(Error::InvalidInput(
-                    "reference_text cannot be empty".to_string(),
-                ));
-            }
-
-            let (audio_samples, sample_rate) = decode_audio_base64_with_rate(ref_audio)?;
-            let reference = SpeakerReference {
-                audio_samples,
-                text: ref_text.to_string(),
-                sample_rate,
+        self.with_model(|model| {
+            let mut active_state = {
+                let mut guard = self.qwen_tts_decode_states.lock().map_err(|_| {
+                    Error::InferenceError("Qwen TTS decode state mutex poisoned".to_string())
+                })?;
+                guard.remove(&request.id)
             };
-            model.generate_with_voice_clone_streaming(
-                text,
-                &reference,
-                language,
-                &params,
-                stream_config,
-                &mut emit_chunk,
-            )?;
-        } else {
-            let available_speakers = model.available_speakers();
-            let requested_speaker = request
-                .params
-                .speaker
-                .as_deref()
-                .or(request.params.voice.as_deref())
-                .filter(|s| !s.trim().is_empty());
 
-            if available_speakers.is_empty() {
-                model.generate_with_text_params_streaming(
-                    text,
-                    language,
-                    request.voice_description.as_deref(),
-                    &params,
-                    stream_config,
-                    &mut emit_chunk,
-                )?;
-            } else {
-                let speaker_to_use =
-                    requested_speaker.unwrap_or_else(|| available_speakers[0].as_str());
-                model.generate_with_speaker_params_streaming(
-                    text,
-                    speaker_to_use,
-                    language,
-                    request.voice_description.as_deref(),
-                    &params,
-                    stream_config,
-                    &mut emit_chunk,
-                )?;
+            if active_state
+                .as_ref()
+                .map(|state| state.variant != variant)
+                .unwrap_or(false)
+            {
+                active_state = None;
             }
-        }
 
-        Self::stream_audio(tx, &request.id, &mut sequence, Vec::new(), 24_000, true)?;
-        Ok(all_samples)
+            let mut active_state = if let Some(state) = active_state {
+                state
+            } else {
+                let text = request
+                    .text
+                    .as_deref()
+                    .ok_or_else(|| Error::InvalidInput("TTS request missing text".to_string()))?;
+                let available_speakers = model.available_speakers();
+                let requested_speaker = request
+                    .params
+                    .speaker
+                    .as_deref()
+                    .or(request.params.voice.as_deref())
+                    .filter(|s| !s.trim().is_empty());
+                let reference = Self::reference_from_request(request)?;
+
+                let decode_state = if let Some(reference) = reference {
+                    Self::run_blocking(|| {
+                        model.start_decode_with_voice_clone_params(
+                            text,
+                            &reference,
+                            language,
+                            &params,
+                            TtsStreamingConfig::default(),
+                        )
+                    })?
+                } else if available_speakers.is_empty() {
+                    Self::run_blocking(|| {
+                        model.start_decode_with_text_params(
+                            text,
+                            language,
+                            request.voice_description.as_deref(),
+                            &params,
+                            TtsStreamingConfig::default(),
+                        )
+                    })?
+                } else {
+                    let speaker_to_use =
+                        requested_speaker.unwrap_or_else(|| available_speakers[0].as_str());
+                    Self::run_blocking(|| {
+                        model.start_decode_with_speaker_params(
+                            text,
+                            speaker_to_use,
+                            language,
+                            request.voice_description.as_deref(),
+                            &params,
+                            TtsStreamingConfig::default(),
+                        )
+                    })?
+                };
+
+                ActiveQwenTtsDecode {
+                    variant,
+                    state: decode_state,
+                    prompt_accounted: false,
+                    last_frames_generated: 0,
+                    stream_sequence: 0,
+                    audio_samples_accum: Vec::new(),
+                }
+            };
+
+            let step = Self::run_blocking(|| model.tts_decode_step(&mut active_state.state))?;
+            let step_tokens_generated = step
+                .frames_generated
+                .saturating_sub(active_state.last_frames_generated);
+            active_state.last_frames_generated = step.frames_generated;
+
+            let mut tokens_processed = scheduled.num_tokens.max(1);
+            if !active_state.prompt_accounted {
+                active_state.prompt_accounted = true;
+                tokens_processed = tokens_processed.saturating_add(request.num_prompt_tokens());
+            }
+
+            if !step.samples.is_empty() {
+                active_state
+                    .audio_samples_accum
+                    .extend_from_slice(&step.samples);
+                if let Some(tx) = stream_tx.as_ref() {
+                    Self::stream_audio(
+                        tx,
+                        &request.id,
+                        &mut active_state.stream_sequence,
+                        step.samples.clone(),
+                        24_000,
+                        false,
+                    )?;
+                }
+            }
+
+            if step.finished {
+                if let Some(tx) = stream_tx.as_ref() {
+                    Self::stream_final_marker(tx, &request.id, &mut active_state.stream_sequence)?;
+                }
+            }
+
+            let finished_samples = if step.finished {
+                active_state.audio_samples_accum.clone()
+            } else {
+                Vec::new()
+            };
+
+            if !step.finished {
+                let mut guard = self.qwen_tts_decode_states.lock().map_err(|_| {
+                    Error::InferenceError("Qwen TTS decode state mutex poisoned".to_string())
+                })?;
+                guard.insert(request.id.clone(), active_state);
+            }
+
+            Ok(ExecutorOutput {
+                request_id: request.id.clone(),
+                audio: Some(AudioOutput::new(finished_samples, 24_000)),
+                text: None,
+                tokens_processed,
+                tokens_generated: step_tokens_generated,
+                finished: step.finished,
+                error: None,
+            })
+        })
     }
 
     fn resolve_variant(request: &EngineCoreRequest) -> Result<ModelVariant> {
@@ -1267,26 +1302,7 @@ impl NativeExecutor {
                     if variant.map(|v| v.is_lfm2()).unwrap_or(false) {
                         self.lfm2_tts_request(request, scheduled_req)
                     } else {
-                        let stream_tx = Self::stream_sender(request);
-                        self.with_model(|model| {
-                            let prompt_tokens = request.num_prompt_tokens();
-                            let samples = if let Some(tx) = stream_tx.as_ref() {
-                                Self::run_blocking(|| {
-                                    Self::synthesize_qwen_tts_streaming(model, request, tx)
-                                })?
-                            } else {
-                                Self::run_blocking(|| Self::synthesize_qwen_tts(model, request))?
-                            };
-                            Ok(ExecutorOutput {
-                                request_id: request.id.clone(),
-                                audio: Some(AudioOutput::new(samples.clone(), 24_000)),
-                                text: None,
-                                tokens_processed: prompt_tokens,
-                                tokens_generated: (samples.len() / 256).max(1),
-                                finished: true,
-                                error: None,
-                            })
-                        })
+                        self.qwen_tts_request(request, scheduled_req)
                     }
                 }
                 TaskType::ASR => self.transcribe_request(request, scheduled_req),
@@ -1379,6 +1395,9 @@ impl ModelExecutor for NativeExecutor {
         if let Ok(mut guard) = self.asr_decode_states.lock() {
             guard.clear();
         }
+        if let Ok(mut guard) = self.qwen_tts_decode_states.lock() {
+            guard.clear();
+        }
         if let Ok(mut guard) = self.lfm2_tts_decode_states.lock() {
             guard.clear();
         }
@@ -1393,6 +1412,9 @@ impl ModelExecutor for NativeExecutor {
             guard.remove(request_id);
         }
         if let Ok(mut guard) = self.asr_decode_states.lock() {
+            guard.remove(request_id);
+        }
+        if let Ok(mut guard) = self.qwen_tts_decode_states.lock() {
             guard.remove(request_id);
         }
         if let Ok(mut guard) = self.lfm2_tts_decode_states.lock() {

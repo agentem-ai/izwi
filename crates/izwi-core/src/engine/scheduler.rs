@@ -294,6 +294,8 @@ struct RunningRequest {
     priority: Priority,
     /// Whether this request has produced its first output token.
     first_token_emitted: bool,
+    /// Whether this request is temporarily paused due to preemption.
+    paused: bool,
 }
 
 impl Scheduler {
@@ -402,6 +404,7 @@ impl Scheduler {
                     additional_blocks,
                     remaining_decode_tokens,
                     r.num_tokens_generated,
+                    r.paused,
                 ))
             })
             .collect();
@@ -424,6 +427,7 @@ impl Scheduler {
             additional_blocks,
             _remaining_decode_tokens,
             _generated_tokens,
+            _paused,
         ) in decode_candidates
         {
             if remaining_batch == 0 || remaining_decode_budget == 0 {
@@ -454,6 +458,14 @@ impl Scheduler {
                         continue;
                     }
                 }
+
+                let extended_blocks = kv_cache.extend(&request_id, additional_blocks);
+                if extended_blocks.len() < additional_blocks {
+                    kv_cache.free(&request_id);
+                    continue;
+                }
+                block_ids.extend(extended_blocks);
+                result.blocks_allocated += additional_blocks;
             }
 
             // Shared-prefix blocks must be detached before appending decode tokens.
@@ -471,6 +483,11 @@ impl Scheduler {
 
             if let Some(updated_blocks) = kv_cache.get_block_table(&request_id) {
                 block_ids = updated_blocks.to_vec();
+            }
+
+            if let Some(running) = self.running.get_mut(&request_id) {
+                running.paused = false;
+                running.block_ids = block_ids.clone();
             }
 
             result.decode_requests.push(ScheduledRequest {
@@ -493,6 +510,111 @@ impl Scheduler {
         } else {
             remaining_decode_budget
         };
+
+        // Phase 2a: resume preempted prefill requests before admitting new waiting requests.
+        let mut paused_prefill_candidates: Vec<_> = self
+            .running
+            .iter()
+            .filter(|(_, r)| r.paused && !r.prefill_complete)
+            .map(|(id, r)| {
+                (
+                    id.clone(),
+                    r.priority,
+                    r.sequence_id,
+                    r.num_tokens_processed,
+                )
+            })
+            .collect();
+        paused_prefill_candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.3.cmp(&b.3)));
+
+        for (request_id, priority, sequence_id, num_computed) in paused_prefill_candidates {
+            if remaining_batch == 0 || remaining_prefill_budget == 0 {
+                break;
+            }
+
+            let metadata = match self.requests.get(&request_id) {
+                Some(m) => m.clone(),
+                None => continue,
+            };
+
+            let remaining_prompt = metadata.total_prompt_tokens.saturating_sub(num_computed);
+            if remaining_prompt == 0 {
+                if let Some(running) = self.running.get_mut(&request_id) {
+                    running.prefill_complete = true;
+                    running.paused = false;
+                }
+                continue;
+            }
+
+            let mut num_tokens = remaining_prompt;
+            if self.config.enable_chunked_prefill
+                && num_tokens > self.config.chunked_prefill_threshold
+            {
+                num_tokens = self.config.chunked_prefill_threshold;
+            }
+            num_tokens = num_tokens.min(remaining_prefill_budget);
+            if num_tokens == 0 {
+                continue;
+            }
+
+            let existing_blocks = self
+                .running
+                .get(&request_id)
+                .map(|r| r.block_ids.len())
+                .unwrap_or(0);
+            let total_tokens_after = num_computed.saturating_add(num_tokens);
+            let blocks_needed = kv_cache.blocks_for_tokens(total_tokens_after);
+            let additional_blocks = blocks_needed.saturating_sub(existing_blocks);
+
+            if additional_blocks > 0 {
+                if !kv_cache.can_allocate(additional_blocks) {
+                    if self.config.enable_preemption {
+                        let preempted =
+                            self.try_preempt_for_blocks(additional_blocks, priority, kv_cache);
+                        if !preempted.is_empty() {
+                            result.preempted_requests.extend(preempted);
+                            if !kv_cache.can_allocate(additional_blocks) {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+
+                let extended_blocks = kv_cache.extend(&request_id, additional_blocks);
+                if extended_blocks.len() < additional_blocks {
+                    kv_cache.free(&request_id);
+                    continue;
+                }
+                result.blocks_allocated += additional_blocks;
+            }
+
+            let block_ids = kv_cache
+                .get_block_table(&request_id)
+                .map(|ids| ids.to_vec())
+                .unwrap_or_default();
+
+            if let Some(running) = self.running.get_mut(&request_id) {
+                running.paused = false;
+                running.block_ids = block_ids.clone();
+            }
+
+            result.prefill_requests.push(ScheduledRequest {
+                request_id: request_id.clone(),
+                sequence_id,
+                num_tokens,
+                is_prefill: true,
+                block_ids,
+                num_computed_tokens: num_computed,
+            });
+
+            remaining_prefill_budget = remaining_prefill_budget.saturating_sub(num_tokens);
+            remaining_batch -= 1;
+            result.total_tokens += num_tokens;
+        }
 
         while remaining_batch > 0 && remaining_prefill_budget > 0 {
             let next_request_id = self.select_next_waiting_request();
@@ -580,6 +702,7 @@ impl Scheduler {
                 prefill_complete: num_tokens >= metadata.total_prompt_tokens,
                 priority: metadata.priority,
                 first_token_emitted: false,
+                paused: false,
             };
 
             result.prefill_requests.push(ScheduledRequest {
@@ -612,6 +735,7 @@ impl Scheduler {
         step_time_ms: f64,
     ) {
         if let Some(running) = self.running.get_mut(request_id) {
+            running.paused = false;
             running.num_tokens_processed += tokens_processed;
             running.num_tokens_generated += tokens_generated;
             running.block_ids.extend(new_block_ids);
@@ -858,7 +982,9 @@ impl Scheduler {
         let mut candidates: Vec<_> = self
             .running
             .iter()
-            .filter(|(_, r)| r.priority < requesting_priority)
+            .filter(|(_, r)| {
+                r.priority < requesting_priority && !r.paused && !r.block_ids.is_empty()
+            })
             .map(|(id, r)| {
                 (
                     id.clone(),
@@ -881,28 +1007,13 @@ impl Scheduler {
                 break;
             }
 
-            // Remove from running and free blocks
-            if let Some(running) = self.running.remove(&request_id) {
+            // Mark as paused and free blocks while keeping decode progress metadata.
+            if let Some(running) = self.running.get_mut(&request_id) {
                 kv_cache.free(&request_id);
                 blocks_freed += num_blocks;
                 preempted.push(request_id.clone());
-
-                // Re-add to waiting queue for later processing
-                if let Some(metadata) = self.requests.get(&request_id) {
-                    match self.config.policy {
-                        SchedulingPolicy::FCFS => {
-                            // Add to front of queue (will be processed soon)
-                            self.waiting_fcfs.push_front(request_id.clone());
-                        }
-                        SchedulingPolicy::Priority => {
-                            self.waiting_priority.push(PriorityRequest {
-                                request_id: request_id.clone(),
-                                priority: running.priority,
-                                arrival_time: metadata.arrival_time,
-                            });
-                        }
-                    }
-                }
+                running.block_ids.clear();
+                running.paused = true;
 
                 debug!(
                     "Preempted request {} (freed {} blocks, total freed: {})",
@@ -950,7 +1061,7 @@ mod tests {
         let scheduler = Scheduler::new(config);
         let kv_cache = KVCacheManager::new(super::super::kv_cache::KVCacheConfig {
             max_blocks: 1,
-            block_size: 1,
+            block_size: 2,
             ..Default::default()
         });
         (scheduler, kv_cache)
@@ -1059,8 +1170,8 @@ mod tests {
             );
             assert_eq!(
                 scheduler.get_status(&low_id),
-                Some(RequestStatus::Waiting),
-                "preempted {task_type:?} request must return to waiting"
+                Some(RequestStatus::Running),
+                "preempted {task_type:?} request should remain tracked for resume"
             );
             assert_eq!(
                 scheduler.get_status(&high_id),
@@ -1072,12 +1183,12 @@ mod tests {
 
             let third = scheduler.schedule(&mut kv_cache);
             assert_eq!(
-                third.prefill_requests.len(),
+                third.decode_requests.len(),
                 1,
-                "preempted {task_type:?} request should be re-admitted as prefill"
+                "preempted {task_type:?} request should resume decode from preserved state"
             );
-            assert_eq!(third.prefill_requests[0].request_id, low_id);
-            assert!(third.prefill_requests[0].is_prefill);
+            assert_eq!(third.decode_requests[0].request_id, low_id);
+            assert!(!third.decode_requests[0].is_prefill);
         }
     }
 

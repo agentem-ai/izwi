@@ -85,6 +85,38 @@ struct ProgressiveStreamState<'a> {
     on_chunk: &'a mut dyn FnMut(Vec<f32>) -> Result<()>,
 }
 
+/// Incremental decode state for scheduler-integrated Qwen3 TTS execution.
+pub struct TtsDecodeState {
+    talker_cache: TalkerCache,
+    predictor_cache: CodePredictorCache,
+    text_vocab_size: u32,
+    acoustic_vocab_size: u32,
+    semantic_vocab_size: u32,
+    trailing_text_hidden: Tensor,
+    trailing_text_len: usize,
+    tts_pad_embed: Tensor,
+    max_frames: usize,
+    frame_idx: usize,
+    offset: usize,
+    all_code_groups: Vec<Vec<u32>>,
+    semantic_history: Vec<u32>,
+    last_hidden: Tensor,
+    last_logits: Tensor,
+    rng: SimpleRng,
+    params: TtsGenerationParams,
+    stream_config: TtsStreamingConfig,
+    emitted_frames: usize,
+    emitted_samples: usize,
+    finished: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct TtsDecodeStep {
+    pub samples: Vec<f32>,
+    pub frames_generated: usize,
+    pub finished: bool,
+}
+
 /// Batch input for CustomVoice (preset speaker) generation.
 #[derive(Debug, Clone)]
 pub struct BatchedSpeakerRequest {
@@ -637,6 +669,88 @@ impl Qwen3TtsModel {
         Ok(())
     }
 
+    /// Start incremental decode state for voice-clone synthesis.
+    pub fn start_decode_with_voice_clone_params(
+        &self,
+        text: &str,
+        reference: &SpeakerReference,
+        language: Option<&str>,
+        params: &TtsGenerationParams,
+        stream_config: TtsStreamingConfig,
+    ) -> Result<TtsDecodeState> {
+        let ref_codec_tokens = self.encode_reference_audio(reference)?;
+        if ref_codec_tokens.is_empty() || ref_codec_tokens[0].is_empty() {
+            return Err(Error::ModelError(
+                "Voice cloning reference encoder produced no conditioning tokens".to_string(),
+            ));
+        }
+
+        let prompt_ids = self.encode_assistant_prompt_ids(text)?;
+        let ref_prompt_ids = self.encode_reference_prompt_ids(reference.text.as_str())?;
+        let target_text_ids: Vec<u32> = if prompt_ids.len() > 8 {
+            prompt_ids[3..prompt_ids.len() - 5].to_vec()
+        } else {
+            Vec::new()
+        };
+        let reference_text_ids: Vec<u32> = if ref_prompt_ids.len() > 5 {
+            ref_prompt_ids[3..ref_prompt_ids.len() - 2].to_vec()
+        } else {
+            Vec::new()
+        };
+        if target_text_ids.is_empty() || reference_text_ids.is_empty() {
+            return Err(Error::InvalidInput(
+                "Voice cloning requires non-empty target/reference transcript tokens".to_string(),
+            ));
+        }
+
+        let language_id = self.resolve_language_id(language);
+        let base_prefill =
+            self.build_conditioned_prefill_embeddings(&[], None, language_id, None)?;
+        let tts_pad_embed = self
+            .talker
+            .get_projected_special_embed(self.specials.tts_pad_token_id)?;
+        let tts_eos_embed = self
+            .talker
+            .get_projected_special_embed(self.specials.tts_eos_token_id)?;
+        let (icl_embed, trailing_text_hidden) = self.build_voice_clone_icl_embeddings(
+            &target_text_ids,
+            &reference_text_ids,
+            &ref_codec_tokens,
+            &tts_pad_embed,
+            &tts_eos_embed,
+            false,
+        )?;
+        let prefill_embeds = Tensor::cat(&[&base_prefill, &icl_embed], 1)?;
+        let prefill_len = prefill_embeds.dim(1)?;
+        let context_budget = self
+            .config
+            .talker_config
+            .max_position_embeddings
+            .saturating_sub(prefill_len + 1);
+        if context_budget == 0 {
+            return Err(Error::InferenceError(
+                "Voice-clone prompt exceeds model context window".to_string(),
+            ));
+        }
+
+        let resolved_max_frames = if params.max_frames == 0 {
+            context_budget
+        } else {
+            params.max_frames.max(1).min(context_budget)
+        };
+        let resolved_params = TtsGenerationParams {
+            max_frames: resolved_max_frames,
+            ..params.clone()
+        };
+        self.start_decode_from_prefill(
+            prefill_embeds,
+            trailing_text_hidden,
+            tts_pad_embed,
+            &resolved_params,
+            stream_config,
+        )
+    }
+
     /// Generate speech without requiring a preset speaker table.
     ///
     /// This path is used for base checkpoints that do not ship `spk_id`
@@ -692,6 +806,223 @@ impl Qwen3TtsModel {
             Some(&mut stream_state),
         )?;
         Ok(())
+    }
+
+    /// Start incremental decode state for preset-speaker TTS.
+    pub fn start_decode_with_speaker_params(
+        &self,
+        text: &str,
+        speaker: &str,
+        language: Option<&str>,
+        instruct: Option<&str>,
+        params: &TtsGenerationParams,
+        stream_config: TtsStreamingConfig,
+    ) -> Result<TtsDecodeState> {
+        let prompt_ids = self.encode_assistant_prompt_ids(text)?;
+        let speaker_id = self.tokenizer.get_speaker_id(speaker).ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "Unknown speaker '{speaker}'. Available speakers: {}",
+                self.tokenizer
+                    .available_speakers()
+                    .into_iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
+        let language_id = self.resolve_language_id(language);
+        let instruct_ids = self.encode_instruction_ids(instruct)?;
+
+        let prefill_embeds = self.build_conditioned_prefill_embeddings(
+            &prompt_ids,
+            Some(speaker_id),
+            language_id,
+            instruct_ids.as_deref(),
+        )?;
+        let prefill_len = prefill_embeds.dim(1)?;
+        let context_budget = self
+            .config
+            .talker_config
+            .max_position_embeddings
+            .saturating_sub(prefill_len + 1);
+        if context_budget == 0 {
+            return Err(Error::InferenceError(
+                "Input is too long for model context; no room left for audio generation"
+                    .to_string(),
+            ));
+        }
+        let resolved_max_frames = if params.max_frames == 0 {
+            context_budget
+        } else {
+            params.max_frames.max(1).min(context_budget)
+        };
+        let resolved_params = TtsGenerationParams {
+            max_frames: resolved_max_frames,
+            ..params.clone()
+        };
+        let (trailing_text_hidden, _, tts_pad_embed) =
+            self.build_trailing_text_embeddings_from_prompt(&prompt_ids, resolved_max_frames)?;
+        self.start_decode_from_prefill(
+            prefill_embeds,
+            trailing_text_hidden,
+            tts_pad_embed,
+            &resolved_params,
+            stream_config,
+        )
+    }
+
+    /// Start incremental decode state for text-only TTS (no preset speaker table).
+    pub fn start_decode_with_text_params(
+        &self,
+        text: &str,
+        language: Option<&str>,
+        instruct: Option<&str>,
+        params: &TtsGenerationParams,
+        stream_config: TtsStreamingConfig,
+    ) -> Result<TtsDecodeState> {
+        let prompt_ids = self.encode_assistant_prompt_ids(text)?;
+        let language_id = self.resolve_language_id(language);
+        let instruct_ids = self.encode_instruction_ids(instruct)?;
+        let prefill_embeds = self.build_conditioned_prefill_embeddings(
+            &prompt_ids,
+            None,
+            language_id,
+            instruct_ids.as_deref(),
+        )?;
+        let prefill_len = prefill_embeds.dim(1)?;
+        let context_budget = self
+            .config
+            .talker_config
+            .max_position_embeddings
+            .saturating_sub(prefill_len + 1);
+        if context_budget == 0 {
+            return Err(Error::InferenceError(
+                "Input is too long for model context; no room left for audio generation"
+                    .to_string(),
+            ));
+        }
+        let resolved_max_frames = if params.max_frames == 0 {
+            context_budget
+        } else {
+            params.max_frames.max(1).min(context_budget)
+        };
+        let resolved_params = TtsGenerationParams {
+            max_frames: resolved_max_frames,
+            ..params.clone()
+        };
+        let (trailing_text_hidden, _, tts_pad_embed) =
+            self.build_trailing_text_embeddings_from_prompt(&prompt_ids, resolved_max_frames)?;
+        self.start_decode_from_prefill(
+            prefill_embeds,
+            trailing_text_hidden,
+            tts_pad_embed,
+            &resolved_params,
+            stream_config,
+        )
+    }
+
+    /// Execute one incremental decode step and optionally emit a new audio chunk.
+    pub fn tts_decode_step(&self, state: &mut TtsDecodeState) -> Result<TtsDecodeStep> {
+        if state.finished {
+            return Ok(TtsDecodeStep {
+                samples: Vec::new(),
+                frames_generated: state.all_code_groups.first().map(|g| g.len()).unwrap_or(0),
+                finished: true,
+            });
+        }
+
+        if state.frame_idx >= state.max_frames {
+            state.finished = true;
+            let final_samples = self.collect_incremental_audio(state, true)?;
+            return Ok(TtsDecodeStep {
+                samples: final_samples,
+                frames_generated: state.all_code_groups.first().map(|g| g.len()).unwrap_or(0),
+                finished: true,
+            });
+        }
+
+        let min_tokens_before_eos = 8usize;
+        let allow_eos = state.all_code_groups[0].len() >= min_tokens_before_eos;
+        let semantic_token = sample_semantic(
+            &state.last_logits.i((0, 0))?,
+            state.semantic_vocab_size,
+            self.specials.codec_eos_token_id,
+            allow_eos,
+            &state.params,
+            &state.semantic_history,
+            &mut state.rng,
+        )?;
+
+        if allow_eos && semantic_token == self.specials.codec_eos_token_id {
+            state.finished = true;
+            let final_samples = self.collect_incremental_audio(state, true)?;
+            return Ok(TtsDecodeStep {
+                samples: final_samples,
+                frames_generated: state.all_code_groups.first().map(|g| g.len()).unwrap_or(0),
+                finished: true,
+            });
+        }
+
+        state.semantic_history.push(semantic_token);
+        if state.semantic_history.len() > 256 {
+            let drain = state.semantic_history.len() - 256;
+            state.semantic_history.drain(0..drain);
+        }
+
+        state.all_code_groups[0].push(state.text_vocab_size + semantic_token);
+
+        let semantic_embed = self.talker.get_codec_embedding(semantic_token)?;
+        let acoustic_codes = self.code_predictor.generate_acoustic_codes(
+            &state.last_hidden,
+            &semantic_embed,
+            &mut state.predictor_cache,
+        )?;
+        let acoustic_embed_sum = self
+            .code_predictor
+            .get_acoustic_embeddings_sum(&acoustic_codes)?;
+        for (acoustic_idx, &group_token) in acoustic_codes.iter().enumerate() {
+            let group_idx = acoustic_idx + 1;
+            if group_idx < state.all_code_groups.len() {
+                let combined_token = state.text_vocab_size
+                    + group_token
+                    + (group_idx as u32 * state.acoustic_vocab_size);
+                state.all_code_groups[group_idx].push(combined_token);
+            }
+        }
+
+        let text_addition = if state.frame_idx < state.trailing_text_len {
+            state
+                .trailing_text_hidden
+                .i((.., state.frame_idx..state.frame_idx + 1, ..))?
+        } else {
+            state.tts_pad_embed.clone()
+        };
+
+        let step_input = semantic_embed
+            .broadcast_add(&acoustic_embed_sum)?
+            .broadcast_add(&text_addition)?;
+        let (new_hidden, new_logits) = self.talker.generate_step_with_embed(
+            &step_input,
+            &mut state.talker_cache,
+            state.offset,
+        )?;
+        state.last_hidden = new_hidden;
+        state.last_logits = new_logits;
+        state.frame_idx = state.frame_idx.saturating_add(1);
+        state.offset = state.offset.saturating_add(1);
+
+        let mut samples = self.collect_incremental_audio(state, false)?;
+        if state.frame_idx >= state.max_frames {
+            state.finished = true;
+            let final_samples = self.collect_incremental_audio(state, true)?;
+            samples.extend(final_samples);
+        }
+
+        Ok(TtsDecodeStep {
+            samples,
+            frames_generated: state.all_code_groups.first().map(|g| g.len()).unwrap_or(0),
+            finished: state.finished,
+        })
     }
 
     fn resolve_language_id(&self, language: Option<&str>) -> Option<u32> {
@@ -1099,9 +1430,44 @@ impl Qwen3TtsModel {
         params: &TtsGenerationParams,
         mut stream_state: Option<&mut ProgressiveStreamState<'_>>,
     ) -> Result<Vec<Vec<u32>>> {
+        let stream_config = stream_state.as_ref().map(|s| s.config).unwrap_or_default();
+        let mut state = self.start_decode_from_prefill(
+            prefill_embeds,
+            trailing_text_hidden,
+            tts_pad_embed,
+            &TtsGenerationParams {
+                max_frames,
+                ..params.clone()
+            },
+            stream_config,
+        )?;
+
+        loop {
+            let step = self.tts_decode_step(&mut state)?;
+            if let Some(progressive) = stream_state.as_deref_mut() {
+                if !step.samples.is_empty() {
+                    (progressive.on_chunk)(step.samples)?;
+                }
+            }
+            if step.finished {
+                break;
+            }
+        }
+
+        Ok(state.all_code_groups)
+    }
+
+    fn start_decode_from_prefill(
+        &self,
+        prefill_embeds: Tensor,
+        trailing_text_hidden: Tensor,
+        tts_pad_embed: Tensor,
+        params: &TtsGenerationParams,
+        stream_config: TtsStreamingConfig,
+    ) -> Result<TtsDecodeState> {
         let mut talker_cache =
             TalkerCache::with_page_size(self.talker.num_layers(), self.kv_page_size);
-        let mut predictor_cache =
+        let predictor_cache =
             CodePredictorCache::with_page_size(self.code_predictor.num_layers(), self.kv_page_size);
         let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
         let acoustic_vocab_size = self.tokenizer.codec_vocab_size() as u32;
@@ -1110,83 +1476,83 @@ impl Qwen3TtsModel {
 
         let prefill_len = prefill_embeds.dim(1)?;
         let trailing_text_len = trailing_text_hidden.dim(1)?;
-        let (mut last_hidden, mut last_logits) =
+        let (last_hidden, last_logits) =
             self.talker
                 .prefill_with_embeds(&prefill_embeds, &mut talker_cache, None)?;
 
-        let mut all_code_groups: Vec<Vec<u32>> =
-            vec![Vec::new(); self.config.talker_config.num_code_groups];
-        let min_tokens_before_eos = 8usize;
-        let mut offset = prefill_len;
-        let mut rng = SimpleRng::new();
-        let mut semantic_history: Vec<u32> = Vec::new();
+        Ok(TtsDecodeState {
+            talker_cache,
+            predictor_cache,
+            text_vocab_size,
+            acoustic_vocab_size,
+            semantic_vocab_size,
+            trailing_text_hidden,
+            trailing_text_len,
+            tts_pad_embed,
+            max_frames: params.max_frames.max(1),
+            frame_idx: 0,
+            offset: prefill_len,
+            all_code_groups: vec![Vec::new(); self.config.talker_config.num_code_groups],
+            semantic_history: Vec::new(),
+            last_hidden,
+            last_logits,
+            rng: SimpleRng::new(),
+            params: params.clone(),
+            stream_config,
+            emitted_frames: 0,
+            emitted_samples: 0,
+            finished: false,
+        })
+    }
 
-        for frame_idx in 0..max_frames {
-            let allow_eos = all_code_groups[0].len() >= min_tokens_before_eos;
-            let semantic_token = sample_semantic(
-                &last_logits.i((0, 0))?,
-                semantic_vocab_size,
-                self.specials.codec_eos_token_id,
-                allow_eos,
-                params,
-                &semantic_history,
-                &mut rng,
-            )?;
-            if allow_eos && semantic_token == self.specials.codec_eos_token_id {
-                break;
+    fn collect_incremental_audio(
+        &self,
+        state: &mut TtsDecodeState,
+        force: bool,
+    ) -> Result<Vec<f32>> {
+        let total_frames = state.all_code_groups.first().map(|g| g.len()).unwrap_or(0);
+        if total_frames == 0 {
+            return Ok(Vec::new());
+        }
+
+        if !force {
+            if total_frames < state.stream_config.min_frames_before_stream {
+                return Ok(Vec::new());
             }
-            semantic_history.push(semantic_token);
-            if semantic_history.len() > 256 {
-                let drain = semantic_history.len() - 256;
-                semantic_history.drain(0..drain);
-            }
-
-            all_code_groups[0].push(text_vocab_size + semantic_token);
-
-            let semantic_embed = self.talker.get_codec_embedding(semantic_token)?;
-            let acoustic_codes = self.code_predictor.generate_acoustic_codes(
-                &last_hidden,
-                &semantic_embed,
-                &mut predictor_cache,
-            )?;
-            let acoustic_embed_sum = self
-                .code_predictor
-                .get_acoustic_embeddings_sum(&acoustic_codes)?;
-            for (acoustic_idx, &group_token) in acoustic_codes.iter().enumerate() {
-                let group_idx = acoustic_idx + 1;
-                if group_idx < all_code_groups.len() {
-                    let combined_token =
-                        text_vocab_size + group_token + (group_idx as u32 * acoustic_vocab_size);
-                    all_code_groups[group_idx].push(combined_token);
-                }
-            }
-
-            let text_addition = if frame_idx < trailing_text_len {
-                trailing_text_hidden.i((.., frame_idx..frame_idx + 1, ..))?
-            } else {
-                tts_pad_embed.clone()
-            };
-
-            let step_input = semantic_embed
-                .broadcast_add(&acoustic_embed_sum)?
-                .broadcast_add(&text_addition)?;
-            let (new_hidden, new_logits) =
-                self.talker
-                    .generate_step_with_embed(&step_input, &mut talker_cache, offset)?;
-            last_hidden = new_hidden;
-            last_logits = new_logits;
-            offset += 1;
-
-            if let Some(state) = stream_state.as_deref_mut() {
-                self.maybe_emit_progressive_audio_chunk(&all_code_groups, state, false)?;
+            let newly_generated = total_frames.saturating_sub(state.emitted_frames);
+            if newly_generated < state.stream_config.decode_interval_frames {
+                return Ok(Vec::new());
             }
         }
 
-        if let Some(state) = stream_state.as_deref_mut() {
-            self.maybe_emit_progressive_audio_chunk(&all_code_groups, state, true)?;
+        let lookahead = if force {
+            0
+        } else {
+            state.stream_config.decode_lookahead_frames
+        };
+        let target_frames = total_frames.saturating_sub(lookahead);
+        if target_frames <= state.emitted_frames {
+            return Ok(Vec::new());
         }
 
-        Ok(all_code_groups)
+        let mut partial_tokens = Vec::with_capacity(state.all_code_groups.len());
+        for group in &state.all_code_groups {
+            if group.len() < target_frames {
+                return Ok(Vec::new());
+            }
+            partial_tokens.push(group[..target_frames].to_vec());
+        }
+
+        let decoded = self.codec_to_audio(&partial_tokens)?;
+        if decoded.len() <= state.emitted_samples {
+            state.emitted_frames = target_frames;
+            return Ok(Vec::new());
+        }
+
+        let new_samples = decoded[state.emitted_samples..].to_vec();
+        state.emitted_samples = decoded.len();
+        state.emitted_frames = target_frames;
+        Ok(new_samples)
     }
 
     fn maybe_emit_progressive_audio_chunk(

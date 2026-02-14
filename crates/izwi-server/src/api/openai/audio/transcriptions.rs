@@ -2,7 +2,7 @@
 
 use axum::{
     body::Body,
-    extract::{Multipart, Request, State},
+    extract::{Extension, Multipart, Request, State},
     http::{header, StatusCode},
     response::Response,
     Json, RequestExt,
@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::info;
 
+use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -60,6 +61,7 @@ struct StreamEvent {
 
 pub async fn transcriptions(
     State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
     req: Request,
 ) -> Result<Response<Body>, ApiError> {
     let mut req = parse_transcription_request(req).await?;
@@ -71,7 +73,7 @@ pub async fn transcriptions(
     info!("OpenAI transcription request: {} bytes", audio_base64.len());
 
     if req.stream {
-        return transcriptions_stream(state, req, audio_base64).await;
+        return transcriptions_stream(state, req, audio_base64, ctx.correlation_id).await;
     }
 
     let _permit = state.acquire_permit().await;
@@ -79,7 +81,13 @@ pub async fn transcriptions(
     let started = Instant::now();
     let output = state
         .runtime
-        .asr_transcribe(&audio_base64, req.model.as_deref(), req.language.as_deref())
+        .asr_transcribe_streaming_with_correlation(
+            &audio_base64,
+            req.model.as_deref(),
+            req.language.as_deref(),
+            Some(&ctx.correlation_id),
+            |_delta| {},
+        )
         .await?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
 
@@ -138,6 +146,7 @@ async fn transcriptions_stream(
     state: AppState,
     req: TranscriptionRequest,
     audio_base64: String,
+    correlation_id: String,
 ) -> Result<Response<Body>, ApiError> {
     let timeout = Duration::from_secs(state.request_timeout_secs);
     let model = req.model;
@@ -187,10 +196,11 @@ async fn transcriptions_stream(
         let delta_tx = event_tx.clone();
         let result = tokio::time::timeout(timeout, async {
             engine
-                .asr_transcribe_streaming(
+                .asr_transcribe_streaming_with_correlation(
                     &audio_base64,
                     model.as_deref(),
                     language.as_deref(),
+                    Some(correlation_id.as_str()),
                     move |delta| {
                         let event = StreamEvent {
                             event: "delta",

@@ -170,6 +170,7 @@ impl OutputProcessor {
             is_finished: executor_output.finished,
             finish_reason,
             token_stats,
+            latency_breakdown: None,
             error: executor_output.error,
         }
     }
