@@ -55,8 +55,8 @@ export function GenerationStats({
       : null;
 
   const rtfColors = {
-    excellent: "text-emerald-400 bg-emerald-500/10",
-    good: "text-green-400 bg-green-500/10",
+    excellent: "text-gray-300 bg-white/10",
+    good: "text-gray-300 bg-white/10",
     fair: "text-yellow-400 bg-yellow-500/10",
     slow: "text-red-400 bg-red-500/10",
   };

@@ -435,7 +435,7 @@ export function TranscriptionPlayground({
 
   const getStatusTone = (option: ModelOption): string => {
     if (option.isReady) {
-      return "text-emerald-400 bg-emerald-500/10";
+      return "text-gray-300 bg-white/10";
     }
     if (
       option.statusLabel.toLowerCase().includes("downloading") ||
@@ -461,7 +461,7 @@ export function TranscriptionPlayground({
         className={clsx(
           "h-9 px-3 rounded-lg border w-full flex items-center justify-between gap-2 text-xs transition-colors",
           selectedOption?.isReady
-            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+            ? "border-white/20 bg-[#1a1a1a] text-gray-300"
             : "border-white/20 bg-[#1a1a1a] text-gray-300 hover:border-white/30",
         )}
       >
@@ -558,7 +558,7 @@ export function TranscriptionPlayground({
             <div
               className={clsx(
                 "mt-1 text-xs",
-                selectedModelReady ? "text-emerald-400" : "text-amber-400",
+                selectedModelReady ? "text-gray-300" : "text-amber-400",
               )}
             >
               {selectedModelReady
@@ -638,8 +638,8 @@ export function TranscriptionPlayground({
             <FileText className="w-4 h-4 text-gray-400" />
             <h3 className="text-sm font-medium text-white">Transcript</h3>
             {isStreaming && (
-              <span className="text-[10px] px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 rounded flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-[10px] px-1.5 py-0.5 bg-white/10 text-gray-300 rounded flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-pulse" />
                 Live
               </span>
             )}
@@ -685,7 +685,7 @@ export function TranscriptionPlayground({
               disabled={!transcription || isStreaming}
             >
               {copied ? (
-                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                <Check className="w-3.5 h-3.5 text-gray-300" />
               ) : (
                 <Copy className="w-3.5 h-3.5" />
               )}

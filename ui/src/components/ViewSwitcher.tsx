@@ -74,7 +74,7 @@ export function ViewSwitcher({
                     {view.label}
                   </span>
                   {hasReadyModel && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-white" />
                   )}
                 </div>
                 <span className="text-xs text-gray-400 hidden sm:block">
