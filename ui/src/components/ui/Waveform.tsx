@@ -23,7 +23,7 @@ export function Waveform({
           key={i}
           className={`w-1 rounded-full ${
             active
-              ? "bg-gradient-to-t from-indigo-500 to-purple-400"
+              ? "bg-gradient-to-t from-[var(--status-positive-solid)] to-[var(--accent-solid)]"
               : "bg-white/20"
           }`}
           initial={{ height: 8 }}
@@ -48,7 +48,7 @@ export function MiniWaveform({ isActive = false }: { isActive?: boolean }) {
       {[0.6, 1, 0.7, 0.9, 0.5].map((scale, i) => (
         <motion.div
           key={i}
-          className={`w-0.5 rounded-full ${isActive ? "bg-indigo-400" : "bg-white/30"}`}
+          className={`w-0.5 rounded-full ${isActive ? "bg-[var(--status-positive-solid)]" : "bg-white/30"}`}
           initial={{ height: 4 }}
           animate={{
             height: isActive ? [4, 12 * scale, 4] : 4,

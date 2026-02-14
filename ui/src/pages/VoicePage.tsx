@@ -33,6 +33,7 @@ type RuntimeStatus =
   | "user_speaking"
   | "processing"
   | "assistant_speaking";
+type PipelineMode = "s2s" | "stt_chat_tts";
 
 interface TranscriptEntry {
   id: string;
@@ -66,6 +67,11 @@ const SYSTEM_PROMPT: ChatMessage = {
   role: "system",
   content:
     "You are a helpful voice assistant. Reply with concise spoken-friendly language. Avoid markdown. Keep responses brief unless asked for details.",
+};
+
+const PIPELINE_LABELS: Record<PipelineMode, string> = {
+  s2s: "Speech-to-Speech (S2S)",
+  stt_chat_tts: "STT -> Chat -> TTS",
 };
 
 function parseFinalAnswer(content: string): string {
@@ -311,6 +317,9 @@ export function VoicePage({
   const [conversation, setConversation] = useState<ChatMessage[]>([]);
   const [audioLevel, setAudioLevel] = useState(0);
 
+  const [pipelineMode, setPipelineMode] =
+    useState<PipelineMode>("stt_chat_tts");
+  const [selectedS2sModel, setSelectedS2sModel] = useState<string | null>(null);
   const [selectedAsrModel, setSelectedAsrModel] = useState<string | null>(null);
   const [selectedTextModel, setSelectedTextModel] = useState<string | null>(
     null,
@@ -322,9 +331,9 @@ export function VoicePage({
   const [silenceDurationMs, setSilenceDurationMs] = useState(900);
   const [minSpeechMs, setMinSpeechMs] = useState(300);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
-  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<string | null>(
-    null,
-  );
+  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<
+    string | null
+  >(null);
 
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -363,6 +372,9 @@ export function VoicePage({
     (variant: string) => {
       setPendingDeleteVariant(null);
       onDelete(variant);
+      if (selectedS2sModel === variant) {
+        setSelectedS2sModel(null);
+      }
       if (selectedAsrModel === variant) {
         setSelectedAsrModel(null);
       }
@@ -373,7 +385,13 @@ export function VoicePage({
         setSelectedTtsModel(null);
       }
     },
-    [onDelete, selectedAsrModel, selectedTextModel, selectedTtsModel],
+    [
+      onDelete,
+      selectedS2sModel,
+      selectedAsrModel,
+      selectedTextModel,
+      selectedTtsModel,
+    ],
   );
 
   const sortedModels = useMemo(() => {
@@ -385,6 +403,14 @@ export function VoicePage({
   const asrModels = useMemo(
     () => sortedModels.filter((m) => isAsrVariant(m.variant)),
     [sortedModels],
+  );
+  const s2sModels = useMemo(
+    () => asrModels.filter((m) => isLfm2Variant(m.variant)),
+    [asrModels],
+  );
+  const sttAsrModels = useMemo(
+    () => asrModels.filter((m) => !isLfm2Variant(m.variant)),
+    [asrModels],
   );
   const textModels = useMemo(
     () => sortedModels.filter((m) => isTextVariant(m.variant)),
@@ -422,31 +448,52 @@ export function VoicePage({
   }, [transcript, runtimeStatus]);
 
   useEffect(() => {
+    if (pipelineMode === "s2s" && s2sModels.length === 0) {
+      setPipelineMode("stt_chat_tts");
+    }
+  }, [pipelineMode, s2sModels.length]);
+
+  useEffect(() => {
+    if (
+      !selectedS2sModel ||
+      !s2sModels.some((m) => m.variant === selectedS2sModel)
+    ) {
+      const preferredS2s =
+        s2sModels.find(
+          (m) => m.variant === "LFM2.5-Audio-1.5B" && m.status === "ready",
+        ) ||
+        s2sModels.find((m) => m.status === "ready") ||
+        s2sModels.find((m) => m.variant === "LFM2.5-Audio-1.5B") ||
+        s2sModels[0];
+      setSelectedS2sModel(preferredS2s?.variant ?? null);
+    }
+  }, [s2sModels, selectedS2sModel]);
+
+  useEffect(() => {
     if (
       !selectedAsrModel ||
-      !asrModels.some((m) => m.variant === selectedAsrModel)
+      !sttAsrModels.some((m) => m.variant === selectedAsrModel)
     ) {
       const preferredAsr =
-        asrModels.find(
+        sttAsrModels.find(
           (m) => m.variant === "Qwen3-ASR-0.6B-4bit" && m.status === "ready",
         ) ||
-        asrModels.find(
+        sttAsrModels.find(
           (m) =>
             m.variant.includes("Qwen3-ASR-0.6B") &&
             m.variant.includes("4bit") &&
             m.status === "ready",
         ) ||
-        asrModels.find((m) => m.status === "ready") ||
-        asrModels.find((m) => m.variant === "Qwen3-ASR-0.6B-4bit") ||
-        asrModels.find(
+        sttAsrModels.find((m) => m.status === "ready") ||
+        sttAsrModels.find((m) => m.variant === "Qwen3-ASR-0.6B-4bit") ||
+        sttAsrModels.find(
           (m) =>
-            m.variant.includes("Qwen3-ASR-0.6B") &&
-            m.variant.includes("4bit"),
+            m.variant.includes("Qwen3-ASR-0.6B") && m.variant.includes("4bit"),
         ) ||
-        asrModels[0];
+        sttAsrModels[0];
       setSelectedAsrModel(preferredAsr?.variant ?? null);
     }
-  }, [asrModels, selectedAsrModel]);
+  }, [sttAsrModels, selectedAsrModel]);
 
   useEffect(() => {
     if (
@@ -493,9 +540,13 @@ export function VoicePage({
     }
   }, [ttsConfigModels, selectedTtsModel]);
 
+  const selectedS2sInfo = useMemo(
+    () => s2sModels.find((m) => m.variant === selectedS2sModel) ?? null,
+    [s2sModels, selectedS2sModel],
+  );
   const selectedAsrInfo = useMemo(
-    () => asrModels.find((m) => m.variant === selectedAsrModel) ?? null,
-    [asrModels, selectedAsrModel],
+    () => sttAsrModels.find((m) => m.variant === selectedAsrModel) ?? null,
+    [sttAsrModels, selectedAsrModel],
   );
   const selectedTextInfo = useMemo(
     () => textModels.find((m) => m.variant === selectedTextModel) ?? null,
@@ -506,30 +557,31 @@ export function VoicePage({
     [ttsConfigModels, selectedTtsModel],
   );
 
-  const lfm2DirectMode = useMemo(
-    () => !!selectedAsrInfo && isLfm2Variant(selectedAsrInfo.variant),
-    [selectedAsrInfo],
-  );
+  const lfm2DirectMode = pipelineMode === "s2s";
+  const currentPipelineLabel = PIPELINE_LABELS[pipelineMode];
 
-  const hasRunnableConfig = useMemo(
-    () => {
-      if (!selectedAsrInfo || !isRunnableModelStatus(selectedAsrInfo.status)) {
-        return false;
-      }
+  const hasRunnableConfig = useMemo(() => {
+    if (lfm2DirectMode) {
+      return !!selectedS2sInfo && isRunnableModelStatus(selectedS2sInfo.status);
+    }
 
-      if (lfm2DirectMode) {
-        return true;
-      }
+    if (!selectedAsrInfo || !isRunnableModelStatus(selectedAsrInfo.status)) {
+      return false;
+    }
 
-      return (
-        !!selectedTextInfo &&
-        !!selectedTtsInfo &&
-        isRunnableModelStatus(selectedTextInfo.status) &&
-        isRunnableModelStatus(selectedTtsInfo.status)
-      );
-    },
-    [lfm2DirectMode, selectedAsrInfo, selectedTextInfo, selectedTtsInfo],
-  );
+    return (
+      !!selectedTextInfo &&
+      !!selectedTtsInfo &&
+      isRunnableModelStatus(selectedTextInfo.status) &&
+      isRunnableModelStatus(selectedTtsInfo.status)
+    );
+  }, [
+    lfm2DirectMode,
+    selectedAsrInfo,
+    selectedS2sInfo,
+    selectedTextInfo,
+    selectedTtsInfo,
+  ]);
 
   const stopTtsStreamingPlayback = useCallback(() => {
     ttsStreamSessionRef.current += 1;
@@ -626,20 +678,23 @@ export function VoicePage({
     setTranscript((prev) => [...prev, entry]);
   }, []);
 
-  const setTranscriptEntryText = useCallback((entryId: string, text: string) => {
-    setTranscript((prev) => {
-      const index = prev.findIndex((entry) => entry.id === entryId);
-      if (index === -1) {
-        return prev;
-      }
-      const next = [...prev];
-      next[index] = {
-        ...next[index],
-        text,
-      };
-      return next;
-    });
-  }, []);
+  const setTranscriptEntryText = useCallback(
+    (entryId: string, text: string) => {
+      setTranscript((prev) => {
+        const index = prev.findIndex((entry) => entry.id === entryId);
+        if (index === -1) {
+          return prev;
+        }
+        const next = [...prev];
+        next[index] = {
+          ...next[index],
+          text,
+        };
+        return next;
+      });
+    },
+    [],
+  );
 
   const removeTranscriptEntry = useCallback((entryId: string) => {
     setTranscript((prev) => prev.filter((entry) => entry.id !== entryId));
@@ -983,7 +1038,8 @@ export function VoicePage({
 
         audio.src = nextUrl;
         audio.onended = () => finalize();
-        audio.onerror = () => finalize(new Error("Failed to play assistant audio"));
+        audio.onerror = () =>
+          finalize(new Error("Failed to play assistant audio"));
 
         if (turnId === turnIdRef.current) {
           setRuntimeStatus("assistant_speaking");
@@ -1007,12 +1063,13 @@ export function VoicePage({
       }
 
       if (
-        !selectedAsrModel ||
+        (lfm2DirectMode && !selectedS2sModel) ||
+        (!lfm2DirectMode && !selectedAsrModel) ||
         (!lfm2DirectMode && (!selectedTextModel || !selectedTtsModel))
       ) {
         setError(
           lfm2DirectMode
-            ? "Select an LFM2 model before starting voice mode."
+            ? "Select a speech-to-speech model before starting voice mode."
             : "Select ASR, text, and TTS models before starting voice mode.",
         );
         setIsConfigOpen(true);
@@ -1039,18 +1096,36 @@ export function VoicePage({
 
         if (lfm2DirectMode) {
           const wavBlob = await transcodeToWav(audioBlob, 24000);
-          if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
+          if (turnId !== turnIdRef.current || !isSessionActiveRef.current)
+            return;
 
           const response = await api.speechToSpeech({
             audio_file: wavBlob,
             audio_filename: "voice-turn.wav",
-            model_id: selectedAsrModel,
+            model_id: selectedS2sModel!,
             language: "English",
           });
 
-          if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
+          if (turnId !== turnIdRef.current || !isSessionActiveRef.current)
+            return;
 
-          const userText = response.transcription?.trim() || "";
+          let userText = response.transcription?.trim() || "";
+          if (!userText) {
+            try {
+              const fallback = await api.asrTranscribe({
+                audio_file: wavBlob,
+                audio_filename: "voice-turn.wav",
+                model_id: selectedS2sModel!,
+                language: "English",
+              });
+              userText = fallback.transcription.trim();
+            } catch {
+              // Keep the turn visible even if transcription fallback fails.
+            }
+          }
+          if (!userText) {
+            userText = "User speech captured (transcription unavailable).";
+          }
           if (userText) {
             appendTranscriptEntry({
               id: makeTranscriptEntryId("user"),
@@ -1073,7 +1148,9 @@ export function VoicePage({
           if (userText || assistantText) {
             setConversation((prev) => [
               ...prev,
-              ...(userText ? [{ role: "user", content: userText } as ChatMessage] : []),
+              ...(userText
+                ? [{ role: "user", content: userText } as ChatMessage]
+                : []),
               ...(assistantText
                 ? [{ role: "assistant", content: assistantText } as ChatMessage]
                 : []),
@@ -1088,7 +1165,7 @@ export function VoicePage({
         if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
         const userText = await streamUserTranscription(
           wavBlob,
-          selectedAsrModel,
+          selectedAsrModel!,
         );
 
         if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
@@ -1164,6 +1241,7 @@ export function VoicePage({
       onError,
       playAssistantBlob,
       selectedAsrModel,
+      selectedS2sModel,
       selectedSpeaker,
       selectedTextModel,
       selectedTtsModel,
@@ -1175,13 +1253,13 @@ export function VoicePage({
 
   const startSession = useCallback(async () => {
     if (
-      !selectedAsrModel ||
+      (lfm2DirectMode && !selectedS2sModel) ||
+      (!lfm2DirectMode && !selectedAsrModel) ||
       (!lfm2DirectMode && (!selectedTextModel || !selectedTtsModel))
     ) {
-      const message =
-        lfm2DirectMode
-          ? "Select an LFM2 model before starting voice mode."
-          : "Select ASR, text, and TTS models before starting voice mode.";
+      const message = lfm2DirectMode
+        ? "Select a speech-to-speech model before starting voice mode."
+        : "Select ASR, text, and TTS models before starting voice mode.";
       setError(message);
       onError?.(message);
       setIsConfigOpen(true);
@@ -1339,6 +1417,7 @@ export function VoicePage({
     onError,
     processUtterance,
     selectedAsrModel,
+    selectedS2sModel,
     selectedTextModel,
     selectedTtsModel,
     silenceDurationMs,
@@ -1370,7 +1449,7 @@ export function VoicePage({
   const getStatusClass = (status: ModelInfo["status"]) => {
     switch (status) {
       case "ready":
-        return "bg-emerald-500/15 border-emerald-500/40 text-emerald-300";
+        return "bg-white/10 border-white/20 text-gray-300";
       case "loading":
       case "downloading":
         return "bg-amber-500/15 border-amber-500/40 text-amber-300";
@@ -1410,6 +1489,20 @@ export function VoicePage({
     return roles;
   };
 
+  const startDisabled =
+    (lfm2DirectMode && !selectedS2sModel) ||
+    (!lfm2DirectMode &&
+      (!selectedAsrModel || !selectedTextModel || !selectedTtsModel)) ||
+    !hasRunnableConfig;
+
+  const modelSummary = lfm2DirectMode
+    ? [{ label: "S2S Model", model: selectedS2sInfo }]
+    : [
+        { label: "ASR", model: selectedAsrInfo },
+        { label: "Text", model: selectedTextInfo },
+        { label: "TTS", model: selectedTtsInfo },
+      ];
+
   if (loading) {
     return (
       <div className="max-w-6xl mx-auto">
@@ -1431,7 +1524,7 @@ export function VoicePage({
         <div>
           <h1 className="text-xl font-semibold text-white">Realtime Voice</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Low-latency speech loop with configurable ASR, LLM, and TTS.
+            {"Low latency realtime voice loop."}
           </p>
         </div>
         <button
@@ -1467,11 +1560,9 @@ export function VoicePage({
             <p className="text-xs text-gray-500 mt-1">
               Barge-in is enabled while the assistant is speaking.
             </p>
-            {lfm2DirectMode && (
-              <p className="text-[11px] text-emerald-300 mt-2">
-                LFM2 direct mode enabled (single-model speech-to-speech).
-              </p>
-            )}
+            <span className="mt-2 inline-flex items-center rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-3)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]">
+              {currentPipelineLabel}
+            </span>
 
             <button
               onClick={toggleSession}
@@ -1479,11 +1570,7 @@ export function VoicePage({
                 "btn w-full mt-5 text-sm min-h-[46px]",
                 runtimeStatus === "idle" ? "btn-primary" : "btn-danger",
               )}
-              disabled={
-                !selectedAsrModel ||
-                (!lfm2DirectMode && (!selectedTextModel || !selectedTtsModel)) ||
-                !hasRunnableConfig
-              }
+              disabled={startDisabled}
             >
               {runtimeStatus === "idle" ? (
                 <>
@@ -1507,11 +1594,13 @@ export function VoicePage({
               />
             </div>
             <div className="space-y-2 text-xs">
-              {[
-                { label: "ASR", model: selectedAsrInfo },
-                { label: "Text", model: selectedTextInfo },
-                { label: "TTS", model: selectedTtsInfo },
-              ].map((item) => (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-gray-500">Mode</span>
+                <span className="inline-flex items-center rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-3)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]">
+                  {currentPipelineLabel}
+                </span>
+              </div>
+              {modelSummary.map((item) => (
                 <div
                   key={item.label}
                   className="flex items-center justify-between gap-2"
@@ -1528,7 +1617,9 @@ export function VoicePage({
                       {formatModelVariantLabel(item.model.variant)}
                     </span>
                   ) : (
-                    <span className="text-amber-400">Not selected</span>
+                    <span className="text-[var(--status-warning-text)]">
+                      Not selected
+                    </span>
                   )}
                 </div>
               ))}
@@ -1539,18 +1630,21 @@ export function VoicePage({
         <div className="card p-4 flex flex-col min-h-[420px] sm:min-h-[520px] lg:min-h-[640px]">
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm text-white font-medium">Conversation</span>
-            <span className="text-xs px-2 py-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] text-gray-300">
-              {statusLabel}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs px-2 py-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] text-gray-300">
+                {statusLabel}
+              </span>
+              <span className="text-xs px-2 py-1 rounded border border-[var(--border-strong)] bg-[var(--bg-surface-3)] text-[var(--text-secondary)]">
+                {currentPipelineLabel}
+              </span>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto pr-1 space-y-3">
             {transcript.length === 0 ? (
               <div className="h-full flex items-center justify-center text-center">
                 <div>
-                  <p className="text-sm text-gray-400">
-                    No conversation yet.
-                  </p>
+                  <p className="text-sm text-gray-400">No conversation yet.</p>
                   <p className="text-xs text-gray-600 mt-1">
                     Configure your voice stack and start a realtime session.
                   </p>
@@ -1643,133 +1737,234 @@ export function VoicePage({
               </div>
 
               <div className="p-4 sm:p-5 overflow-y-auto max-h-[calc(90vh-88px)] space-y-5">
+                <section className="space-y-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-medium text-white">
+                      Pipeline Mode
+                    </h3>
+                    <span className="text-[11px] text-gray-500">
+                      Choose your realtime voice route.
+                    </span>
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <button
+                      className={clsx(
+                        "rounded-lg border p-3 text-left transition-colors",
+                        lfm2DirectMode
+                          ? "border-[var(--border-strong)] bg-[var(--bg-surface-3)]"
+                          : "border-[#2a2a2a] bg-[#151515] hover:border-[var(--border-strong)]",
+                      )}
+                      onClick={() => setPipelineMode("s2s")}
+                    >
+                      <div className="text-sm text-white font-medium">
+                        Speech-to-Speech (S2S)
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        One LFM2 model handles user speech understanding and
+                        assistant speech output.
+                      </p>
+                    </button>
+                    <button
+                      className={clsx(
+                        "rounded-lg border p-3 text-left transition-colors",
+                        !lfm2DirectMode
+                          ? "border-[var(--border-strong)] bg-[var(--bg-surface-3)]"
+                          : "border-[#2a2a2a] bg-[#151515] hover:border-[var(--border-strong)]",
+                      )}
+                      onClick={() => setPipelineMode("stt_chat_tts")}
+                    >
+                      <div className="text-sm text-white font-medium">
+                        {"STT -> Chat -> TTS"}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Use separate ASR, language model, and TTS models for
+                        maximum control.
+                      </p>
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-[var(--text-muted)]">
+                    Current mode: {currentPipelineLabel}
+                  </div>
+                </section>
+
                 <section className="space-y-3">
                   <div className="flex items-center justify-between gap-2">
                     <h3 className="text-sm font-medium text-white">
-                      Pipeline Selection
+                      Model Assignment
                     </h3>
                     <span className="text-[11px] text-gray-500">
-                      Assign one model to each stage.
+                      Assign one model to each active stage.
                     </span>
                   </div>
-                  {lfm2DirectMode && (
-                    <div className="text-[11px] text-emerald-300">
-                      LFM2 direct mode is active. Text and TTS selections are ignored.
+                  {lfm2DirectMode ? (
+                    <div className="grid md:grid-cols-2 gap-3">
+                      <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400">
+                            S2S Model
+                          </label>
+                          {selectedS2sInfo && (
+                            <span
+                              className={clsx(
+                                "text-[10px] px-1.5 py-0.5 rounded border",
+                                getStatusClass(selectedS2sInfo.status),
+                              )}
+                            >
+                              {getStatusLabel(selectedS2sInfo.status)}
+                            </span>
+                          )}
+                        </div>
+                        <Select
+                          value={selectedS2sModel ?? undefined}
+                          onValueChange={setSelectedS2sModel}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select speech-to-speech model" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {s2sModels.map((m) => (
+                              <SelectItem key={m.variant} value={m.variant}>
+                                {formatModelVariantLabel(m.variant)} •{" "}
+                                {getStatusLabel(m.status)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3">
+                        <p className="text-xs text-gray-400">
+                          STT, text, and TTS selectors are disabled in S2S mode
+                          because the selected LFM2 model handles the entire
+                          realtime speech loop.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid md:grid-cols-2 gap-3">
+                      <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400">
+                            ASR Model
+                          </label>
+                          {selectedAsrInfo && (
+                            <span
+                              className={clsx(
+                                "text-[10px] px-1.5 py-0.5 rounded border",
+                                getStatusClass(selectedAsrInfo.status),
+                              )}
+                            >
+                              {getStatusLabel(selectedAsrInfo.status)}
+                            </span>
+                          )}
+                        </div>
+                        <Select
+                          value={selectedAsrModel ?? undefined}
+                          onValueChange={setSelectedAsrModel}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select ASR model" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {sttAsrModels.map((m) => (
+                              <SelectItem key={m.variant} value={m.variant}>
+                                {formatModelVariantLabel(m.variant)} •{" "}
+                                {getStatusLabel(m.status)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400">
+                            Text Model
+                          </label>
+                          {selectedTextInfo && (
+                            <span
+                              className={clsx(
+                                "text-[10px] px-1.5 py-0.5 rounded border",
+                                getStatusClass(selectedTextInfo.status),
+                              )}
+                            >
+                              {getStatusLabel(selectedTextInfo.status)}
+                            </span>
+                          )}
+                        </div>
+                        <Select
+                          value={selectedTextModel ?? undefined}
+                          onValueChange={setSelectedTextModel}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select text model" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {textModels.map((m) => (
+                              <SelectItem key={m.variant} value={m.variant}>
+                                {formatModelVariantLabel(m.variant)} •{" "}
+                                {getStatusLabel(m.status)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400">
+                            TTS Model
+                          </label>
+                          {selectedTtsInfo && (
+                            <span
+                              className={clsx(
+                                "text-[10px] px-1.5 py-0.5 rounded border",
+                                getStatusClass(selectedTtsInfo.status),
+                              )}
+                            >
+                              {getStatusLabel(selectedTtsInfo.status)}
+                            </span>
+                          )}
+                        </div>
+                        <Select
+                          value={selectedTtsModel ?? undefined}
+                          onValueChange={setSelectedTtsModel}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select TTS model" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {ttsConfigModels.map((m) => (
+                              <SelectItem key={m.variant} value={m.variant}>
+                                {formatModelVariantLabel(m.variant)} •{" "}
+                                {getStatusLabel(m.status)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
+                        <label className="text-xs text-gray-400">
+                          Assistant Voice
+                        </label>
+                        <Select
+                          value={selectedSpeaker}
+                          onValueChange={setSelectedSpeaker}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select assistant voice" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {SPEAKERS.map((speaker) => (
+                              <SelectItem key={speaker.id} value={speaker.id}>
+                                {speaker.name} ({speaker.language})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
                   )}
-                  <div className="grid md:grid-cols-2 gap-3">
-                    <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="text-xs text-gray-400">ASR Model</label>
-                        {selectedAsrInfo && (
-                          <span
-                            className={clsx(
-                              "text-[10px] px-1.5 py-0.5 rounded border",
-                              getStatusClass(selectedAsrInfo.status),
-                            )}
-                          >
-                            {getStatusLabel(selectedAsrInfo.status)}
-                          </span>
-                        )}
-                      </div>
-                      <Select
-                        value={selectedAsrModel ?? undefined}
-                        onValueChange={setSelectedAsrModel}
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select ASR model" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {asrModels.map((m) => (
-                            <SelectItem key={m.variant} value={m.variant}>
-                              {formatModelVariantLabel(m.variant)} •{" "}
-                              {getStatusLabel(m.status)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="text-xs text-gray-400">Text Model</label>
-                        {selectedTextInfo && (
-                          <span
-                            className={clsx(
-                              "text-[10px] px-1.5 py-0.5 rounded border",
-                              getStatusClass(selectedTextInfo.status),
-                            )}
-                          >
-                            {getStatusLabel(selectedTextInfo.status)}
-                          </span>
-                        )}
-                      </div>
-                      <Select
-                        value={selectedTextModel ?? undefined}
-                        onValueChange={setSelectedTextModel}
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select text model" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {textModels.map((m) => (
-                            <SelectItem key={m.variant} value={m.variant}>
-                              {formatModelVariantLabel(m.variant)} •{" "}
-                              {getStatusLabel(m.status)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="text-xs text-gray-400">TTS Model</label>
-                        {selectedTtsInfo && (
-                          <span
-                            className={clsx(
-                              "text-[10px] px-1.5 py-0.5 rounded border",
-                              getStatusClass(selectedTtsInfo.status),
-                            )}
-                          >
-                            {getStatusLabel(selectedTtsInfo.status)}
-                          </span>
-                        )}
-                      </div>
-                      <Select
-                        value={selectedTtsModel ?? undefined}
-                        onValueChange={setSelectedTtsModel}
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select TTS model" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {ttsConfigModels.map((m) => (
-                            <SelectItem key={m.variant} value={m.variant}>
-                              {formatModelVariantLabel(m.variant)} •{" "}
-                              {getStatusLabel(m.status)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
-                      <label className="text-xs text-gray-400">Assistant Voice</label>
-                      <Select value={selectedSpeaker} onValueChange={setSelectedSpeaker}>
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select assistant voice" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {SPEAKERS.map((speaker) => (
-                            <SelectItem key={speaker.id} value={speaker.id}>
-                              {speaker.name} ({speaker.language})
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
                 </section>
 
                 <section className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3">
@@ -1841,7 +2036,9 @@ export function VoicePage({
 
                 <section className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-medium text-white">Model Library</h3>
+                    <h3 className="text-sm font-medium text-white">
+                      Model Library
+                    </h3>
                     <span className="text-[11px] text-gray-500">
                       Download, load, unload, and delete
                     </span>
@@ -1852,6 +2049,7 @@ export function VoicePage({
                     const progressValue = downloadProgress[model.variant];
                     const progress =
                       progressValue?.percent ?? model.download_progress ?? 0;
+                    const isSelectedS2s = selectedS2sModel === model.variant;
                     const isSelectedAsr = selectedAsrModel === model.variant;
                     const isSelectedText = selectedTextModel === model.variant;
                     const isSelectedTts = selectedTtsModel === model.variant;
@@ -1875,11 +2073,14 @@ export function VoicePage({
                                   {role}
                                 </span>
                               ))}
-                              <span
-                                className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap"
-                              >
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap">
                                 {getStatusLabel(model.status)}
                               </span>
+                              {isSelectedS2s && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap">
+                                  S2S selected
+                                </span>
+                              )}
                               {isSelectedAsr && (
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap">
                                   ASR selected
@@ -1899,18 +2100,21 @@ export function VoicePage({
                           </div>
 
                           <div className="flex flex-wrap items-center justify-end gap-2">
-                            {model.status === "downloading" && onCancelDownload && (
-                              <button
-                                onClick={() => onCancelDownload(model.variant)}
-                                className="btn btn-danger text-xs"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                                Cancel
-                              </button>
-                            )}
+                            {model.status === "downloading" &&
+                              onCancelDownload && (
+                                <button
+                                  onClick={() =>
+                                    onCancelDownload(model.variant)
+                                  }
+                                  className="btn btn-danger text-xs"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                  Cancel
+                                </button>
+                              )}
                             {(model.status === "not_downloaded" ||
-                              model.status === "error") && (
-                              requiresManualDownload(model.variant) ? (
+                              model.status === "error") &&
+                              (requiresManualDownload(model.variant) ? (
                                 <button
                                   className="btn btn-secondary text-xs"
                                   disabled
@@ -1927,8 +2131,7 @@ export function VoicePage({
                                   <Download className="w-3.5 h-3.5" />
                                   Download
                                 </button>
-                              )
-                            )}
+                              ))}
                             {model.status === "downloaded" && (
                               <button
                                 onClick={() => onLoad(model.variant)}
@@ -1948,18 +2151,22 @@ export function VoicePage({
                               </button>
                             )}
                             {(model.status === "downloaded" ||
-                              model.status === "ready") && (
-                              pendingDeleteVariant === model.variant ? (
+                              model.status === "ready") &&
+                              (pendingDeleteVariant === model.variant ? (
                                 <div className="flex items-center gap-1">
                                   <button
-                                    onClick={() => setPendingDeleteVariant(null)}
+                                    onClick={() =>
+                                      setPendingDeleteVariant(null)
+                                    }
                                     className="btn btn-secondary text-xs"
                                   >
                                     <X className="w-3.5 h-3.5" />
                                     Cancel
                                   </button>
                                   <button
-                                    onClick={() => handleConfigDelete(model.variant)}
+                                    onClick={() =>
+                                      handleConfigDelete(model.variant)
+                                    }
                                     className="btn text-xs border border-red-500/45 bg-red-500/15 text-red-300 hover:bg-red-500/25 hover:text-red-200"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
@@ -1976,8 +2183,7 @@ export function VoicePage({
                                   <Trash2 className="w-3.5 h-3.5" />
                                   Delete
                                 </button>
-                              )
-                            )}
+                              ))}
                           </div>
                         </div>
 
@@ -1991,13 +2197,17 @@ export function VoicePage({
                             </div>
                             <div className="mt-1 text-[11px] text-gray-500">
                               Downloading {Math.round(progress)}%
-                              {progressValue && progressValue.totalBytes > 0 && (
-                                <>
-                                  {" "}
-                                  ({formatBytes(progressValue.downloadedBytes)} /{" "}
-                                  {formatBytes(progressValue.totalBytes)})
-                                </>
-                              )}
+                              {progressValue &&
+                                progressValue.totalBytes > 0 && (
+                                  <>
+                                    {" "}
+                                    (
+                                    {formatBytes(
+                                      progressValue.downloadedBytes,
+                                    )}{" "}
+                                    / {formatBytes(progressValue.totalBytes)})
+                                  </>
+                                )}
                             </div>
                             {progressValue?.currentFile && (
                               <div className="mt-0.5 text-[11px] text-gray-600 truncate">
@@ -2006,7 +2216,6 @@ export function VoicePage({
                             )}
                           </div>
                         )}
-
                       </div>
                     );
                   })}

@@ -27,7 +27,7 @@ export function VoiceOrb({
       {active && (
         <>
           <motion.div
-            className="absolute inset-0 rounded-full bg-gradient-to-r from-indigo-500/20 to-purple-500/20"
+            className="absolute inset-0 rounded-full bg-gradient-to-r from-[var(--accent-solid)]/20 to-[var(--status-positive-solid)]/20"
             animate={{
               scale: [1, 1.5, 1],
               opacity: [0.5, 0, 0.5],
@@ -39,7 +39,7 @@ export function VoiceOrb({
             }}
           />
           <motion.div
-            className="absolute inset-0 rounded-full bg-gradient-to-r from-indigo-500/30 to-purple-500/30"
+            className="absolute inset-0 rounded-full bg-gradient-to-r from-[var(--accent-solid)]/25 to-[var(--status-positive-solid)]/25"
             animate={{
               scale: [1, 1.3, 1],
               opacity: [0.6, 0, 0.6],
@@ -58,7 +58,7 @@ export function VoiceOrb({
       <motion.div
         className={`absolute inset-0 rounded-full ${
           active
-            ? "bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500"
+            ? "bg-gradient-to-br from-[var(--status-positive-solid)] via-[var(--accent-solid)] to-[var(--bg-surface-4)]"
             : "bg-gradient-to-br from-gray-700 to-gray-800"
         }`}
         animate={
@@ -66,9 +66,9 @@ export function VoiceOrb({
             ? {
                 scale: [1, 1.05, 1],
                 boxShadow: [
-                  "0 0 20px rgba(99, 102, 241, 0.3)",
-                  "0 0 40px rgba(139, 92, 246, 0.5)",
-                  "0 0 20px rgba(99, 102, 241, 0.3)",
+                  "0 0 20px rgba(255, 255, 255, 0.2)",
+                  "0 0 36px rgba(255, 255, 255, 0.35)",
+                  "0 0 20px rgba(255, 255, 255, 0.2)",
                 ],
               }
             : {}

@@ -97,7 +97,7 @@ export function TTSPanel({ selectedModel, onModelRequired }: TTSPanelProps) {
           onClick={() => setShowSettings(!showSettings)}
           className={`p-2 rounded-lg transition-colors ${
             showSettings
-              ? "bg-primary-600 text-white"
+              ? "bg-[var(--accent-solid)] text-[var(--text-on-accent)]"
               : "text-gray-400 hover:text-white hover:bg-gray-800"
           }`}
         >

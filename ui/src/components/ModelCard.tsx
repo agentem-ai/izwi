@@ -106,7 +106,7 @@ export function ModelCard({
     <div
       className={`p-4 rounded-lg border transition-all cursor-pointer ${
         isSelected
-          ? "bg-primary-900/20 border-primary-600"
+          ? "bg-[var(--bg-surface-3)] border-[var(--border-strong)]"
           : "bg-gray-800/50 border-gray-700 hover:border-gray-600"
       }`}
       onClick={() => model.status === "ready" && onSelect()}
@@ -116,7 +116,7 @@ export function ModelCard({
           <div className="flex items-center gap-2">
             <h3 className="font-medium text-white">{displayName}</h3>
             {isSelected && (
-              <span className="text-xs bg-primary-600 text-white px-2 py-0.5 rounded">
+              <span className="text-xs bg-[var(--accent-solid)] text-[var(--text-on-accent)] px-2 py-0.5 rounded">
                 Active
               </span>
             )}
