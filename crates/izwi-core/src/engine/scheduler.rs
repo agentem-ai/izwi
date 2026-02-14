@@ -931,8 +931,47 @@ impl Scheduler {
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::TaskType;
     use super::*;
+    use crate::models::chat_types::{ChatMessage, ChatRole};
     use std::time::Duration;
+
+    fn tiny_preemption_scheduler() -> (Scheduler, KVCacheManager) {
+        let config = SchedulerConfig {
+            max_batch_size: 2,
+            max_tokens_per_step: 8,
+            min_tokens_per_step: 1,
+            policy: SchedulingPolicy::Priority,
+            enable_chunked_prefill: false,
+            enable_preemption: true,
+            enable_adaptive_batching: false,
+            ..Default::default()
+        };
+        let scheduler = Scheduler::new(config);
+        let kv_cache = KVCacheManager::new(super::super::kv_cache::KVCacheConfig {
+            max_blocks: 1,
+            block_size: 1,
+            ..Default::default()
+        });
+        (scheduler, kv_cache)
+    }
+
+    fn build_request(task_type: TaskType, id: &str, priority: Priority) -> EngineCoreRequest {
+        let mut request = match task_type {
+            TaskType::TTS => EngineCoreRequest::tts("hello world"),
+            TaskType::ASR => EngineCoreRequest::asr("UklGRg=="),
+            TaskType::Chat => EngineCoreRequest::chat(vec![ChatMessage {
+                role: ChatRole::User,
+                content: "hello world".to_string(),
+            }]),
+            TaskType::SpeechToSpeech => EngineCoreRequest::speech_to_speech("UklGRg=="),
+        }
+        .with_priority(priority);
+
+        request.id = id.to_string();
+        request.prompt_tokens = vec![1];
+        request
+    }
 
     #[test]
     fn test_scheduler_creation() {
@@ -983,5 +1022,110 @@ mod tests {
         let scheduled = scheduler.schedule(&mut kv_cache);
         assert_eq!(scheduled.prefill_requests.len(), 1);
         assert_eq!(scheduled.prefill_requests[0].request_id, old_id);
+    }
+
+    #[test]
+    fn test_preemption_requeue_across_task_types() {
+        let task_types = [
+            TaskType::TTS,
+            TaskType::ASR,
+            TaskType::Chat,
+            TaskType::SpeechToSpeech,
+        ];
+
+        for task_type in task_types {
+            let (mut scheduler, mut kv_cache) = tiny_preemption_scheduler();
+            let low_id = format!("low-{task_type:?}");
+            let high_id = format!("high-{task_type:?}");
+            let low = build_request(task_type, &low_id, Priority::Low);
+            scheduler.add_request(&low);
+
+            let first = scheduler.schedule(&mut kv_cache);
+            assert_eq!(
+                first.prefill_requests.len(),
+                1,
+                "expected initial prefill for {task_type:?}"
+            );
+            assert_eq!(first.prefill_requests[0].request_id, low_id);
+            scheduler.update_after_step(&low_id, 1, 0, Vec::new(), 1.0);
+
+            let high = build_request(task_type, &high_id, Priority::High);
+            scheduler.add_request(&high);
+
+            let second = scheduler.schedule(&mut kv_cache);
+            assert!(
+                second.preempted_requests.iter().any(|id| id == &low_id),
+                "expected low-priority {task_type:?} request to be preempted"
+            );
+            assert_eq!(
+                scheduler.get_status(&low_id),
+                Some(RequestStatus::Waiting),
+                "preempted {task_type:?} request must return to waiting"
+            );
+            assert_eq!(
+                scheduler.get_status(&high_id),
+                Some(RequestStatus::Running),
+                "high-priority {task_type:?} request should run after preemption"
+            );
+
+            scheduler.finish_request(&high_id, &mut kv_cache);
+
+            let third = scheduler.schedule(&mut kv_cache);
+            assert_eq!(
+                third.prefill_requests.len(),
+                1,
+                "preempted {task_type:?} request should be re-admitted as prefill"
+            );
+            assert_eq!(third.prefill_requests[0].request_id, low_id);
+            assert!(third.prefill_requests[0].is_prefill);
+        }
+    }
+
+    #[test]
+    fn test_abort_running_request_across_task_types() {
+        let task_types = [
+            TaskType::TTS,
+            TaskType::ASR,
+            TaskType::Chat,
+            TaskType::SpeechToSpeech,
+        ];
+
+        for task_type in task_types {
+            let (mut scheduler, mut kv_cache) = tiny_preemption_scheduler();
+            let request_id = format!("abort-{task_type:?}");
+            let request = build_request(task_type, &request_id, Priority::Normal);
+            scheduler.add_request(&request);
+
+            let scheduled = scheduler.schedule(&mut kv_cache);
+            assert_eq!(
+                scheduled.prefill_requests.len(),
+                1,
+                "expected running request before abort for {task_type:?}"
+            );
+            assert_eq!(
+                scheduler.get_status(&request_id),
+                Some(RequestStatus::Running)
+            );
+
+            assert!(
+                scheduler.abort_request(&request_id, &mut kv_cache),
+                "abort should report running request removal for {task_type:?}"
+            );
+            assert!(
+                !scheduler.has_request(&request_id),
+                "aborted {task_type:?} request should be removed from scheduler metadata"
+            );
+            assert_eq!(
+                scheduler.get_status(&request_id),
+                None,
+                "aborted {task_type:?} request must not remain queued/running"
+            );
+
+            let after_abort = scheduler.schedule(&mut kv_cache);
+            assert!(
+                !after_abort.has_work(),
+                "no work should remain after aborting sole {task_type:?} request"
+            );
+        }
     }
 }

@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::chat_types::ChatMessage;
 use crate::models::lfm2_audio::{
-    lfm2_tts_voice_prompt, SpeechToSpeechDecodeState, LFM2_DEFAULT_S2S_PROMPT,
+    lfm2_tts_voice_prompt, SpeechToSpeechDecodeState, TtsDecodeState, LFM2_DEFAULT_S2S_PROMPT,
 };
 use crate::models::qwen3_tts::{
     Qwen3TtsModel, SpeakerReference, TtsGenerationParams, TtsStreamingConfig,
@@ -202,6 +202,7 @@ pub struct NativeExecutor {
     loaded_tts_model: Option<Arc<Qwen3TtsModel>>,
     chat_decode_states: Mutex<HashMap<String, ActiveChatDecode>>,
     asr_decode_states: Mutex<HashMap<String, ActiveAsrDecode>>,
+    lfm2_tts_decode_states: Mutex<HashMap<String, ActiveLfm2TtsDecode>>,
     speech_to_speech_decode_states: Mutex<HashMap<String, ActiveSpeechToSpeechDecode>>,
 }
 
@@ -232,6 +233,15 @@ struct ActiveSpeechToSpeechDecode {
     audio_samples_accum: Vec<f32>,
 }
 
+struct ActiveLfm2TtsDecode {
+    variant: ModelVariant,
+    state: TtsDecodeState,
+    prompt_accounted: bool,
+    last_tokens_generated: usize,
+    stream_sequence: usize,
+    audio_samples_accum: Vec<f32>,
+}
+
 impl NativeExecutor {
     /// Create a new native executor.
     pub fn new(config: WorkerConfig) -> Self {
@@ -241,6 +251,7 @@ impl NativeExecutor {
             loaded_tts_model: None,
             chat_decode_states: Mutex::new(HashMap::new()),
             asr_decode_states: Mutex::new(HashMap::new()),
+            lfm2_tts_decode_states: Mutex::new(HashMap::new()),
             speech_to_speech_decode_states: Mutex::new(HashMap::new()),
         }
     }
@@ -904,7 +915,11 @@ impl NativeExecutor {
         })
     }
 
-    fn lfm2_tts_request(&self, request: &EngineCoreRequest) -> Result<ExecutorOutput> {
+    fn lfm2_tts_request(
+        &self,
+        request: &EngineCoreRequest,
+        scheduled: &ScheduledRequest,
+    ) -> Result<ExecutorOutput> {
         let variant = Self::resolve_variant(request)?;
         let text = request
             .text
@@ -938,80 +953,120 @@ impl NativeExecutor {
         } else {
             64
         };
-        let max_new_tokens = request.params.max_tokens.max(1);
+        let max_new_tokens = request.params.max_tokens.max(256);
         let stream_tx = Self::stream_sender(request);
 
-        let samples = Self::run_blocking(|| {
-            let model = self.with_registry(|registry| {
-                registry.try_get_lfm2(variant).ok_or_else(|| {
-                    Error::ModelNotFound(format!("LFM2 model {variant} is not loaded"))
-                })
-            })?;
-            if let Some(tx) = stream_tx.as_ref() {
-                let mut sequence = 0usize;
-                let mut stream_err: Option<Error> = None;
-                let mut on_delta = |delta: &str| {
-                    if stream_err.is_none() {
-                        if let Err(err) =
-                            Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
-                        {
-                            stream_err = Some(err);
-                        }
-                    }
-                };
-
-                let samples = model.synthesize_with_callback(
-                    text,
-                    &voice_instruction,
-                    Some(temperature),
-                    Some(top_k),
-                    max_new_tokens,
-                    &mut on_delta,
-                )?;
-
-                if let Some(err) = stream_err {
-                    return Err(err);
-                }
-
-                if !samples.is_empty() {
-                    let chunk_size = 4_800usize;
-                    let total_chunks = samples.len().div_ceil(chunk_size);
-                    for (idx, chunk) in samples.chunks(chunk_size).enumerate() {
-                        let is_final = idx + 1 >= total_chunks;
-                        Self::stream_audio(
-                            tx,
-                            &request.id,
-                            &mut sequence,
-                            chunk.to_vec(),
-                            24_000,
-                            is_final,
-                        )?;
-                    }
-                } else {
-                    Self::stream_final_marker(tx, &request.id, &mut sequence)?;
-                }
-
-                Ok(samples)
-            } else {
-                let mut sink = |_delta: &str| {};
-                model.synthesize_with_callback(
-                    text,
-                    &voice_instruction,
-                    Some(temperature),
-                    Some(top_k),
-                    max_new_tokens,
-                    &mut sink,
-                )
-            }
+        let model = self.with_registry(|registry| {
+            registry
+                .try_get_lfm2(variant)
+                .ok_or_else(|| Error::ModelNotFound(format!("LFM2 model {variant} is not loaded")))
         })?;
+
+        let mut active_state = {
+            let mut guard = self.lfm2_tts_decode_states.lock().map_err(|_| {
+                Error::InferenceError("LFM2 TTS decode state mutex poisoned".to_string())
+            })?;
+            guard.remove(&request.id)
+        };
+
+        if active_state
+            .as_ref()
+            .map(|state| state.variant != variant)
+            .unwrap_or(false)
+        {
+            active_state = None;
+        }
+
+        let mut active_state = if let Some(state) = active_state {
+            state
+        } else {
+            let decode_state = Self::run_blocking(|| {
+                model.start_tts_decode(
+                    text,
+                    &voice_instruction,
+                    Some(temperature),
+                    Some(top_k),
+                    max_new_tokens,
+                )
+            })?;
+            ActiveLfm2TtsDecode {
+                variant,
+                state: decode_state,
+                prompt_accounted: false,
+                last_tokens_generated: 0,
+                stream_sequence: 0,
+                audio_samples_accum: Vec::new(),
+            }
+        };
+
+        let step = Self::run_blocking(|| model.tts_decode_step(&mut active_state.state))?;
+        let step_tokens_generated = step
+            .tokens_generated
+            .saturating_sub(active_state.last_tokens_generated);
+        active_state.last_tokens_generated = step.tokens_generated;
+
+        let mut tokens_processed = scheduled.num_tokens.max(1);
+        if !active_state.prompt_accounted {
+            active_state.prompt_accounted = true;
+            tokens_processed = tokens_processed.saturating_add(request.num_prompt_tokens());
+        }
+
+        if let Some(tx) = stream_tx.as_ref() {
+            if !step.delta.is_empty() {
+                Self::stream_text(
+                    tx,
+                    &request.id,
+                    &mut active_state.stream_sequence,
+                    step.delta.clone(),
+                )?;
+            }
+        }
+
+        if let Some(frame) = step.audio_frame.as_ref() {
+            let chunk_samples = Self::run_blocking(|| model.decode_audio_frame(frame))?;
+            if !chunk_samples.is_empty() {
+                active_state
+                    .audio_samples_accum
+                    .extend_from_slice(&chunk_samples);
+                if let Some(tx) = stream_tx.as_ref() {
+                    Self::stream_audio(
+                        tx,
+                        &request.id,
+                        &mut active_state.stream_sequence,
+                        chunk_samples,
+                        24_000,
+                        false,
+                    )?;
+                }
+            }
+        }
+
+        if step.finished {
+            if let Some(tx) = stream_tx.as_ref() {
+                Self::stream_final_marker(tx, &request.id, &mut active_state.stream_sequence)?;
+            }
+        }
+
+        let finished_samples = if step.finished {
+            active_state.audio_samples_accum.clone()
+        } else {
+            Vec::new()
+        };
+
+        if !step.finished {
+            let mut guard = self.lfm2_tts_decode_states.lock().map_err(|_| {
+                Error::InferenceError("LFM2 TTS decode state mutex poisoned".to_string())
+            })?;
+            guard.insert(request.id.clone(), active_state);
+        }
 
         Ok(ExecutorOutput {
             request_id: request.id.clone(),
-            audio: Some(AudioOutput::new(samples.clone(), 24_000)),
+            audio: Some(AudioOutput::new(finished_samples, 24_000)),
             text: None,
-            tokens_processed: request.num_prompt_tokens(),
-            tokens_generated: (samples.len() / 256).max(1),
-            finished: true,
+            tokens_processed,
+            tokens_generated: step_tokens_generated,
+            finished: step.finished,
             error: None,
         })
     }
@@ -1210,7 +1265,7 @@ impl NativeExecutor {
                 TaskType::TTS => {
                     let variant = request.model_variant;
                     if variant.map(|v| v.is_lfm2()).unwrap_or(false) {
-                        self.lfm2_tts_request(request)
+                        self.lfm2_tts_request(request, scheduled_req)
                     } else {
                         let stream_tx = Self::stream_sender(request);
                         self.with_model(|model| {
@@ -1324,6 +1379,9 @@ impl ModelExecutor for NativeExecutor {
         if let Ok(mut guard) = self.asr_decode_states.lock() {
             guard.clear();
         }
+        if let Ok(mut guard) = self.lfm2_tts_decode_states.lock() {
+            guard.clear();
+        }
         if let Ok(mut guard) = self.speech_to_speech_decode_states.lock() {
             guard.clear();
         }
@@ -1335,6 +1393,9 @@ impl ModelExecutor for NativeExecutor {
             guard.remove(request_id);
         }
         if let Ok(mut guard) = self.asr_decode_states.lock() {
+            guard.remove(request_id);
+        }
+        if let Ok(mut guard) = self.lfm2_tts_decode_states.lock() {
             guard.remove(request_id);
         }
         if let Ok(mut guard) = self.speech_to_speech_decode_states.lock() {
@@ -1353,6 +1414,13 @@ impl UnifiedExecutor {
     pub fn new_native(config: WorkerConfig) -> Self {
         Self {
             inner: Arc::new(RwLock::new(Box::new(NativeExecutor::new(config)))),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(executor: Box<dyn ModelExecutor>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(executor)),
         }
     }
 
