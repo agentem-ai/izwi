@@ -122,8 +122,12 @@ impl RuntimeService {
             }
 
             info!("Loading native TTS model from {:?}", model_path);
-            let tts_model =
-                Qwen3TtsModel::load(&model_path, self.device.clone(), self.config.kv_page_size)?;
+            let tts_model = Qwen3TtsModel::load(
+                &model_path,
+                self.device.clone(),
+                self.config.kv_page_size,
+                &self.config.kv_cache_dtype,
+            )?;
 
             let mut model_guard = self.tts_model.write().await;
             *model_guard = Some(tts_model);

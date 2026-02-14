@@ -36,6 +36,8 @@ pub struct WorkerConfig {
     pub device: String,
     /// Data type (float32, float16, bfloat16)
     pub dtype: String,
+    /// KV cache storage dtype hint (e.g. float16, int8).
+    pub kv_cache_dtype: String,
     /// Number of threads
     pub num_threads: usize,
     /// Decode-time KV cache page size.
@@ -53,6 +55,7 @@ impl std::fmt::Debug for WorkerConfig {
             .field("models_dir", &self.models_dir)
             .field("device", &self.device)
             .field("dtype", &self.dtype)
+            .field("kv_cache_dtype", &self.kv_cache_dtype)
             .field("num_threads", &self.num_threads)
             .field("kv_page_size", &self.kv_page_size)
             .field(
@@ -81,6 +84,7 @@ impl Default for WorkerConfig {
                 "cpu".to_string()
             },
             dtype: "float32".to_string(),
+            kv_cache_dtype: "float16".to_string(),
             num_threads: 4,
             kv_page_size: 64,
             shared_tts_model: None,
@@ -100,6 +104,7 @@ impl From<&EngineCoreConfig> for WorkerConfig {
                 "cpu".to_string()
             },
             dtype: "float32".to_string(),
+            kv_cache_dtype: config.kv_cache_dtype.clone(),
             num_threads: config.num_threads,
             kv_page_size: config.block_size.max(1),
             shared_tts_model: None,
@@ -1372,6 +1377,7 @@ impl ModelExecutor for NativeExecutor {
                 &self.config.models_dir,
                 device,
                 self.config.kv_page_size.max(1),
+                &self.config.kv_cache_dtype,
             )?;
             self.loaded_tts_model = Some(Arc::new(model));
             debug!(

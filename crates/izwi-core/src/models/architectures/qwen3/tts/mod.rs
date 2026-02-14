@@ -25,7 +25,7 @@ use tracing::{debug, info};
 
 use crate::error::{Error, Result};
 use crate::models::device::DeviceProfile;
-use crate::models::shared::attention::paged::default_kv_page_size;
+use crate::models::shared::attention::paged::{default_kv_page_size, KvCacheQuantization};
 
 const NEWLINE_TOKEN_ID: u32 = 198;
 
@@ -165,11 +165,18 @@ pub struct Qwen3TtsModel {
     config: Qwen3TtsConfig,
     /// Decode-time KV page size.
     kv_page_size: usize,
+    /// KV cache quantization mode.
+    kv_quantization: KvCacheQuantization,
 }
 
 impl Qwen3TtsModel {
     /// Load a Qwen3-TTS model from the specified directory
-    pub fn load(model_dir: &Path, device: DeviceProfile, kv_page_size: usize) -> Result<Self> {
+    pub fn load(
+        model_dir: &Path,
+        device: DeviceProfile,
+        kv_page_size: usize,
+        kv_cache_dtype: &str,
+    ) -> Result<Self> {
         info!("Loading Qwen3-TTS model from {:?}", model_dir);
 
         // Load configuration
@@ -221,6 +228,7 @@ impl Qwen3TtsModel {
             SpeechTokenizerDecoder::load(&speech_tokenizer_path, device.device.clone(), dtype)?;
 
         info!("Qwen3-TTS model loaded successfully on {:?}", device.kind);
+        let kv_quantization = KvCacheQuantization::from_dtype_hint(kv_cache_dtype);
 
         Ok(Self {
             device,
@@ -232,6 +240,7 @@ impl Qwen3TtsModel {
             speech_tokenizer,
             config,
             kv_page_size: kv_page_size.max(1),
+            kv_quantization,
         })
     }
 
@@ -444,8 +453,11 @@ impl Qwen3TtsModel {
             let embeds: Vec<Tensor> = group.iter().map(|req| req.prefill_embeds.clone()).collect();
             let batch_embeds = Tensor::cat(&embeds, 0)?;
 
-            let mut talker_cache =
-                TalkerCache::with_page_size(self.talker.num_layers(), self.kv_page_size);
+            let mut talker_cache = TalkerCache::with_page_size_and_quantization(
+                self.talker.num_layers(),
+                self.kv_page_size,
+                self.kv_quantization,
+            );
             let (last_hidden_batch, last_logits_batch) =
                 self.talker
                     .prefill_with_embeds(&batch_embeds, &mut talker_cache, None)?;
@@ -481,9 +493,10 @@ impl Qwen3TtsModel {
                     semantic_history: Vec::new(),
                     last_hidden,
                     last_logits,
-                    predictor_cache: CodePredictorCache::with_page_size(
+                    predictor_cache: CodePredictorCache::with_page_size_and_quantization(
                         self.code_predictor.num_layers(),
                         self.kv_page_size,
+                        self.kv_quantization,
                     ),
                     rng: SimpleRng::new(),
                     finished: false,
@@ -1069,10 +1082,16 @@ impl Qwen3TtsModel {
         max_length: usize,
         params: &TtsGenerationParams,
     ) -> Result<Vec<Vec<u32>>> {
-        let mut talker_cache =
-            TalkerCache::with_page_size(self.talker.num_layers(), self.kv_page_size);
-        let mut predictor_cache =
-            CodePredictorCache::with_page_size(self.code_predictor.num_layers(), self.kv_page_size);
+        let mut talker_cache = TalkerCache::with_page_size_and_quantization(
+            self.talker.num_layers(),
+            self.kv_page_size,
+            self.kv_quantization,
+        );
+        let mut predictor_cache = CodePredictorCache::with_page_size_and_quantization(
+            self.code_predictor.num_layers(),
+            self.kv_page_size,
+            self.kv_quantization,
+        );
         let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
         let acoustic_vocab_size = self.tokenizer.codec_vocab_size() as u32;
         // Talker logits are over full codec vocab (semantic + control).
@@ -1465,10 +1484,16 @@ impl Qwen3TtsModel {
         params: &TtsGenerationParams,
         stream_config: TtsStreamingConfig,
     ) -> Result<TtsDecodeState> {
-        let mut talker_cache =
-            TalkerCache::with_page_size(self.talker.num_layers(), self.kv_page_size);
-        let predictor_cache =
-            CodePredictorCache::with_page_size(self.code_predictor.num_layers(), self.kv_page_size);
+        let mut talker_cache = TalkerCache::with_page_size_and_quantization(
+            self.talker.num_layers(),
+            self.kv_page_size,
+            self.kv_quantization,
+        );
+        let predictor_cache = CodePredictorCache::with_page_size_and_quantization(
+            self.code_predictor.num_layers(),
+            self.kv_page_size,
+            self.kv_quantization,
+        );
         let text_vocab_size = self.tokenizer.text_vocab_size() as u32;
         let acoustic_vocab_size = self.tokenizer.codec_vocab_size() as u32;
         let talker_codec_vocab_size = self.config.talker_config.vocab_size as u32;
@@ -2082,7 +2107,9 @@ fn normalize_audio(samples: &mut [f32]) {
 
 /// Load a Qwen3-TTS model
 pub fn load_model(model_path: &Path, device: DeviceProfile) -> Result<Qwen3TtsModel> {
-    Qwen3TtsModel::load(model_path, device, default_kv_page_size())
+    let kv_cache_dtype =
+        std::env::var("IZWI_KV_CACHE_DTYPE").unwrap_or_else(|_| "float16".to_string());
+    Qwen3TtsModel::load(model_path, device, default_kv_page_size(), &kv_cache_dtype)
 }
 
 #[cfg(test)]

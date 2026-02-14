@@ -28,23 +28,32 @@ enum KvCacheBackend {
 
 impl KvCacheBackend {
     fn new(config: &EngineCoreConfig) -> Result<Self> {
+        let requested_dtype_bytes = match config.kv_cache_dtype.trim().to_ascii_lowercase().as_str()
+        {
+            "float32" | "f32" => 4,
+            "int8" | "i8" | "q8" | "q8_0" => 1,
+            _ => 2,
+        };
+        // Keep Metal KV manager on its tuned F32 layout unless explicit int8 KV is requested.
+        let dtype_bytes = if config.use_metal && requested_dtype_bytes != 1 {
+            4
+        } else {
+            requested_dtype_bytes
+        };
         let kv_config = KVCacheConfig {
             num_layers: 24,
             num_heads: 16,
             head_dim: 64,
             block_size: config.block_size,
             max_blocks: config.max_blocks,
-            dtype_bytes: 2,
+            dtype_bytes,
         };
 
-        if config.use_metal {
+        if config.use_metal && kv_config.dtype_bytes == 4 {
             if let Ok(profile) = DeviceSelector::detect_with_preference(Some("metal")) {
                 if profile.kind.is_metal() {
                     let mut metal_config = MetalKVCacheConfig::default();
-                    metal_config.base_config = KVCacheConfig {
-                        dtype_bytes: 4,
-                        ..kv_config.clone()
-                    };
+                    metal_config.base_config = kv_config.clone();
                     let manager = MetalKVCacheManager::new(metal_config, profile)?;
                     return Ok(Self::Metal(manager));
                 }
