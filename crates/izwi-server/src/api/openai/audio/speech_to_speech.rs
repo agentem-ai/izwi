@@ -2,7 +2,7 @@
 
 use axum::{
     body::Body,
-    extract::{Multipart, Request, State},
+    extract::{Extension, Multipart, Request, State},
     http::{header, StatusCode},
     response::Response,
     Json, RequestExt,
@@ -12,6 +12,7 @@ use std::convert::Infallible;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::AppState;
 use izwi_core::audio::{AudioEncoder, AudioFormat};
@@ -80,6 +81,7 @@ struct SpeechToSpeechJsonPayload {
 
 pub async fn speech_to_speech(
     State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
     req: Request,
 ) -> Result<Response<Body>, ApiError> {
     let mut req = parse_request(req).await?;
@@ -92,7 +94,7 @@ pub async fn speech_to_speech(
     state.runtime.load_model(variant).await?;
 
     if req.stream {
-        return stream_response(state, req, audio_base64).await;
+        return stream_response(state, req, audio_base64, ctx.correlation_id).await;
     }
 
     let _permit = state.acquire_permit().await;
@@ -101,12 +103,13 @@ pub async fn speech_to_speech(
     let result = tokio::time::timeout(timeout, async {
         state
             .runtime
-            .lfm2_speech_to_speech(
+            .lfm2_speech_to_speech_with_correlation(
                 &audio_base64,
                 req.language.as_deref(),
                 req.system_prompt.as_deref(),
                 req.temperature,
                 req.top_k,
+                Some(&ctx.correlation_id),
             )
             .await
     })
@@ -134,6 +137,7 @@ async fn stream_response(
     state: AppState,
     req: SpeechToSpeechRequest,
     audio_base64: String,
+    correlation_id: String,
 ) -> Result<Response<Body>, ApiError> {
     let timeout = Duration::from_secs(state.request_timeout_secs);
     let language = req.language;
@@ -205,12 +209,13 @@ async fn stream_response(
         let stream_encoder = AudioEncoder::new(stream_sample_rate, 1);
         let result = tokio::time::timeout(timeout, async {
             engine
-                .lfm2_speech_to_speech_streaming(
+                .lfm2_speech_to_speech_streaming_with_correlation(
                     &audio_base64,
                     language.as_deref(),
                     system_prompt.as_deref(),
                     temperature,
                     top_k,
+                    Some(correlation_id.as_str()),
                     move |delta| {
                         let _ = delta_tx.send(
                             serde_json::to_string(&SpeechToSpeechStreamEvent {

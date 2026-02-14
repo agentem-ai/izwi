@@ -104,6 +104,10 @@ pub struct GenerationRequest {
     #[serde(default = "generate_request_id")]
     pub id: String,
 
+    /// Optional request correlation ID.
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+
     /// Text to synthesize
     pub text: String,
 
@@ -136,6 +140,7 @@ impl GenerationRequest {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             id: generate_request_id(),
+            correlation_id: None,
             text: text.into(),
             config: GenerationConfig::default(),
             language: None,

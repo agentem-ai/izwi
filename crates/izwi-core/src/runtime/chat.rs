@@ -14,11 +14,23 @@ impl RuntimeService {
         messages: Vec<ChatMessage>,
         max_new_tokens: usize,
     ) -> Result<ChatGeneration> {
+        self.chat_generate_with_correlation(variant, messages, max_new_tokens, None)
+            .await
+    }
+
+    pub async fn chat_generate_with_correlation(
+        &self,
+        variant: ModelVariant,
+        messages: Vec<ChatMessage>,
+        max_new_tokens: usize,
+        correlation_id: Option<&str>,
+    ) -> Result<ChatGeneration> {
         self.load_model(variant).await?;
 
         let mut request = EngineCoreRequest::chat(messages);
         request.model_variant = Some(variant);
         request.params.max_tokens = max_new_tokens.max(1);
+        request.correlation_id = correlation_id.map(|s| s.to_string());
 
         let output = self.run_request(request).await?;
         Ok(ChatGeneration {
@@ -33,6 +45,27 @@ impl RuntimeService {
         variant: ModelVariant,
         messages: Vec<ChatMessage>,
         max_new_tokens: usize,
+        on_delta: F,
+    ) -> Result<ChatGeneration>
+    where
+        F: FnMut(String) + Send + 'static,
+    {
+        self.chat_generate_streaming_with_correlation(
+            variant,
+            messages,
+            max_new_tokens,
+            None,
+            on_delta,
+        )
+        .await
+    }
+
+    pub async fn chat_generate_streaming_with_correlation<F>(
+        &self,
+        variant: ModelVariant,
+        messages: Vec<ChatMessage>,
+        max_new_tokens: usize,
+        correlation_id: Option<&str>,
         mut on_delta: F,
     ) -> Result<ChatGeneration>
     where
@@ -43,6 +76,7 @@ impl RuntimeService {
         let mut request = EngineCoreRequest::chat(messages);
         request.model_variant = Some(variant);
         request.params.max_tokens = max_new_tokens.max(1);
+        request.correlation_id = correlation_id.map(|s| s.to_string());
 
         let mut streamed_text = String::new();
         let output = self

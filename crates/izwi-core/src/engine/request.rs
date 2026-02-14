@@ -44,6 +44,8 @@ pub struct EngineCoreRequest {
     pub chat_messages: Option<Vec<ChatMessage>>,
     /// Optional language hint for multilingual generation.
     pub language: Option<String>,
+    /// Request correlation ID propagated from API/runtime boundaries.
+    pub correlation_id: Option<String>,
     /// Input audio (base64 encoded, for ASR/chat)
     pub audio_input: Option<String>,
     /// Reference audio for voice cloning (base64 encoded)
@@ -80,6 +82,7 @@ impl EngineCoreRequest {
             text: Some(text.into()),
             chat_messages: None,
             language: None,
+            correlation_id: None,
             audio_input: None,
             reference_audio: None,
             reference_text: None,
@@ -104,6 +107,7 @@ impl EngineCoreRequest {
             text: None,
             chat_messages: None,
             language: None,
+            correlation_id: None,
             audio_input: Some(audio_base64.into()),
             reference_audio: None,
             reference_text: None,
@@ -128,6 +132,7 @@ impl EngineCoreRequest {
             text: None,
             chat_messages: Some(messages),
             language: None,
+            correlation_id: None,
             audio_input: None,
             reference_audio: None,
             reference_text: None,
@@ -152,6 +157,7 @@ impl EngineCoreRequest {
             text: None,
             chat_messages: None,
             language: None,
+            correlation_id: None,
             audio_input: Some(audio_base64.into()),
             reference_audio: None,
             reference_text: None,
@@ -218,6 +224,12 @@ impl EngineCoreRequest {
     /// Set language hint.
     pub fn with_language(mut self, language: impl Into<String>) -> Self {
         self.language = Some(language.into());
+        self
+    }
+
+    /// Set request correlation ID.
+    pub fn with_correlation_id(mut self, correlation_id: impl Into<String>) -> Self {
+        self.correlation_id = Some(correlation_id.into());
         self
     }
 

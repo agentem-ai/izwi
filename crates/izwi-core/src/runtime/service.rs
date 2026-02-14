@@ -1,13 +1,18 @@
 //! Runtime service orchestrator.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
+use futures::FutureExt;
+use serde::Serialize;
 use tokio::sync::{broadcast, oneshot, Mutex, RwLock};
 use tokio::task::yield_now;
+use tracing::{error, info_span};
 
 use crate::audio::{AudioCodec, AudioEncoder, StreamingConfig};
 use crate::backends::{BackendRouter, ExecutionBackend};
@@ -23,6 +28,217 @@ use crate::models::qwen3_tts::Qwen3TtsModel;
 use crate::models::{DeviceProfile, DeviceSelector, ModelRegistry};
 use crate::tokenizer::Tokenizer;
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeTelemetrySnapshot {
+    pub uptime_secs: f64,
+    pub requests_queued: u64,
+    pub requests_completed: u64,
+    pub requests_failed: u64,
+    pub requests_active: u64,
+    pub worker_restarts: u64,
+    pub worker_panics: u64,
+    pub queue_wait_ms_avg: f64,
+    pub queue_wait_ms_p50: f64,
+    pub queue_wait_ms_p95: f64,
+    pub prefill_ms_avg: f64,
+    pub prefill_ms_p50: f64,
+    pub prefill_ms_p95: f64,
+    pub decode_ms_avg: f64,
+    pub decode_ms_p50: f64,
+    pub decode_ms_p95: f64,
+    pub end_to_end_ms_avg: f64,
+    pub end_to_end_ms_p50: f64,
+    pub end_to_end_ms_p95: f64,
+}
+
+#[derive(Debug)]
+struct RuntimeTelemetryCollector {
+    start_time: Instant,
+    max_samples: usize,
+    requests_queued: AtomicU64,
+    requests_completed: AtomicU64,
+    requests_failed: AtomicU64,
+    requests_active: AtomicU64,
+    worker_restarts: AtomicU64,
+    worker_panics: AtomicU64,
+    queue_wait_ms_samples: Mutex<VecDeque<f64>>,
+    prefill_ms_samples: Mutex<VecDeque<f64>>,
+    decode_ms_samples: Mutex<VecDeque<f64>>,
+    end_to_end_ms_samples: Mutex<VecDeque<f64>>,
+}
+
+impl RuntimeTelemetryCollector {
+    fn new(max_samples: usize) -> Self {
+        Self {
+            start_time: Instant::now(),
+            max_samples: max_samples.max(64),
+            requests_queued: AtomicU64::new(0),
+            requests_completed: AtomicU64::new(0),
+            requests_failed: AtomicU64::new(0),
+            requests_active: AtomicU64::new(0),
+            worker_restarts: AtomicU64::new(0),
+            worker_panics: AtomicU64::new(0),
+            queue_wait_ms_samples: Mutex::new(VecDeque::with_capacity(max_samples.max(64))),
+            prefill_ms_samples: Mutex::new(VecDeque::with_capacity(max_samples.max(64))),
+            decode_ms_samples: Mutex::new(VecDeque::with_capacity(max_samples.max(64))),
+            end_to_end_ms_samples: Mutex::new(VecDeque::with_capacity(max_samples.max(64))),
+        }
+    }
+
+    async fn record_request_queued(&self) {
+        self.requests_queued.fetch_add(1, Ordering::Relaxed);
+        self.requests_active.fetch_add(1, Ordering::Relaxed);
+    }
+
+    async fn record_request_finished(&self, output: &EngineOutput) {
+        self.requests_completed.fetch_add(1, Ordering::Relaxed);
+        if output.error.is_some() {
+            self.requests_failed.fetch_add(1, Ordering::Relaxed);
+        }
+        self.requests_active.fetch_sub(1, Ordering::Relaxed);
+
+        if let Some(latency) = output.latency_breakdown.as_ref() {
+            Self::push_sample(
+                &self.queue_wait_ms_samples,
+                self.max_samples,
+                latency.queue_wait_ms,
+            )
+            .await;
+            Self::push_sample(
+                &self.prefill_ms_samples,
+                self.max_samples,
+                latency.prefill_ms,
+            )
+            .await;
+            Self::push_sample(&self.decode_ms_samples, self.max_samples, latency.decode_ms).await;
+            Self::push_sample(
+                &self.end_to_end_ms_samples,
+                self.max_samples,
+                latency.total_ms,
+            )
+            .await;
+        } else {
+            Self::push_sample(
+                &self.end_to_end_ms_samples,
+                self.max_samples,
+                output.generation_time.as_secs_f64() * 1000.0,
+            )
+            .await;
+        }
+    }
+
+    fn record_forced_failures(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let count_u64 = count as u64;
+        self.requests_completed
+            .fetch_add(count_u64, Ordering::Relaxed);
+        self.requests_failed.fetch_add(count_u64, Ordering::Relaxed);
+        let _ = self
+            .requests_active
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(count_u64))
+            });
+    }
+
+    fn record_worker_restart(&self) {
+        self.worker_restarts.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_worker_panic(&self) {
+        self.worker_panics.fetch_add(1, Ordering::Relaxed);
+    }
+
+    async fn snapshot(&self) -> RuntimeTelemetrySnapshot {
+        let queue = self.queue_wait_ms_samples.lock().await.clone();
+        let prefill = self.prefill_ms_samples.lock().await.clone();
+        let decode = self.decode_ms_samples.lock().await.clone();
+        let end_to_end = self.end_to_end_ms_samples.lock().await.clone();
+
+        RuntimeTelemetrySnapshot {
+            uptime_secs: self.start_time.elapsed().as_secs_f64(),
+            requests_queued: self.requests_queued.load(Ordering::Relaxed),
+            requests_completed: self.requests_completed.load(Ordering::Relaxed),
+            requests_failed: self.requests_failed.load(Ordering::Relaxed),
+            requests_active: self.requests_active.load(Ordering::Relaxed),
+            worker_restarts: self.worker_restarts.load(Ordering::Relaxed),
+            worker_panics: self.worker_panics.load(Ordering::Relaxed),
+            queue_wait_ms_avg: mean(&queue),
+            queue_wait_ms_p50: percentile(&queue, 0.50),
+            queue_wait_ms_p95: percentile(&queue, 0.95),
+            prefill_ms_avg: mean(&prefill),
+            prefill_ms_p50: percentile(&prefill, 0.50),
+            prefill_ms_p95: percentile(&prefill, 0.95),
+            decode_ms_avg: mean(&decode),
+            decode_ms_p50: percentile(&decode, 0.50),
+            decode_ms_p95: percentile(&decode, 0.95),
+            end_to_end_ms_avg: mean(&end_to_end),
+            end_to_end_ms_p50: percentile(&end_to_end, 0.50),
+            end_to_end_ms_p95: percentile(&end_to_end, 0.95),
+        }
+    }
+
+    async fn prometheus(&self) -> String {
+        let snapshot = self.snapshot().await;
+        format!(
+            "# TYPE izwi_requests_queued_total counter\nizwi_requests_queued_total {}\n\
+# TYPE izwi_requests_completed_total counter\nizwi_requests_completed_total {}\n\
+# TYPE izwi_requests_failed_total counter\nizwi_requests_failed_total {}\n\
+# TYPE izwi_requests_active gauge\nizwi_requests_active {}\n\
+# TYPE izwi_worker_restarts_total counter\nizwi_worker_restarts_total {}\n\
+# TYPE izwi_worker_panics_total counter\nizwi_worker_panics_total {}\n\
+# TYPE izwi_latency_queue_wait_ms gauge\nizwi_latency_queue_wait_ms{{quantile=\"avg\"}} {:.6}\nizwi_latency_queue_wait_ms{{quantile=\"p50\"}} {:.6}\nizwi_latency_queue_wait_ms{{quantile=\"p95\"}} {:.6}\n\
+# TYPE izwi_latency_prefill_ms gauge\nizwi_latency_prefill_ms{{quantile=\"avg\"}} {:.6}\nizwi_latency_prefill_ms{{quantile=\"p50\"}} {:.6}\nizwi_latency_prefill_ms{{quantile=\"p95\"}} {:.6}\n\
+# TYPE izwi_latency_decode_ms gauge\nizwi_latency_decode_ms{{quantile=\"avg\"}} {:.6}\nizwi_latency_decode_ms{{quantile=\"p50\"}} {:.6}\nizwi_latency_decode_ms{{quantile=\"p95\"}} {:.6}\n\
+# TYPE izwi_latency_end_to_end_ms gauge\nizwi_latency_end_to_end_ms{{quantile=\"avg\"}} {:.6}\nizwi_latency_end_to_end_ms{{quantile=\"p50\"}} {:.6}\nizwi_latency_end_to_end_ms{{quantile=\"p95\"}} {:.6}\n",
+            snapshot.requests_queued,
+            snapshot.requests_completed,
+            snapshot.requests_failed,
+            snapshot.requests_active,
+            snapshot.worker_restarts,
+            snapshot.worker_panics,
+            snapshot.queue_wait_ms_avg,
+            snapshot.queue_wait_ms_p50,
+            snapshot.queue_wait_ms_p95,
+            snapshot.prefill_ms_avg,
+            snapshot.prefill_ms_p50,
+            snapshot.prefill_ms_p95,
+            snapshot.decode_ms_avg,
+            snapshot.decode_ms_p50,
+            snapshot.decode_ms_p95,
+            snapshot.end_to_end_ms_avg,
+            snapshot.end_to_end_ms_p50,
+            snapshot.end_to_end_ms_p95,
+        )
+    }
+
+    async fn push_sample(buffer: &Mutex<VecDeque<f64>>, max_samples: usize, value: f64) {
+        let mut guard = buffer.lock().await;
+        if guard.len() >= max_samples {
+            guard.pop_front();
+        }
+        guard.push_back(value.max(0.0));
+    }
+}
+
+fn mean(values: &VecDeque<f64>) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.iter().sum::<f64>() / values.len() as f64
+}
+
+fn percentile(values: &VecDeque<f64>, q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted: Vec<f64> = values.iter().copied().collect();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = ((sorted.len().saturating_sub(1)) as f64 * q.clamp(0.0, 1.0)) as usize;
+    sorted[idx]
+}
+
 /// Main inference engine runtime.
 pub struct RuntimeService {
     pub(crate) config: EngineConfig,
@@ -35,6 +251,7 @@ pub struct RuntimeService {
     pub(crate) streaming_config: StreamingConfig,
     pub(crate) tts_model: Arc<RwLock<Option<Qwen3TtsModel>>>,
     pub(crate) core_engine: Arc<CoreEngine>,
+    telemetry: Arc<RuntimeTelemetryCollector>,
     completion_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<Result<EngineOutput>>>>>,
     step_driver_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     step_driver_started: AtomicBool,
@@ -149,6 +366,7 @@ impl RuntimeService {
             streaming_config: StreamingConfig::default(),
             tts_model,
             core_engine,
+            telemetry: Arc::new(RuntimeTelemetryCollector::new(2048)),
             completion_waiters: Arc::new(Mutex::new(HashMap::new())),
             step_driver_task: Mutex::new(None),
             step_driver_started: AtomicBool::new(false),
@@ -221,21 +439,32 @@ impl RuntimeService {
     }
 
     async fn ensure_step_driver_started(&self) {
-        if self.step_driver_started.load(Ordering::Acquire) {
+        let mut guard = self.step_driver_task.lock().await;
+        let restart_needed = match guard.as_ref() {
+            Some(handle) if !handle.is_finished() => false,
+            Some(_) => true,
+            None => true,
+        };
+
+        if !restart_needed {
+            self.step_driver_started.store(true, Ordering::Release);
             return;
         }
 
-        let mut guard = self.step_driver_task.lock().await;
-        if self.step_driver_started.load(Ordering::Acquire) {
-            return;
+        if guard.is_some() {
+            self.telemetry.record_worker_restart();
         }
 
         let engine = self.core_engine.clone();
         let waiters = self.completion_waiters.clone();
+        let telemetry = self.telemetry.clone();
         let task = tokio::spawn(async move {
             loop {
-                match engine.step().await {
-                    Ok(outputs) => {
+                let step_result = std::panic::AssertUnwindSafe(engine.step())
+                    .catch_unwind()
+                    .await;
+                match step_result {
+                    Ok(Ok(outputs)) => {
                         if outputs.is_empty() {
                             tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
                             continue;
@@ -245,6 +474,7 @@ impl RuntimeService {
                             if !output.is_finished {
                                 continue;
                             }
+                            telemetry.record_request_finished(&output).await;
 
                             let waiter = {
                                 let mut w = waiters.lock().await;
@@ -260,14 +490,29 @@ impl RuntimeService {
                             }
                         }
                     }
-                    Err(err) => {
+                    Ok(Err(err)) => {
                         let mut w = waiters.lock().await;
                         let pending: Vec<_> = w.drain().collect();
                         drop(w);
+                        telemetry.record_forced_failures(pending.len());
                         for (_, tx) in pending {
                             let _ = tx.send(Err(Error::InferenceError(err.to_string())));
                         }
                         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+                    }
+                    Err(_) => {
+                        telemetry.record_worker_panic();
+                        let mut w = waiters.lock().await;
+                        let pending: Vec<_> = w.drain().collect();
+                        drop(w);
+                        telemetry.record_forced_failures(pending.len());
+                        for (_, tx) in pending {
+                            let _ = tx.send(Err(Error::InferenceError(
+                                "Engine worker panicked".to_string(),
+                            )));
+                        }
+                        error!("Engine step worker panicked; continuing with isolated loop");
+                        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
                     }
                 }
             }
@@ -305,6 +550,15 @@ impl RuntimeService {
     pub(crate) async fn run_request(&self, request: EngineCoreRequest) -> Result<EngineOutput> {
         self.ensure_step_driver_started().await;
 
+        let span = info_span!(
+            "runtime_request",
+            request_id = %request.id,
+            correlation_id = ?request.correlation_id,
+            task = ?request.task_type,
+            streaming = false
+        );
+        let _entered = span.enter();
+
         let request_id = request.id.clone();
         let completion_rx = self.register_waiter(&request_id).await;
 
@@ -312,6 +566,7 @@ impl RuntimeService {
             self.remove_waiter(&request_id).await;
             return Err(err);
         }
+        self.telemetry.record_request_queued().await;
 
         let mut guard = PendingRequestGuard::new(
             request_id.clone(),
@@ -335,6 +590,15 @@ impl RuntimeService {
         self.ensure_step_driver_started().await;
 
         request.streaming = true;
+        let span = info_span!(
+            "runtime_request",
+            request_id = %request.id,
+            correlation_id = ?request.correlation_id,
+            task = ?request.task_type,
+            streaming = true
+        );
+        let _entered = span.enter();
+
         let request_id = request.id.clone();
         let completion_rx = self.register_waiter(&request_id).await;
         let (stream_request_id, mut stream_rx) =
@@ -345,6 +609,7 @@ impl RuntimeService {
                     return Err(err);
                 }
             };
+        self.telemetry.record_request_queued().await;
         debug_assert_eq!(stream_request_id, request_id);
         let mut guard = PendingRequestGuard::new(
             stream_request_id.clone(),
@@ -371,5 +636,15 @@ impl RuntimeService {
         // Allow pending tasks to progress before returning to upper layers.
         yield_now().await;
         Ok(output)
+    }
+
+    /// Snapshot of runtime/engine telemetry (queue/prefill/decode/worker health).
+    pub async fn telemetry_snapshot(&self) -> RuntimeTelemetrySnapshot {
+        self.telemetry.snapshot().await
+    }
+
+    /// Prometheus exposition format telemetry payload.
+    pub async fn telemetry_prometheus(&self) -> String {
+        self.telemetry.prometheus().await
     }
 }

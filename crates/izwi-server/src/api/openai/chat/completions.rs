@@ -4,7 +4,7 @@ use std::convert::Infallible;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{
-    extract::State,
+    extract::{Extension, State},
     response::{sse::Event, IntoResponse, Response, Sse},
     Json,
 };
@@ -12,6 +12,7 @@ use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::AppState;
 use izwi_core::models::chat_types::{ChatMessage, ChatRole};
@@ -208,6 +209,7 @@ fn flatten_content(content: OpenAiInboundContent) -> String {
 
 pub async fn completions(
     State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Result<Response, ApiError> {
     if req.n.unwrap_or(1) != 1 {
@@ -224,7 +226,7 @@ pub async fn completions(
     }
 
     if req.stream.unwrap_or(false) {
-        let stream_response = complete_stream(state, req, messages).await?;
+        let stream_response = complete_stream(state, req, messages, ctx.correlation_id).await?;
         return Ok(stream_response.into_response());
     }
 
@@ -233,10 +235,11 @@ pub async fn completions(
 
     let generation = state
         .runtime
-        .chat_generate(
+        .chat_generate_with_correlation(
             variant,
             messages,
             max_new_tokens(variant, req.max_completion_tokens, req.max_tokens),
+            Some(&ctx.correlation_id),
         )
         .await?;
 
@@ -273,6 +276,7 @@ async fn complete_stream(
     state: AppState,
     req: ChatCompletionRequest,
     messages: Vec<ChatMessage>,
+    correlation_id: String,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let variant = parse_chat_model(&req.model)?;
     let include_usage = req
@@ -331,24 +335,30 @@ async fn complete_stream(
         let delta_tx = event_tx.clone();
         let result = tokio::time::timeout(timeout, async {
             engine
-                .chat_generate_streaming(variant, messages, max_tokens, move |delta| {
-                    let chunk = OpenAiChatChunk {
-                        id: completion_id_for_task.clone(),
-                        object: "chat.completion.chunk",
-                        created,
-                        model: model_id_for_task.clone(),
-                        choices: vec![OpenAiChunkChoice {
-                            index: 0,
-                            delta: OpenAiDelta {
-                                role: None,
-                                content: Some(delta),
-                            },
-                            finish_reason: None,
-                        }],
-                        usage: None,
-                    };
-                    let _ = delta_tx.send(serde_json::to_string(&chunk).unwrap_or_default());
-                })
+                .chat_generate_streaming_with_correlation(
+                    variant,
+                    messages,
+                    max_tokens,
+                    Some(correlation_id.as_str()),
+                    move |delta| {
+                        let chunk = OpenAiChatChunk {
+                            id: completion_id_for_task.clone(),
+                            object: "chat.completion.chunk",
+                            created,
+                            model: model_id_for_task.clone(),
+                            choices: vec![OpenAiChunkChoice {
+                                index: 0,
+                                delta: OpenAiDelta {
+                                    role: None,
+                                    content: Some(delta),
+                                },
+                                finish_reason: None,
+                            }],
+                            usage: None,
+                        };
+                        let _ = delta_tx.send(serde_json::to_string(&chunk).unwrap_or_default());
+                    },
+                )
                 .await
         })
         .await;

@@ -160,6 +160,8 @@ pub struct EngineOutput {
     pub finish_reason: Option<FinishReason>,
     /// Token statistics
     pub token_stats: TokenStats,
+    /// Latency breakdown by request phase.
+    pub latency_breakdown: Option<LatencyBreakdown>,
     /// Backend execution error when generation failed.
     pub error: Option<String>,
 }
@@ -204,6 +206,23 @@ pub struct TokenStats {
     pub decode_time_ms: f32,
     /// Tokens per second during decode
     pub tokens_per_second: f32,
+}
+
+/// Request latency phases captured by the scheduler/engine loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LatencyBreakdown {
+    /// Time spent waiting in queue before first scheduling.
+    pub queue_wait_ms: f64,
+    /// Total scheduler prefill phase wall-clock time attributed to this request.
+    pub prefill_ms: f64,
+    /// Total scheduler decode phase wall-clock time attributed to this request.
+    pub decode_ms: f64,
+    /// End-to-end request time in milliseconds.
+    pub total_ms: f64,
+    /// Number of prefill steps.
+    pub prefill_steps: u32,
+    /// Number of decode steps.
+    pub decode_steps: u32,
 }
 
 impl TokenStats {

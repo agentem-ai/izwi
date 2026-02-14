@@ -3,13 +3,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::{header, StatusCode},
     response::Response,
     Json,
 };
 use tokio::sync::mpsc;
 
+use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::{AppState, StoredResponseInputItem, StoredResponseRecord};
 use izwi_core::models::chat_types::{ChatMessage, ChatRole};
@@ -25,6 +26,7 @@ use super::dto::{
 
 pub async fn create_response(
     State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
     Json(req): Json<ResponsesCreateRequest>,
 ) -> Result<Response<Body>, ApiError> {
     let model_variant = parse_chat_model_variant(Some(&req.model))
@@ -39,17 +41,26 @@ pub async fn create_response(
     }
 
     if req.stream.unwrap_or(false) {
-        return create_streaming_response(state, req, model_variant, messages, input_items).await;
+        return create_streaming_response(
+            state,
+            req,
+            model_variant,
+            messages,
+            input_items,
+            ctx.correlation_id,
+        )
+        .await;
     }
 
     let _permit = state.acquire_permit().await;
 
     let output = state
         .runtime
-        .chat_generate(
+        .chat_generate_with_correlation(
             model_variant,
             messages,
             req.max_output_tokens.unwrap_or(1536).clamp(1, 4096),
+            Some(&ctx.correlation_id),
         )
         .await?;
 
@@ -183,6 +194,7 @@ async fn create_streaming_response(
     model_variant: izwi_core::ModelVariant,
     messages: Vec<ChatMessage>,
     input_items: Vec<StoredResponseInputItem>,
+    correlation_id: String,
 ) -> Result<Response<Body>, ApiError> {
     let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
     let created_at = now_unix_secs();
@@ -244,10 +256,11 @@ async fn create_streaming_response(
 
         let result = tokio::time::timeout(timeout, async {
             engine
-                .chat_generate_streaming(
+                .chat_generate_streaming_with_correlation(
                     model_variant,
                     messages,
                     req.max_output_tokens.unwrap_or(1536).clamp(1, 4096),
+                    Some(correlation_id.as_str()),
                     move |delta| {
                         if let Ok(mut text) = full_text_for_cb.lock() {
                             text.push_str(&delta);

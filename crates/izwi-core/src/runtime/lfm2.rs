@@ -54,6 +54,7 @@ impl RuntimeService {
 
         let mut core_request = EngineCoreRequest::tts(request.text.clone());
         core_request.id = request.id.clone();
+        core_request.correlation_id = request.correlation_id.clone();
         core_request.model_variant = Some(variant);
         core_request.language = request.language.clone();
         core_request.voice_description = request.voice_description.clone();
@@ -86,6 +87,7 @@ impl RuntimeService {
         system_prompt: Option<&str>,
         temperature: Option<f32>,
         top_k: Option<usize>,
+        correlation_id: Option<&str>,
     ) -> EngineCoreRequest {
         let resolved_temperature = temperature.unwrap_or(Self::LFM2_S2S_DEFAULT_AUDIO_TEMPERATURE);
         let resolved_top_k = top_k
@@ -94,6 +96,7 @@ impl RuntimeService {
 
         let mut request = EngineCoreRequest::speech_to_speech(audio_base64.to_string());
         request.model_variant = Some(variant);
+        request.correlation_id = correlation_id.map(|s| s.to_string());
         request.language = language.map(|s| s.to_string());
         request.system_prompt = system_prompt.map(|s| s.to_string());
         request.params = CoreGenParams {
@@ -205,6 +208,34 @@ impl RuntimeService {
         system_prompt: Option<&str>,
         temperature: Option<f32>,
         top_k: Option<usize>,
+        on_delta: F,
+        on_audio_chunk: G,
+    ) -> Result<SpeechToSpeechGeneration>
+    where
+        F: FnMut(String) + Send + 'static,
+        G: FnMut(AudioChunk) + Send + 'static,
+    {
+        self.lfm2_speech_to_speech_streaming_with_correlation(
+            audio_base64,
+            language,
+            system_prompt,
+            temperature,
+            top_k,
+            None,
+            on_delta,
+            on_audio_chunk,
+        )
+        .await
+    }
+
+    pub async fn lfm2_speech_to_speech_streaming_with_correlation<F, G>(
+        &self,
+        audio_base64: &str,
+        language: Option<&str>,
+        system_prompt: Option<&str>,
+        temperature: Option<f32>,
+        top_k: Option<usize>,
+        correlation_id: Option<&str>,
         mut on_delta: F,
         mut on_audio_chunk: G,
     ) -> Result<SpeechToSpeechGeneration>
@@ -221,6 +252,7 @@ impl RuntimeService {
             system_prompt,
             temperature,
             top_k,
+            correlation_id,
         );
 
         let mut streamed_text = String::new();
@@ -261,12 +293,33 @@ impl RuntimeService {
         temperature: Option<f32>,
         top_k: Option<usize>,
     ) -> Result<SpeechToSpeechGeneration> {
-        self.lfm2_speech_to_speech_streaming(
+        self.lfm2_speech_to_speech_with_correlation(
             audio_base64,
             language,
             system_prompt,
             temperature,
             top_k,
+            None,
+        )
+        .await
+    }
+
+    pub async fn lfm2_speech_to_speech_with_correlation(
+        &self,
+        audio_base64: &str,
+        language: Option<&str>,
+        system_prompt: Option<&str>,
+        temperature: Option<f32>,
+        top_k: Option<usize>,
+        correlation_id: Option<&str>,
+    ) -> Result<SpeechToSpeechGeneration> {
+        self.lfm2_speech_to_speech_streaming_with_correlation(
+            audio_base64,
+            language,
+            system_prompt,
+            temperature,
+            top_k,
+            correlation_id,
             |_delta| {},
             |_chunk| {},
         )
