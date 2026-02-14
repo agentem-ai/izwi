@@ -43,6 +43,7 @@ export function VoiceDesignPage({
   const viewConfig = VIEW_CONFIGS["voice-design"];
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [modalIntentModel, setModalIntentModel] = useState<string | null>(null);
+  const [autoCloseOnIntentReady, setAutoCloseOnIntentReady] = useState(false);
 
   const routeModels = useMemo(
     () =>
@@ -94,7 +95,7 @@ export function VoiceDesignPage({
   const selectedModelReady = selectedModelInfo?.status === "ready";
 
   useEffect(() => {
-    if (!isModelModalOpen || !modalIntentModel) {
+    if (!isModelModalOpen || !modalIntentModel || !autoCloseOnIntentReady) {
       return;
     }
     const targetModel = routeModels.find(
@@ -102,11 +103,18 @@ export function VoiceDesignPage({
     );
     if (targetModel?.status === "ready") {
       setIsModelModalOpen(false);
+      setAutoCloseOnIntentReady(false);
     }
-  }, [isModelModalOpen, modalIntentModel, routeModels]);
+  }, [autoCloseOnIntentReady, isModelModalOpen, modalIntentModel, routeModels]);
+
+  const closeModelModal = () => {
+    setIsModelModalOpen(false);
+    setAutoCloseOnIntentReady(false);
+  };
 
   const openModelManager = () => {
     setModalIntentModel(resolvedSelectedModel);
+    setAutoCloseOnIntentReady(false);
     setIsModelModalOpen(true);
   };
 
@@ -146,6 +154,7 @@ export function VoiceDesignPage({
 
     if (model.status !== "ready") {
       setModalIntentModel(variant);
+      setAutoCloseOnIntentReady(true);
       setIsModelModalOpen(true);
     }
   };
@@ -165,6 +174,7 @@ export function VoiceDesignPage({
         onOpenModelManager={openModelManager}
         onModelRequired={() => {
           setModalIntentModel(resolvedSelectedModel);
+          setAutoCloseOnIntentReady(true);
           setIsModelModalOpen(true);
           onError("Select and load a VoiceDesign model to continue.");
         }}
@@ -172,7 +182,7 @@ export function VoiceDesignPage({
 
       <RouteModelModal
         isOpen={isModelModalOpen}
-        onClose={() => setIsModelModalOpen(false)}
+        onClose={closeModelModal}
         title="Voice Design Models"
         description="Manage VoiceDesign models for this route."
         models={routeModels}
