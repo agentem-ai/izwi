@@ -20,7 +20,7 @@ impl RuntimeService {
         request.model_variant = Some(variant);
         request.params.max_tokens = max_new_tokens.max(1);
 
-        let output = self.core_engine.generate(request).await?;
+        let output = self.run_request(request).await?;
         Ok(ChatGeneration {
             text: output.text.unwrap_or_default(),
             tokens_generated: output.num_tokens,

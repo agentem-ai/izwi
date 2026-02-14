@@ -14,13 +14,29 @@ use super::device::DeviceProfile;
 use super::gemma3_chat::Gemma3ChatModel;
 use super::lfm2_audio::Lfm2AudioModel;
 use super::parakeet_asr::ParakeetAsrModel;
-use super::qwen3_asr::Qwen3AsrModel;
-use super::qwen3_chat::{ChatGenerationOutput, Qwen3ChatModel};
+use super::qwen3_asr::{
+    AsrDecodeState as Qwen3AsrDecodeState, AsrDecodeStep as Qwen3AsrDecodeStep, Qwen3AsrModel,
+};
+use super::qwen3_chat::{
+    ChatDecodeState as Qwen3ChatDecodeState, ChatGenerationOutput, Qwen3ChatModel,
+};
 use super::voxtral::VoxtralRealtimeModel;
 
 pub enum NativeAsrModel {
     Qwen3(Qwen3AsrModel),
     Parakeet(ParakeetAsrModel),
+}
+
+pub enum NativeAsrDecodeState {
+    Qwen3(Qwen3AsrDecodeState),
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeAsrDecodeStep {
+    pub delta: String,
+    pub text: String,
+    pub tokens_generated: usize,
+    pub finished: bool,
 }
 
 impl NativeAsrModel {
@@ -54,11 +70,64 @@ impl NativeAsrModel {
             )),
         }
     }
+
+    pub fn supports_incremental_decode(&self) -> bool {
+        matches!(self, Self::Qwen3(_))
+    }
+
+    pub fn start_decode_state(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+        max_new_tokens: usize,
+    ) -> Result<NativeAsrDecodeState> {
+        match self {
+            Self::Qwen3(model) => Ok(NativeAsrDecodeState::Qwen3(model.start_decode(
+                audio,
+                sample_rate,
+                language,
+                max_new_tokens,
+            )?)),
+            Self::Parakeet(_) => Err(Error::InvalidInput(
+                "Incremental decode state is not available for this ASR model".to_string(),
+            )),
+        }
+    }
+
+    pub fn decode_step(&self, state: &mut NativeAsrDecodeState) -> Result<NativeAsrDecodeStep> {
+        match (self, state) {
+            (Self::Qwen3(model), NativeAsrDecodeState::Qwen3(state)) => {
+                let step: Qwen3AsrDecodeStep = model.decode_step(state)?;
+                Ok(NativeAsrDecodeStep {
+                    delta: step.delta,
+                    text: step.text,
+                    tokens_generated: step.tokens_generated,
+                    finished: step.finished,
+                })
+            }
+            _ => Err(Error::InvalidInput(
+                "ASR decode state does not match loaded ASR model".to_string(),
+            )),
+        }
+    }
 }
 
 pub enum NativeChatModel {
     Qwen3(Qwen3ChatModel),
     Gemma3(Gemma3ChatModel),
+}
+
+pub enum NativeChatDecodeState {
+    Qwen3(Qwen3ChatDecodeState),
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeChatDecodeStep {
+    pub delta: String,
+    pub text: String,
+    pub tokens_generated: usize,
+    pub finished: bool,
 }
 
 impl NativeChatModel {
@@ -94,6 +163,42 @@ impl NativeChatModel {
                     tokens_generated: output.tokens_generated,
                 })
             }
+        }
+    }
+
+    pub fn supports_incremental_decode(&self) -> bool {
+        matches!(self, Self::Qwen3(_))
+    }
+
+    pub fn start_decode_state(
+        &self,
+        messages: &[ChatMessage],
+        max_new_tokens: usize,
+    ) -> Result<NativeChatDecodeState> {
+        match self {
+            Self::Qwen3(model) => Ok(NativeChatDecodeState::Qwen3(
+                model.start_decode(messages, max_new_tokens)?,
+            )),
+            Self::Gemma3(_) => Err(Error::InvalidInput(
+                "Incremental decode state is not available for this chat model".to_string(),
+            )),
+        }
+    }
+
+    pub fn decode_step(&self, state: &mut NativeChatDecodeState) -> Result<NativeChatDecodeStep> {
+        match (self, state) {
+            (Self::Qwen3(model), NativeChatDecodeState::Qwen3(state)) => {
+                let step = model.decode_step(state)?;
+                Ok(NativeChatDecodeStep {
+                    delta: step.delta,
+                    text: step.text,
+                    tokens_generated: step.tokens_generated,
+                    finished: step.finished,
+                })
+            }
+            _ => Err(Error::InvalidInput(
+                "Chat decode state does not match loaded chat model".to_string(),
+            )),
         }
     }
 }

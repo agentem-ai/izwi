@@ -64,6 +64,33 @@ pub struct Lfm2AudioModel {
     wave_decoder: WaveDecoder,
 }
 
+pub struct SpeechToSpeechDecodeState {
+    cache: LfmCache,
+    in_emb: Tensor,
+    current_modality: LfmModality,
+    modality_left: usize,
+    text_done: bool,
+    max_new_tokens: usize,
+    steps: usize,
+    text_tokens: Vec<u32>,
+    assembled: String,
+    rng: SimpleRng,
+    text_temperature: Option<f32>,
+    text_top_k: Option<usize>,
+    audio_temperature: Option<f32>,
+    audio_top_k: Option<usize>,
+    finished: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpeechToSpeechDecodeStep {
+    pub delta: String,
+    pub text: String,
+    pub audio_frame: Option<Vec<u32>>,
+    pub tokens_generated: usize,
+    pub finished: bool,
+}
+
 struct AudioAdapter {
     norm: LayerNorm,
     linear1: Linear,
@@ -360,6 +387,182 @@ impl Lfm2AudioModel {
         trim_audio_frames(&mut audio_frames);
         let wav = self.wave_decoder.decode_tokens(&audio_frames)?;
         Ok((assembled.trim().to_string(), wav))
+    }
+
+    pub fn start_speech_to_speech_decode(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        system_prompt: Option<&str>,
+        audio_temperature: Option<f32>,
+        audio_top_k: Option<usize>,
+        max_new_tokens: usize,
+    ) -> Result<SpeechToSpeechDecodeState> {
+        let mel = self.prepare_audio_mel(audio, sample_rate)?;
+
+        let mut state = ChatState::new(
+            &self.tokenizer,
+            self.cfg.codebooks,
+            self.preprocessor.features(),
+        );
+        state.new_turn(&self.tokenizer, "system")?;
+        state.add_text(
+            &self.tokenizer,
+            system_prompt.unwrap_or(LFM2_DEFAULT_S2S_PROMPT),
+        )?;
+        state.end_turn(&self.tokenizer)?;
+
+        state.new_turn(&self.tokenizer, "user")?;
+        state.add_audio_mel(&mel.0, mel.1);
+        state.end_turn(&self.tokenizer)?;
+
+        state.new_turn(&self.tokenizer, "assistant")?;
+
+        Ok(SpeechToSpeechDecodeState {
+            cache: LfmCache::new(self.lfm.config()),
+            in_emb: self.build_prefill_embeddings(&state)?,
+            current_modality: LfmModality::Text,
+            modality_left: self.cfg.interleaved_n_text,
+            text_done: false,
+            max_new_tokens: max_new_tokens.max(1),
+            steps: 0,
+            text_tokens: Vec::new(),
+            assembled: String::new(),
+            rng: SimpleRng::new(),
+            text_temperature: None,
+            text_top_k: None,
+            audio_temperature,
+            audio_top_k,
+            finished: false,
+        })
+    }
+
+    pub fn speech_to_speech_decode_step(
+        &self,
+        state: &mut SpeechToSpeechDecodeState,
+    ) -> Result<SpeechToSpeechDecodeStep> {
+        if state.finished || state.steps >= state.max_new_tokens {
+            state.finished = true;
+            return Ok(SpeechToSpeechDecodeStep {
+                delta: String::new(),
+                text: state.assembled.trim().to_string(),
+                audio_frame: None,
+                tokens_generated: state.steps,
+                finished: true,
+            });
+        }
+
+        state.modality_left = state.modality_left.saturating_sub(1);
+        let out = self
+            .lfm
+            .forward_embeds_cached(&state.in_emb, &mut state.cache)?;
+        let last = out.i((0, out.dim(1)? - 1, ..))?;
+
+        let mut delta = String::new();
+        let mut audio_frame = None;
+
+        match state.current_modality {
+            LfmModality::Text => {
+                let logits = last
+                    .reshape((1, last.dim(0)?))?
+                    .matmul(&self.lfm.embed_tokens_weight().t()?)?
+                    .squeeze(0)?;
+                let token = sample_token(
+                    &logits,
+                    state.text_temperature.unwrap_or(0.0) <= 0.0 || state.text_top_k == Some(1),
+                    state.text_temperature,
+                    state.text_top_k,
+                    &mut state.rng,
+                )?;
+
+                if token == self.tokenizer.specials().im_end {
+                    state.finished = true;
+                    return Ok(SpeechToSpeechDecodeStep {
+                        delta,
+                        text: state.assembled.trim().to_string(),
+                        audio_frame,
+                        tokens_generated: state.steps,
+                        finished: true,
+                    });
+                }
+
+                state.text_tokens.push(token);
+                if let Ok(decoded) = self.tokenizer.decode_text(&state.text_tokens) {
+                    delta = text_delta(&state.assembled, &decoded);
+                    state.assembled = decoded;
+                }
+
+                if token == self.tokenizer.specials().text_end {
+                    state.text_done = true;
+                }
+
+                if state.modality_left == 0 || state.text_done {
+                    state.current_modality = LfmModality::AudioOut;
+                    state.modality_left = self.cfg.interleaved_n_audio;
+                }
+
+                state.in_emb = self.lfm.embed_tokens(token)?;
+            }
+            LfmModality::AudioOut => {
+                let mut frame = self.depthformer.sample_audio_frame(
+                    &last,
+                    state.audio_temperature,
+                    state.audio_top_k,
+                    &mut state.rng,
+                )?;
+
+                if state.modality_left == 0 && !state.text_done {
+                    state.current_modality = LfmModality::Text;
+                    state.modality_left = self.cfg.interleaved_n_text;
+                }
+
+                if is_end_of_audio_frame(&frame) {
+                    for t in &mut frame {
+                        *t = END_OF_AUDIO_TOKEN;
+                    }
+                    state.current_modality = LfmModality::Text;
+                    state.modality_left = self.cfg.interleaved_n_text;
+                }
+
+                audio_frame = Some(frame.clone());
+                let frame_t = Tensor::from_vec(
+                    frame,
+                    self.cfg.codebooks,
+                    self.lfm.embed_tokens_weight().device(),
+                )?
+                .to_dtype(DType::U32)?;
+                state.in_emb = self.depthformer.audio_embedding_sum(&frame_t)?;
+            }
+            LfmModality::AudioIn => {}
+        }
+
+        state.steps = state.steps.saturating_add(1);
+        if state.steps >= state.max_new_tokens {
+            state.finished = true;
+        }
+
+        Ok(SpeechToSpeechDecodeStep {
+            delta,
+            text: state.assembled.trim().to_string(),
+            audio_frame,
+            tokens_generated: state.steps,
+            finished: state.finished,
+        })
+    }
+
+    pub fn decode_audio_frame(&self, frame: &[u32]) -> Result<Vec<f32>> {
+        if frame.is_empty() || is_end_of_audio_frame(frame) {
+            return Ok(Vec::new());
+        }
+
+        let mut codebooks: Vec<Vec<u32>> = vec![Vec::new(); self.cfg.codebooks];
+        for (i, &tok) in frame.iter().enumerate() {
+            if i >= codebooks.len() {
+                break;
+            }
+            codebooks[i].push(tok);
+        }
+        self.wave_decoder.decode_tokens(&codebooks)
     }
 
     fn prepare_audio_mel(&self, audio: &[f32], sample_rate: u32) -> Result<(Vec<f32>, usize)> {

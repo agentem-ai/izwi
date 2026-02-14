@@ -46,6 +46,25 @@ pub struct Qwen3AsrModel {
     preprocessor: PreprocessorConfig,
 }
 
+pub struct AsrDecodeState {
+    cache: Qwen3Cache,
+    embeds: Tensor,
+    pos: usize,
+    generated_ids: Vec<u32>,
+    assembled: String,
+    stop_tokens: Vec<u32>,
+    max_new_tokens: usize,
+    finished: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AsrDecodeStep {
+    pub delta: String,
+    pub text: String,
+    pub tokens_generated: usize,
+    pub finished: bool,
+}
+
 impl Qwen3AsrModel {
     pub fn load(model_dir: &Path, device: DeviceProfile) -> Result<Self> {
         let config_path = model_dir.join("config.json");
@@ -222,6 +241,28 @@ impl Qwen3AsrModel {
         language: Option<&str>,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String> {
+        let mut state = self.start_decode(audio, sample_rate, language, 256)?;
+        loop {
+            let step = self.decode_step(&mut state)?;
+            if !step.delta.is_empty() {
+                for ch in step.delta.chars() {
+                    let mut buf = [0u8; 4];
+                    on_delta(ch.encode_utf8(&mut buf));
+                }
+            }
+            if step.finished {
+                return Ok(step.text);
+            }
+        }
+    }
+
+    pub fn start_decode(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+        max_new_tokens: usize,
+    ) -> Result<AsrDecodeState> {
         let audio = if sample_rate != 16_000 {
             resample(audio, sample_rate, 16_000)?
         } else {
@@ -240,18 +281,18 @@ impl Qwen3AsrModel {
 
         let frames = mel_spec.len();
         let mut flat = Vec::with_capacity(frames * n_mels);
-        for frame in mel_spec.iter() {
+        for frame in &mel_spec {
             flat.extend_from_slice(frame);
         }
 
         let mel = Tensor::from_vec(flat, (frames, n_mels), &self.device.device)?
-            .transpose(0, 1)? // [n_mels, frames]
+            .transpose(0, 1)?
             .unsqueeze(0)?
-            .unsqueeze(0)? // [1, 1, n_mels, frames]
+            .unsqueeze(0)?
             .to_dtype(self.audio_dtype)?;
 
         let feature_lens = vec![frames];
-        let mut audio_embeds = self.audio_tower.forward(&mel, Some(&feature_lens))?; // [1, t, hidden]
+        let mut audio_embeds = self.audio_tower.forward(&mel, Some(&feature_lens))?;
         if audio_embeds.dtype() != self.text_dtype {
             audio_embeds = audio_embeds.to_dtype(self.text_dtype)?;
         }
@@ -267,61 +308,82 @@ impl Qwen3AsrModel {
         )?;
 
         let mut cache = Qwen3Cache::new(self.text_model.num_layers());
-        let mut embeds = self.forward_with_audio(
+        let embeds = self.forward_with_audio(
             &input_ids,
             &audio_embeds,
             prompt.audio_pad_start,
             prompt.audio_pad_len,
             &mut cache,
         )?;
+        let pos = embeds.dim(1)?;
 
-        let base_pos = embeds.dim(1)?;
-        let mut pos = base_pos;
+        Ok(AsrDecodeState {
+            cache,
+            embeds,
+            pos,
+            generated_ids: Vec::new(),
+            assembled: String::new(),
+            stop_tokens: collect_stop_token_ids(&self.specials),
+            max_new_tokens: max_new_tokens.max(1),
+            finished: false,
+        })
+    }
 
-        let mut generated: Vec<u32> = Vec::new();
-        let mut assembled = String::new();
-        let stop_tokens = collect_stop_token_ids(&self.specials);
-
-        // Keep this bounded to reduce latency.
-        let max_tokens = 256usize;
-        for _step in 0..max_tokens {
-            // Get logits for the last position only
-            let logits = embeds.i((0, embeds.dim(1)? - 1))?; // [vocab_size]
-            let next = argmax(&logits)?;
-
-            if stop_tokens.contains(&next) {
-                break;
-            }
-            generated.push(next);
-            let decoded = self.decode_generated_untrimmed(&generated)?;
-            let delta = text_delta(&assembled, &decoded);
-            for ch in delta.chars() {
-                let mut buf = [0u8; 4];
-                on_delta(ch.encode_utf8(&mut buf));
-            }
-            assembled = decoded;
-
-            // Forward pass for next token with updated position
-            let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
-            if self.text_model.uses_mrope() {
-                let next_embeds = self.text_model.embeddings(&next_tensor)?;
-                let position_ids = self.build_position_ids(1, pos, None)?;
-                embeds = self.text_model.forward_with_embeds(
-                    &next_embeds,
-                    pos,
-                    Some(&mut cache),
-                    Some(&position_ids),
-                )?;
-            } else {
-                embeds = self
-                    .text_model
-                    .forward(&next_tensor, pos, Some(&mut cache))?;
-            }
-            pos += 1;
+    pub fn decode_step(&self, state: &mut AsrDecodeState) -> Result<AsrDecodeStep> {
+        if state.finished || state.generated_ids.len() >= state.max_new_tokens {
+            state.finished = true;
+            return Ok(AsrDecodeStep {
+                delta: String::new(),
+                text: state.assembled.trim().to_string(),
+                tokens_generated: state.generated_ids.len(),
+                finished: true,
+            });
         }
 
-        let text = assembled.trim().to_string();
-        Ok(text)
+        let logits = state.embeds.i((0, state.embeds.dim(1)? - 1))?;
+        let next = argmax(&logits)?;
+        if state.stop_tokens.contains(&next) {
+            state.finished = true;
+            return Ok(AsrDecodeStep {
+                delta: String::new(),
+                text: state.assembled.trim().to_string(),
+                tokens_generated: state.generated_ids.len(),
+                finished: true,
+            });
+        }
+
+        state.generated_ids.push(next);
+        let decoded = self.decode_generated_untrimmed(&state.generated_ids)?;
+        let delta = text_delta(&state.assembled, &decoded);
+        state.assembled = decoded;
+
+        let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
+        if self.text_model.uses_mrope() {
+            let next_embeds = self.text_model.embeddings(&next_tensor)?;
+            let position_ids = self.build_position_ids(1, state.pos, None)?;
+            state.embeds = self.text_model.forward_with_embeds(
+                &next_embeds,
+                state.pos,
+                Some(&mut state.cache),
+                Some(&position_ids),
+            )?;
+        } else {
+            state.embeds =
+                self.text_model
+                    .forward(&next_tensor, state.pos, Some(&mut state.cache))?;
+        }
+        state.pos += 1;
+
+        if state.generated_ids.len() >= state.max_new_tokens {
+            state.finished = true;
+        }
+
+        Ok(AsrDecodeStep {
+            delta,
+            text: state.assembled.trim().to_string(),
+            tokens_generated: state.generated_ids.len(),
+            finished: state.finished,
+        })
     }
 
     /// Forced alignment: align reference text with audio timestamps.

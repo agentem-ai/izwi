@@ -155,7 +155,7 @@ impl RuntimeService {
         self.load_model(variant).await?;
         let core_request = Self::build_lfm2_tts_request(&request, variant)?;
 
-        let output = self.core_engine.generate(core_request).await?;
+        let output = self.run_request(core_request).await?;
         Ok(GenerationResult {
             request_id: output.request_id,
             samples: output.audio.samples,

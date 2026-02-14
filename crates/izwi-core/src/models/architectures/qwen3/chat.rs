@@ -22,6 +22,24 @@ pub struct ChatGenerationOutput {
     pub tokens_generated: usize,
 }
 
+pub struct ChatDecodeState {
+    cache: Qwen3Cache,
+    embeds: Tensor,
+    pos: usize,
+    generated_ids: Vec<u32>,
+    assembled: String,
+    max_new_tokens: usize,
+    finished: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatDecodeStep {
+    pub delta: String,
+    pub text: String,
+    pub tokens_generated: usize,
+    pub finished: bool,
+}
+
 #[derive(Debug, Clone)]
 struct SpecialTokenIds {
     im_start: u32,
@@ -172,6 +190,29 @@ impl Qwen3ChatModel {
         max_new_tokens: usize,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ChatGenerationOutput> {
+        let mut state = self.start_decode(messages, max_new_tokens)?;
+        loop {
+            let step = self.decode_step(&mut state)?;
+            if !step.delta.is_empty() {
+                for ch in step.delta.chars() {
+                    let mut buf = [0u8; 4];
+                    on_delta(ch.encode_utf8(&mut buf));
+                }
+            }
+            if step.finished {
+                return Ok(ChatGenerationOutput {
+                    text: step.text,
+                    tokens_generated: step.tokens_generated,
+                });
+            }
+        }
+    }
+
+    pub fn start_decode(
+        &self,
+        messages: &[ChatMessage],
+        max_new_tokens: usize,
+    ) -> Result<ChatDecodeState> {
         let prompt_ids = self.build_prompt(messages)?;
         let input_ids = Tensor::from_vec(
             prompt_ids.clone(),
@@ -180,43 +221,67 @@ impl Qwen3ChatModel {
         )?;
 
         let mut cache = Qwen3Cache::new(self.text_model.num_layers());
-        let mut embeds = self.text_model.forward(&input_ids, 0, Some(&mut cache))?;
-        let mut pos = embeds.dim(1)?;
+        let embeds = self.text_model.forward(&input_ids, 0, Some(&mut cache))?;
+        let pos = embeds.dim(1)?;
 
-        let mut generated_ids = Vec::new();
-        let mut assembled = String::new();
+        Ok(ChatDecodeState {
+            cache,
+            embeds,
+            pos,
+            generated_ids: Vec::new(),
+            assembled: String::new(),
+            max_new_tokens: max_new_tokens.max(1),
+            finished: false,
+        })
+    }
 
-        for _ in 0..max_new_tokens {
-            let logits = embeds.i((0, embeds.dim(1)? - 1))?;
-            let next = argmax(&logits)?;
-
-            if next == self.tokenizer.specials.im_end
-                || next == self.tokenizer.specials.eos
-                || self.tokenizer.specials.eos_alt == Some(next)
-            {
-                break;
-            }
-
-            generated_ids.push(next);
-
-            let decoded = self.tokenizer.decode_text(&generated_ids)?;
-            let delta = text_delta(&assembled, &decoded);
-            for ch in delta.chars() {
-                let mut buf = [0u8; 4];
-                on_delta(ch.encode_utf8(&mut buf));
-            }
-            assembled = decoded;
-
-            let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
-            embeds = self
-                .text_model
-                .forward(&next_tensor, pos, Some(&mut cache))?;
-            pos += 1;
+    pub fn decode_step(&self, state: &mut ChatDecodeState) -> Result<ChatDecodeStep> {
+        if state.finished || state.generated_ids.len() >= state.max_new_tokens {
+            state.finished = true;
+            return Ok(ChatDecodeStep {
+                delta: String::new(),
+                text: state.assembled.trim().to_string(),
+                tokens_generated: state.generated_ids.len(),
+                finished: true,
+            });
         }
 
-        Ok(ChatGenerationOutput {
-            text: assembled.trim().to_string(),
-            tokens_generated: generated_ids.len(),
+        let logits = state.embeds.i((0, state.embeds.dim(1)? - 1))?;
+        let next = argmax(&logits)?;
+
+        if next == self.tokenizer.specials.im_end
+            || next == self.tokenizer.specials.eos
+            || self.tokenizer.specials.eos_alt == Some(next)
+        {
+            state.finished = true;
+            return Ok(ChatDecodeStep {
+                delta: String::new(),
+                text: state.assembled.trim().to_string(),
+                tokens_generated: state.generated_ids.len(),
+                finished: true,
+            });
+        }
+
+        state.generated_ids.push(next);
+        let decoded = self.tokenizer.decode_text(&state.generated_ids)?;
+        let delta = text_delta(&state.assembled, &decoded);
+        state.assembled = decoded;
+
+        let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
+        state.embeds = self
+            .text_model
+            .forward(&next_tensor, state.pos, Some(&mut state.cache))?;
+        state.pos += 1;
+
+        if state.generated_ids.len() >= state.max_new_tokens {
+            state.finished = true;
+        }
+
+        Ok(ChatDecodeStep {
+            delta,
+            text: state.assembled.trim().to_string(),
+            tokens_generated: state.generated_ids.len(),
+            finished: state.finished,
         })
     }
 
