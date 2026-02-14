@@ -10,7 +10,6 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
-use std::hash::{Hash, Hasher};
 use std::time::Instant;
 use tracing::debug;
 
@@ -274,7 +273,7 @@ struct RequestMetadata {
     arrival_time: Instant,
     total_prompt_tokens: usize,
     max_tokens: usize,
-    prompt_prefix_hash: Option<u64>,
+    prompt_prefix_tokens: Vec<u32>,
 }
 
 /// State for a running request.
@@ -325,7 +324,7 @@ impl Scheduler {
             arrival_time: Instant::now(),
             total_prompt_tokens: request.num_prompt_tokens(),
             max_tokens: request.params.max_tokens,
-            prompt_prefix_hash: Self::compute_prompt_prefix_hash(&request.prompt_tokens),
+            prompt_prefix_tokens: request.prompt_tokens.clone(),
         };
 
         self.requests.insert(request.id.clone(), metadata);
@@ -526,6 +525,14 @@ impl Scheduler {
         } else {
             remaining_decode_budget
         };
+        let prefill_admission_cap = if has_decode_demand && kv_utilization > 0.90 {
+            1
+        } else if has_decode_demand && kv_utilization > 0.80 {
+            2
+        } else {
+            usize::MAX
+        };
+        let mut prefill_admissions = 0usize;
 
         // Phase 2a: resume preempted prefill requests before admitting new waiting requests.
         let mut paused_prefill_candidates: Vec<_> = self
@@ -631,7 +638,10 @@ impl Scheduler {
             result.total_tokens += num_tokens;
         }
 
-        while remaining_batch > 0 && remaining_prefill_budget > 0 {
+        while remaining_batch > 0
+            && remaining_prefill_budget > 0
+            && prefill_admissions < prefill_admission_cap
+        {
             let next_request_id = self.select_next_waiting_request();
 
             let request_id = match next_request_id {
@@ -694,10 +704,10 @@ impl Scheduler {
                 }
             }
 
-            let block_ids = kv_cache.allocate_with_prefix(
+            let block_ids = kv_cache.allocate_with_prefix_tokens(
                 &request_id,
                 blocks_needed,
-                metadata.prompt_prefix_hash,
+                &metadata.prompt_prefix_tokens,
             );
             if block_ids.len() < blocks_needed {
                 debug!("Failed to allocate required blocks for {}", request_id);
@@ -733,6 +743,7 @@ impl Scheduler {
 
             remaining_prefill_budget = remaining_prefill_budget.saturating_sub(num_tokens);
             remaining_batch -= 1;
+            prefill_admissions = prefill_admissions.saturating_add(1);
             result.total_tokens += num_tokens;
         }
 
@@ -993,19 +1004,6 @@ impl Scheduler {
         }
 
         self.telemetry.dynamic_tokens_per_step = target;
-    }
-
-    fn compute_prompt_prefix_hash(tokens: &[u32]) -> Option<u64> {
-        if tokens.is_empty() {
-            return None;
-        }
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        let prefix_len = tokens.len().min(128);
-        prefix_len.hash(&mut hasher);
-        for token in tokens.iter().take(prefix_len) {
-            token.hash(&mut hasher);
-        }
-        Some(hasher.finish())
     }
 
     /// Try to preempt running requests to free up the required number of blocks.

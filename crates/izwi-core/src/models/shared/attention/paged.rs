@@ -1,11 +1,32 @@
 //! Shared paged-KV helpers for decode-time attention.
 
-use candle_core::{Tensor, D};
+use candle_core::{DType, Tensor, D};
 
 use crate::error::{Error, Result};
 
 /// Default KV page size used when model-specific config is unavailable.
 pub const DEFAULT_KV_PAGE_SIZE: usize = 64;
+
+/// Supported KV cache quantization modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KvCacheQuantization {
+    /// Keep KV pages in the model's native dtype.
+    None,
+    /// Store KV pages in int8 with per-page symmetric scale.
+    Int8,
+}
+
+impl KvCacheQuantization {
+    /// Parse quantization mode from a KV cache dtype hint.
+    ///
+    /// Accepts values such as `int8`, `i8`, `q8`, `float16`, `float32`, `bf16`.
+    pub fn from_dtype_hint(dtype: &str) -> Self {
+        match dtype.trim().to_ascii_lowercase().as_str() {
+            "int8" | "i8" | "q8" | "q8_0" => Self::Int8,
+            _ => Self::None,
+        }
+    }
+}
 
 /// Resolve default page size, optionally overridden by env.
 pub fn default_kv_page_size() -> usize {
@@ -16,10 +37,106 @@ pub fn default_kv_page_size() -> usize {
         .unwrap_or(DEFAULT_KV_PAGE_SIZE)
 }
 
+/// Resolve default KV quantization from env.
+pub fn default_kv_quantization() -> KvCacheQuantization {
+    std::env::var("IZWI_KV_CACHE_DTYPE")
+        .ok()
+        .map(|raw| KvCacheQuantization::from_dtype_hint(&raw))
+        .unwrap_or(KvCacheQuantization::None)
+}
+
+/// Single KV page storage (dense or quantized).
+#[derive(Debug, Clone)]
+pub enum KvPage {
+    Dense(Tensor),
+    Int8 {
+        values: Tensor,
+        scale: f32,
+        target_dtype: DType,
+    },
+}
+
+impl KvPage {
+    fn from_dense(tensor: Tensor, quantization: KvCacheQuantization) -> Result<Self> {
+        match quantization {
+            KvCacheQuantization::None => Ok(Self::Dense(tensor)),
+            KvCacheQuantization::Int8 => {
+                let (values, scale, target_dtype) = quantize_tensor_int8(&tensor)?;
+                Ok(Self::Int8 {
+                    values,
+                    scale,
+                    target_dtype,
+                })
+            }
+        }
+    }
+
+    fn seq_len(&self) -> Result<usize> {
+        match self {
+            Self::Dense(t) => t.dim(1).map_err(Error::from),
+            Self::Int8 { values, .. } => values.dim(1).map_err(Error::from),
+        }
+    }
+
+    fn to_dense(&self) -> Result<Tensor> {
+        match self {
+            Self::Dense(t) => Ok(t.clone()),
+            Self::Int8 {
+                values,
+                scale,
+                target_dtype,
+            } => dequantize_tensor_int8(values, *scale, *target_dtype),
+        }
+    }
+}
+
+fn quantize_tensor_int8(tensor: &Tensor) -> Result<(Tensor, f32, DType)> {
+    let target_dtype = tensor.dtype();
+    let max_abs = tensor
+        .abs()?
+        .max_all()?
+        .to_dtype(DType::F32)?
+        .to_scalar::<f32>()?;
+    let scale = if max_abs > 0.0 {
+        (max_abs / 127.0).max(1e-8)
+    } else {
+        1.0
+    };
+    let inv_scale = 1.0f32 / scale;
+    let inv_scale_t =
+        Tensor::from_vec(vec![inv_scale], (1,), tensor.device())?.to_dtype(target_dtype)?;
+    let offset_t =
+        Tensor::from_vec(vec![128.0f32], (1,), tensor.device())?.to_dtype(target_dtype)?;
+    let quantized = tensor
+        .broadcast_mul(&inv_scale_t)?
+        .clamp(-127.0f64, 127.0f64)?
+        .round()?
+        .broadcast_add(&offset_t)?
+        .to_dtype(DType::U8)?;
+    Ok((quantized, scale, target_dtype))
+}
+
+fn dequantize_tensor_int8(values: &Tensor, scale: f32, target_dtype: DType) -> Result<Tensor> {
+    let dense = values.to_dtype(target_dtype)?;
+    let offset_t =
+        Tensor::from_vec(vec![128.0f32], (1,), values.device())?.to_dtype(target_dtype)?;
+    let dense = dense.broadcast_sub(&offset_t)?;
+    if (scale - 1.0).abs() < f32::EPSILON {
+        return Ok(dense);
+    }
+    let scale_t = Tensor::from_vec(vec![scale], (1,), values.device())?.to_dtype(target_dtype)?;
+    dense.broadcast_mul(&scale_t).map_err(Error::from)
+}
+
 /// Append a `[batch, seq, heads, dim]` tensor into fixed-size pages along `seq`.
 ///
 /// The last existing page is filled first (if not full), then new pages are pushed.
-pub fn append_to_pages(page_size: usize, pages: &mut Vec<Tensor>, append: &Tensor) -> Result<()> {
+pub fn append_to_pages(
+    page_size: usize,
+    pages: &mut Vec<KvPage>,
+    append: &Tensor,
+    quantization: KvCacheQuantization,
+) -> Result<()> {
     if page_size == 0 {
         return Err(Error::InvalidInput(
             "KV page size must be greater than zero".to_string(),
@@ -34,11 +151,13 @@ pub fn append_to_pages(page_size: usize, pages: &mut Vec<Tensor>, append: &Tenso
     while cursor < seq_len {
         let mut consumed = false;
         if let Some(last) = pages.last_mut() {
-            let last_len = last.dim(1)?;
+            let last_len = last.seq_len()?;
             if last_len < page_size {
                 let take = (page_size - last_len).min(seq_len - cursor);
                 let chunk = append.narrow(1, cursor, take)?;
-                *last = Tensor::cat(&[&*last, &chunk], 1)?;
+                let last_dense = last.to_dense()?;
+                let merged = Tensor::cat(&[&last_dense, &chunk], 1)?;
+                *last = KvPage::from_dense(merged, quantization)?;
                 cursor += take;
                 consumed = true;
             }
@@ -50,23 +169,27 @@ pub fn append_to_pages(page_size: usize, pages: &mut Vec<Tensor>, append: &Tenso
 
         let take = page_size.min(seq_len - cursor);
         let chunk = append.narrow(1, cursor, take)?;
-        pages.push(chunk);
+        pages.push(KvPage::from_dense(chunk, quantization)?);
         cursor += take;
     }
     Ok(())
 }
 
 /// Materialize paged tensors into a single contiguous `[batch, total_seq, heads, dim]` tensor.
-pub fn materialize_pages(pages: &[Tensor]) -> Result<Tensor> {
+pub fn materialize_pages(pages: &[KvPage]) -> Result<Tensor> {
     if pages.is_empty() {
         return Err(Error::InferenceError(
             "Attempted to materialize empty KV pages".to_string(),
         ));
     }
     if pages.len() == 1 {
-        return Ok(pages[0].clone());
+        return pages[0].to_dense();
     }
-    let refs: Vec<&Tensor> = pages.iter().collect();
+    let mut dense_pages = Vec::with_capacity(pages.len());
+    for page in pages {
+        dense_pages.push(page.to_dense()?);
+    }
+    let refs: Vec<&Tensor> = dense_pages.iter().collect();
     Tensor::cat(&refs, 1).map_err(Error::from)
 }
 
@@ -76,8 +199,8 @@ pub fn materialize_pages(pages: &[Tensor]) -> Result<Tensor> {
 /// Returns `[batch, 1, heads, head_dim]`.
 pub fn paged_decode_attention(
     q: &Tensor,
-    k_pages: &[Tensor],
-    v_pages: &[Tensor],
+    k_pages: &[KvPage],
+    v_pages: &[KvPage],
     num_heads: usize,
     head_dim: usize,
 ) -> Result<Tensor> {
@@ -106,6 +229,8 @@ pub fn paged_decode_attention(
     let mut running_out: Option<Tensor> = None; // [bh, 1, d]
 
     for (k_page, v_page) in k_pages.iter().zip(v_pages.iter()) {
+        let k_page = k_page.to_dense()?;
+        let v_page = v_page.to_dense()?;
         let page_len = k_page.dim(1)?;
         if page_len == 0 {
             continue;
@@ -175,22 +300,53 @@ mod tests {
     use candle_core::{DType, Device};
     use candle_nn::ops;
 
+    fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
+        let a = a
+            .to_dtype(DType::F32)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        let b = b
+            .to_dtype(DType::F32)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        a.iter()
+            .zip(b.iter())
+            .fold(0.0f32, |m, (x, y)| m.max((x - y).abs()))
+    }
+
     #[test]
     fn test_append_to_pages_respects_page_size() {
         let device = Device::Cpu;
         let mut pages = Vec::new();
         let tensor = Tensor::randn(0.0f32, 1.0f32, (1, 10, 2, 4), &device).unwrap();
-        append_to_pages(4, &mut pages, &tensor).unwrap();
+        append_to_pages(4, &mut pages, &tensor, KvCacheQuantization::None).unwrap();
         assert_eq!(pages.len(), 3);
-        assert_eq!(pages[0].dim(1).unwrap(), 4);
-        assert_eq!(pages[1].dim(1).unwrap(), 4);
-        assert_eq!(pages[2].dim(1).unwrap(), 2);
+        assert_eq!(pages[0].seq_len().unwrap(), 4);
+        assert_eq!(pages[1].seq_len().unwrap(), 4);
+        assert_eq!(pages[2].seq_len().unwrap(), 2);
 
         let next = Tensor::randn(0.0f32, 1.0f32, (1, 3, 2, 4), &device).unwrap();
-        append_to_pages(4, &mut pages, &next).unwrap();
+        append_to_pages(4, &mut pages, &next, KvCacheQuantization::None).unwrap();
         assert_eq!(pages.len(), 4);
-        assert_eq!(pages[2].dim(1).unwrap(), 4);
-        assert_eq!(pages[3].dim(1).unwrap(), 1);
+        assert_eq!(pages[2].seq_len().unwrap(), 4);
+        assert_eq!(pages[3].seq_len().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_quantized_materialize_close_to_dense() {
+        let device = Device::Cpu;
+        let full = Tensor::randn(0.0f32, 1.0f32, (1, 17, 4, 8), &device).unwrap();
+        let mut pages = Vec::new();
+        append_to_pages(5, &mut pages, &full, KvCacheQuantization::Int8).unwrap();
+        let materialized = materialize_pages(&pages).unwrap();
+        let diff = max_abs_diff(&materialized, &full);
+        assert!(diff < 0.08, "max abs diff was {}", diff);
     }
 
     #[test]
@@ -219,8 +375,8 @@ mod tests {
 
         let mut k_pages = Vec::new();
         let mut v_pages = Vec::new();
-        append_to_pages(3, &mut k_pages, &k_full).unwrap();
-        append_to_pages(3, &mut v_pages, &v_full).unwrap();
+        append_to_pages(3, &mut k_pages, &k_full, KvCacheQuantization::None).unwrap();
+        append_to_pages(3, &mut v_pages, &v_full, KvCacheQuantization::None).unwrap();
 
         let paged = paged_decode_attention(&q, &k_pages, &v_pages, num_heads, head_dim).unwrap();
 
@@ -256,26 +412,74 @@ mod tests {
             .transpose(1, 2)
             .unwrap();
 
-        let paged_vals = paged
-            .to_dtype(DType::F32)
-            .unwrap()
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
-        let dense_vals = dense
-            .to_dtype(DType::F32)
-            .unwrap()
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
-        assert_eq!(paged_vals.len(), dense_vals.len());
+        let diff = max_abs_diff(&paged, &dense);
+        assert!(diff < 1e-4, "max abs diff was {}", diff);
+    }
 
-        let mut max_abs_diff = 0.0f32;
-        for (a, b) in paged_vals.iter().zip(dense_vals.iter()) {
-            max_abs_diff = max_abs_diff.max((a - b).abs());
-        }
-        assert!(max_abs_diff < 1e-4, "max abs diff was {}", max_abs_diff);
+    #[test]
+    fn test_quantized_paged_decode_matches_dense_single_token() {
+        let device = Device::Cpu;
+        let bsz = 2usize;
+        let num_heads = 4usize;
+        let head_dim = 8usize;
+        let total_len = 13usize;
+
+        let q = Tensor::randn(0.0f32, 1.0f32, (bsz, 1, num_heads, head_dim), &device).unwrap();
+        let k_full = Tensor::randn(
+            0.0f32,
+            1.0f32,
+            (bsz, total_len, num_heads, head_dim),
+            &device,
+        )
+        .unwrap();
+        let v_full = Tensor::randn(
+            0.0f32,
+            1.0f32,
+            (bsz, total_len, num_heads, head_dim),
+            &device,
+        )
+        .unwrap();
+
+        let mut k_pages = Vec::new();
+        let mut v_pages = Vec::new();
+        append_to_pages(4, &mut k_pages, &k_full, KvCacheQuantization::Int8).unwrap();
+        append_to_pages(4, &mut v_pages, &v_full, KvCacheQuantization::Int8).unwrap();
+
+        let paged = paged_decode_attention(&q, &k_pages, &v_pages, num_heads, head_dim).unwrap();
+
+        // Dense reference implementation.
+        let q_ref = q
+            .transpose(1, 2)
+            .unwrap()
+            .reshape((bsz * num_heads, 1, head_dim))
+            .unwrap();
+        let k_ref = k_full
+            .transpose(1, 2)
+            .unwrap()
+            .reshape((bsz * num_heads, total_len, head_dim))
+            .unwrap();
+        let v_ref = v_full
+            .transpose(1, 2)
+            .unwrap()
+            .reshape((bsz * num_heads, total_len, head_dim))
+            .unwrap();
+        let scale = (head_dim as f64).sqrt();
+        let mut scores = q_ref.matmul(&k_ref.transpose(1, 2).unwrap()).unwrap();
+        let scale_t = Tensor::from_vec(vec![scale as f32], (1,), &device)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap();
+        scores = scores.broadcast_div(&scale_t).unwrap();
+        let weights = ops::softmax(&scores, D::Minus1).unwrap();
+        let dense = weights
+            .matmul(&v_ref)
+            .unwrap()
+            .reshape((bsz, num_heads, 1, head_dim))
+            .unwrap()
+            .transpose(1, 2)
+            .unwrap();
+
+        let diff = max_abs_diff(&paged, &dense);
+        assert!(diff < 0.12, "max abs diff was {}", diff);
     }
 }

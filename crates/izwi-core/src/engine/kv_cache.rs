@@ -8,6 +8,7 @@
 //! - Memory usage tracking
 
 use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use tracing::debug;
 
 use super::types::{BlockId, RequestId};
@@ -265,6 +266,12 @@ pub struct KVCacheManager {
     request_prefix_hash: HashMap<RequestId, u64>,
     /// Number of active request mappings per shared prefix.
     prefix_ref_counts: HashMap<u64, usize>,
+    /// Advanced prefix index keyed by aligned prefix token length.
+    shared_prefix_levels: HashMap<usize, HashMap<u64, Vec<BlockId>>>,
+    /// Reference counts for advanced prefix index entries.
+    shared_prefix_level_ref_counts: HashMap<(usize, u64), usize>,
+    /// Prefix index entries registered by request (for cleanup).
+    request_prefix_entries: HashMap<RequestId, Vec<(usize, u64)>>,
     /// Minimum soft-cap floor for adaptive tuning.
     min_soft_blocks: usize,
     /// Last operation count sampled for churn tuning.
@@ -313,6 +320,9 @@ impl KVCacheManager {
             shared_prefixes: HashMap::new(),
             request_prefix_hash: HashMap::new(),
             prefix_ref_counts: HashMap::new(),
+            shared_prefix_levels: HashMap::new(),
+            shared_prefix_level_ref_counts: HashMap::new(),
+            request_prefix_entries: HashMap::new(),
             min_soft_blocks,
             last_tuned_ops: 0,
             telemetry: KVCacheTelemetry {
@@ -419,20 +429,105 @@ impl KVCacheManager {
         self.allocate(request_id, additional_blocks)
     }
 
+    /// Allocate blocks with block-granular prefix matching.
+    ///
+    /// Unlike `allocate_with_prefix`, this can reuse partial prefixes at block granularity
+    /// by matching progressively shorter aligned token prefixes.
+    pub fn allocate_with_prefix_tokens(
+        &mut self,
+        request_id: &RequestId,
+        num_blocks: usize,
+        prompt_tokens: &[u32],
+    ) -> Vec<BlockId> {
+        if num_blocks == 0 {
+            return Vec::new();
+        }
+
+        let block_size = self.config.block_size.max(1);
+        let mut reused = Vec::new();
+        let max_reusable_blocks = (prompt_tokens.len() / block_size).min(num_blocks);
+
+        if max_reusable_blocks > 0 {
+            for blocks in (1..=max_reusable_blocks).rev() {
+                let prefix_tokens = blocks * block_size;
+                let prefix_hash = Self::hash_prefix_tokens(&prompt_tokens[..prefix_tokens]);
+                if let Some(level) = self.shared_prefix_levels.get(&prefix_tokens) {
+                    if let Some(candidate_blocks) = level.get(&prefix_hash) {
+                        let mut acquired = Vec::with_capacity(blocks);
+                        let mut ok = true;
+                        for block_id in candidate_blocks.iter().take(blocks) {
+                            if self.allocator.incref(*block_id) {
+                                acquired.push(*block_id);
+                            } else {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if ok && acquired.len() == blocks {
+                            reused = acquired;
+                            self.telemetry.shared_prefix_hits += 1;
+                            break;
+                        }
+                        if !acquired.is_empty() {
+                            self.allocator.free_blocks(&acquired);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut block_ids = reused;
+        let remaining = num_blocks.saturating_sub(block_ids.len());
+        if remaining > 0 {
+            if let Some(mut fresh_blocks) = self.allocator.allocate(remaining) {
+                self.telemetry.total_allocations += fresh_blocks.len() as u64;
+                block_ids.append(&mut fresh_blocks);
+            } else {
+                self.allocator.free_blocks(&block_ids);
+                return Vec::new();
+            }
+        }
+
+        if block_ids.is_empty() {
+            return block_ids;
+        }
+
+        self.request_blocks
+            .entry(request_id.clone())
+            .or_default()
+            .extend(block_ids.iter().copied());
+        self.block_table
+            .entry(request_id.clone())
+            .or_default()
+            .extend(block_ids.iter().copied());
+
+        self.register_prefix_levels_for_request(request_id, &block_ids, prompt_tokens);
+        self.maybe_tune_soft_limit();
+
+        debug!(
+            "Allocated {} blocks for request {} with advanced prefix reuse: {:?}",
+            num_blocks, request_id, block_ids
+        );
+
+        block_ids
+    }
+
     /// Free all blocks for a request.
     pub fn free(&mut self, request_id: &RequestId) {
-        if let Some(block_ids) = self.request_blocks.remove(request_id) {
+        let released_blocks = self.request_blocks.remove(request_id).unwrap_or_default();
+        if !released_blocks.is_empty() {
             let allocated_before = self.allocator.num_allocated();
             debug!(
                 "Freeing {} blocks for request {}: {:?}",
-                block_ids.len(),
+                released_blocks.len(),
                 request_id,
-                block_ids
+                released_blocks
             );
-            self.allocator.free_blocks(&block_ids);
+            self.allocator.free_blocks(&released_blocks);
             let freed = allocated_before.saturating_sub(self.allocator.num_allocated());
             self.telemetry.total_frees += freed as u64;
         }
+        self.cleanup_prefix_levels_for_request(request_id);
         if let Some(prefix_hash) = self.request_prefix_hash.remove(request_id) {
             if let Some(ref_count) = self.prefix_ref_counts.get_mut(&prefix_hash) {
                 *ref_count = ref_count.saturating_sub(1);
@@ -444,6 +539,76 @@ impl KVCacheManager {
         }
         self.block_table.remove(request_id);
         self.maybe_tune_soft_limit();
+    }
+
+    fn hash_prefix_tokens(tokens: &[u32]) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        tokens.len().hash(&mut hasher);
+        for token in tokens {
+            token.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    fn register_prefix_levels_for_request(
+        &mut self,
+        request_id: &RequestId,
+        block_ids: &[BlockId],
+        prompt_tokens: &[u32],
+    ) {
+        if block_ids.is_empty() || prompt_tokens.is_empty() {
+            return;
+        }
+        let block_size = self.config.block_size.max(1);
+        let max_prefix_blocks = (prompt_tokens.len() / block_size).min(block_ids.len());
+        if max_prefix_blocks == 0 {
+            return;
+        }
+        let mut request_entries = Vec::with_capacity(max_prefix_blocks);
+
+        for blocks in 1..=max_prefix_blocks {
+            let token_len = blocks * block_size;
+            let hash = Self::hash_prefix_tokens(&prompt_tokens[..token_len]);
+            self.shared_prefix_levels
+                .entry(token_len)
+                .or_default()
+                .entry(hash)
+                .or_insert_with(|| block_ids[..blocks].to_vec());
+            *self
+                .shared_prefix_level_ref_counts
+                .entry((token_len, hash))
+                .or_insert(0) += 1;
+            request_entries.push((token_len, hash));
+        }
+
+        self.request_prefix_entries
+            .entry(request_id.clone())
+            .or_default()
+            .extend(request_entries);
+    }
+
+    fn cleanup_prefix_levels_for_request(&mut self, request_id: &RequestId) {
+        let Some(entries) = self.request_prefix_entries.remove(request_id) else {
+            return;
+        };
+
+        for (token_len, hash) in entries {
+            let key = (token_len, hash);
+            if let Some(ref_count) = self.shared_prefix_level_ref_counts.get_mut(&key) {
+                *ref_count = ref_count.saturating_sub(1);
+                if *ref_count == 0 {
+                    self.shared_prefix_level_ref_counts.remove(&key);
+                    let mut level_empty = false;
+                    if let Some(level) = self.shared_prefix_levels.get_mut(&token_len) {
+                        level.remove(&hash);
+                        level_empty = level.is_empty();
+                    }
+                    if level_empty {
+                        self.shared_prefix_levels.remove(&token_len);
+                    }
+                }
+            }
+        }
     }
 
     /// Get blocks allocated to a request.
@@ -1187,5 +1352,52 @@ mod tests {
         let req2_last = manager.get_block_table(&req2).unwrap()[1];
         assert_ne!(req1_last, req2_last);
         assert_eq!(manager.stats().telemetry.copy_on_write_splits, 1);
+    }
+
+    #[test]
+    fn test_advanced_prefix_cache_reuses_partial_blocks() {
+        let config = KVCacheConfig {
+            max_blocks: 32,
+            block_size: 4,
+            ..Default::default()
+        };
+        let mut manager = KVCacheManager::new(config);
+
+        let prompt_a = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let prompt_b = vec![1, 2, 3, 4, 5, 6, 7, 8, 44, 45, 46, 47];
+
+        let blocks_a = manager.allocate_with_prefix_tokens(&"req-a".to_string(), 3, &prompt_a);
+        assert_eq!(blocks_a.len(), 3);
+
+        let blocks_b = manager.allocate_with_prefix_tokens(&"req-b".to_string(), 3, &prompt_b);
+        assert_eq!(blocks_b.len(), 3);
+        assert_eq!(blocks_b[..2], blocks_a[..2]);
+        assert_ne!(blocks_b[2], blocks_a[2]);
+
+        let stats = manager.stats();
+        assert_eq!(stats.allocated_blocks, 4);
+        assert!(stats.telemetry.shared_prefix_hits >= 1);
+    }
+
+    #[test]
+    fn test_advanced_prefix_cleanup_preserves_live_entries() {
+        let config = KVCacheConfig {
+            max_blocks: 32,
+            block_size: 4,
+            ..Default::default()
+        };
+        let mut manager = KVCacheManager::new(config);
+
+        let prompt = vec![1, 2, 3, 4, 5, 6, 7, 8];
+
+        let blocks1 = manager.allocate_with_prefix_tokens(&"req-1".to_string(), 2, &prompt);
+        let blocks2 = manager.allocate_with_prefix_tokens(&"req-2".to_string(), 2, &prompt);
+        assert_eq!(blocks1, blocks2);
+
+        manager.free(&"req-1".to_string());
+
+        // req-2 still references the shared prefix. A new request should reuse it.
+        let blocks3 = manager.allocate_with_prefix_tokens(&"req-3".to_string(), 2, &prompt);
+        assert_eq!(blocks3, blocks2);
     }
 }

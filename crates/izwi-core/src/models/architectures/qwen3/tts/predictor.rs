@@ -14,39 +14,64 @@ use crate::models::batched_attention::{
 use crate::models::mlx_compat;
 use crate::models::qwen3_tts::config::CodePredictorConfig;
 use crate::models::shared::attention::paged::{
-    append_to_pages, default_kv_page_size, materialize_pages, paged_decode_attention,
+    append_to_pages, default_kv_page_size, default_kv_quantization, materialize_pages,
+    paged_decode_attention, KvCacheQuantization, KvPage,
 };
 
 /// KV Cache for the code predictor
 pub struct CodePredictorCache {
-    k_pages: Vec<Vec<Tensor>>,
-    v_pages: Vec<Vec<Tensor>>,
+    k_pages: Vec<Vec<KvPage>>,
+    v_pages: Vec<Vec<KvPage>>,
     page_size: usize,
+    quantization: KvCacheQuantization,
 }
 
 impl CodePredictorCache {
     /// Create a new cache
     pub fn new(num_layers: usize) -> Self {
-        Self::with_page_size(num_layers, default_kv_page_size())
+        Self::with_page_size_and_quantization(
+            num_layers,
+            default_kv_page_size(),
+            default_kv_quantization(),
+        )
     }
 
     /// Create a new cache with explicit page size.
     pub fn with_page_size(num_layers: usize, page_size: usize) -> Self {
+        Self::with_page_size_and_quantization(num_layers, page_size, default_kv_quantization())
+    }
+
+    pub fn with_page_size_and_quantization(
+        num_layers: usize,
+        page_size: usize,
+        quantization: KvCacheQuantization,
+    ) -> Self {
         Self {
             k_pages: vec![Vec::new(); num_layers],
             v_pages: vec![Vec::new(); num_layers],
             page_size: page_size.max(1),
+            quantization,
         }
     }
 
     /// Append new k, v to cache
     fn append(&mut self, layer: usize, k: Tensor, v: Tensor) -> Result<()> {
-        append_to_pages(self.page_size, &mut self.k_pages[layer], &k)?;
-        append_to_pages(self.page_size, &mut self.v_pages[layer], &v)?;
+        append_to_pages(
+            self.page_size,
+            &mut self.k_pages[layer],
+            &k,
+            self.quantization,
+        )?;
+        append_to_pages(
+            self.page_size,
+            &mut self.v_pages[layer],
+            &v,
+            self.quantization,
+        )?;
         Ok(())
     }
 
-    fn pages(&self, layer: usize) -> Option<(&[Tensor], &[Tensor])> {
+    fn pages(&self, layer: usize) -> Option<(&[KvPage], &[KvPage])> {
         let k = self.k_pages.get(layer)?;
         let v = self.v_pages.get(layer)?;
         if k.is_empty() || v.is_empty() {

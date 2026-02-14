@@ -344,9 +344,11 @@ impl RuntimeService {
         core_config.use_metal = config.use_metal;
         core_config.num_threads = config.num_threads.max(1);
         core_config.block_size = config.kv_page_size.max(1);
+        core_config.kv_cache_dtype = config.kv_cache_dtype.clone();
 
         let mut worker_config = WorkerConfig::from(&core_config);
         worker_config.models_dir = config.models_dir.clone();
+        worker_config.kv_cache_dtype = config.kv_cache_dtype.clone();
         worker_config.kv_page_size = config.kv_page_size.max(1);
         worker_config.shared_tts_model = Some(tts_model.clone());
         worker_config.model_registry = Some(model_registry.clone());

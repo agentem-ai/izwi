@@ -33,6 +33,10 @@ pub struct EngineCoreConfig {
     #[serde(default = "default_block_size")]
     pub block_size: usize,
 
+    /// KV cache storage dtype hint (float16, float32, int8, ...).
+    #[serde(default = "default_kv_cache_dtype")]
+    pub kv_cache_dtype: String,
+
     /// Maximum number of KV cache blocks
     #[serde(default = "default_max_blocks")]
     pub max_blocks: usize,
@@ -113,6 +117,9 @@ fn default_max_tokens_per_step() -> usize {
 fn default_block_size() -> usize {
     16
 }
+fn default_kv_cache_dtype() -> String {
+    "float16".to_string()
+}
 fn default_max_blocks() -> usize {
     1024
 }
@@ -168,6 +175,7 @@ impl Default for EngineCoreConfig {
             max_seq_len: default_max_seq_len(),
             max_tokens_per_step: default_max_tokens_per_step(),
             block_size: default_block_size(),
+            kv_cache_dtype: default_kv_cache_dtype(),
             max_blocks: default_max_blocks(),
             scheduling_policy: SchedulingPolicy::default(),
             enable_chunked_prefill: default_chunked_prefill(),
@@ -204,7 +212,16 @@ impl EngineCoreConfig {
         // Using typical values for audio models
         let hidden_dim = 1024;
         let num_layers = 24;
-        let dtype_bytes = 2; // float16
+        let requested_dtype_bytes = match self.kv_cache_dtype.trim().to_ascii_lowercase().as_str() {
+            "float32" | "f32" => 4,
+            "int8" | "i8" | "q8" | "q8_0" => 1,
+            _ => 2,
+        };
+        let dtype_bytes = if self.use_metal && requested_dtype_bytes != 1 {
+            4
+        } else {
+            requested_dtype_bytes
+        };
 
         self.max_blocks * self.block_size * hidden_dim * num_layers * 2 * dtype_bytes
     }
