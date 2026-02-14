@@ -111,15 +111,17 @@ impl EngineCore {
     pub fn new_with_worker(config: EngineCoreConfig, worker_config: WorkerConfig) -> Result<Self> {
         info!("Creating engine core");
 
+        let executor = UnifiedExecutor::new_native(worker_config);
+        Self::new_with_executor(config, executor)
+    }
+
+    fn new_with_executor(config: EngineCoreConfig, executor: UnifiedExecutor) -> Result<Self> {
         // Create scheduler
         let scheduler_config = SchedulerConfig::from(&config);
         let scheduler = Scheduler::new(scheduler_config);
 
         // Create KV cache manager
         let kv_cache = KvCacheBackend::new(&config)?;
-
-        // Create executor
-        let executor = UnifiedExecutor::new_native(worker_config);
 
         // Create output processor
         let output_processor =
@@ -135,6 +137,15 @@ impl EngineCore {
             request_start_times: HashMap::new(),
             initialized: false,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_unified_executor(
+        config: EngineCoreConfig,
+        executor: UnifiedExecutor,
+    ) -> Result<Self> {
+        info!("Creating engine core");
+        Self::new_with_executor(config, executor)
     }
 
     /// Initialize the engine core.
@@ -193,6 +204,15 @@ impl EngineCore {
         // Phase 1: Schedule
         self.kv_cache.maintenance()?;
         let schedule_result = self.scheduler.schedule(self.kv_cache.inner_mut());
+
+        if !schedule_result.preempted_requests.is_empty() {
+            let mut seen = HashSet::new();
+            for request_id in &schedule_result.preempted_requests {
+                if seen.insert(request_id.clone()) {
+                    self.executor.cleanup_request(request_id).await;
+                }
+            }
+        }
 
         if !schedule_result.has_work() {
             return Ok(Vec::new());
@@ -390,7 +410,78 @@ impl Drop for EngineCore {
 
 #[cfg(test)]
 mod tests {
+    use super::super::executor::{ExecutorOutput, ModelExecutor};
+    use super::super::scheduler::ScheduledRequest;
+    use super::super::types::Priority;
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    struct MockExecutor {
+        initialized: bool,
+        cleanup_calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl MockExecutor {
+        fn new(cleanup_calls: Arc<Mutex<Vec<String>>>) -> Self {
+            Self {
+                initialized: false,
+                cleanup_calls,
+            }
+        }
+
+        fn build_outputs(scheduled: &[ScheduledRequest]) -> Vec<ExecutorOutput> {
+            scheduled
+                .iter()
+                .map(|entry| ExecutorOutput {
+                    request_id: entry.request_id.clone(),
+                    audio: None,
+                    text: None,
+                    tokens_processed: entry.num_tokens.max(1),
+                    tokens_generated: usize::from(!entry.is_prefill),
+                    finished: false,
+                    error: None,
+                })
+                .collect()
+        }
+    }
+
+    impl ModelExecutor for MockExecutor {
+        fn execute_prefill(
+            &self,
+            _requests: &[&EngineCoreRequest],
+            scheduled: &[ScheduledRequest],
+        ) -> Result<Vec<ExecutorOutput>> {
+            Ok(Self::build_outputs(scheduled))
+        }
+
+        fn execute_decode(
+            &self,
+            _requests: &[&EngineCoreRequest],
+            scheduled: &[ScheduledRequest],
+        ) -> Result<Vec<ExecutorOutput>> {
+            Ok(Self::build_outputs(scheduled))
+        }
+
+        fn is_ready(&self) -> bool {
+            self.initialized
+        }
+
+        fn initialize(&mut self) -> Result<()> {
+            self.initialized = true;
+            Ok(())
+        }
+
+        fn shutdown(&mut self) -> Result<()> {
+            self.initialized = false;
+            Ok(())
+        }
+
+        fn cleanup_request(&self, request_id: &str) {
+            if let Ok(mut calls) = self.cleanup_calls.lock() {
+                calls.push(request_id.to_string());
+            }
+        }
+    }
 
     #[test]
     fn test_engine_core_creation() {
@@ -408,5 +499,51 @@ mod tests {
         let result = core.add_request(request);
         assert!(result.is_ok());
         assert_eq!(core.pending_request_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_step_cleans_executor_state_for_preempted_request() {
+        let cleanup_calls = Arc::new(Mutex::new(Vec::new()));
+        let executor =
+            UnifiedExecutor::new_for_test(Box::new(MockExecutor::new(cleanup_calls.clone())));
+
+        let config = EngineCoreConfig {
+            max_batch_size: 2,
+            max_tokens_per_step: 8,
+            min_tokens_per_step: 1,
+            block_size: 1,
+            max_blocks: 1,
+            scheduling_policy: super::super::scheduler::SchedulingPolicy::Priority,
+            enable_chunked_prefill: false,
+            enable_preemption: true,
+            enable_adaptive_batching: false,
+            use_metal: false,
+            ..Default::default()
+        };
+        let mut core = EngineCore::new_with_unified_executor(config, executor).unwrap();
+
+        let mut low = EngineCoreRequest::tts("low-priority");
+        low.id = "low-priority".to_string();
+        low.prompt_tokens = vec![1];
+        low.priority = Priority::Low;
+        core.add_request(low).unwrap();
+        let _ = core.step().await.unwrap();
+
+        let mut high = EngineCoreRequest::tts("high-priority");
+        high.id = "high-priority".to_string();
+        high.prompt_tokens = vec![1];
+        high.priority = Priority::High;
+        core.add_request(high).unwrap();
+        let _ = core.step().await.unwrap();
+
+        let calls = cleanup_calls.lock().unwrap().clone();
+        assert!(
+            calls.iter().any(|id| id == "low-priority"),
+            "preempted request must trigger executor cleanup to drop stale decode state"
+        );
+        assert_eq!(
+            core.get_request_status(&"low-priority".to_string()),
+            Some(RequestStatus::Waiting)
+        );
     }
 }
