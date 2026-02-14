@@ -128,6 +128,9 @@ impl Engine {
 
             for output in outputs {
                 if output.request_id == request_id && output.is_finished {
+                    if let Some(err) = output.error.clone() {
+                        return Err(crate::error::Error::InferenceError(err));
+                    }
                     return Ok(output);
                 }
             }
@@ -240,7 +243,7 @@ impl Engine {
     /// Abort a specific request.
     pub async fn abort_request(&self, request_id: &RequestId) -> Result<bool> {
         let mut core = self.core.write().await;
-        Ok(core.abort_request(request_id))
+        Ok(core.abort_request(request_id).await)
     }
 
     /// Check if a request is still tracked by the engine core.

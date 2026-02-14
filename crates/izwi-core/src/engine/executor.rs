@@ -1,7 +1,8 @@
 //! Model executor - handles forward pass execution.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info};
 
@@ -13,10 +14,13 @@ use super::types::{AudioOutput, ModelType, TaskType};
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::chat_types::ChatMessage;
-use crate::models::lfm2_audio::{lfm2_tts_voice_prompt, LFM2_DEFAULT_S2S_PROMPT};
+use crate::models::lfm2_audio::{
+    lfm2_tts_voice_prompt, SpeechToSpeechDecodeState, LFM2_DEFAULT_S2S_PROMPT,
+};
 use crate::models::qwen3_tts::{
     Qwen3TtsModel, SpeakerReference, TtsGenerationParams, TtsStreamingConfig,
 };
+use crate::models::registry::{NativeAsrDecodeState, NativeChatDecodeState};
 use crate::models::DeviceSelector;
 use crate::models::ModelRegistry;
 
@@ -187,12 +191,45 @@ pub trait ModelExecutor: Send + Sync {
 
     /// Shutdown the executor.
     fn shutdown(&mut self) -> Result<()>;
+
+    /// Cleanup transient per-request state held by the executor backend.
+    fn cleanup_request(&self, _request_id: &str) {}
 }
 
 pub struct NativeExecutor {
     config: WorkerConfig,
     initialized: bool,
     loaded_tts_model: Option<Arc<Qwen3TtsModel>>,
+    chat_decode_states: Mutex<HashMap<String, ActiveChatDecode>>,
+    asr_decode_states: Mutex<HashMap<String, ActiveAsrDecode>>,
+    speech_to_speech_decode_states: Mutex<HashMap<String, ActiveSpeechToSpeechDecode>>,
+}
+
+struct ActiveChatDecode {
+    variant: ModelVariant,
+    state: NativeChatDecodeState,
+    prompt_accounted: bool,
+    last_tokens_generated: usize,
+    stream_sequence: usize,
+}
+
+struct ActiveAsrDecode {
+    variant: ModelVariant,
+    state: NativeAsrDecodeState,
+    prompt_accounted: bool,
+    last_tokens_generated: usize,
+    stream_sequence: usize,
+    input_sample_rate: u32,
+    input_sample_count: usize,
+}
+
+struct ActiveSpeechToSpeechDecode {
+    variant: ModelVariant,
+    state: SpeechToSpeechDecodeState,
+    prompt_accounted: bool,
+    last_tokens_generated: usize,
+    stream_sequence: usize,
+    audio_samples_accum: Vec<f32>,
 }
 
 impl NativeExecutor {
@@ -202,6 +239,9 @@ impl NativeExecutor {
             config,
             initialized: false,
             loaded_tts_model: None,
+            chat_decode_states: Mutex::new(HashMap::new()),
+            asr_decode_states: Mutex::new(HashMap::new()),
+            speech_to_speech_decode_states: Mutex::new(HashMap::new()),
         }
     }
 
@@ -486,16 +526,132 @@ impl NativeExecutor {
         })
     }
 
-    fn transcribe_request(&self, request: &EngineCoreRequest) -> Result<ExecutorOutput> {
+    fn transcribe_request(
+        &self,
+        request: &EngineCoreRequest,
+        scheduled: &ScheduledRequest,
+    ) -> Result<ExecutorOutput> {
         let variant = Self::resolve_variant(request)?;
+        let language = request.language.as_deref();
+        let stream_tx = Self::stream_sender(request);
+
+        if let Some(tx) = stream_tx.as_ref() {
+            if !variant.is_voxtral() && !variant.is_lfm2() {
+                let model = self.with_registry(|registry| {
+                    registry.try_get_asr(variant).ok_or_else(|| {
+                        Error::ModelNotFound(format!("ASR model {variant} is not loaded"))
+                    })
+                })?;
+
+                if model.supports_incremental_decode() {
+                    let mut active_state = {
+                        let mut guard = self.asr_decode_states.lock().map_err(|_| {
+                            Error::InferenceError("ASR decode state mutex poisoned".to_string())
+                        })?;
+                        guard.remove(&request.id)
+                    };
+
+                    if active_state
+                        .as_ref()
+                        .map(|state| state.variant != variant)
+                        .unwrap_or(false)
+                    {
+                        active_state = None;
+                    }
+
+                    let mut active_state = if let Some(state) = active_state {
+                        state
+                    } else {
+                        let audio_b64 = request.audio_input.as_deref().ok_or_else(|| {
+                            Error::InvalidInput("ASR request missing audio input".to_string())
+                        })?;
+                        let (samples, sample_rate) = decode_audio_base64_with_rate(audio_b64)?;
+                        let max_new_tokens = request.params.max_tokens.clamp(1, 1024);
+                        let decode_state = Self::run_blocking(|| {
+                            model.start_decode_state(
+                                &samples,
+                                sample_rate,
+                                language,
+                                max_new_tokens,
+                            )
+                        })?;
+                        ActiveAsrDecode {
+                            variant,
+                            state: decode_state,
+                            prompt_accounted: false,
+                            last_tokens_generated: 0,
+                            stream_sequence: 0,
+                            input_sample_rate: sample_rate,
+                            input_sample_count: samples.len(),
+                        }
+                    };
+
+                    let step = Self::run_blocking(|| model.decode_step(&mut active_state.state))?;
+                    let step_tokens_generated = step
+                        .tokens_generated
+                        .saturating_sub(active_state.last_tokens_generated);
+                    active_state.last_tokens_generated = step.tokens_generated;
+
+                    let mut tokens_processed = scheduled.num_tokens.max(1);
+                    if !active_state.prompt_accounted {
+                        active_state.prompt_accounted = true;
+                        tokens_processed =
+                            tokens_processed.saturating_add(request.num_prompt_tokens());
+                    }
+
+                    if !step.delta.is_empty() {
+                        Self::stream_text(
+                            tx,
+                            &request.id,
+                            &mut active_state.stream_sequence,
+                            step.delta.clone(),
+                        )?;
+                    }
+                    if step.finished {
+                        Self::stream_final_marker(
+                            tx,
+                            &request.id,
+                            &mut active_state.stream_sequence,
+                        )?;
+                    }
+
+                    let input_sample_rate = active_state.input_sample_rate;
+                    let input_sample_count = active_state.input_sample_count;
+
+                    if !step.finished {
+                        let mut guard = self.asr_decode_states.lock().map_err(|_| {
+                            Error::InferenceError("ASR decode state mutex poisoned".to_string())
+                        })?;
+                        guard.insert(request.id.clone(), active_state);
+                    }
+
+                    return Ok(ExecutorOutput {
+                        request_id: request.id.clone(),
+                        audio: Some(AudioOutput {
+                            samples: Vec::new(),
+                            sample_rate: input_sample_rate,
+                            duration_secs: if input_sample_rate > 0 {
+                                input_sample_count as f32 / input_sample_rate as f32
+                            } else {
+                                0.0
+                            },
+                        }),
+                        text: Some(step.text),
+                        tokens_processed,
+                        tokens_generated: step_tokens_generated,
+                        finished: step.finished,
+                        error: None,
+                    });
+                }
+            }
+        }
+
         let audio_b64 = request
             .audio_input
             .as_deref()
             .ok_or_else(|| Error::InvalidInput("ASR request missing audio input".to_string()))?;
         let (samples, sample_rate) = decode_audio_base64_with_rate(audio_b64)?;
         let samples_len = samples.len();
-        let language = request.language.as_deref();
-        let stream_tx = Self::stream_sender(request);
 
         let text = Self::run_blocking(|| {
             let mut sequence = 0usize;
@@ -616,48 +772,134 @@ impl NativeExecutor {
             .ok_or_else(|| Error::InvalidInput("Chat request missing messages".to_string()))
     }
 
-    fn chat_request(&self, request: &EngineCoreRequest) -> Result<ExecutorOutput> {
+    fn chat_request(
+        &self,
+        request: &EngineCoreRequest,
+        scheduled: &ScheduledRequest,
+    ) -> Result<ExecutorOutput> {
         let variant = Self::resolve_variant(request)?;
         let messages = Self::chat_messages(request)?;
         let max_new_tokens = request.params.max_tokens.max(1);
         let stream_tx = Self::stream_sender(request);
 
-        let output = Self::run_blocking(|| {
-            let model = self.with_registry(|registry| {
-                registry.try_get_chat(variant).ok_or_else(|| {
-                    Error::ModelNotFound(format!("Chat model {variant} is not loaded"))
-                })
-            })?;
-            if let Some(tx) = stream_tx.as_ref() {
-                let mut sequence = 0usize;
-                let mut stream_err: Option<Error> = None;
-                let mut emit = |delta: &str| {
-                    if stream_err.is_none() {
-                        if let Err(err) =
-                            Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
-                        {
-                            stream_err = Some(err);
-                        }
-                    }
-                };
-                let output = model.generate_with_callback(messages, max_new_tokens, &mut emit)?;
-                if let Some(err) = stream_err {
-                    return Err(err);
-                }
-                Self::stream_final_marker(tx, &request.id, &mut sequence)?;
-                Ok(output)
-            } else {
-                model.generate(messages, max_new_tokens)
-            }
+        let model = self.with_registry(|registry| {
+            registry
+                .try_get_chat(variant)
+                .ok_or_else(|| Error::ModelNotFound(format!("Chat model {variant} is not loaded")))
         })?;
+
+        // Fallback path for chat backends that do not expose incremental decode state.
+        if !model.supports_incremental_decode() {
+            let output = Self::run_blocking(|| {
+                if let Some(tx) = stream_tx.as_ref() {
+                    let mut sequence = 0usize;
+                    let mut stream_err: Option<Error> = None;
+                    let mut emit = |delta: &str| {
+                        if stream_err.is_none() {
+                            if let Err(err) =
+                                Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
+                            {
+                                stream_err = Some(err);
+                            }
+                        }
+                    };
+                    let output =
+                        model.generate_with_callback(messages, max_new_tokens, &mut emit)?;
+                    if let Some(err) = stream_err {
+                        return Err(err);
+                    }
+                    Self::stream_final_marker(tx, &request.id, &mut sequence)?;
+                    Ok(output)
+                } else {
+                    model.generate(messages, max_new_tokens)
+                }
+            })?;
+
+            return Ok(ExecutorOutput {
+                request_id: request.id.clone(),
+                audio: Some(AudioOutput::empty(24_000)),
+                text: Some(output.text),
+                tokens_processed: request.num_prompt_tokens(),
+                tokens_generated: output.tokens_generated.max(1),
+                finished: true,
+                error: None,
+            });
+        }
+
+        let mut active_state = {
+            let mut guard = self.chat_decode_states.lock().map_err(|_| {
+                Error::InferenceError("Chat decode state mutex poisoned".to_string())
+            })?;
+            if scheduled.is_prefill {
+                // Prefill scheduling can happen after preemption; reset stale state.
+                guard.remove(&request.id)
+            } else {
+                guard.remove(&request.id)
+            }
+        };
+
+        if active_state
+            .as_ref()
+            .map(|state| state.variant != variant)
+            .unwrap_or(false)
+        {
+            active_state = None;
+        }
+
+        let mut active_state = if let Some(state) = active_state {
+            state
+        } else {
+            let decode_state =
+                Self::run_blocking(|| model.start_decode_state(messages, max_new_tokens))?;
+            ActiveChatDecode {
+                variant,
+                state: decode_state,
+                prompt_accounted: false,
+                last_tokens_generated: 0,
+                stream_sequence: 0,
+            }
+        };
+
+        let step = Self::run_blocking(|| model.decode_step(&mut active_state.state))?;
+        let step_tokens_generated = step
+            .tokens_generated
+            .saturating_sub(active_state.last_tokens_generated);
+        active_state.last_tokens_generated = step.tokens_generated;
+
+        let mut tokens_processed = scheduled.num_tokens.max(1);
+        if !active_state.prompt_accounted {
+            active_state.prompt_accounted = true;
+            tokens_processed = tokens_processed.saturating_add(request.num_prompt_tokens());
+        }
+
+        if let Some(tx) = stream_tx.as_ref() {
+            if !step.delta.is_empty() {
+                Self::stream_text(
+                    tx,
+                    &request.id,
+                    &mut active_state.stream_sequence,
+                    step.delta.clone(),
+                )?;
+            }
+            if step.finished {
+                Self::stream_final_marker(tx, &request.id, &mut active_state.stream_sequence)?;
+            }
+        }
+
+        if !step.finished {
+            let mut guard = self.chat_decode_states.lock().map_err(|_| {
+                Error::InferenceError("Chat decode state mutex poisoned".to_string())
+            })?;
+            guard.insert(request.id.clone(), active_state);
+        }
 
         Ok(ExecutorOutput {
             request_id: request.id.clone(),
             audio: Some(AudioOutput::empty(24_000)),
-            text: Some(output.text),
-            tokens_processed: request.num_prompt_tokens(),
-            tokens_generated: output.tokens_generated.max(1),
-            finished: true,
+            text: Some(step.text),
+            tokens_processed,
+            tokens_generated: step_tokens_generated,
+            finished: step.finished,
             error: None,
         })
     }
@@ -774,12 +1016,12 @@ impl NativeExecutor {
         })
     }
 
-    fn speech_to_speech_request(&self, request: &EngineCoreRequest) -> Result<ExecutorOutput> {
+    fn speech_to_speech_request(
+        &self,
+        request: &EngineCoreRequest,
+        scheduled: &ScheduledRequest,
+    ) -> Result<ExecutorOutput> {
         let variant = Self::resolve_variant(request)?;
-        let audio_b64 = request.audio_input.as_deref().ok_or_else(|| {
-            Error::InvalidInput("Speech-to-speech request missing audio input".to_string())
-        })?;
-        let (samples, sample_rate) = decode_audio_base64_with_rate(audio_b64)?;
         let system_prompt = request
             .system_prompt
             .as_deref()
@@ -795,70 +1037,146 @@ impl NativeExecutor {
         let max_new_tokens = request.params.max_tokens.max(1);
         let stream_tx = Self::stream_sender(request);
 
-        let (text, output_samples) = Self::run_blocking(|| {
+        if let Some(tx) = stream_tx.as_ref() {
             let model = self.with_registry(|registry| {
                 registry.try_get_lfm2(variant).ok_or_else(|| {
                     Error::ModelNotFound(format!("LFM2 model {variant} is not loaded"))
                 })
             })?;
-            if let Some(tx) = stream_tx.as_ref() {
-                let mut sequence = 0usize;
-                let mut stream_err: Option<Error> = None;
-                let mut on_delta = |delta: &str| {
-                    if stream_err.is_none() {
-                        if let Err(err) =
-                            Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
-                        {
-                            stream_err = Some(err);
-                        }
-                    }
-                };
 
-                let (text, output_samples) = model.speech_to_speech_with_callback(
-                    &samples,
-                    sample_rate,
-                    Some(system_prompt),
-                    Some(resolved_temperature),
-                    Some(resolved_top_k),
-                    max_new_tokens,
-                    &mut on_delta,
-                )?;
+            let mut active_state = {
+                let mut guard = self.speech_to_speech_decode_states.lock().map_err(|_| {
+                    Error::InferenceError(
+                        "Speech-to-speech decode state mutex poisoned".to_string(),
+                    )
+                })?;
+                guard.remove(&request.id)
+            };
 
-                if let Some(err) = stream_err {
-                    return Err(err);
-                }
-
-                if !output_samples.is_empty() {
-                    let chunk_size = 4_800usize;
-                    let total_chunks = output_samples.len().div_ceil(chunk_size);
-                    for (idx, chunk) in output_samples.chunks(chunk_size).enumerate() {
-                        let is_final = idx + 1 >= total_chunks;
-                        Self::stream_audio(
-                            tx,
-                            &request.id,
-                            &mut sequence,
-                            chunk.to_vec(),
-                            24_000,
-                            is_final,
-                        )?;
-                    }
-                } else {
-                    Self::stream_final_marker(tx, &request.id, &mut sequence)?;
-                }
-
-                Ok((text, output_samples))
-            } else {
-                let mut sink = |_delta: &str| {};
-                model.speech_to_speech_with_callback(
-                    &samples,
-                    sample_rate,
-                    Some(system_prompt),
-                    Some(resolved_temperature),
-                    Some(resolved_top_k),
-                    max_new_tokens,
-                    &mut sink,
-                )
+            if active_state
+                .as_ref()
+                .map(|state| state.variant != variant)
+                .unwrap_or(false)
+            {
+                active_state = None;
             }
+
+            let mut active_state = if let Some(state) = active_state {
+                state
+            } else {
+                let audio_b64 = request.audio_input.as_deref().ok_or_else(|| {
+                    Error::InvalidInput("Speech-to-speech request missing audio input".to_string())
+                })?;
+                let (samples, sample_rate) = decode_audio_base64_with_rate(audio_b64)?;
+                let decode_state = Self::run_blocking(|| {
+                    model.start_speech_to_speech_decode(
+                        &samples,
+                        sample_rate,
+                        Some(system_prompt),
+                        Some(resolved_temperature),
+                        Some(resolved_top_k),
+                        max_new_tokens,
+                    )
+                })?;
+                ActiveSpeechToSpeechDecode {
+                    variant,
+                    state: decode_state,
+                    prompt_accounted: false,
+                    last_tokens_generated: 0,
+                    stream_sequence: 0,
+                    audio_samples_accum: Vec::new(),
+                }
+            };
+
+            let step =
+                Self::run_blocking(|| model.speech_to_speech_decode_step(&mut active_state.state))?;
+            let step_tokens_generated = step
+                .tokens_generated
+                .saturating_sub(active_state.last_tokens_generated);
+            active_state.last_tokens_generated = step.tokens_generated;
+
+            let mut tokens_processed = scheduled.num_tokens.max(1);
+            if !active_state.prompt_accounted {
+                active_state.prompt_accounted = true;
+                tokens_processed = tokens_processed.saturating_add(request.num_prompt_tokens());
+            }
+
+            if !step.delta.is_empty() {
+                Self::stream_text(
+                    tx,
+                    &request.id,
+                    &mut active_state.stream_sequence,
+                    step.delta.clone(),
+                )?;
+            }
+
+            if let Some(frame) = step.audio_frame.as_ref() {
+                let chunk_samples = Self::run_blocking(|| model.decode_audio_frame(frame))?;
+                if !chunk_samples.is_empty() {
+                    active_state
+                        .audio_samples_accum
+                        .extend_from_slice(&chunk_samples);
+                    Self::stream_audio(
+                        tx,
+                        &request.id,
+                        &mut active_state.stream_sequence,
+                        chunk_samples,
+                        24_000,
+                        false,
+                    )?;
+                }
+            }
+
+            if step.finished {
+                Self::stream_final_marker(tx, &request.id, &mut active_state.stream_sequence)?;
+            }
+
+            let finished_samples = if step.finished {
+                active_state.audio_samples_accum.clone()
+            } else {
+                Vec::new()
+            };
+
+            if !step.finished {
+                let mut guard = self.speech_to_speech_decode_states.lock().map_err(|_| {
+                    Error::InferenceError(
+                        "Speech-to-speech decode state mutex poisoned".to_string(),
+                    )
+                })?;
+                guard.insert(request.id.clone(), active_state);
+            }
+
+            return Ok(ExecutorOutput {
+                request_id: request.id.clone(),
+                audio: Some(AudioOutput::new(finished_samples, 24_000)),
+                text: Some(step.text),
+                tokens_processed,
+                tokens_generated: step_tokens_generated,
+                finished: step.finished,
+                error: None,
+            });
+        }
+
+        let audio_b64 = request.audio_input.as_deref().ok_or_else(|| {
+            Error::InvalidInput("Speech-to-speech request missing audio input".to_string())
+        })?;
+        let (samples, sample_rate) = decode_audio_base64_with_rate(audio_b64)?;
+        let model = self.with_registry(|registry| {
+            registry
+                .try_get_lfm2(variant)
+                .ok_or_else(|| Error::ModelNotFound(format!("LFM2 model {variant} is not loaded")))
+        })?;
+        let (text, output_samples) = Self::run_blocking(|| {
+            let mut sink = |_delta: &str| {};
+            model.speech_to_speech_with_callback(
+                &samples,
+                sample_rate,
+                Some(system_prompt),
+                Some(resolved_temperature),
+                Some(resolved_top_k),
+                max_new_tokens,
+                &mut sink,
+            )
         })?;
 
         Ok(ExecutorOutput {
@@ -916,9 +1234,9 @@ impl NativeExecutor {
                         })
                     }
                 }
-                TaskType::ASR => self.transcribe_request(request),
-                TaskType::Chat => self.chat_request(request),
-                TaskType::SpeechToSpeech => self.speech_to_speech_request(request),
+                TaskType::ASR => self.transcribe_request(request, scheduled_req),
+                TaskType::Chat => self.chat_request(request, scheduled_req),
+                TaskType::SpeechToSpeech => self.speech_to_speech_request(request, scheduled_req),
             };
 
             match result {
@@ -1000,7 +1318,28 @@ impl ModelExecutor for NativeExecutor {
         info!("Shutting down native executor");
         self.initialized = false;
         self.loaded_tts_model = None;
+        if let Ok(mut guard) = self.chat_decode_states.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.asr_decode_states.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.speech_to_speech_decode_states.lock() {
+            guard.clear();
+        }
         Ok(())
+    }
+
+    fn cleanup_request(&self, request_id: &str) {
+        if let Ok(mut guard) = self.chat_decode_states.lock() {
+            guard.remove(request_id);
+        }
+        if let Ok(mut guard) = self.asr_decode_states.lock() {
+            guard.remove(request_id);
+        }
+        if let Ok(mut guard) = self.speech_to_speech_decode_states.lock() {
+            guard.remove(request_id);
+        }
     }
 }
 
@@ -1063,6 +1402,12 @@ impl UnifiedExecutor {
     pub async fn shutdown(&self) -> Result<()> {
         let mut executor = self.inner.write().await;
         executor.shutdown()
+    }
+
+    /// Cleanup transient backend state for a completed/aborted request.
+    pub async fn cleanup_request(&self, request_id: &str) {
+        let executor = self.inner.read().await;
+        executor.cleanup_request(request_id);
     }
 }
 

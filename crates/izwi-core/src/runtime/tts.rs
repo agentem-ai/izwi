@@ -28,7 +28,7 @@ impl RuntimeService {
         core_request.voice_description = request.voice_description.clone();
         core_request.params = core_params_from_generation(&request.config);
 
-        let output = self.core_engine.generate(core_request).await?;
+        let output = self.run_request(core_request).await?;
         let samples = output.audio.samples;
         let sample_rate = output.audio.sample_rate;
         let total_tokens = output.num_tokens;

@@ -160,6 +160,8 @@ pub struct EngineOutput {
     pub finish_reason: Option<FinishReason>,
     /// Token statistics
     pub token_stats: TokenStats,
+    /// Backend execution error when generation failed.
+    pub error: Option<String>,
 }
 
 impl EngineOutput {

@@ -294,6 +294,7 @@ impl EngineCore {
 
             // Update scheduler state
             if exec_output.finished {
+                self.executor.cleanup_request(&request_id).await;
                 self.scheduler
                     .finish_request(&request_id, self.kv_cache.inner_mut());
                 self.requests.remove(&request_id);
@@ -323,11 +324,12 @@ impl EngineCore {
     }
 
     /// Abort a request.
-    pub fn abort_request(&mut self, request_id: &RequestId) -> bool {
+    pub async fn abort_request(&mut self, request_id: &RequestId) -> bool {
         if self
             .scheduler
             .abort_request(request_id, self.kv_cache.inner_mut())
         {
+            self.executor.cleanup_request(request_id).await;
             self.requests.remove(request_id);
             self.request_start_times.remove(request_id);
             debug!("Aborted request {}", request_id);
@@ -364,7 +366,7 @@ impl EngineCore {
         // Abort all pending requests
         let request_ids: Vec<_> = self.requests.keys().cloned().collect();
         for id in request_ids {
-            self.abort_request(&id);
+            self.abort_request(&id).await;
         }
 
         // Shutdown executor
