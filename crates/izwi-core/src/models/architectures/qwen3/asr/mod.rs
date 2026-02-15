@@ -5,6 +5,7 @@ mod config;
 mod tokenizer;
 
 use std::path::Path;
+use std::{fs, io::Read};
 
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
@@ -38,6 +39,7 @@ pub struct Qwen3AsrModel {
     device: DeviceProfile,
     audio_dtype: DType,
     text_dtype: DType,
+    is_forced_aligner: bool,
     timestamp_token_id: Option<u32>,
     timestamp_segment_time_ms: Option<u32>,
     tokenizer: AsrTokenizer,
@@ -70,18 +72,43 @@ pub struct AsrDecodeStep {
 impl Qwen3AsrModel {
     pub fn load(model_dir: &Path, device: DeviceProfile) -> Result<Self> {
         let config_path = model_dir.join("config.json");
-        let config_str = std::fs::read_to_string(config_path)?;
+        let config_str = fs::read_to_string(config_path)?;
         let config: Qwen3AsrConfig = serde_json::from_str(&config_str)?;
         let timestamp_token_id = config.timestamp_token_id;
         let timestamp_segment_time_ms = config.timestamp_segment_time.map(|v| v as u32);
+        let is_forced_aligner = config
+            .thinker_config
+            .model_type
+            .as_deref()
+            .map(|name| name.to_ascii_lowercase().contains("forced_aligner"))
+            .unwrap_or(false)
+            || config.thinker_config.classify_num.is_some();
 
-        let tokenizer =
-            AsrTokenizer::load(model_dir, config.thinker_config.text_config.vocab_size)?;
+        let mut text_cfg = config.thinker_config.text_config.clone();
+        let inferred_lm_head_size =
+            infer_lm_head_size_from_checkpoint(model_dir, Some("thinker.lm_head.weight"))?.or(
+                infer_lm_head_size_from_checkpoint(model_dir, Some("lm_head.weight"))?,
+            );
+        if let Some(inferred_lm_head_size) = inferred_lm_head_size {
+            if inferred_lm_head_size != text_cfg.vocab_size {
+                debug!(
+                    "Overriding Qwen3-ASR lm_head output size from {} to {}",
+                    text_cfg.vocab_size, inferred_lm_head_size
+                );
+                text_cfg.lm_head_size = Some(inferred_lm_head_size);
+            }
+        } else if let Some(classify_num) = config.thinker_config.classify_num {
+            if classify_num != text_cfg.vocab_size {
+                text_cfg.lm_head_size = Some(classify_num);
+            }
+        }
+
+        let tokenizer = AsrTokenizer::load(model_dir, text_cfg.vocab_size)?;
         let specials = tokenizer.specials().clone();
 
         let preprocessor: PreprocessorConfig = {
             let path = model_dir.join("preprocessor_config.json");
-            let data = std::fs::read_to_string(path)?;
+            let data = fs::read_to_string(path)?;
             serde_json::from_str(&data)?
         };
 
@@ -132,7 +159,7 @@ impl Qwen3AsrModel {
         let index_path = model_dir.join("model.safetensors.index.json");
         let vb_text = if index_path.exists() {
             // Load sharded weights
-            let index_data = std::fs::read_to_string(&index_path)?;
+            let index_data = fs::read_to_string(&index_path)?;
             let index: serde_json::Value = serde_json::from_str(&index_data)?;
 
             // Collect unique shard files from the index
@@ -168,7 +195,7 @@ impl Qwen3AsrModel {
             }
         };
         let vb_audio = if index_path.exists() {
-            let index_data = std::fs::read_to_string(&index_path)?;
+            let index_data = fs::read_to_string(&index_path)?;
             let index: serde_json::Value = serde_json::from_str(&index_data)?;
             let weight_map = index
                 .get("weight_map")
@@ -210,7 +237,6 @@ impl Qwen3AsrModel {
 
         let audio_cfg = config.thinker_config.audio_config.clone();
         let audio_tower = AudioTower::load(audio_cfg, vb_audio.pp("audio_tower"))?;
-        let text_cfg = config.thinker_config.text_config.clone();
         let text_model = Qwen3Model::load(text_cfg, vb_text)?;
 
         info!("Loaded Qwen3-ASR model on {:?}", device.kind);
@@ -219,6 +245,7 @@ impl Qwen3AsrModel {
             device,
             audio_dtype,
             text_dtype,
+            is_forced_aligner,
             timestamp_token_id,
             timestamp_segment_time_ms,
             tokenizer,
@@ -247,6 +274,12 @@ impl Qwen3AsrModel {
         language: Option<&str>,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String> {
+        if self.is_forced_aligner {
+            return Err(Error::InvalidInput(
+                "Qwen3-ForcedAligner models do not support transcription. Use forced alignment instead."
+                    .to_string(),
+            ));
+        }
         let mut state = self.start_decode(audio, sample_rate, language, 256)?;
         loop {
             let step = self.decode_step(&mut state)?;
@@ -269,6 +302,11 @@ impl Qwen3AsrModel {
         language: Option<&str>,
         max_new_tokens: usize,
     ) -> Result<AsrDecodeState> {
+        if self.is_forced_aligner {
+            return Err(Error::InvalidInput(
+                "Qwen3-ForcedAligner models do not support transcription decode state.".to_string(),
+            ));
+        }
         let audio = if sample_rate != 16_000 {
             resample(audio, sample_rate, 16_000)?
         } else {
@@ -400,6 +438,10 @@ impl Qwen3AsrModel {
         sample_rate: u32,
         reference_text: &str,
     ) -> Result<Vec<(String, u32, u32)>> {
+        if self.is_forced_aligner {
+            return self.force_align_with_nar_head(audio, sample_rate, reference_text);
+        }
+
         let audio = if sample_rate != 16_000 {
             resample(audio, sample_rate, 16_000)?
         } else {
@@ -485,6 +527,150 @@ impl Qwen3AsrModel {
         }
 
         self.parse_alignment(&generated, reference_text, audio.len() as u32 / 16)
+    }
+
+    fn force_align_with_nar_head(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        reference_text: &str,
+    ) -> Result<Vec<(String, u32, u32)>> {
+        let audio = if sample_rate != 16_000 {
+            resample(audio, sample_rate, 16_000)?
+        } else {
+            audio.to_vec()
+        };
+
+        let mut mel_spec = self.mel.compute(&audio)?;
+        if self.preprocessor.nb_max_frames > 0 && mel_spec.len() > self.preprocessor.nb_max_frames {
+            mel_spec.truncate(self.preprocessor.nb_max_frames);
+        }
+
+        let n_mels = self.mel.config().n_mels;
+        if mel_spec.is_empty() {
+            return Err(Error::InvalidInput("Empty audio input".to_string()));
+        }
+
+        let frames = mel_spec.len();
+        let mut flat = Vec::with_capacity(frames * n_mels);
+        for frame in mel_spec.iter() {
+            flat.extend_from_slice(frame);
+        }
+
+        let mel = Tensor::from_vec(flat, (frames, n_mels), &self.device.device)?
+            .transpose(0, 1)?
+            .unsqueeze(0)?
+            .unsqueeze(0)?
+            .to_dtype(self.audio_dtype)?;
+
+        let feature_lens = vec![frames];
+        let mut audio_embeds = self.audio_tower.forward(&mel, Some(&feature_lens))?;
+        if audio_embeds.dtype() != self.text_dtype {
+            audio_embeds = audio_embeds.to_dtype(self.text_dtype)?;
+        }
+        let audio_len = audio_embeds.dim(1)?;
+
+        let words = extract_alignment_words(reference_text);
+        if words.is_empty() {
+            return Err(Error::InvalidInput(
+                "Reference text produced no alignable words".to_string(),
+            ));
+        }
+
+        let prompt = self.build_forced_aligner_prompt(audio_len, &words)?;
+        let timestamp_positions: Vec<usize> = prompt
+            .ids
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, token_id)| (*token_id == prompt.timestamp_token_id).then_some(idx))
+            .collect();
+        if timestamp_positions.is_empty() {
+            return Err(Error::InferenceError(
+                "Forced aligner prompt contains no timestamp markers".to_string(),
+            ));
+        }
+
+        let input_ids = Tensor::from_vec(
+            prompt.ids.clone(),
+            (1, prompt.ids.len()),
+            &self.device.device,
+        )?;
+
+        let mut cache = Qwen3Cache::new(self.text_model.num_layers());
+        let logits = self.forward_with_audio(
+            &input_ids,
+            &audio_embeds,
+            prompt.audio_pad_start,
+            prompt.audio_pad_len,
+            &mut cache,
+        )?;
+
+        let segment_time_ms = self.timestamp_segment_time_ms.unwrap_or(20).max(1);
+        let mut timestamp_ms = Vec::with_capacity(timestamp_positions.len());
+        for &position in &timestamp_positions {
+            let token_logits = logits.i((0, position))?;
+            let cls_idx = argmax(&token_logits)?;
+            timestamp_ms.push(cls_idx.saturating_mul(segment_time_ms));
+        }
+
+        let mut fixed = fix_timestamp_sequence(&timestamp_ms);
+        let required = words.len().saturating_mul(2);
+        if fixed.len() < required {
+            let fill = fixed.last().copied().unwrap_or(0);
+            fixed.resize(required, fill);
+        }
+
+        let mut alignments = Vec::with_capacity(words.len());
+        for (idx, word) in words.iter().enumerate() {
+            let start = fixed.get(idx * 2).copied().unwrap_or(0);
+            let mut end = fixed
+                .get(idx * 2 + 1)
+                .copied()
+                .unwrap_or_else(|| start.saturating_add(segment_time_ms));
+            if end <= start {
+                end = start.saturating_add(1);
+            }
+            alignments.push((word.clone(), start, end));
+        }
+
+        let audio_duration_ms = ((audio.len() as f32 / 16_000.0) * 1000.0).round() as u32;
+        normalize_alignment_bounds(&mut alignments, audio_duration_ms);
+        Ok(alignments)
+    }
+
+    fn build_forced_aligner_prompt(
+        &self,
+        audio_len: usize,
+        words: &[String],
+    ) -> Result<ForcedAlignerPrompt> {
+        let timestamp_token_id = self
+            .specials
+            .timestamp
+            .or(self.timestamp_token_id)
+            .ok_or_else(|| {
+                Error::InvalidInput(
+                    "Forced aligner model is missing timestamp token metadata".to_string(),
+                )
+            })?;
+
+        let mut ids = Vec::new();
+        ids.push(self.specials.audio_start);
+        let audio_pad_start = ids.len();
+        ids.extend(std::iter::repeat_n(self.specials.audio_token, audio_len));
+        ids.push(self.specials.audio_end);
+
+        for word in words {
+            ids.extend(self.tokenizer.encode_text(word)?);
+            ids.push(timestamp_token_id);
+            ids.push(timestamp_token_id);
+        }
+
+        Ok(ForcedAlignerPrompt {
+            ids,
+            audio_pad_start,
+            audio_pad_len: audio_len,
+            timestamp_token_id,
+        })
     }
 
     fn decode_generated_untrimmed(&self, tokens: &[u32]) -> Result<String> {
@@ -734,13 +920,53 @@ impl Qwen3AsrModel {
 }
 
 fn extract_alignment_words(text: &str) -> Vec<String> {
-    text.split_whitespace()
-        .map(|word| {
-            word.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '\'' && ch != '-')
-                .to_string()
-        })
-        .filter(|word| !word.is_empty())
-        .collect()
+    let mut words = Vec::new();
+    let mut current = String::new();
+
+    let flush = |buffer: &mut String, out: &mut Vec<String>| {
+        if buffer.is_empty() {
+            return;
+        }
+        out.push(buffer.clone());
+        buffer.clear();
+    };
+
+    for ch in text.chars() {
+        if is_east_asian_char(ch) {
+            flush(&mut current, &mut words);
+            words.push(ch.to_string());
+            continue;
+        }
+
+        if is_alignment_word_char(ch) {
+            current.push(ch);
+        } else {
+            flush(&mut current, &mut words);
+        }
+    }
+    flush(&mut current, &mut words);
+
+    words
+}
+
+fn is_alignment_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '\'' || ch == '-'
+}
+
+fn is_east_asian_char(ch: char) -> bool {
+    let code = ch as u32;
+    (0x4E00..=0x9FFF).contains(&code)
+        || (0x3400..=0x4DBF).contains(&code)
+        || (0x20000..=0x2A6DF).contains(&code)
+        || (0x2A700..=0x2B73F).contains(&code)
+        || (0x2B740..=0x2B81F).contains(&code)
+        || (0x2B820..=0x2CEAF).contains(&code)
+        || (0xF900..=0xFAFF).contains(&code)
+        || (0x3040..=0x309F).contains(&code) // Hiragana
+        || (0x30A0..=0x30FF).contains(&code) // Katakana
+        || (0xAC00..=0xD7AF).contains(&code) // Hangul syllables
+        || (0x1100..=0x11FF).contains(&code) // Hangul Jamo
+        || (0x3130..=0x318F).contains(&code) // Hangul Compatibility Jamo
 }
 
 fn distribute_words_over_interval(
@@ -815,6 +1041,196 @@ fn normalize_alignment_bounds(alignments: &mut [(String, u32, u32)], audio_durat
     }
 }
 
+const MAX_SAFE_TENSORS_HEADER_SIZE: usize = 100_000_000;
+
+fn infer_lm_head_size_from_checkpoint(
+    model_dir: &Path,
+    tensor_name: Option<&str>,
+) -> Result<Option<usize>> {
+    let tensor_name = tensor_name.unwrap_or("lm_head.weight");
+    let index_path = model_dir.join("model.safetensors.index.json");
+    if index_path.exists() {
+        let index_data = fs::read_to_string(&index_path)?;
+        let index: serde_json::Value = serde_json::from_str(&index_data)?;
+        let weight_map = index
+            .get("weight_map")
+            .and_then(|m| m.as_object())
+            .ok_or_else(|| {
+                Error::InvalidInput("Invalid model.safetensors.index.json format".to_string())
+            })?;
+        let Some(shard_name) = weight_map.get(tensor_name).and_then(|v| v.as_str()) else {
+            return Ok(None);
+        };
+        let shard_path = model_dir.join(shard_name);
+        return infer_tensor_first_dim_from_safetensors(&shard_path, tensor_name);
+    }
+
+    let weights_path = model_dir.join("model.safetensors");
+    if !weights_path.exists() {
+        return Ok(None);
+    }
+    infer_tensor_first_dim_from_safetensors(&weights_path, tensor_name)
+}
+
+fn infer_tensor_first_dim_from_safetensors(
+    safetensors_path: &Path,
+    tensor_name: &str,
+) -> Result<Option<usize>> {
+    let shape = match tensor_shape_from_safetensors_header(safetensors_path, tensor_name)? {
+        Some(shape) => shape,
+        None => return Ok(None),
+    };
+    Ok(shape.first().copied())
+}
+
+fn tensor_shape_from_safetensors_header(
+    safetensors_path: &Path,
+    tensor_name: &str,
+) -> Result<Option<Vec<usize>>> {
+    let mut file = fs::File::open(safetensors_path)?;
+
+    let mut n_buf = [0u8; 8];
+    file.read_exact(&mut n_buf)?;
+    let header_len_u64 = u64::from_le_bytes(n_buf);
+    let header_len: usize = header_len_u64
+        .try_into()
+        .map_err(|_| Error::InvalidInput("Invalid safetensors header length".to_string()))?;
+    if header_len > MAX_SAFE_TENSORS_HEADER_SIZE {
+        return Err(Error::InvalidInput(format!(
+            "Safetensors header too large: {header_len}"
+        )));
+    }
+
+    let mut header_buf = vec![0u8; header_len];
+    file.read_exact(&mut header_buf)?;
+
+    let metadata: serde_json::Value = serde_json::from_slice(&header_buf)?;
+    let Some(tensor_entry) = metadata.get(tensor_name) else {
+        return Ok(None);
+    };
+    let Some(shape) = tensor_entry.get("shape").and_then(|shape| shape.as_array()) else {
+        return Ok(None);
+    };
+
+    let dims = shape
+        .iter()
+        .map(|dim| dim.as_u64().map(|value| value as usize))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "Invalid shape metadata for tensor {tensor_name} in {}",
+                safetensors_path.display()
+            ))
+        })?;
+    Ok(Some(dims))
+}
+
+fn fix_timestamp_sequence(data: &[u32]) -> Vec<u32> {
+    let n = data.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let mut dp = vec![1usize; n];
+    let mut parent = vec![usize::MAX; n];
+    for i in 1..n {
+        for j in 0..i {
+            if data[j] <= data[i] && dp[j] + 1 > dp[i] {
+                dp[i] = dp[j] + 1;
+                parent[i] = j;
+            }
+        }
+    }
+
+    let mut max_idx = 0usize;
+    for i in 1..n {
+        if dp[i] > dp[max_idx] {
+            max_idx = i;
+        }
+    }
+
+    let mut lis_indices = Vec::new();
+    let mut idx = max_idx;
+    while idx != usize::MAX {
+        lis_indices.push(idx);
+        idx = parent[idx];
+    }
+    lis_indices.reverse();
+
+    let mut is_normal = vec![false; n];
+    for idx in lis_indices {
+        is_normal[idx] = true;
+    }
+
+    let mut result: Vec<f32> = data.iter().map(|&v| v as f32).collect();
+    let mut i = 0usize;
+    while i < n {
+        if is_normal[i] {
+            i += 1;
+            continue;
+        }
+
+        let mut j = i;
+        while j < n && !is_normal[j] {
+            j += 1;
+        }
+        let anomaly_count = j - i;
+
+        if anomaly_count <= 2 {
+            let left_val = (0..i).rev().find(|&k| is_normal[k]).map(|k| result[k]);
+            let right_val = (j..n).find(|&k| is_normal[k]).map(|k| result[k]);
+
+            for (offset, value) in result[i..j].iter_mut().enumerate() {
+                let k = i + offset;
+                *value = match (left_val, right_val) {
+                    (None, Some(right)) => right,
+                    (Some(left), None) => left,
+                    (Some(left), Some(right)) => {
+                        let left_distance = k as isize - (i as isize - 1);
+                        let right_distance = j as isize - k as isize;
+                        if left_distance <= right_distance {
+                            left
+                        } else {
+                            right
+                        }
+                    }
+                    (None, None) => *value,
+                };
+            }
+        } else {
+            let left_val = (0..i).rev().find(|&k| is_normal[k]).map(|k| result[k]);
+            let right_val = (j..n).find(|&k| is_normal[k]).map(|k| result[k]);
+
+            match (left_val, right_val) {
+                (Some(left), Some(right)) => {
+                    let step = (right - left) / (anomaly_count as f32 + 1.0);
+                    for (offset, value) in result[i..j].iter_mut().enumerate() {
+                        *value = left + step * (offset as f32 + 1.0);
+                    }
+                }
+                (Some(left), None) => {
+                    for value in &mut result[i..j] {
+                        *value = left;
+                    }
+                }
+                (None, Some(right)) => {
+                    for value in &mut result[i..j] {
+                        *value = right;
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+
+        i = j;
+    }
+
+    result
+        .into_iter()
+        .map(|value| value.max(0.0) as u32)
+        .collect()
+}
+
 fn validate_quantization_config(config: &Qwen3AsrConfig) -> Result<()> {
     let quant = config
         .quantization_config
@@ -847,6 +1263,13 @@ struct PromptTokens {
     ids: Vec<u32>,
     audio_pad_start: usize,
     audio_pad_len: usize,
+}
+
+struct ForcedAlignerPrompt {
+    ids: Vec<u32>,
+    audio_pad_start: usize,
+    audio_pad_len: usize,
+    timestamp_token_id: u32,
 }
 
 fn parse_asr_dtype(dtype: Option<&str>) -> Option<DType> {
@@ -1030,6 +1453,9 @@ fn collect_stop_token_ids(specials: &SpecialTokenIds) -> Vec<u32> {
 mod tests {
     use super::*;
     use candle_core::DType;
+    use std::path::PathBuf;
+
+    use crate::models::device::DeviceSelector;
 
     #[test]
     fn collect_stop_token_ids_deduplicates_alt_eos() {
@@ -1039,6 +1465,7 @@ mod tests {
             audio_start: 3,
             audio_end: 4,
             audio_token: 5,
+            timestamp: Some(12),
             asr_text: Some(7),
             fim_prefix: Some(8),
             fim_middle: Some(9),
@@ -1085,6 +1512,12 @@ mod tests {
     }
 
     #[test]
+    fn extract_alignment_words_splits_cjk_and_hangul() {
+        let words = extract_alignment_words("你好 world 안녕");
+        assert_eq!(words, vec!["你", "好", "world", "안", "녕"]);
+    }
+
+    #[test]
     fn distribute_words_over_interval_is_monotonic() {
         let words = vec!["one".to_string(), "two".to_string(), "three".to_string()];
         let aligned = distribute_words_over_interval(&words, 100, 160);
@@ -1106,5 +1539,48 @@ mod tests {
         assert!(alignments[0].1 < alignments[0].2);
         assert!(alignments[1].1 >= alignments[0].2);
         assert!(alignments[2].2 <= 60);
+    }
+
+    #[test]
+    fn fix_timestamp_sequence_recovers_monotonicity() {
+        let repaired = fix_timestamp_sequence(&[100, 80, 120, 60, 140]);
+        assert_eq!(repaired.len(), 5);
+        for pair in repaired.windows(2) {
+            assert!(pair[0] <= pair[1]);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires local Qwen3-ForcedAligner checkpoint"]
+    fn forced_aligner_local_checkpoint_loads_and_aligns() {
+        let models_root = std::env::var("IZWI_MODELS_DIR")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                dirs::data_local_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("izwi")
+                    .join("models")
+            });
+        let model_dir = models_root.join("Qwen3-ForcedAligner-0.6B");
+        if !model_dir.join("model.safetensors").exists() {
+            eprintln!(
+                "Skipping forced aligner local checkpoint test, model not found at {}",
+                model_dir.display()
+            );
+            return;
+        }
+
+        let device = DeviceSelector::detect_with_preference(Some("cpu")).expect("cpu device");
+        let model = Qwen3AsrModel::load(&model_dir, device).expect("forced aligner should load");
+        let audio = vec![0f32; 16_000];
+        let alignment = model
+            .force_align(&audio, 16_000, "hello world")
+            .expect("forced align should run");
+        assert!(
+            !alignment.is_empty(),
+            "forced aligner should return timestamps"
+        );
     }
 }

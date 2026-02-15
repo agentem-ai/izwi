@@ -25,6 +25,10 @@ pub struct Qwen3AsrConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ThinkerConfig {
+    #[serde(default)]
+    pub model_type: Option<String>,
+    #[serde(default)]
+    pub classify_num: Option<usize>,
     pub audio_config: AudioConfig,
     pub text_config: Qwen3Config,
     #[serde(default)]

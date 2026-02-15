@@ -421,6 +421,7 @@ impl ModelVariant {
             Self::VoxtralMini4BRealtime2602 => false,
             Self::ParakeetTdt06BV2 | Self::ParakeetTdt06BV3 => true,
             Self::DiarStreamingSortformer4SpkV21 => true,
+            Self::Qwen3ForcedAligner06B => true,
             _ => !self.is_quantized(),
         }
     }

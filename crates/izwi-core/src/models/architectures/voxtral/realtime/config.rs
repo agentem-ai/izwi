@@ -235,6 +235,7 @@ impl From<MistralConfig> for Qwen3Config {
             rms_norm_eps: cfg.rms_norm_eps,
             rope_theta: cfg.rope_theta as f64,
             vocab_size: cfg.vocab_size,
+            lm_head_size: None,
             rope_scaling: None,
         }
     }
