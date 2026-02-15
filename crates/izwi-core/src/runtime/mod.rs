@@ -5,7 +5,7 @@
 //! maintained as compatibility shims.
 
 mod asr;
-mod audio_io;
+pub(crate) mod audio_io;
 mod chat;
 mod diarization;
 mod lfm2;
