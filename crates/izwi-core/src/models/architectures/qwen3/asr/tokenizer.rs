@@ -16,6 +16,7 @@ pub struct SpecialTokenIds {
     pub audio_start: u32,
     pub audio_end: u32,
     pub audio_token: u32,
+    pub timestamp: Option<u32>,
     pub asr_text: Option<u32>,
     pub fim_prefix: Option<u32>,
     pub fim_middle: Option<u32>,
@@ -80,6 +81,7 @@ impl AsrTokenizer {
         let audio_token = id_for("<|audio_pad|>").ok_or_else(|| {
             Error::TokenizationError("Missing <|audio_pad|> token id".to_string())
         })?;
+        let timestamp = id_for("<timestamp>");
         let asr_text = id_for("<asr_text>");
         let fim_prefix = id_for("<|fim_prefix|>");
         let fim_middle = id_for("<|fim_middle|>");
@@ -117,6 +119,7 @@ impl AsrTokenizer {
                 audio_start,
                 audio_end,
                 audio_token,
+                timestamp,
                 asr_text,
                 fim_prefix,
                 fim_middle,

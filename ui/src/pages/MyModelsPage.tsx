@@ -274,6 +274,14 @@ const MODEL_DETAILS: Record<
     capabilities: ["Transcription", "BF16"],
     size: "3.8 GB",
   },
+  "Qwen3-ForcedAligner-0.6B": {
+    shortName: "ForcedAligner 0.6B",
+    fullName: "Qwen3-ForcedAligner 0.6B",
+    description: "Aligns transcript text to precise speech timestamps",
+    category: "asr",
+    capabilities: ["Forced Alignment", "Word timestamps"],
+    size: "1.7 GB",
+  },
   "Parakeet-TDT-0.6B-v2": {
     shortName: "Parakeet v2",
     fullName: "Parakeet-TDT 0.6B v2",

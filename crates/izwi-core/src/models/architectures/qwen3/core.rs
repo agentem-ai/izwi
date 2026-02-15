@@ -44,6 +44,8 @@ pub struct Qwen3Config {
     pub rope_theta: f64,
     pub vocab_size: usize,
     #[serde(default)]
+    pub lm_head_size: Option<usize>,
+    #[serde(default)]
     pub rope_scaling: Option<RopeScalingConfig>,
 }
 
@@ -502,15 +504,22 @@ pub struct Qwen3Model {
 
 impl Qwen3Model {
     pub fn load(cfg: Qwen3Config, vb: VarBuilder) -> Result<Self> {
+        let lm_head_size = cfg.lm_head_size.unwrap_or(cfg.vocab_size);
         let embed_tokens = mlx_compat::load_embedding(
             cfg.vocab_size,
             cfg.hidden_size,
             vb.pp("model.embed_tokens"),
         )?;
         let lm_head = if vb.contains_tensor("lm_head.weight") {
-            mlx_compat::load_linear_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?
+            mlx_compat::load_linear_no_bias(cfg.hidden_size, lm_head_size, vb.pp("lm_head"))?
         } else {
             // Some MLX checkpoints omit lm_head and tie it to token embeddings.
+            if lm_head_size != cfg.vocab_size {
+                return Err(Error::InvalidInput(format!(
+                    "lm_head_size ({lm_head_size}) differs from vocab_size ({}) but lm_head.weight is missing",
+                    cfg.vocab_size
+                )));
+            }
             Linear::new(embed_tokens.embeddings().clone(), None)
         };
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
