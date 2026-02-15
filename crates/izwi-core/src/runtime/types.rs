@@ -26,6 +26,45 @@ pub struct DiarizationResult {
     pub speaker_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiarizationWord {
+    pub word: String,
+    pub speaker: String,
+    pub start_secs: f32,
+    pub end_secs: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker_confidence: Option<f32>,
+    #[serde(default)]
+    pub overlaps_segment: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiarizationUtterance {
+    pub speaker: String,
+    pub start_secs: f32,
+    pub end_secs: f32,
+    pub text: String,
+    #[serde(default)]
+    pub word_start: usize,
+    #[serde(default)]
+    pub word_end: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiarizationTranscriptResult {
+    pub segments: Vec<DiarizationSegment>,
+    pub words: Vec<DiarizationWord>,
+    pub utterances: Vec<DiarizationUtterance>,
+    pub asr_text: String,
+    pub raw_transcript: String,
+    pub transcript: String,
+    pub duration_secs: f32,
+    pub speaker_count: usize,
+    pub alignment_coverage: f32,
+    pub unattributed_words: usize,
+    pub llm_refined: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiarizationConfig {
     #[serde(default)]

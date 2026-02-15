@@ -223,11 +223,33 @@ export interface DiarizationSegment {
   confidence?: number | null;
 }
 
+export interface DiarizationWord {
+  word: string;
+  speaker: string;
+  start: number;
+  end: number;
+  speaker_confidence?: number | null;
+  overlaps_segment: boolean;
+}
+
+export interface DiarizationUtterance {
+  speaker: string;
+  start: number;
+  end: number;
+  text: string;
+  word_start: number;
+  word_end: number;
+}
+
 export interface DiarizationRequest {
   audio_base64?: string;
   audio_file?: Blob;
   audio_filename?: string;
   model_id?: string;
+  asr_model_id?: string;
+  aligner_model_id?: string;
+  llm_model_id?: string;
+  enable_llm_refinement?: boolean;
   min_speakers?: number;
   max_speakers?: number;
   min_speech_duration_ms?: number;
@@ -236,6 +258,14 @@ export interface DiarizationRequest {
 
 export interface DiarizationResponse {
   segments: DiarizationSegment[];
+  words: DiarizationWord[];
+  utterances: DiarizationUtterance[];
+  asr_text: string;
+  raw_transcript: string;
+  transcript: string;
+  llm_refined: boolean;
+  alignment_coverage: number;
+  unattributed_words: number;
   speaker_count: number;
   duration: number;
   stats?: {
@@ -698,6 +728,10 @@ class ApiClient {
 
     const payload = await response.json();
     const rawSegments = Array.isArray(payload.segments) ? payload.segments : [];
+    const rawWords = Array.isArray(payload.words) ? payload.words : [];
+    const rawUtterances = Array.isArray(payload.utterances)
+      ? payload.utterances
+      : [];
 
     const segments: DiarizationSegment[] = rawSegments
       .map((segment: unknown): DiarizationSegment => {
@@ -720,8 +754,77 @@ class ApiClient {
           segment.end > segment.start,
       );
 
+    const words: DiarizationWord[] = rawWords
+      .map((word: unknown): DiarizationWord => {
+        const raw =
+          word && typeof word === "object"
+            ? (word as Record<string, unknown>)
+            : {};
+        return {
+          word: String(raw.word ?? ""),
+          speaker: String(raw.speaker ?? "UNKNOWN"),
+          start: Number(raw.start ?? 0),
+          end: Number(raw.end ?? 0),
+          speaker_confidence:
+            typeof raw.speaker_confidence === "number"
+              ? raw.speaker_confidence
+              : null,
+          overlaps_segment: Boolean(raw.overlaps_segment),
+        };
+      })
+      .filter(
+        (word: DiarizationWord) =>
+          word.word.trim().length > 0 &&
+          Number.isFinite(word.start) &&
+          Number.isFinite(word.end) &&
+          word.end > word.start,
+      );
+
+    const utterances: DiarizationUtterance[] = rawUtterances
+      .map((utterance: unknown): DiarizationUtterance => {
+        const raw =
+          utterance && typeof utterance === "object"
+            ? (utterance as Record<string, unknown>)
+            : {};
+        return {
+          speaker: String(raw.speaker ?? "UNKNOWN"),
+          start: Number(raw.start ?? 0),
+          end: Number(raw.end ?? 0),
+          text: String(raw.text ?? ""),
+          word_start: Number(raw.word_start ?? 0),
+          word_end: Number(raw.word_end ?? 0),
+        };
+      })
+      .filter(
+        (utterance: DiarizationUtterance) =>
+          utterance.text.trim().length > 0 &&
+          Number.isFinite(utterance.start) &&
+          Number.isFinite(utterance.end) &&
+          utterance.end > utterance.start,
+      );
+
     return {
       segments,
+      words,
+      utterances,
+      asr_text: typeof payload.asr_text === "string" ? payload.asr_text : "",
+      raw_transcript:
+        typeof payload.raw_transcript === "string" ? payload.raw_transcript : "",
+      transcript:
+        typeof payload.transcript === "string"
+          ? payload.transcript
+          : typeof payload.text === "string"
+            ? payload.text
+            : "",
+      llm_refined: Boolean(payload.llm_refined),
+      alignment_coverage:
+        typeof payload.alignment_coverage === "number"
+          ? payload.alignment_coverage
+          : 0,
+      unattributed_words:
+        typeof payload.unattributed_words === "number"
+          ? payload.unattributed_words
+          : 0,
       speaker_count:
         typeof payload.speaker_count === "number"
           ? payload.speaker_count
@@ -1024,6 +1127,17 @@ class ApiClient {
         request.audio_filename || "audio.wav",
       );
       if (request.model_id) form.append("model", request.model_id);
+      if (request.asr_model_id) form.append("asr_model", request.asr_model_id);
+      if (request.aligner_model_id) {
+        form.append("aligner_model", request.aligner_model_id);
+      }
+      if (request.llm_model_id) form.append("llm_model", request.llm_model_id);
+      if (typeof request.enable_llm_refinement === "boolean") {
+        form.append(
+          "enable_llm_refinement",
+          request.enable_llm_refinement ? "true" : "false",
+        );
+      }
       if (typeof request.min_speakers === "number") {
         form.append("min_speakers", String(request.min_speakers));
       }
@@ -1061,6 +1175,10 @@ class ApiClient {
       body: JSON.stringify({
         audio_base64: request.audio_base64,
         model: request.model_id,
+        asr_model: request.asr_model_id,
+        aligner_model: request.aligner_model_id,
+        llm_model: request.llm_model_id,
+        enable_llm_refinement: request.enable_llm_refinement,
         min_speakers: request.min_speakers,
         max_speakers: request.max_speakers,
         min_speech_duration_ms: request.min_speech_duration_ms,

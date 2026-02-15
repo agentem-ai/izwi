@@ -38,6 +38,8 @@ pub struct Qwen3AsrModel {
     device: DeviceProfile,
     audio_dtype: DType,
     text_dtype: DType,
+    timestamp_token_id: Option<u32>,
+    timestamp_segment_time_ms: Option<u32>,
     tokenizer: AsrTokenizer,
     specials: SpecialTokenIds,
     audio_tower: AudioTower,
@@ -70,6 +72,8 @@ impl Qwen3AsrModel {
         let config_path = model_dir.join("config.json");
         let config_str = std::fs::read_to_string(config_path)?;
         let config: Qwen3AsrConfig = serde_json::from_str(&config_str)?;
+        let timestamp_token_id = config.timestamp_token_id;
+        let timestamp_segment_time_ms = config.timestamp_segment_time.map(|v| v as u32);
 
         let tokenizer =
             AsrTokenizer::load(model_dir, config.thinker_config.text_config.vocab_size)?;
@@ -215,6 +219,8 @@ impl Qwen3AsrModel {
             device,
             audio_dtype,
             text_dtype,
+            timestamp_token_id,
+            timestamp_segment_time_ms,
             tokenizer,
             specials,
             audio_tower,
@@ -478,8 +484,7 @@ impl Qwen3AsrModel {
             pos += 1;
         }
 
-        let alignment_text = self.tokenizer.decode_text(&generated)?;
-        self.parse_alignment(&alignment_text, audio.len() as u32 / 16)
+        self.parse_alignment(&generated, reference_text, audio.len() as u32 / 16)
     }
 
     fn decode_generated_untrimmed(&self, tokens: &[u32]) -> Result<String> {
@@ -630,35 +635,82 @@ impl Qwen3AsrModel {
 
     fn parse_alignment(
         &self,
-        alignment_text: &str,
-        _audio_duration_ms: u32,
+        generated_ids: &[u32],
+        reference_text: &str,
+        audio_duration_ms: u32,
     ) -> Result<Vec<(String, u32, u32)>> {
-        // Parse alignment output format:
-        // Expected: word<|timestamp_0|>word<|timestamp_1|>...
-        // or: word[0.00s]word[0.50s]...
+        let mut alignments = self.parse_alignment_from_timestamp_tokens(generated_ids)?;
 
-        let mut results = Vec::new();
-        let mut current_word = String::new();
-        let mut last_time_ms: u32 = 0;
-
-        for ch in alignment_text.chars() {
-            if ch.is_alphanumeric() || ch == '\'' || ch == '-' {
-                current_word.push(ch);
-            } else if ch == '<' || ch == '[' {
-                // Start of timestamp marker - save current word
-                if !current_word.is_empty() {
-                    // Parse timestamp
-                    let time_ms = last_time_ms; // Simplified - would parse actual timestamp
-                    results.push((current_word.clone(), last_time_ms, time_ms + 100));
-                    last_time_ms = time_ms + 100;
-                    current_word.clear();
-                }
-            }
+        if alignments.is_empty() {
+            let decoded = self
+                .tokenizer
+                .decode_text_with_special_tokens(generated_ids)
+                .unwrap_or_default();
+            alignments = fallback_alignment_from_text(&decoded, audio_duration_ms);
         }
 
-        // Handle last word if any
-        if !current_word.is_empty() {
-            results.push((current_word, last_time_ms, last_time_ms + 100));
+        if alignments.is_empty() {
+            alignments = fallback_alignment_from_text(reference_text, audio_duration_ms);
+        }
+
+        if alignments.is_empty() {
+            return Err(Error::InferenceError(
+                "Forced alignment produced no aligned words".to_string(),
+            ));
+        }
+
+        normalize_alignment_bounds(&mut alignments, audio_duration_ms);
+        Ok(alignments)
+    }
+
+    fn parse_alignment_from_timestamp_tokens(
+        &self,
+        generated_ids: &[u32],
+    ) -> Result<Vec<(String, u32, u32)>> {
+        let mut results = Vec::new();
+        let mut text_ids = Vec::new();
+        let mut last_ts_ms = 0u32;
+
+        let segment_time_ms = self
+            .timestamp_segment_time_ms
+            .or_else(|| self.timestamp_token_id.map(|_| 20))
+            .unwrap_or(20)
+            .max(1);
+
+        for token_id in generated_ids.iter().copied() {
+            if let Some(timestamp_index) = self.tokenizer.timestamp_index_for_token(token_id) {
+                let ts_ms = timestamp_index.saturating_mul(segment_time_ms);
+                if !text_ids.is_empty() {
+                    let chunk_text = self.tokenizer.decode_text(&text_ids)?;
+                    let words = extract_alignment_words(&chunk_text);
+                    results.extend(distribute_words_over_interval(
+                        &words,
+                        last_ts_ms,
+                        ts_ms.max(last_ts_ms.saturating_add(1)),
+                    ));
+                    text_ids.clear();
+                }
+                last_ts_ms = ts_ms;
+                continue;
+            }
+
+            if is_special_generation_token(&self.specials, token_id) {
+                continue;
+            }
+            text_ids.push(token_id);
+        }
+
+        if !text_ids.is_empty() {
+            let chunk_text = self.tokenizer.decode_text(&text_ids)?;
+            let words = extract_alignment_words(&chunk_text);
+            let default_end = last_ts_ms
+                .saturating_add((words.len() as u32).saturating_mul(segment_time_ms.max(1)))
+                .max(last_ts_ms.saturating_add(1));
+            results.extend(distribute_words_over_interval(
+                &words,
+                last_ts_ms,
+                default_end,
+            ));
         }
 
         Ok(results)
@@ -678,6 +730,88 @@ impl Qwen3AsrModel {
         }
 
         Tensor::from_vec(data, (3, seq_len), &self.device.device).map_err(Error::from)
+    }
+}
+
+fn extract_alignment_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|word| {
+            word.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '\'' && ch != '-')
+                .to_string()
+        })
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+fn distribute_words_over_interval(
+    words: &[String],
+    start_ms: u32,
+    end_ms: u32,
+) -> Vec<(String, u32, u32)> {
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let start = start_ms.min(end_ms);
+    let mut end = end_ms.max(start.saturating_add(1));
+    let min_span = words.len() as u32;
+    if end.saturating_sub(start) < min_span {
+        end = start.saturating_add(min_span);
+    }
+
+    let span = end.saturating_sub(start).max(1);
+    let step = span as f32 / words.len() as f32;
+
+    words
+        .iter()
+        .enumerate()
+        .map(|(idx, word)| {
+            let ws = start.saturating_add((idx as f32 * step).floor() as u32);
+            let mut we = if idx + 1 == words.len() {
+                end
+            } else {
+                start.saturating_add(((idx + 1) as f32 * step).floor() as u32)
+            };
+            if we <= ws {
+                we = ws.saturating_add(1);
+            }
+            (word.clone(), ws, we)
+        })
+        .collect()
+}
+
+fn fallback_alignment_from_text(text: &str, audio_duration_ms: u32) -> Vec<(String, u32, u32)> {
+    let words = extract_alignment_words(text);
+    distribute_words_over_interval(&words, 0, audio_duration_ms.max(1))
+}
+
+fn normalize_alignment_bounds(alignments: &mut [(String, u32, u32)], audio_duration_ms: u32) {
+    if alignments.is_empty() {
+        return;
+    }
+
+    let max_end = audio_duration_ms.max(1);
+    let mut cursor = 0u32;
+
+    for (_, start, end) in alignments.iter_mut() {
+        let mut s = (*start).min(max_end.saturating_sub(1));
+        let mut e = (*end).min(max_end);
+
+        if s < cursor {
+            s = cursor;
+        }
+        if e <= s {
+            e = s.saturating_add(1).min(max_end);
+        }
+        if e <= s {
+            // audio may be fully exhausted; preserve monotonic order with best effort.
+            s = max_end.saturating_sub(1);
+            e = max_end;
+        }
+
+        *start = s;
+        *end = e;
+        cursor = e;
     }
 }
 
@@ -942,5 +1076,35 @@ mod tests {
     fn text_delta_finds_suffix_when_prefix_changes() {
         assert_eq!(text_delta("Hello", "Hello world"), " world");
         assert_eq!(text_delta("abcd", "abXY"), "XY");
+    }
+
+    #[test]
+    fn extract_alignment_words_strips_markers() {
+        let words = extract_alignment_words("hello,  world! it's me.");
+        assert_eq!(words, vec!["hello", "world", "it's", "me"]);
+    }
+
+    #[test]
+    fn distribute_words_over_interval_is_monotonic() {
+        let words = vec!["one".to_string(), "two".to_string(), "three".to_string()];
+        let aligned = distribute_words_over_interval(&words, 100, 160);
+        assert_eq!(aligned.len(), 3);
+        assert!(aligned[0].1 < aligned[0].2);
+        assert!(aligned[1].1 >= aligned[0].2);
+        assert!(aligned[2].2 >= aligned[1].2);
+    }
+
+    #[test]
+    fn normalize_alignment_bounds_clamps_to_duration() {
+        let mut alignments = vec![
+            ("one".to_string(), 0, 20),
+            ("two".to_string(), 10, 12),
+            ("three".to_string(), 100, 140),
+        ];
+        normalize_alignment_bounds(&mut alignments, 60);
+        assert_eq!(alignments[0].0, "one");
+        assert!(alignments[0].1 < alignments[0].2);
+        assert!(alignments[1].1 >= alignments[0].2);
+        assert!(alignments[2].2 <= 60);
     }
 }

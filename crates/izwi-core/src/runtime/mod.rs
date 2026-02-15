@@ -17,6 +17,6 @@ mod types;
 pub use service::{RuntimeService, RuntimeTelemetrySnapshot};
 pub use types::{
     AsrTranscription, AudioChunk, ChatGeneration, ChunkStats, DiarizationConfig, DiarizationResult,
-    DiarizationSegment, GenerationConfig, GenerationRequest, GenerationResult,
-    SpeechToSpeechGeneration,
+    DiarizationSegment, DiarizationTranscriptResult, DiarizationUtterance, DiarizationWord,
+    GenerationConfig, GenerationRequest, GenerationResult, SpeechToSpeechGeneration,
 };

@@ -45,6 +45,7 @@ pub struct AsrTokenizer {
     inner: Tokenizer,
     vocab_size: usize,
     specials: SpecialTokenIds,
+    timestamp_token_indices: HashMap<u32, u32>,
 }
 
 impl AsrTokenizer {
@@ -97,6 +98,16 @@ impl AsrTokenizer {
             .and_then(&mut id_for)
             .unwrap_or(eos);
 
+        let timestamp_token_indices: HashMap<u32, u32> = config
+            .added_tokens_decoder
+            .iter()
+            .filter_map(|(id, entry)| {
+                let token_id = id.parse::<u32>().ok()?;
+                let timestamp_idx = parse_timestamp_token_index(&entry.content)?;
+                Some((token_id, timestamp_idx))
+            })
+            .collect();
+
         Ok(Self {
             inner,
             vocab_size,
@@ -115,6 +126,7 @@ impl AsrTokenizer {
                 eos_alt,
                 pad,
             },
+            timestamp_token_indices,
         })
     }
 
@@ -131,6 +143,19 @@ impl AsrTokenizer {
         self.inner.decode(&filtered)
     }
 
+    pub fn decode_text_with_special_tokens(&self, ids: &[u32]) -> Result<String> {
+        let filtered: Vec<u32> = ids
+            .iter()
+            .copied()
+            .filter(|id| (*id as usize) < self.vocab_size)
+            .collect();
+        self.inner.decode_with_special_tokens(&filtered)
+    }
+
+    pub fn timestamp_index_for_token(&self, token_id: u32) -> Option<u32> {
+        self.timestamp_token_indices.get(&token_id).copied()
+    }
+
     pub fn specials(&self) -> &SpecialTokenIds {
         &self.specials
     }
@@ -138,4 +163,13 @@ impl AsrTokenizer {
     pub fn vocab_size(&self) -> usize {
         self.vocab_size
     }
+}
+
+fn parse_timestamp_token_index(token: &str) -> Option<u32> {
+    let trimmed = token.trim();
+    if !trimmed.starts_with("<|timestamp_") || !trimmed.ends_with("|>") {
+        return None;
+    }
+    let inner = trimmed.strip_prefix("<|timestamp_")?.strip_suffix("|>")?;
+    inner.parse::<u32>().ok()
 }

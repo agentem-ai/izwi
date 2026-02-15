@@ -13,7 +13,7 @@ import {
   Upload,
 } from "lucide-react";
 import clsx from "clsx";
-import { api, DiarizationSegment } from "../api";
+import { api, DiarizationSegment, DiarizationUtterance } from "../api";
 import { ASRStats, GenerationStats } from "./GenerationStats";
 import {
   Select,
@@ -143,6 +143,11 @@ export function DiarizationPlayground({
   onModelRequired,
 }: DiarizationPlaygroundProps) {
   const [segments, setSegments] = useState<DiarizationSegment[]>([]);
+  const [utterances, setUtterances] = useState<DiarizationUtterance[]>([]);
+  const [speakerTranscript, setSpeakerTranscript] = useState("");
+  const [rawTranscript, setRawTranscript] = useState("");
+  const [alignmentCoverage, setAlignmentCoverage] = useState<number | null>(null);
+  const [unattributedWords, setUnattributedWords] = useState<number | null>(null);
   const [speakerCount, setSpeakerCount] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -184,6 +189,11 @@ export function DiarizationPlayground({
       setError(null);
       setProcessingStats(null);
       setSegments([]);
+      setUtterances([]);
+      setSpeakerTranscript("");
+      setRawTranscript("");
+      setAlignmentCoverage(null);
+      setUnattributedWords(null);
       setSpeakerCount(0);
 
       try {
@@ -207,6 +217,11 @@ export function DiarizationPlayground({
         });
 
         setSegments(response.segments);
+        setUtterances(response.utterances);
+        setSpeakerTranscript(response.transcript || "");
+        setRawTranscript(response.raw_transcript || "");
+        setAlignmentCoverage(response.alignment_coverage ?? null);
+        setUnattributedWords(response.unattributed_words ?? null);
         setSpeakerCount(response.speaker_count);
         if (response.stats) {
           setProcessingStats({
@@ -301,6 +316,11 @@ export function DiarizationPlayground({
       URL.revokeObjectURL(audioUrl);
     }
     setSegments([]);
+    setUtterances([]);
+    setSpeakerTranscript("");
+    setRawTranscript("");
+    setAlignmentCoverage(null);
+    setUnattributedWords(null);
     setSpeakerCount(0);
     setAudioUrl(null);
     setError(null);
@@ -309,14 +329,21 @@ export function DiarizationPlayground({
   };
 
   const asText = useMemo(
-    () =>
-      segments
+    () => {
+      if (speakerTranscript.trim().length > 0) {
+        return speakerTranscript.trim();
+      }
+      if (rawTranscript.trim().length > 0) {
+        return rawTranscript.trim();
+      }
+      return segments
         .map(
           (segment) =>
             `${segment.start.toFixed(2)}s - ${segment.end.toFixed(2)}s\t${segment.speaker}`,
         )
-        .join("\n"),
-    [segments],
+        .join("\n");
+    },
+    [rawTranscript, segments, speakerTranscript],
   );
 
   const handleCopy = async () => {
@@ -326,9 +353,23 @@ export function DiarizationPlayground({
   };
 
   const handleDownload = () => {
-    const blob = new Blob([JSON.stringify({ segments }, null, 2)], {
-      type: "application/json",
-    });
+    const blob = new Blob(
+      [
+        JSON.stringify(
+          {
+            transcript: speakerTranscript,
+            raw_transcript: rawTranscript,
+            utterances,
+            segments,
+          },
+          null,
+          2,
+        ),
+      ],
+      {
+        type: "application/json",
+      },
+    );
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -344,6 +385,11 @@ export function DiarizationPlayground({
   }, [minSpeakers, maxSpeakers]);
 
   const canRunInput = !isProcessing && !isRecording && selectedModelReady;
+  const hasOutput =
+    segments.length > 0 ||
+    utterances.length > 0 ||
+    speakerTranscript.trim().length > 0 ||
+    rawTranscript.trim().length > 0;
 
   return (
     <div className="grid xl:grid-cols-[360px,1fr] gap-4 lg:gap-6">
@@ -525,7 +571,7 @@ export function DiarizationPlayground({
           </div>
         )}
 
-        {(segments.length > 0 || audioUrl || error) && (
+        {(hasOutput || audioUrl || error) && (
           <button onClick={handleReset} className="btn btn-ghost w-full text-xs">
             <RotateCcw className="w-3.5 h-3.5" />
             Reset Session
@@ -536,10 +582,15 @@ export function DiarizationPlayground({
       <div className="card p-4 sm:p-5 min-h-[560px] flex flex-col">
         <div className="flex items-center justify-between gap-2 mb-3">
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-medium text-white">Speaker Segments</h3>
+            <h3 className="text-sm font-medium text-white">Speaker Transcript</h3>
             {speakerCount > 0 && (
               <span className="text-[10px] px-1.5 py-0.5 bg-white/10 text-gray-300 rounded">
                 {speakerCount} speaker{speakerCount > 1 ? "s" : ""}
+              </span>
+            )}
+            {alignmentCoverage !== null && (
+              <span className="text-[10px] px-1.5 py-0.5 bg-white/10 text-gray-300 rounded">
+                {(alignmentCoverage * 100).toFixed(0)}% aligned
               </span>
             )}
           </div>
@@ -547,7 +598,7 @@ export function DiarizationPlayground({
             <button
               onClick={handleCopy}
               className="p-1.5 rounded hover:bg-white/5 text-gray-500 hover:text-gray-300 disabled:opacity-40"
-              disabled={segments.length === 0 || isProcessing}
+              disabled={!hasOutput || isProcessing}
             >
               {copied ? (
                 <Check className="w-3.5 h-3.5 text-gray-300" />
@@ -558,7 +609,7 @@ export function DiarizationPlayground({
             <button
               onClick={handleDownload}
               className="p-1.5 rounded hover:bg-white/5 text-gray-500 hover:text-gray-300 disabled:opacity-40"
-              disabled={segments.length === 0 || isProcessing}
+              disabled={!hasOutput || isProcessing}
             >
               <Download className="w-3.5 h-3.5" />
             </button>
@@ -569,31 +620,60 @@ export function DiarizationPlayground({
           {isProcessing ? (
             <div className="h-full flex items-center justify-center text-sm text-gray-400 gap-2">
               <Loader2 className="w-4 h-4 animate-spin" />
-              Running diarization...
+              Running diarization and transcript pipeline...
             </div>
-          ) : segments.length > 0 ? (
-            <div className="space-y-2">
-              {segments.map((segment, index) => (
-                <div
-                  key={`${segment.speaker}-${segment.start}-${segment.end}-${index}`}
-                  className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 text-sm text-gray-200"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium">{segment.speaker}</span>
-                    <span className="text-xs text-gray-400">
-                      {(segment.end - segment.start).toFixed(2)}s
-                    </span>
+          ) : hasOutput ? (
+            <div className="space-y-3">
+              {(speakerTranscript.trim().length > 0 ||
+                rawTranscript.trim().length > 0) && (
+                <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3">
+                  <div className="text-xs text-gray-500 mb-2">
+                    Speaker-attributed transcript
                   </div>
-                  <div className="mt-1 text-xs text-gray-400">
-                    {segment.start.toFixed(2)}s - {segment.end.toFixed(2)}s
-                    {typeof segment.confidence === "number" && (
-                      <span className="ml-2">
-                        confidence {(segment.confidence * 100).toFixed(0)}%
-                      </span>
-                    )}
-                  </div>
+                  <pre className="text-sm text-gray-200 whitespace-pre-wrap break-words">
+                    {speakerTranscript || rawTranscript}
+                  </pre>
+                  {unattributedWords !== null && (
+                    <div className="mt-2 text-[11px] text-gray-500">
+                      {unattributedWords} word
+                      {unattributedWords === 1 ? "" : "s"} assigned by fallback
+                      attribution.
+                    </div>
+                  )}
                 </div>
-              ))}
+              )}
+
+              {segments.length > 0 && (
+                <div className="space-y-2">
+                  {segments.map((segment, index) => (
+                    <div
+                      key={`${segment.speaker}-${segment.start}-${segment.end}-${index}`}
+                      className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 text-sm text-gray-200"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium">{segment.speaker}</span>
+                        <span className="text-xs text-gray-400">
+                          {(segment.end - segment.start).toFixed(2)}s
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-gray-400">
+                        {segment.start.toFixed(2)}s - {segment.end.toFixed(2)}s
+                        {typeof segment.confidence === "number" && (
+                          <span className="ml-2">
+                            confidence {(segment.confidence * 100).toFixed(0)}%
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {utterances.length > 0 && (
+                <div className="text-[11px] text-gray-500">
+                  {utterances.length} utterance
+                  {utterances.length === 1 ? "" : "s"} generated.
+                </div>
+              )}
             </div>
           ) : (
             <div className="h-full flex items-center justify-center text-center px-6">
@@ -602,7 +682,7 @@ export function DiarizationPlayground({
                   Record audio or upload a file to start diarization.
                 </p>
                 <p className="text-xs text-gray-600 mt-1">
-                  Speaker segments will appear here.
+                  Speaker-attributed transcript and segments will appear here.
                 </p>
               </div>
             </div>

@@ -12,17 +12,24 @@ use std::time::Instant;
 
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::{DiarizationConfig, DiarizationResult, DiarizationSegment};
+use izwi_core::{
+    DiarizationConfig, DiarizationResult, DiarizationSegment, DiarizationTranscriptResult,
+    DiarizationUtterance, DiarizationWord,
+};
 
 #[derive(Debug, Default)]
 struct DiarizationRequest {
     audio_base64: Option<String>,
-    model: Option<String>,
+    diarization_model: Option<String>,
+    asr_model: Option<String>,
+    aligner_model: Option<String>,
+    llm_model: Option<String>,
     response_format: Option<String>,
     min_speakers: Option<usize>,
     max_speakers: Option<usize>,
     min_speech_duration_ms: Option<f32>,
     min_silence_duration_ms: Option<f32>,
+    enable_llm_refinement: Option<bool>,
     stream: bool,
 }
 
@@ -36,13 +43,43 @@ struct JsonSegment {
 }
 
 #[derive(Debug, serde::Serialize)]
+struct JsonWord {
+    word: String,
+    speaker: String,
+    start: f32,
+    end: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speaker_confidence: Option<f32>,
+    overlaps_segment: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct JsonUtterance {
+    speaker: String,
+    start: f32,
+    end: f32,
+    text: String,
+    word_start: usize,
+    word_end: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
 struct JsonDiarizationResponse {
     segments: Vec<JsonSegment>,
+    transcript: String,
 }
 
 #[derive(Debug, serde::Serialize)]
 struct VerboseJsonDiarizationResponse {
     segments: Vec<JsonSegment>,
+    words: Vec<JsonWord>,
+    utterances: Vec<JsonUtterance>,
+    asr_text: String,
+    raw_transcript: String,
+    transcript: String,
+    llm_refined: bool,
+    alignment_coverage: f32,
+    unattributed_words: usize,
     speaker_count: usize,
     duration: f32,
     processing_time_ms: f64,
@@ -77,7 +114,15 @@ pub async fn diarizations(
     let started = Instant::now();
     let output = state
         .runtime
-        .diarize(&audio_base64, req.model.as_deref(), &config)
+        .diarize_with_transcript(
+            &audio_base64,
+            req.diarization_model.as_deref(),
+            req.asr_model.as_deref(),
+            req.aligner_model.as_deref(),
+            req.llm_model.as_deref(),
+            &config,
+            req.enable_llm_refinement.unwrap_or(true),
+        )
         .await?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     let rtf = if output.duration_secs > 0.0 {
@@ -98,7 +143,11 @@ pub async fn diarizations(
         "json" => Ok(Response::builder()
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
-                serde_json::to_string(&JsonDiarizationResponse { segments }).unwrap(),
+                serde_json::to_string(&JsonDiarizationResponse {
+                    segments,
+                    transcript: output.transcript,
+                })
+                .unwrap(),
             ))
             .unwrap()),
         "verbose_json" => Ok(Response::builder()
@@ -106,6 +155,14 @@ pub async fn diarizations(
             .body(Body::from(
                 serde_json::to_string(&VerboseJsonDiarizationResponse {
                     segments,
+                    words: map_words(&output.words),
+                    utterances: map_utterances(&output.utterances),
+                    asr_text: output.asr_text,
+                    raw_transcript: output.raw_transcript,
+                    transcript: output.transcript,
+                    llm_refined: output.llm_refined,
+                    alignment_coverage: output.alignment_coverage,
+                    unattributed_words: output.unattributed_words,
                     speaker_count: output.speaker_count,
                     duration: output.duration_secs,
                     processing_time_ms: elapsed_ms,
@@ -116,7 +173,7 @@ pub async fn diarizations(
             .unwrap()),
         "text" => Ok(Response::builder()
             .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Body::from(format_segments_text(&output)))
+            .body(Body::from(format_diarization_text(&output)))
             .unwrap()),
         other => Err(ApiError::bad_request(format!(
             "Unsupported response_format: {}. Supported: json, verbose_json, text",
@@ -137,6 +194,45 @@ fn map_segments(segments: &[DiarizationSegment]) -> Vec<JsonSegment> {
         .collect()
 }
 
+fn map_words(words: &[DiarizationWord]) -> Vec<JsonWord> {
+    words
+        .iter()
+        .map(|word| JsonWord {
+            word: word.word.clone(),
+            speaker: word.speaker.clone(),
+            start: word.start_secs,
+            end: word.end_secs,
+            speaker_confidence: word.speaker_confidence,
+            overlaps_segment: word.overlaps_segment,
+        })
+        .collect()
+}
+
+fn map_utterances(utterances: &[DiarizationUtterance]) -> Vec<JsonUtterance> {
+    utterances
+        .iter()
+        .map(|utterance| JsonUtterance {
+            speaker: utterance.speaker.clone(),
+            start: utterance.start_secs,
+            end: utterance.end_secs,
+            text: utterance.text.clone(),
+            word_start: utterance.word_start,
+            word_end: utterance.word_end,
+        })
+        .collect()
+}
+
+fn format_diarization_text(output: &DiarizationTranscriptResult) -> String {
+    if !output.transcript.trim().is_empty() {
+        return output.transcript.clone();
+    }
+    format_segments_text(&DiarizationResult {
+        segments: output.segments.clone(),
+        duration_secs: output.duration_secs,
+        speaker_count: output.speaker_count,
+    })
+}
+
 fn format_segments_text(output: &DiarizationResult) -> String {
     let mut out = String::new();
     for segment in &output.segments {
@@ -155,6 +251,14 @@ struct JsonRequestBody {
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
+    diarization_model: Option<String>,
+    #[serde(default)]
+    asr_model: Option<String>,
+    #[serde(default)]
+    aligner_model: Option<String>,
+    #[serde(default)]
+    llm_model: Option<String>,
+    #[serde(default)]
     response_format: Option<String>,
     #[serde(default)]
     min_speakers: Option<usize>,
@@ -164,6 +268,8 @@ struct JsonRequestBody {
     min_speech_duration_ms: Option<f32>,
     #[serde(default)]
     min_silence_duration_ms: Option<f32>,
+    #[serde(default)]
+    enable_llm_refinement: Option<bool>,
     #[serde(default)]
     stream: Option<bool>,
 }
@@ -184,12 +290,16 @@ async fn parse_diarization_request(req: Request) -> Result<DiarizationRequest, A
 
         return Ok(DiarizationRequest {
             audio_base64: Some(payload.audio_base64),
-            model: payload.model,
+            diarization_model: payload.model.or(payload.diarization_model),
+            asr_model: payload.asr_model,
+            aligner_model: payload.aligner_model,
+            llm_model: payload.llm_model,
             response_format: payload.response_format,
             min_speakers: payload.min_speakers,
             max_speakers: payload.max_speakers,
             min_speech_duration_ms: payload.min_speech_duration_ms,
             min_silence_duration_ms: payload.min_silence_duration_ms,
+            enable_llm_refinement: payload.enable_llm_refinement,
             stream: payload.stream.unwrap_or(false),
         });
     }
@@ -232,14 +342,45 @@ async fn parse_diarization_request(req: Request) -> Result<DiarizationRequest, A
                         out.audio_base64 = Some(text.trim().to_string());
                     }
                 }
-                "model" => {
+                "model" | "diarization_model" => {
                     let text = field.text().await.map_err(|e| {
                         ApiError::bad_request(format!(
-                            "Failed reading multipart 'model' field: {e}"
+                            "Failed reading multipart '{}' field: {e}",
+                            name
                         ))
                     })?;
                     if !text.trim().is_empty() {
-                        out.model = Some(text.trim().to_string());
+                        out.diarization_model = Some(text.trim().to_string());
+                    }
+                }
+                "asr_model" => {
+                    let text = field.text().await.map_err(|e| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'asr_model' field: {e}"
+                        ))
+                    })?;
+                    if !text.trim().is_empty() {
+                        out.asr_model = Some(text.trim().to_string());
+                    }
+                }
+                "aligner_model" => {
+                    let text = field.text().await.map_err(|e| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'aligner_model' field: {e}"
+                        ))
+                    })?;
+                    if !text.trim().is_empty() {
+                        out.aligner_model = Some(text.trim().to_string());
+                    }
+                }
+                "llm_model" => {
+                    let text = field.text().await.map_err(|e| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'llm_model' field: {e}"
+                        ))
+                    })?;
+                    if !text.trim().is_empty() {
+                        out.llm_model = Some(text.trim().to_string());
                     }
                 }
                 "response_format" => {
@@ -283,6 +424,17 @@ async fn parse_diarization_request(req: Request) -> Result<DiarizationRequest, A
                         ))
                     })?;
                     out.min_silence_duration_ms = text.trim().parse::<f32>().ok();
+                }
+                "enable_llm_refinement" => {
+                    let text = field.text().await.map_err(|e| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'enable_llm_refinement' field: {e}"
+                        ))
+                    })?;
+                    out.enable_llm_refinement = Some(matches!(
+                        text.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "on"
+                    ));
                 }
                 "stream" => {
                     let text = field.text().await.map_err(|e| {
