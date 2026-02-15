@@ -1,6 +1,6 @@
 //! ASR runtime methods routed through the unified core engine.
 
-use crate::catalog::resolve_asr_model_variant;
+use crate::catalog::{parse_model_variant, resolve_asr_model_variant};
 use crate::engine::EngineCoreRequest;
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
@@ -146,7 +146,17 @@ impl RuntimeService {
         audio_base64: &str,
         reference_text: &str,
     ) -> Result<Vec<(String, u32, u32)>> {
-        let variant = ModelVariant::Qwen3ForcedAligner06B;
+        self.force_align_with_model(audio_base64, reference_text, None)
+            .await
+    }
+
+    pub async fn force_align_with_model(
+        &self,
+        audio_base64: &str,
+        reference_text: &str,
+        model_id: Option<&str>,
+    ) -> Result<Vec<(String, u32, u32)>> {
+        let variant = resolve_forced_aligner_variant(model_id)?;
         self.load_model(variant).await?;
 
         let model = self
@@ -156,10 +166,26 @@ impl RuntimeService {
             .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
 
         let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
-        let alignments = model.force_align(&samples, sample_rate, reference_text)?;
-
-        Ok(alignments)
+        model.force_align(&samples, sample_rate, reference_text)
     }
+}
+
+fn resolve_forced_aligner_variant(model_id: Option<&str>) -> Result<ModelVariant> {
+    let variant = match model_id {
+        Some(raw) => {
+            parse_model_variant(raw).map_err(|err| Error::InvalidInput(err.to_string()))?
+        }
+        None => ModelVariant::Qwen3ForcedAligner06B,
+    };
+
+    if !variant.is_forced_aligner() {
+        return Err(Error::InvalidInput(format!(
+            "Model {} is not a forced aligner model",
+            variant.dir_name()
+        )));
+    }
+
+    Ok(variant)
 }
 
 #[cfg(all(test, unix))]

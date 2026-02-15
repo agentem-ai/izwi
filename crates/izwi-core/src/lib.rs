@@ -50,7 +50,8 @@ pub use config::EngineConfig;
 pub use error::{Error, Result};
 pub use runtime::{
     AsrTranscription, ChatGeneration, ChunkStats, DiarizationConfig, DiarizationResult,
-    DiarizationSegment, GenerationRequest, GenerationResult,
+    DiarizationSegment, DiarizationTranscriptResult, DiarizationUtterance, DiarizationWord,
+    GenerationRequest, GenerationResult,
 };
 pub use runtime::{
     AudioChunk, GenerationConfig, RuntimeService, RuntimeTelemetrySnapshot,

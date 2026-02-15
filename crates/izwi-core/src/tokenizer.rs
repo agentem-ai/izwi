@@ -191,6 +191,12 @@ impl Tokenizer {
             .map_err(|e| Error::TokenizationError(e.to_string()))
     }
 
+    pub fn decode_with_special_tokens(&self, ids: &[u32]) -> Result<String> {
+        self.inner
+            .decode(ids, false)
+            .map_err(|e| Error::TokenizationError(e.to_string()))
+    }
+
     pub fn vocab_size(&self) -> usize {
         self.inner.get_vocab_size(true)
     }
