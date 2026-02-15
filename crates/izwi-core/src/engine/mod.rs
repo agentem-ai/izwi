@@ -152,8 +152,8 @@ impl Engine {
     pub async fn generate_streaming(
         &self,
         request: EngineCoreRequest,
-    ) -> Result<(RequestId, mpsc::Receiver<StreamingOutput>)> {
-        let (tx, rx) = mpsc::channel(32);
+    ) -> Result<(RequestId, mpsc::UnboundedReceiver<StreamingOutput>)> {
+        let (tx, rx) = mpsc::unbounded_channel();
         let request_id = request.id.clone();
 
         // Add request with streaming callback

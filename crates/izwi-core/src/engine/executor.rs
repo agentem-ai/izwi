@@ -325,7 +325,9 @@ impl NativeExecutor {
         }
     }
 
-    fn stream_sender(request: &EngineCoreRequest) -> Option<mpsc::Sender<StreamingOutput>> {
+    fn stream_sender(
+        request: &EngineCoreRequest,
+    ) -> Option<mpsc::UnboundedSender<StreamingOutput>> {
         if request.streaming {
             request.streaming_tx.clone()
         } else {
@@ -334,12 +336,12 @@ impl NativeExecutor {
     }
 
     fn stream_text(
-        tx: &mpsc::Sender<StreamingOutput>,
+        tx: &mpsc::UnboundedSender<StreamingOutput>,
         request_id: &str,
         sequence: &mut usize,
         text: String,
     ) -> Result<()> {
-        tx.blocking_send(StreamingOutput {
+        tx.send(StreamingOutput {
             request_id: request_id.to_string(),
             sequence: *sequence,
             samples: Vec::new(),
@@ -354,14 +356,14 @@ impl NativeExecutor {
     }
 
     fn stream_audio(
-        tx: &mpsc::Sender<StreamingOutput>,
+        tx: &mpsc::UnboundedSender<StreamingOutput>,
         request_id: &str,
         sequence: &mut usize,
         samples: Vec<f32>,
         sample_rate: u32,
         is_final: bool,
     ) -> Result<()> {
-        tx.blocking_send(StreamingOutput {
+        tx.send(StreamingOutput {
             request_id: request_id.to_string(),
             sequence: *sequence,
             samples,
@@ -376,7 +378,7 @@ impl NativeExecutor {
     }
 
     fn stream_final_marker(
-        tx: &mpsc::Sender<StreamingOutput>,
+        tx: &mpsc::UnboundedSender<StreamingOutput>,
         request_id: &str,
         sequence: &mut usize,
     ) -> Result<()> {
@@ -1315,8 +1317,8 @@ impl NativeExecutor {
             );
         };
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            match request.task_type {
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match request.task_type {
                 TaskType::TTS => {
                     let variant = request.model_variant;
                     if variant.map(|v| v.is_lfm2()).unwrap_or(false) {
@@ -1328,8 +1330,7 @@ impl NativeExecutor {
                 TaskType::ASR => self.transcribe_request(request, scheduled_req),
                 TaskType::Chat => self.chat_request(request, scheduled_req),
                 TaskType::SpeechToSpeech => self.speech_to_speech_request(request, scheduled_req),
-            }
-        }));
+            }));
 
         let result = match result {
             Ok(result) => result,
@@ -1686,7 +1687,60 @@ mod tests {
             .build()
             .expect("failed to build runtime");
 
-        let result = runtime.block_on(async { NativeExecutor::run_blocking(|| Ok::<_, Error>(())) });
+        let result =
+            runtime.block_on(async { NativeExecutor::run_blocking(|| Ok::<_, Error>(())) });
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_stream_audio_send_is_safe_inside_current_thread_runtime() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build runtime");
+
+        let result = runtime.block_on(async {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let mut sequence = 0usize;
+            NativeExecutor::stream_audio(
+                &tx,
+                "req-1",
+                &mut sequence,
+                vec![0.1, -0.1],
+                24_000,
+                false,
+            )?;
+            let chunk = rx
+                .recv()
+                .await
+                .ok_or_else(|| Error::InferenceError("missing streamed chunk".to_string()))?;
+            if chunk.request_id != "req-1" || chunk.sequence != 0 || chunk.samples.len() != 2 {
+                return Err(Error::InferenceError(
+                    "unexpected streamed chunk payload".to_string(),
+                ));
+            }
+            Ok::<(), Error>(())
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_stream_audio_send_returns_error_when_channel_closed() {
+        let (tx, rx) = mpsc::unbounded_channel::<StreamingOutput>();
+        drop(rx);
+
+        let mut sequence = 0usize;
+        let result = NativeExecutor::stream_audio(
+            &tx,
+            "req-closed",
+            &mut sequence,
+            vec![0.2],
+            24_000,
+            false,
+        );
+        let Err(Error::InferenceError(message)) = result else {
+            panic!("expected inference error when streaming channel is closed");
+        };
+        assert!(message.contains("Streaming output channel closed"));
     }
 }
