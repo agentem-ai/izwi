@@ -141,8 +141,8 @@ fn max_new_tokens(
     let requested = max_completion_tokens.or(max_tokens);
 
     let default = match variant {
-        ModelVariant::Gemma34BIt => 8192,
-        ModelVariant::Gemma31BIt => 8192,
+        ModelVariant::Gemma34BIt => 4096,
+        ModelVariant::Gemma31BIt => 4096,
         _ => 1536,
     };
 
