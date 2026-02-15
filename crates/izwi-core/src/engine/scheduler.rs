@@ -16,7 +16,7 @@ use tracing::debug;
 use super::config::EngineCoreConfig;
 use super::kv_cache::KVCacheManager;
 use super::request::{EngineCoreRequest, RequestStatus};
-use super::types::{BlockId, Priority, RequestId, SequenceId};
+use super::types::{BlockId, Priority, RequestId, SequenceId, TaskType};
 
 /// Scheduling policy for the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -317,13 +317,23 @@ impl Scheduler {
         let sequence_id = self.next_sequence_id;
         self.next_sequence_id += 1;
 
+        let max_tokens = match (request.task_type, request.params.max_tokens) {
+            (TaskType::TTS, 0) => usize::MAX,
+            (_, 0) => 2048,
+            (_, value) => value,
+        };
+
         let metadata = RequestMetadata {
             request_id: request.id.clone(),
             sequence_id,
             priority: request.priority,
             arrival_time: Instant::now(),
             total_prompt_tokens: request.num_prompt_tokens(),
-            max_tokens: request.params.max_tokens,
+            // TTS uses max_tokens=0 to indicate "auto". Keep scheduler decode budget
+            // effectively unbounded so model-level stop criteria can terminate naturally.
+            // For other task types, guard against zero-budget stalls if upstream
+            // validation is ever bypassed.
+            max_tokens,
             prompt_prefix_tokens: request.prompt_tokens.clone(),
         };
 
@@ -1278,5 +1288,88 @@ mod tests {
                 "no work should remain after aborting sole {task_type:?} request"
             );
         }
+    }
+
+    #[test]
+    fn test_tts_auto_max_tokens_allows_decode_after_prefill() {
+        let config = SchedulerConfig {
+            max_batch_size: 1,
+            max_tokens_per_step: 8,
+            min_tokens_per_step: 1,
+            policy: SchedulingPolicy::FCFS,
+            enable_chunked_prefill: false,
+            enable_preemption: false,
+            enable_adaptive_batching: false,
+            ..Default::default()
+        };
+        let mut scheduler = Scheduler::new(config);
+        let mut kv_cache = KVCacheManager::new(super::super::kv_cache::KVCacheConfig {
+            max_blocks: 32,
+            block_size: 16,
+            ..Default::default()
+        });
+
+        let request_id = "tts-auto-max".to_string();
+        let mut request = EngineCoreRequest::tts("hello world");
+        request.id = request_id.clone();
+        request.prompt_tokens = vec![1];
+        request.params.max_tokens = 0;
+        scheduler.add_request(&request);
+
+        let first = scheduler.schedule(&mut kv_cache);
+        assert_eq!(first.prefill_requests.len(), 1);
+        assert_eq!(first.prefill_requests[0].request_id, request_id);
+        scheduler.update_after_step(&request_id, 1, 1, Vec::new(), 1.0);
+
+        let second = scheduler.schedule(&mut kv_cache);
+        assert_eq!(
+            second.decode_requests.len(),
+            1,
+            "TTS auto max_tokens must still schedule decode"
+        );
+        assert_eq!(second.decode_requests[0].request_id, request_id);
+    }
+
+    #[test]
+    fn test_non_tts_zero_max_tokens_gets_safe_default_budget() {
+        let config = SchedulerConfig {
+            max_batch_size: 1,
+            max_tokens_per_step: 8,
+            min_tokens_per_step: 1,
+            policy: SchedulingPolicy::FCFS,
+            enable_chunked_prefill: false,
+            enable_preemption: false,
+            enable_adaptive_batching: false,
+            ..Default::default()
+        };
+        let mut scheduler = Scheduler::new(config);
+        let mut kv_cache = KVCacheManager::new(super::super::kv_cache::KVCacheConfig {
+            max_blocks: 32,
+            block_size: 16,
+            ..Default::default()
+        });
+
+        let request_id = "chat-zero-max".to_string();
+        let mut request = EngineCoreRequest::chat(vec![ChatMessage {
+            role: ChatRole::User,
+            content: "hello world".to_string(),
+        }]);
+        request.id = request_id.clone();
+        request.prompt_tokens = vec![1];
+        request.params.max_tokens = 0;
+        scheduler.add_request(&request);
+
+        let first = scheduler.schedule(&mut kv_cache);
+        assert_eq!(first.prefill_requests.len(), 1);
+        assert_eq!(first.prefill_requests[0].request_id, request_id);
+        scheduler.update_after_step(&request_id, 1, 1, Vec::new(), 1.0);
+
+        let second = scheduler.schedule(&mut kv_cache);
+        assert_eq!(
+            second.decode_requests.len(),
+            1,
+            "Non-TTS zero max_tokens should be normalized to a safe decode budget"
+        );
+        assert_eq!(second.decode_requests[0].request_id, request_id);
     }
 }
