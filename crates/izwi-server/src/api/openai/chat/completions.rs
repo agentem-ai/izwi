@@ -141,10 +141,8 @@ fn max_new_tokens(
     let requested = max_completion_tokens.or(max_tokens);
 
     let default = match variant {
-        // Gemma 3 4B can be very slow on local Metal setups when clients omit max_tokens.
-        // Keep the default conservative to avoid hitting request timeout before completion.
-        ModelVariant::Gemma34BIt => 8,
-        ModelVariant::Gemma31BIt => 64,
+        ModelVariant::Gemma34BIt => 8192,
+        ModelVariant::Gemma31BIt => 8192,
         _ => 1536,
     };
 
