@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use super::config::EngineCoreConfig;
 use super::output::StreamingOutput;
@@ -25,6 +25,16 @@ use crate::models::qwen3_tts::{
 use crate::models::registry::{NativeAsrDecodeState, NativeChatDecodeState};
 use crate::models::DeviceSelector;
 use crate::models::ModelRegistry;
+
+fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(msg) = payload.downcast_ref::<&str>() {
+        return (*msg).to_string();
+    }
+    if let Some(msg) = payload.downcast_ref::<String>() {
+        return msg.clone();
+    }
+    "unknown panic payload".to_string()
+}
 
 /// Configuration for the model executor.
 #[derive(Clone)]
@@ -301,10 +311,31 @@ impl NativeExecutor {
     }
 
     fn run_blocking<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-        if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::task::block_in_place(f)
+        let unwind_result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) {
+                tokio::task::block_in_place(|| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+                })
+            } else {
+                // Current-thread runtimes do not permit block_in_place.
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+            }
         } else {
-            f()
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        };
+
+        match unwind_result {
+            Ok(result) => result,
+            Err(payload) => {
+                let message = panic_payload_to_string(payload.as_ref());
+                error!("Model execution panicked: {message}");
+                Err(Error::InferenceError(format!(
+                    "Model execution panicked: {message}"
+                )))
+            }
         }
     }
 
@@ -1298,18 +1329,35 @@ impl NativeExecutor {
             );
         };
 
-        let result = match request.task_type {
-            TaskType::TTS => {
-                let variant = request.model_variant;
-                if variant.map(|v| v.is_lfm2()).unwrap_or(false) {
-                    self.lfm2_tts_request(request, scheduled_req)
-                } else {
-                    self.qwen_tts_request(request, scheduled_req)
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match request.task_type {
+                TaskType::TTS => {
+                    let variant = request.model_variant;
+                    if variant.map(|v| v.is_lfm2()).unwrap_or(false) {
+                        self.lfm2_tts_request(request, scheduled_req)
+                    } else {
+                        self.qwen_tts_request(request, scheduled_req)
+                    }
                 }
+                TaskType::ASR => self.transcribe_request(request, scheduled_req),
+                TaskType::Chat => self.chat_request(request, scheduled_req),
+                TaskType::SpeechToSpeech => self.speech_to_speech_request(request, scheduled_req),
             }
-            TaskType::ASR => self.transcribe_request(request, scheduled_req),
-            TaskType::Chat => self.chat_request(request, scheduled_req),
-            TaskType::SpeechToSpeech => self.speech_to_speech_request(request, scheduled_req),
+        }));
+
+        let result = match result {
+            Ok(result) => result,
+            Err(payload) => {
+                let message = panic_payload_to_string(payload.as_ref());
+                error!(
+                    request_id = %request.id,
+                    task = ?request.task_type,
+                    "Executor request handling panicked: {message}"
+                );
+                Err(Error::InferenceError(format!(
+                    "Executor request handling panicked: {message}"
+                )))
+            }
         };
 
         match result {
@@ -1631,5 +1679,17 @@ mod tests {
     fn test_worker_config_default() {
         let config = WorkerConfig::default();
         assert_eq!(config.model_type, ModelType::Qwen3TTS);
+    }
+
+    #[test]
+    fn test_run_blocking_converts_panic_to_error() {
+        let result = NativeExecutor::run_blocking(|| -> Result<()> {
+            panic!("executor panic sentinel");
+        });
+
+        let Err(Error::InferenceError(message)) = result else {
+            panic!("expected inference error from panic");
+        };
+        assert!(message.contains("executor panic sentinel"));
     }
 }

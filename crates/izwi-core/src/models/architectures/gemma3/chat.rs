@@ -76,7 +76,8 @@ impl GemmaTokenizer {
             .copied()
             .filter(|id| (*id as usize) < self.vocab_size)
             .collect();
-        self.inner.decode(&filtered)
+        let decoded = self.inner.decode(&filtered)?;
+        Ok(strip_unused_placeholders(&decoded))
     }
 }
 
@@ -634,6 +635,40 @@ fn strip_think_blocks(input: &str) -> String {
     output.trim().to_string()
 }
 
+fn strip_unused_placeholders(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0usize;
+
+    while cursor < input.len() {
+        let tail = &input[cursor..];
+        if let Some(after_prefix) = tail.strip_prefix("<unused") {
+            let mut digit_len = 0usize;
+            for ch in after_prefix.chars() {
+                if ch.is_ascii_digit() {
+                    digit_len += ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+
+            if digit_len > 0 {
+                let rest = &after_prefix[digit_len..];
+                if let Some(after_marker) = rest.strip_prefix('>') {
+                    let consumed = input.len() - after_marker.len() - cursor;
+                    cursor += consumed;
+                    continue;
+                }
+            }
+        }
+
+        let ch = tail.chars().next().unwrap_or_default();
+        out.push(ch);
+        cursor += ch.len_utf8();
+    }
+
+    out
+}
+
 fn argmax(logits: &Tensor, vocab_limit: usize) -> Result<u32> {
     let values = logits.to_dtype(DType::F32)?.to_vec1::<f32>()?;
     let capped = vocab_limit.min(values.len());
@@ -683,4 +718,23 @@ fn text_delta(previous: &str, current: &str) -> String {
         .take_while(|(a, b)| a == b)
         .count();
     current.chars().skip(common).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_unused_placeholders;
+
+    #[test]
+    fn strip_unused_placeholders_removes_marker_tokens() {
+        let input = "<unused6421> hello <unused9>world<unused123>";
+        let output = strip_unused_placeholders(input);
+        assert_eq!(output, " hello world");
+    }
+
+    #[test]
+    fn strip_unused_placeholders_keeps_normal_angle_bracket_text() {
+        let input = "a <unused> b <unusedx12> c";
+        let output = strip_unused_placeholders(input);
+        assert_eq!(output, input);
+    }
 }
