@@ -10,7 +10,7 @@ use std::{fs, io::Read};
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use serde::Deserialize;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::audio::{MelConfig, MelSpectrogram};
 use crate::error::{Error, Result};
@@ -280,7 +280,7 @@ impl Qwen3AsrModel {
                     .to_string(),
             ));
         }
-        let mut state = self.start_decode(audio, sample_rate, language, 256)?;
+        let mut state = self.start_decode(audio, sample_rate, language, 1024)?;
         loop {
             let step = self.decode_step(&mut state)?;
             if !step.delta.is_empty() {
@@ -635,6 +635,13 @@ impl Qwen3AsrModel {
 
         let audio_duration_ms = ((audio.len() as f32 / 16_000.0) * 1000.0).round() as u32;
         normalize_alignment_bounds(&mut alignments, audio_duration_ms);
+        if alignment_distribution_is_degenerate(&alignments, audio_duration_ms) {
+            warn!(
+                "Forced aligner produced degenerate timestamp distribution; falling back to interval-based alignment"
+            );
+            alignments = distribute_words_over_interval(&words, 0, audio_duration_ms.max(1));
+            normalize_alignment_bounds(&mut alignments, audio_duration_ms);
+        }
         Ok(alignments)
     }
 
@@ -846,6 +853,13 @@ impl Qwen3AsrModel {
         }
 
         normalize_alignment_bounds(&mut alignments, audio_duration_ms);
+        if alignment_distribution_is_degenerate(&alignments, audio_duration_ms) {
+            warn!(
+                "Parsed forced alignment timestamps looked degenerate; falling back to text interval distribution"
+            );
+            alignments = fallback_alignment_from_text(reference_text, audio_duration_ms.max(1));
+            normalize_alignment_bounds(&mut alignments, audio_duration_ms);
+        }
         Ok(alignments)
     }
 
@@ -1039,6 +1053,42 @@ fn normalize_alignment_bounds(alignments: &mut [(String, u32, u32)], audio_durat
         *end = e;
         cursor = e;
     }
+}
+
+fn alignment_distribution_is_degenerate(
+    alignments: &[(String, u32, u32)],
+    audio_duration_ms: u32,
+) -> bool {
+    if alignments.is_empty() {
+        return true;
+    }
+    if alignments.len() < 8 {
+        return false;
+    }
+
+    let audio_duration_ms = audio_duration_ms.max(1);
+    let tail_start = audio_duration_ms.saturating_sub(250);
+    let mut min_start = u32::MAX;
+    let mut max_end = 0u32;
+    let mut tiny_spans = 0usize;
+    let mut tail_heavy = 0usize;
+
+    for (_, start, end) in alignments {
+        min_start = min_start.min((*start).min(audio_duration_ms));
+        max_end = max_end.max((*end).min(audio_duration_ms));
+        if *end <= start.saturating_add(1) {
+            tiny_spans += 1;
+        }
+        if *start >= tail_start {
+            tail_heavy += 1;
+        }
+    }
+
+    let span = max_end.saturating_sub(min_start);
+    let len = alignments.len();
+    tiny_spans * 10 >= len * 8
+        || tail_heavy * 10 >= len * 8
+        || span <= (audio_duration_ms / 20).max(1)
 }
 
 const MAX_SAFE_TENSORS_HEADER_SIZE: usize = 100_000_000;
@@ -1539,6 +1589,26 @@ mod tests {
         assert!(alignments[0].1 < alignments[0].2);
         assert!(alignments[1].1 >= alignments[0].2);
         assert!(alignments[2].2 <= 60);
+    }
+
+    #[test]
+    fn alignment_distribution_is_degenerate_detects_tail_collapse() {
+        let alignments = (0..20)
+            .map(|idx| (format!("w{idx}"), 27_302u32, 27_303u32))
+            .collect::<Vec<_>>();
+        assert!(alignment_distribution_is_degenerate(&alignments, 27_303));
+    }
+
+    #[test]
+    fn alignment_distribution_is_degenerate_accepts_spread_alignment() {
+        let alignments = (0..20)
+            .map(|idx| {
+                let start = idx * 120;
+                let end = start + 80;
+                (format!("w{idx}"), start, end)
+            })
+            .collect::<Vec<_>>();
+        assert!(!alignment_distribution_is_degenerate(&alignments, 3_000));
     }
 
     #[test]

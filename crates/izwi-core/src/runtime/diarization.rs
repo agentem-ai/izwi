@@ -11,10 +11,13 @@ use crate::runtime::types::{
     DiarizationUtterance, DiarizationWord,
 };
 use crate::{models::chat_types::ChatMessage, models::chat_types::ChatRole, ModelVariant};
+use std::collections::HashMap;
 use tracing::warn;
 
 const UNKNOWN_SPEAKER: &str = "UNKNOWN";
 const MAX_UTTERANCE_GAP_SECS: f32 = 0.9;
+const MIN_ALIGNMENT_COVERAGE: f32 = 0.25;
+const ALIGNMENT_COLLAPSE_TAIL_MS: u32 = 250;
 
 impl RuntimeService {
     /// Run speaker diarization over a single audio input.
@@ -57,8 +60,9 @@ impl RuntimeService {
             .asr_transcribe(audio_base64, Some(asr_variant.dir_name()), None)
             .await?;
         let asr_text = asr.text.trim().to_string();
+        let asr_words = extract_words(&asr_text);
 
-        let alignments = if asr_text.is_empty() {
+        let mut alignments = if asr_text.is_empty() {
             Vec::new()
         } else {
             match self
@@ -66,16 +70,58 @@ impl RuntimeService {
                 .await
             {
                 Ok(aligned) if !aligned.is_empty() => aligned,
-                Ok(_) => fallback_word_timings(&asr_text, diarization.duration_secs),
+                Ok(_) => fallback_word_timings_with_segments(
+                    &asr_words,
+                    &diarization.segments,
+                    diarization.duration_secs,
+                ),
                 Err(err) => {
-                    warn!("Forced alignment failed, falling back to uniform word timing: {err}");
-                    fallback_word_timings(&asr_text, diarization.duration_secs)
+                    warn!(
+                        "Forced alignment failed, falling back to diarization-guided word timing: {err}"
+                    );
+                    fallback_word_timings_with_segments(
+                        &asr_words,
+                        &diarization.segments,
+                        diarization.duration_secs,
+                    )
                 }
             }
         };
 
-        let (words, overlap_assigned_words, unattributed_words) =
+        if alignment_is_suspicious(&alignments, asr_words.len(), diarization.duration_secs) {
+            warn!(
+                "Forced aligner output looked invalid, using diarization-guided fallback timings"
+            );
+            alignments = fallback_word_timings_with_segments(
+                &asr_words,
+                &diarization.segments,
+                diarization.duration_secs,
+            );
+        }
+
+        let (mut words, mut overlap_assigned_words, mut unattributed_words) =
             attribute_words_to_speakers(&alignments, &diarization.segments);
+
+        if !words.is_empty() {
+            let coverage = overlap_assigned_words as f32 / words.len() as f32;
+            if coverage < MIN_ALIGNMENT_COVERAGE {
+                warn!(
+                    "Alignment coverage too low ({:.1}%), retrying with diarization-guided fallback timings",
+                    coverage * 100.0
+                );
+                alignments = fallback_word_timings_with_segments(
+                    &asr_words,
+                    &diarization.segments,
+                    diarization.duration_secs,
+                );
+                let (fallback_words, fallback_overlap_assigned_words, fallback_unattributed_words) =
+                    attribute_words_to_speakers(&alignments, &diarization.segments);
+                words = fallback_words;
+                overlap_assigned_words = fallback_overlap_assigned_words;
+                unattributed_words = fallback_unattributed_words;
+            }
+        }
+
         let utterances = build_utterances(&words);
         let raw_transcript = if utterances.is_empty() {
             asr_text.clone()
@@ -83,17 +129,19 @@ impl RuntimeService {
             format_utterance_transcript(&utterances)
         };
 
+        let raw_transcript_trimmed = raw_transcript.trim();
         let mut transcript = raw_transcript.clone();
         let mut llm_refined = false;
-        if enable_llm_refinement && !raw_transcript.trim().is_empty() {
+        if enable_llm_refinement && !raw_transcript_trimmed.is_empty() {
             let llm_variant = resolve_chat_variant(llm_model_id)?;
             match self
                 .polish_diarized_transcript(llm_variant, &raw_transcript)
                 .await
             {
                 Ok(polished) if !polished.trim().is_empty() => {
-                    transcript = polished.trim().to_string();
-                    llm_refined = true;
+                    let polished_trimmed = polished.trim();
+                    transcript = polished_trimmed.to_string();
+                    llm_refined = polished_trimmed != raw_transcript_trimmed;
                 }
                 Ok(_) => {}
                 Err(err) => {
@@ -131,13 +179,13 @@ impl RuntimeService {
         let messages = vec![
             ChatMessage {
                 role: ChatRole::System,
-                content: "You are a diarized transcript editor. Return only final transcript lines, with no analysis or hidden reasoning. Never output tags (including <think>), markdown, code fences, or commentary. Keep speaker labels and timestamps exactly unchanged. Only improve punctuation and readability of spoken text after the colon on each line."
+                content: "You are a diarized transcript editor. Return only final transcript lines, with no analysis or hidden reasoning. Never output tags (including <think>), markdown, code fences, or commentary. Keep speaker labels and timestamps exactly unchanged. Keep line count and line order exactly unchanged. Do not invent, repeat, or omit spoken content. Only improve punctuation and readability of spoken text after the colon on each line."
                     .to_string(),
             },
             ChatMessage {
                 role: ChatRole::User,
                 content: format!(
-                    "Rewrite this diarized transcript with minimal edits.\nRules:\n- Keep exactly one output line per input line.\n- Preserve each leading speaker label + timestamp prefix exactly as-is.\n- Edit only the spoken text after the colon.\n- Do not add, remove, or merge lines.\n- Output only the final transcript lines.\n\n{}",
+                    "Rewrite this diarized transcript with minimal edits.\nRules:\n- Keep exactly one output line per input line.\n- Preserve each leading speaker label + timestamp prefix exactly as-is.\n- Edit only the spoken text after the colon.\n- Do not add, remove, or merge lines.\n- Do not invent new words, drop spoken words, or repeat content not present in the line.\n- Output only the final transcript lines.\n\n{}",
                     raw_transcript
                 ),
             },
@@ -157,11 +205,18 @@ fn resolve_chat_variant(model_id: Option<&str>) -> Result<ModelVariant> {
 
 fn fallback_word_timings(text: &str, duration_secs: f32) -> Vec<(String, u32, u32)> {
     let words = extract_words(text);
+    fallback_word_timings_from_words(&words, duration_secs)
+}
+
+fn fallback_word_timings_from_words(
+    words: &[String],
+    duration_secs: f32,
+) -> Vec<(String, u32, u32)> {
     if words.is_empty() {
         return Vec::new();
     }
 
-    let max_duration_ms = ((duration_secs.max(0.0)) * 1000.0).round() as u32;
+    let max_duration_ms = secs_to_ms(duration_secs);
     let duration_ms = if max_duration_ms > 0 {
         max_duration_ms
     } else {
@@ -178,9 +233,120 @@ fn fallback_word_timings(text: &str, duration_secs: f32) -> Vec<(String, u32, u3
             if end <= start {
                 end = start.saturating_add(1);
             }
-            (word, start, end)
+            (word.clone(), start, end)
         })
         .collect()
+}
+
+fn fallback_word_timings_with_segments(
+    words: &[String],
+    segments: &[DiarizationSegment],
+    duration_secs: f32,
+) -> Vec<(String, u32, u32)> {
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let mut windows = segments
+        .iter()
+        .filter_map(|segment| {
+            let start = secs_to_ms(segment.start_secs);
+            let mut end = secs_to_ms(segment.end_secs);
+            if end <= start {
+                end = start.saturating_add(1);
+            }
+            (end > start).then_some((start, end))
+        })
+        .collect::<Vec<_>>();
+    windows.sort_by_key(|(start, _)| *start);
+
+    if windows.is_empty() {
+        return fallback_word_timings_from_words(words, duration_secs);
+    }
+
+    let durations = windows
+        .iter()
+        .map(|(start, end)| end.saturating_sub(*start).max(1))
+        .collect::<Vec<_>>();
+    let total_duration_ms = durations.iter().copied().sum::<u32>();
+    if total_duration_ms == 0 {
+        return fallback_word_timings_from_words(words, duration_secs);
+    }
+
+    let word_count = words.len();
+    let mut allocations = vec![0usize; windows.len()];
+    let mut assigned = 0usize;
+    let mut remainders = Vec::with_capacity(windows.len());
+
+    for (idx, duration_ms) in durations.iter().copied().enumerate() {
+        let target = word_count as f32 * duration_ms as f32 / total_duration_ms as f32;
+        let base = target.floor() as usize;
+        allocations[idx] = base;
+        assigned += base;
+        remainders.push((target - base as f32, idx));
+    }
+
+    let mut remaining = word_count.saturating_sub(assigned);
+    remainders.sort_by(|left, right| right.0.total_cmp(&left.0).then(left.1.cmp(&right.1)));
+    for (_, idx) in remainders {
+        if remaining == 0 {
+            break;
+        }
+        allocations[idx] += 1;
+        remaining -= 1;
+    }
+
+    let allocated_total = allocations.iter().sum::<usize>();
+    if allocated_total < word_count {
+        if let Some(last) = allocations.last_mut() {
+            *last += word_count - allocated_total;
+        }
+    } else if allocated_total > word_count {
+        let mut excess = allocated_total - word_count;
+        for allocation in allocations.iter_mut().rev() {
+            if excess == 0 {
+                break;
+            }
+            let delta = (*allocation).min(excess);
+            *allocation -= delta;
+            excess -= delta;
+        }
+    }
+
+    let mut alignments = Vec::with_capacity(word_count);
+    let mut word_idx = 0usize;
+    for ((segment_start, segment_end), allocation) in windows.into_iter().zip(allocations) {
+        if allocation == 0 {
+            continue;
+        }
+        let segment_span = segment_end.saturating_sub(segment_start).max(1);
+        let step = segment_span as f32 / allocation as f32;
+
+        for local_idx in 0..allocation {
+            if word_idx >= word_count {
+                break;
+            }
+            let start = segment_start.saturating_add((local_idx as f32 * step).floor() as u32);
+            let mut end = if local_idx + 1 == allocation {
+                segment_end
+            } else {
+                segment_start.saturating_add(((local_idx + 1) as f32 * step).floor() as u32)
+            };
+            if end <= start {
+                end = start.saturating_add(1);
+            }
+            alignments.push((words[word_idx].clone(), start, end));
+            word_idx += 1;
+        }
+    }
+
+    if word_idx < word_count {
+        let remaining_words = &words[word_idx..];
+        let mut carry = fallback_word_timings_from_words(remaining_words, duration_secs);
+        alignments.append(&mut carry);
+    }
+
+    alignments
 }
 
 fn extract_words(text: &str) -> Vec<String> {
@@ -191,6 +357,48 @@ fn extract_words(text: &str) -> Vec<String> {
         })
         .filter(|word| !word.is_empty())
         .collect()
+}
+
+fn alignment_is_suspicious(
+    alignments: &[(String, u32, u32)],
+    expected_word_count: usize,
+    duration_secs: f32,
+) -> bool {
+    if expected_word_count == 0 {
+        return false;
+    }
+    if alignments.is_empty() {
+        return true;
+    }
+    if alignments.len() < expected_word_count.saturating_div(2).max(1) {
+        return true;
+    }
+
+    let duration_ms = secs_to_ms(duration_secs).max(1);
+    let tail_start = duration_ms.saturating_sub(ALIGNMENT_COLLAPSE_TAIL_MS);
+
+    let mut min_start = u32::MAX;
+    let mut max_end = 0u32;
+    let mut tiny_spans = 0usize;
+    let mut tail_heavy = 0usize;
+
+    for (_, start, end) in alignments {
+        min_start = min_start.min((*start).min(duration_ms));
+        max_end = max_end.max((*end).min(duration_ms));
+        if *end <= start.saturating_add(1) {
+            tiny_spans += 1;
+        }
+        if *start >= tail_start {
+            tail_heavy += 1;
+        }
+    }
+
+    let span = max_end.saturating_sub(min_start);
+    let len = alignments.len();
+    len >= 8
+        && (tiny_spans * 10 >= len * 8
+            || tail_heavy * 10 >= len * 8
+            || span <= (duration_ms / 20).max(1))
 }
 
 fn attribute_words_to_speakers(
@@ -359,24 +567,109 @@ fn format_utterance_transcript(utterances: &[DiarizationUtterance]) -> String {
 }
 
 fn sanitize_refined_transcript(candidate: &str, fallback: &str) -> String {
+    let fallback_trimmed = fallback.trim();
     let stripped = strip_tagged_sections(candidate, "<think>", "</think>")
         .replace("```text", "")
         .replace("```", "");
 
-    let lines = stripped
+    let candidate_lines = stripped
         .lines()
         .filter_map(extract_utterance_line)
         .collect::<Vec<_>>();
-    if !lines.is_empty() {
-        return lines.join("\n");
+    let fallback_lines = fallback_trimmed
+        .lines()
+        .filter_map(extract_utterance_line)
+        .collect::<Vec<_>>();
+
+    if !candidate_lines.is_empty() {
+        if fallback_lines.is_empty() {
+            return candidate_lines.join("\n");
+        }
+        // Accept refined output only when it preserves line count and line headers.
+        let structurally_consistent = candidate_lines.len() == fallback_lines.len()
+            && candidate_lines.iter().zip(fallback_lines.iter()).all(
+                |(candidate_line, fallback_line)| {
+                    utterance_prefix(candidate_line) == utterance_prefix(fallback_line)
+                        && utterance_text_similarity_ok(candidate_line, fallback_line)
+                },
+            );
+        if structurally_consistent {
+            return candidate_lines.join("\n");
+        }
     }
 
-    let fallback = fallback.trim();
-    if !fallback.is_empty() {
-        return fallback.to_string();
+    if !fallback_trimmed.is_empty() {
+        return fallback_trimmed.to_string();
     }
 
     stripped.trim().to_string()
+}
+
+fn utterance_prefix(line: &str) -> Option<&str> {
+    let mut trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(stripped) = trimmed.strip_prefix("- ") {
+        trimmed = stripped.trim();
+    } else if let Some(stripped) = trimmed.strip_prefix("* ") {
+        trimmed = stripped.trim();
+    }
+    let header_end = trimmed.find(':')?;
+    Some(trimmed[..header_end].trim())
+}
+
+fn utterance_text_similarity_ok(candidate_line: &str, fallback_line: &str) -> bool {
+    let Some((_, candidate_text)) = candidate_line.split_once(':') else {
+        return false;
+    };
+    let Some((_, fallback_text)) = fallback_line.split_once(':') else {
+        return false;
+    };
+
+    let candidate_words = extract_words(candidate_text)
+        .into_iter()
+        .map(|word| word.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let fallback_words = extract_words(fallback_text)
+        .into_iter()
+        .map(|word| word.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
+    if fallback_words.is_empty() {
+        return true;
+    }
+    if candidate_words.is_empty() {
+        return false;
+    }
+
+    let (recall, precision) = bag_word_overlap(&fallback_words, &candidate_words);
+    recall >= 0.75 && precision >= 0.6
+}
+
+fn bag_word_overlap(reference_words: &[String], candidate_words: &[String]) -> (f32, f32) {
+    if reference_words.is_empty() || candidate_words.is_empty() {
+        return (0.0, 0.0);
+    }
+
+    let mut counts = HashMap::<&str, usize>::new();
+    for word in reference_words {
+        *counts.entry(word.as_str()).or_insert(0) += 1;
+    }
+
+    let mut common = 0usize;
+    for word in candidate_words {
+        if let Some(remaining) = counts.get_mut(word.as_str()) {
+            if *remaining > 0 {
+                *remaining -= 1;
+                common += 1;
+            }
+        }
+    }
+
+    let recall = common as f32 / reference_words.len() as f32;
+    let precision = common as f32 / candidate_words.len() as f32;
+    (recall, precision)
 }
 
 fn strip_tagged_sections(input: &str, start_tag: &str, end_tag: &str) -> String {
@@ -458,6 +751,14 @@ fn is_seconds_token(token: &str) -> bool {
         .parse::<f32>()
         .map(|parsed| parsed.is_finite() && parsed >= 0.0)
         .unwrap_or(false)
+}
+
+fn secs_to_ms(value: f32) -> u32 {
+    if !value.is_finite() || value <= 0.0 {
+        0
+    } else {
+        (value * 1000.0).round() as u32
+    }
 }
 
 #[cfg(test)]
@@ -552,14 +853,10 @@ internal reasoning
 </think>
 Here is the refined transcript:
 - SPEAKER_00 [0.00s - 1.00s]: Hello there.
-- SPEAKER_01 [1.20s - 2.00s]: Thanks.
 "#;
 
         let sanitized = sanitize_refined_transcript(candidate, fallback);
-        assert_eq!(
-            sanitized,
-            "SPEAKER_00 [0.00s - 1.00s]: Hello there.\nSPEAKER_01 [1.20s - 2.00s]: Thanks."
-        );
+        assert_eq!(sanitized, "SPEAKER_00 [0.00s - 1.00s]: Hello there.");
     }
 
     #[test]
@@ -569,5 +866,64 @@ Here is the refined transcript:
 
         let sanitized = sanitize_refined_transcript(candidate, fallback);
         assert_eq!(sanitized, fallback);
+    }
+
+    #[test]
+    fn sanitize_refined_transcript_falls_back_on_line_count_mismatch() {
+        let fallback = "SPEAKER_00 [0.00s - 1.00s]: hello there";
+        let candidate =
+            "SPEAKER_00 [0.00s - 1.00s]: Hello there.\nSPEAKER_01 [1.00s - 2.00s]: Extra line";
+
+        let sanitized = sanitize_refined_transcript(candidate, fallback);
+        assert_eq!(sanitized, fallback);
+    }
+
+    #[test]
+    fn sanitize_refined_transcript_falls_back_on_low_similarity() {
+        let fallback = "SPEAKER_00 [0.00s - 1.00s]: hello there from class";
+        let candidate =
+            "SPEAKER_00 [0.00s - 1.00s]: completely new invented content that was never spoken";
+
+        let sanitized = sanitize_refined_transcript(candidate, fallback);
+        assert_eq!(sanitized, fallback);
+    }
+
+    #[test]
+    fn fallback_word_timings_with_segments_places_words_in_windows() {
+        let words = vec![
+            "one".to_string(),
+            "two".to_string(),
+            "three".to_string(),
+            "four".to_string(),
+        ];
+        let segments = vec![
+            DiarizationSegment {
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.0,
+                end_secs: 1.0,
+                confidence: None,
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 2.0,
+                end_secs: 3.0,
+                confidence: None,
+            },
+        ];
+
+        let alignments = fallback_word_timings_with_segments(&words, &segments, 3.0);
+        assert_eq!(alignments.len(), 4);
+        assert!(alignments[0].1 < 1_000);
+        assert!(alignments[1].1 < 1_000);
+        assert!(alignments[2].1 >= 2_000);
+        assert!(alignments[3].1 >= 2_000);
+    }
+
+    #[test]
+    fn alignment_is_suspicious_detects_tail_collapse() {
+        let alignments = (0..20)
+            .map(|idx| (format!("w{idx}"), 27_302u32, 27_303u32))
+            .collect::<Vec<_>>();
+        assert!(alignment_is_suspicious(&alignments, 20, 27.303));
     }
 }

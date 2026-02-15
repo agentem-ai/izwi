@@ -1642,18 +1642,44 @@ fn decode_audio_base64_with_rate(audio_b64: &str) -> Result<(Vec<f32>, u32)> {
 
     let spec = reader.spec();
     let sample_rate = spec.sample_rate;
+    let channels = spec.channels.max(1) as usize;
 
-    let samples: Vec<f32> = match spec.sample_format {
+    let mut samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => {
-            let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
+            let bits = spec.bits_per_sample.max(1) as u32;
+            let max_val = if bits > 1 {
+                ((1i64 << (bits - 1)) - 1) as f32
+            } else {
+                1.0
+            };
             reader
                 .samples::<i32>()
                 .filter_map(|s| s.ok())
-                .map(|s| s as f32 / max_val)
+                .map(|s| (s as f32 / max_val).clamp(-1.0, 1.0))
                 .collect()
         }
         hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
     };
+
+    if channels > 1 {
+        let mut mono = Vec::with_capacity(samples.len() / channels + 1);
+        for frame in samples.chunks(channels) {
+            if frame.is_empty() {
+                continue;
+            }
+            let sum: f32 = frame.iter().copied().sum();
+            mono.push(sum / frame.len() as f32);
+        }
+        samples = mono;
+    }
+
+    for sample in &mut samples {
+        if !sample.is_finite() {
+            *sample = 0.0;
+        } else {
+            *sample = sample.clamp(-1.0, 1.0);
+        }
+    }
 
     Ok((samples, sample_rate))
 }
@@ -1661,6 +1687,7 @@ fn decode_audio_base64_with_rate(audio_b64: &str) -> Result<(Vec<f32>, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     #[test]
     fn test_worker_config_default() {
@@ -1742,5 +1769,41 @@ mod tests {
             panic!("expected inference error when streaming channel is closed");
         };
         assert!(message.contains("Streaming output channel closed"));
+    }
+
+    #[test]
+    fn decode_audio_base64_with_rate_downmixes_stereo_wav() {
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+
+        let mut wav_bytes = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut wav_bytes);
+            let mut writer = hound::WavWriter::new(cursor, spec).expect("writer");
+            // 2 stereo frames: [L,R]=[0.25,0.75] then [0.5,-0.5]
+            writer.write_sample((0.25f32 * 32767.0) as i16).unwrap();
+            writer.write_sample((0.75f32 * 32767.0) as i16).unwrap();
+            writer.write_sample((0.5f32 * 32767.0) as i16).unwrap();
+            writer.write_sample((-0.5f32 * 32767.0) as i16).unwrap();
+            writer.finalize().unwrap();
+        }
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
+        let (samples, sample_rate) =
+            decode_audio_base64_with_rate(&b64).expect("decode should succeed");
+
+        assert_eq!(sample_rate, 16_000);
+        assert_eq!(samples.len(), 2);
+        // After downmixing, expected mono values are averages: 0.5 and 0.0.
+        assert!(
+            (samples[0] - 0.5).abs() < 0.02,
+            "first sample was {}",
+            samples[0]
+        );
+        assert!(samples[1].abs() < 0.02, "second sample was {}", samples[1]);
     }
 }
