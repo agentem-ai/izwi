@@ -318,6 +318,10 @@ interface OpenAiChatChunk {
     };
     finish_reason: string | null;
   }>;
+  usage?: {
+    completion_tokens?: number;
+  };
+  izwi_generation_time_ms?: number;
 }
 
 interface OpenAiResponseObject {
@@ -1062,6 +1066,9 @@ class ApiClient {
         const decoder = new TextDecoder();
         let buffer = "";
         let fullText = "";
+        const streamStartedAt = performance.now();
+        let completionTokens: number | null = null;
+        let generationTimeMs: number | null = null;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -1078,15 +1085,26 @@ class ApiClient {
             if (!data) continue;
 
             if (data === "[DONE]") {
+              const elapsedMs = Math.max(
+                1,
+                Math.round(performance.now() - streamStartedAt),
+              );
               callbacks.onDone?.(fullText, {
-                tokens_generated: Math.max(1, Math.floor(fullText.length / 4)),
-                generation_time_ms: 0,
+                tokens_generated:
+                  completionTokens ?? Math.max(1, Math.floor(fullText.length / 4)),
+                generation_time_ms: generationTimeMs ?? elapsedMs,
               });
               return;
             }
 
             try {
               const payload = JSON.parse(data) as OpenAiChatChunk;
+              if (typeof payload.izwi_generation_time_ms === "number") {
+                generationTimeMs = payload.izwi_generation_time_ms;
+              }
+              if (typeof payload.usage?.completion_tokens === "number") {
+                completionTokens = payload.usage.completion_tokens;
+              }
               const choice = payload.choices?.[0];
               const delta = choice?.delta?.content;
               if (delta) {
