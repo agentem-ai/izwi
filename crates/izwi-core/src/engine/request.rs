@@ -306,7 +306,7 @@ impl RequestProcessor {
         }
 
         // Validate and clamp parameters
-        self.validate_params(&mut request.params)?;
+        self.validate_params(request.task_type, &mut request.params)?;
 
         // Set model type from config if not specified
         if request.model_type == ModelType::default() {
@@ -327,7 +327,7 @@ impl RequestProcessor {
     }
 
     /// Validate and clamp generation parameters.
-    fn validate_params(&self, params: &mut GenerationParams) -> Result<()> {
+    fn validate_params(&self, task_type: TaskType, params: &mut GenerationParams) -> Result<()> {
         // Clamp temperature
         params.temperature = params.temperature.clamp(0.0, 2.0);
 
@@ -335,10 +335,12 @@ impl RequestProcessor {
         params.top_p = params.top_p.clamp(0.0, 1.0);
 
         // Clamp max_tokens
-        if params.max_tokens == 0 {
+        if params.max_tokens == 0 && !matches!(task_type, TaskType::TTS) {
             params.max_tokens = 2048;
         }
-        params.max_tokens = params.max_tokens.min(self.config.max_seq_len);
+        if params.max_tokens > 0 {
+            params.max_tokens = params.max_tokens.min(self.config.max_seq_len);
+        }
 
         // Clamp speed
         params.speed = params.speed.clamp(0.5, 2.0);
@@ -516,6 +518,7 @@ impl RequestBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::chat_types::ChatRole;
 
     #[test]
     fn test_tts_request() {
@@ -546,5 +549,33 @@ mod tests {
         let request = EngineCoreRequest::tts("Test");
         let processed = processor.process(request);
         assert!(processed.is_ok());
+    }
+
+    #[test]
+    fn test_request_processor_preserves_tts_auto_max_tokens() {
+        let config = EngineCoreConfig::default();
+        let processor = RequestProcessor::new(config);
+
+        let mut request = EngineCoreRequest::tts("Test");
+        request.params.max_tokens = 0;
+
+        let processed = processor.process(request).expect("request should process");
+        assert_eq!(processed.params.max_tokens, 0);
+    }
+
+    #[test]
+    fn test_request_processor_defaults_chat_max_tokens() {
+        let config = EngineCoreConfig::default();
+        let expected_default = 2048usize.min(config.max_seq_len);
+        let processor = RequestProcessor::new(config);
+
+        let mut request = EngineCoreRequest::chat(vec![ChatMessage {
+            role: ChatRole::User,
+            content: "Hello".to_string(),
+        }]);
+        request.params.max_tokens = 0;
+
+        let processed = processor.process(request).expect("request should process");
+        assert_eq!(processed.params.max_tokens, expected_default);
     }
 }
