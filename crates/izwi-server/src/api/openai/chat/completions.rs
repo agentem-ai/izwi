@@ -116,6 +116,8 @@ struct OpenAiChatChunk {
     choices: Vec<OpenAiChunkChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<OpenAiUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    izwi_generation_time_ms: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -327,6 +329,7 @@ async fn complete_stream(
                 finish_reason: None,
             }],
             usage: None,
+            izwi_generation_time_ms: None,
         };
         let _ = event_tx.send(serde_json::to_string(&start_chunk).unwrap_or_default());
 
@@ -353,6 +356,7 @@ async fn complete_stream(
                                 finish_reason: None,
                             }],
                             usage: None,
+                            izwi_generation_time_ms: None,
                         };
                         let _ = delta_tx.send(serde_json::to_string(&chunk).unwrap_or_default());
                     },
@@ -381,6 +385,7 @@ async fn complete_stream(
                         completion_tokens: generation.tokens_generated,
                         total_tokens: generation.tokens_generated,
                     }),
+                    izwi_generation_time_ms: Some(generation.generation_time_ms),
                 };
                 let _ = event_tx.send(serde_json::to_string(&final_chunk).unwrap_or_default());
             }
