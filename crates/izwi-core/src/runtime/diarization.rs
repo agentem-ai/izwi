@@ -4,7 +4,7 @@ use crate::catalog::{
     parse_chat_model_variant, resolve_asr_model_variant, resolve_diarization_model_variant,
 };
 use crate::error::{Error, Result};
-use crate::runtime::audio_io::{base64_decode, decode_wav_bytes};
+use crate::runtime::audio_io::{base64_decode, decode_audio_bytes};
 use crate::runtime::service::RuntimeService;
 use crate::runtime::types::{
     DiarizationConfig, DiarizationResult, DiarizationSegment, DiarizationTranscriptResult,
@@ -27,7 +27,7 @@ impl RuntimeService {
         model_id: Option<&str>,
         config: &DiarizationConfig,
     ) -> Result<DiarizationResult> {
-        let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
+        let (samples, sample_rate) = decode_audio_bytes(&base64_decode(audio_base64)?)?;
         let variant = resolve_diarization_model_variant(model_id);
         self.load_model(variant).await?;
 

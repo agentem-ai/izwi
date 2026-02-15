@@ -4,7 +4,7 @@ use crate::catalog::{parse_model_variant, resolve_asr_model_variant};
 use crate::engine::EngineCoreRequest;
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
-use crate::runtime::audio_io::{base64_decode, decode_wav_bytes};
+use crate::runtime::audio_io::{base64_decode, decode_audio_bytes};
 use crate::runtime::service::RuntimeService;
 use crate::runtime::types::AsrTranscription;
 
@@ -165,7 +165,7 @@ impl RuntimeService {
             .await
             .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
 
-        let (samples, sample_rate) = decode_wav_bytes(&base64_decode(audio_base64)?)?;
+        let (samples, sample_rate) = decode_audio_bytes(&base64_decode(audio_base64)?)?;
         model.force_align(&samples, sample_rate, reference_text)
     }
 }

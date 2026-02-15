@@ -23,6 +23,7 @@ candle-nn = { workspace = true }
 candle-transformers = { workspace = true }
 
 hound = { workspace = true }
+symphonia = { workspace = true, default-features = false, features = ["all-formats", "all-codecs"] }
 rubato = { workspace = true }
 rustfft = { workspace = true }
 

@@ -25,6 +25,7 @@ use crate::models::qwen3_tts::{
 use crate::models::registry::{NativeAsrDecodeState, NativeChatDecodeState};
 use crate::models::DeviceSelector;
 use crate::models::ModelRegistry;
+use crate::runtime::audio_io::{base64_decode, decode_audio_bytes};
 
 fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(msg) = payload.downcast_ref::<&str>() {
@@ -1619,69 +1620,8 @@ pub fn decode_audio_base64(audio_b64: &str, _sample_rate: u32) -> Result<Vec<f32
 }
 
 fn decode_audio_base64_with_rate(audio_b64: &str) -> Result<(Vec<f32>, u32)> {
-    use base64::Engine;
-    use std::io::Cursor;
-
-    let payload = if audio_b64.starts_with("data:") {
-        audio_b64
-            .split_once(',')
-            .map(|(_, b64)| b64)
-            .unwrap_or(audio_b64)
-    } else {
-        audio_b64
-    };
-    let normalized: String = payload.chars().filter(|c| !c.is_whitespace()).collect();
-
-    let wav_bytes = base64::engine::general_purpose::STANDARD
-        .decode(normalized.as_bytes())
-        .map_err(|e| Error::InferenceError(format!("Failed to decode base64 audio: {}", e)))?;
-
-    let cursor = Cursor::new(wav_bytes);
-    let mut reader = hound::WavReader::new(cursor)
-        .map_err(|e| Error::InferenceError(format!("Failed to parse WAV: {}", e)))?;
-
-    let spec = reader.spec();
-    let sample_rate = spec.sample_rate;
-    let channels = spec.channels.max(1) as usize;
-
-    let mut samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Int => {
-            let bits = spec.bits_per_sample.max(1) as u32;
-            let max_val = if bits > 1 {
-                ((1i64 << (bits - 1)) - 1) as f32
-            } else {
-                1.0
-            };
-            reader
-                .samples::<i32>()
-                .filter_map(|s| s.ok())
-                .map(|s| (s as f32 / max_val).clamp(-1.0, 1.0))
-                .collect()
-        }
-        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
-    };
-
-    if channels > 1 {
-        let mut mono = Vec::with_capacity(samples.len() / channels + 1);
-        for frame in samples.chunks(channels) {
-            if frame.is_empty() {
-                continue;
-            }
-            let sum: f32 = frame.iter().copied().sum();
-            mono.push(sum / frame.len() as f32);
-        }
-        samples = mono;
-    }
-
-    for sample in &mut samples {
-        if !sample.is_finite() {
-            *sample = 0.0;
-        } else {
-            *sample = sample.clamp(-1.0, 1.0);
-        }
-    }
-
-    Ok((samples, sample_rate))
+    let audio_bytes = base64_decode(audio_b64)?;
+    decode_audio_bytes(&audio_bytes)
 }
 
 #[cfg(test)]
