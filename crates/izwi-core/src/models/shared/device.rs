@@ -6,8 +6,10 @@
 //! - Unified memory awareness for Apple Silicon
 
 use candle_core::{DType, Device};
+use std::any::Any;
 use std::sync::Arc;
-use tracing::{debug, info};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::{debug, info, warn};
 
 use crate::error::Result;
 use crate::models::metal_memory::{metal_pool_for_device, MetalMemoryPool};
@@ -155,11 +157,36 @@ impl DeviceProfile {
 
 pub struct DeviceSelector;
 
+static METAL_PROBE_PANICKED: AtomicBool = AtomicBool::new(false);
+
+fn panic_payload_to_string(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "unknown panic payload".to_string()
+}
+
 impl DeviceSelector {
     fn try_metal() -> Option<DeviceProfile> {
-        let device = std::panic::catch_unwind(|| Device::metal_if_available(0))
-            .ok()?
-            .ok()?;
+        if METAL_PROBE_PANICKED.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        let device = match std::panic::catch_unwind(|| Device::metal_if_available(0)) {
+            Ok(Ok(device)) => device,
+            Ok(Err(_)) => return None,
+            Err(payload) => {
+                METAL_PROBE_PANICKED.store(true, Ordering::Relaxed);
+                warn!(
+                    "Metal probe panicked; disabling Metal for this process: {}",
+                    panic_payload_to_string(payload.as_ref())
+                );
+                return None;
+            }
+        };
         if device.is_metal() {
             // Initialize memory pool for Metal
             let memory_pool = metal_pool_for_device(&device);

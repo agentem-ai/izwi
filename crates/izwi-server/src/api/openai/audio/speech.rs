@@ -217,7 +217,6 @@ async fn stream_speech(
 
     let engine = state.runtime.clone();
     let semaphore = state.request_semaphore.clone();
-    let timeout = Duration::from_secs(state.request_timeout_secs);
     tokio::spawn(async move {
         let _permit = match semaphore.acquire_owned().await {
             Ok(permit) => permit,
@@ -279,13 +278,8 @@ async fn stream_speech(
 
         let (chunk_tx, mut chunk_rx) = mpsc::channel::<AudioChunk>(32);
         let generation_engine = engine.clone();
-        let generation_task = tokio::spawn(async move {
-            tokio::time::timeout(
-                timeout,
-                generation_engine.generate_streaming(gen_request, chunk_tx),
-            )
-            .await
-        });
+        let generation_task =
+            tokio::spawn(async move { generation_engine.generate_streaming(gen_request, chunk_tx).await });
 
         let mut total_samples = 0usize;
         let stream_started = Instant::now();
@@ -340,7 +334,7 @@ async fn stream_speech(
 
         let generation_outcome = generation_task.await;
         match generation_outcome {
-            Ok(Ok(Ok(()))) => {
+            Ok(Ok(())) => {
                 let generation_time_ms = stream_started.elapsed().as_secs_f32() * 1000.0;
                 let audio_duration_secs = total_samples as f32 / sample_rate as f32;
                 let tokens_generated = total_samples / 256;
@@ -367,7 +361,7 @@ async fn stream_speech(
                 };
                 let _ = event_tx.send(serde_json::to_string(&final_event).unwrap_or_default());
             }
-            Ok(Ok(Err(err))) => {
+            Ok(Err(err)) => {
                 let error_event = SpeechStreamEvent {
                     event: "error",
                     request_id: Some(stream_request_id.clone()),
@@ -382,24 +376,6 @@ async fn stream_speech(
                     audio_duration_secs: None,
                     rtf: None,
                     error: Some(err.to_string()),
-                };
-                let _ = event_tx.send(serde_json::to_string(&error_event).unwrap_or_default());
-            }
-            Ok(Err(_)) => {
-                let error_event = SpeechStreamEvent {
-                    event: "error",
-                    request_id: Some(stream_request_id.clone()),
-                    sequence: None,
-                    audio_base64: None,
-                    sample_count: None,
-                    is_final: None,
-                    sample_rate: None,
-                    audio_format: None,
-                    tokens_generated: None,
-                    generation_time_ms: None,
-                    audio_duration_secs: None,
-                    rtf: None,
-                    error: Some("Speech synthesis request timed out".to_string()),
                 };
                 let _ = event_tx.send(serde_json::to_string(&error_event).unwrap_or_default());
             }

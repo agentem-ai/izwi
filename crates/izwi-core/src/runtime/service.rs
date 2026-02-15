@@ -28,6 +28,16 @@ use crate::models::qwen3_tts::Qwen3TtsModel;
 use crate::models::{DeviceProfile, DeviceSelector, ModelRegistry};
 use crate::tokenizer::Tokenizer;
 
+fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(msg) = payload.downcast_ref::<&str>() {
+        return (*msg).to_string();
+    }
+    if let Some(msg) = payload.downcast_ref::<String>() {
+        return msg.clone();
+    }
+    "unknown panic payload".to_string()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeTelemetrySnapshot {
     pub uptime_secs: f64,
@@ -325,6 +335,7 @@ impl RuntimeService {
         } else {
             DeviceSelector::detect()?
         };
+        let use_metal_backend = config.use_metal && device.kind.is_metal();
 
         let model_registry = Arc::new(ModelRegistry::new(
             config.models_dir.clone(),
@@ -342,7 +353,7 @@ impl RuntimeService {
         core_config.models_dir = config.models_dir.clone();
         core_config.max_batch_size = config.max_batch_size.max(1);
         core_config.max_seq_len = config.max_sequence_length.max(1);
-        core_config.use_metal = config.use_metal;
+        core_config.use_metal = use_metal_backend;
         core_config.num_threads = config.num_threads.max(1);
         core_config.block_size = config.kv_page_size.max(1);
         core_config.kv_cache_dtype = config.kv_cache_dtype.clone();
@@ -353,7 +364,7 @@ impl RuntimeService {
         worker_config.kv_page_size = config.kv_page_size.max(1);
         worker_config.shared_tts_model = Some(tts_model.clone());
         worker_config.model_registry = Some(model_registry.clone());
-        worker_config.device = if config.use_metal {
+        worker_config.device = if use_metal_backend {
             "mps".to_string()
         } else {
             "cpu".to_string()
@@ -518,7 +529,8 @@ impl RuntimeService {
                         }
                         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
                     }
-                    Err(_) => {
+                    Err(payload) => {
+                        let panic_message = panic_payload_to_string(payload.as_ref());
                         telemetry.record_worker_panic();
                         let mut w = waiters.lock().await;
                         let pending: Vec<_> = w.drain().collect();
@@ -526,10 +538,13 @@ impl RuntimeService {
                         telemetry.record_forced_failures(pending.len());
                         for (_, tx) in pending {
                             let _ = tx.send(Err(Error::InferenceError(
-                                "Engine worker panicked".to_string(),
+                                format!("Engine worker panicked: {}", panic_message),
                             )));
                         }
-                        error!("Engine step worker panicked; continuing with isolated loop");
+                        error!(
+                            "Engine step worker panicked ({}); continuing with isolated loop",
+                            panic_message
+                        );
                         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
                     }
                 }
@@ -619,7 +634,7 @@ impl RuntimeService {
         let _entered = span.enter();
 
         let request_id = request.id.clone();
-        let completion_rx = self.register_waiter(&request_id).await;
+        let mut completion_rx = self.register_waiter(&request_id).await;
         let (stream_request_id, mut stream_rx) =
             match self.core_engine.generate_streaming(request).await {
                 Ok(v) => v,
@@ -636,22 +651,53 @@ impl RuntimeService {
             self.core_engine.clone(),
             self.completion_waiters.clone(),
         );
+        let mut completion_result: Option<EngineOutput> = None;
 
-        while let Some(chunk) = stream_rx.recv().await {
-            if chunk.request_id != stream_request_id {
-                continue;
-            }
+        loop {
+            tokio::select! {
+                maybe_chunk = stream_rx.recv() => {
+                    let Some(chunk) = maybe_chunk else {
+                        break;
+                    };
 
-            if let Err(err) = on_chunk(chunk).await {
-                self.remove_waiter(&stream_request_id).await;
-                let _ = self.core_engine.abort_request(&stream_request_id).await;
-                return Err(err);
+                    if chunk.request_id != stream_request_id {
+                        continue;
+                    }
+
+                    if let Err(err) = on_chunk(chunk).await {
+                        self.remove_waiter(&stream_request_id).await;
+                        let _ = self.core_engine.abort_request(&stream_request_id).await;
+                        return Err(err);
+                    }
+                }
+                completion = &mut completion_rx, if completion_result.is_none() => {
+                    let completion = completion.map_err(|_| {
+                        Error::InferenceError(format!(
+                            "Request {} completion channel closed unexpectedly",
+                            stream_request_id
+                        ))
+                    })?;
+
+                    match completion {
+                        Ok(output) => {
+                            completion_result = Some(output);
+                        }
+                        Err(err) => {
+                            // If engine worker panics, fail fast so streaming callers
+                            // don't hang waiting for a chunk channel that may never close.
+                            let _ = self.core_engine.abort_request(&stream_request_id).await;
+                            return Err(err);
+                        }
+                    }
+                }
             }
         }
 
-        let output = self
-            .await_completion(&stream_request_id, completion_rx)
-            .await?;
+        let output = if let Some(output) = completion_result {
+            output
+        } else {
+            self.await_completion(&stream_request_id, completion_rx).await?
+        };
         guard.disarm();
         // Allow pending tasks to progress before returning to upper layers.
         yield_now().await;
