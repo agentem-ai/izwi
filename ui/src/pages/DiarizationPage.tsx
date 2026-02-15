@@ -35,6 +35,31 @@ interface DiarizationPageProps {
   onError: (message: string) => void;
 }
 
+interface DiarizationModelGroup {
+  key: string;
+  title: string;
+  description: string;
+  selectable: boolean;
+  models: ModelInfo[];
+}
+
+function isDiarizationVariant(variant: string): boolean {
+  const normalized = variant.toLowerCase();
+  return normalized.includes("sortformer") || normalized.includes("diar");
+}
+
+function isPipelineAsrVariant(variant: string): boolean {
+  return variant === "Qwen3-ASR-0.6B" || variant.startsWith("Qwen3-ASR-0.6B-");
+}
+
+function isPipelineAlignerVariant(variant: string): boolean {
+  return variant === "Qwen3-ForcedAligner-0.6B";
+}
+
+function isPipelineLlmVariant(variant: string): boolean {
+  return variant === "Gemma-3-1b-it";
+}
+
 export function DiarizationPage({
   models,
   selectedModel,
@@ -58,12 +83,54 @@ export function DiarizationPage({
   const diarizationModels = useMemo(
     () =>
       models
-        .filter((model) => {
-          const normalized = model.variant.toLowerCase();
-          return normalized.includes("sortformer") || normalized.includes("diar");
-        })
+        .filter((model) => isDiarizationVariant(model.variant))
         .sort((a, b) => a.variant.localeCompare(b.variant)),
     [models],
+  );
+  const pipelineModelGroups = useMemo<DiarizationModelGroup[]>(
+    () => [
+      {
+        key: "diarization",
+        title: "Diarization",
+        description: "Speaker segmentation model used by this route.",
+        selectable: true,
+        models: models
+          .filter((model) => isDiarizationVariant(model.variant))
+          .sort((a, b) => a.variant.localeCompare(b.variant)),
+      },
+      {
+        key: "asr",
+        title: "ASR",
+        description: "Transcript generation model in the diarization pipeline.",
+        selectable: false,
+        models: models
+          .filter((model) => isPipelineAsrVariant(model.variant))
+          .sort((a, b) => a.variant.localeCompare(b.variant)),
+      },
+      {
+        key: "aligner",
+        title: "Forced Aligner",
+        description: "Word timing alignment model for speaker attribution.",
+        selectable: false,
+        models: models
+          .filter((model) => isPipelineAlignerVariant(model.variant))
+          .sort((a, b) => a.variant.localeCompare(b.variant)),
+      },
+      {
+        key: "llm",
+        title: "Transcript Refiner",
+        description: "LLM used to polish final diarized transcript output.",
+        selectable: false,
+        models: models
+          .filter((model) => isPipelineLlmVariant(model.variant))
+          .sort((a, b) => a.variant.localeCompare(b.variant)),
+      },
+    ],
+    [models],
+  );
+  const pipelineModels = useMemo(
+    () => pipelineModelGroups.flatMap((group) => group.models),
+    [pipelineModelGroups],
   );
 
   const preferredModelOrder = ["diar_streaming_sortformer_4spk-v2.1"];
@@ -173,6 +240,7 @@ export function DiarizationPage({
   const renderPrimaryAction = (
     model: ModelInfo,
     isActiveModel: boolean,
+    canSelectModel: boolean,
   ): JSX.Element | null => {
     if (model.status === "downloading" && onCancelDownload) {
       return (
@@ -229,25 +297,33 @@ export function DiarizationPage({
     }
 
     if (model.status === "ready") {
-      if (isActiveModel) {
+      if (canSelectModel) {
+        if (isActiveModel) {
+          return (
+            <button className="btn btn-secondary text-xs" disabled>
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              Active
+            </button>
+          );
+        }
         return (
-          <button className="btn btn-secondary text-xs" disabled>
+          <button
+            onClick={(event) => {
+              event.stopPropagation();
+              onSelect(model.variant);
+              closeModelModal();
+            }}
+            className="btn btn-primary text-xs"
+          >
             <CheckCircle2 className="w-3.5 h-3.5" />
-            Active
+            Use Model
           </button>
         );
       }
       return (
-        <button
-          onClick={(event) => {
-            event.stopPropagation();
-            onSelect(model.variant);
-            closeModelModal();
-          }}
-          className="btn btn-primary text-xs"
-        >
+        <button className="btn btn-secondary text-xs" disabled>
           <CheckCircle2 className="w-3.5 h-3.5" />
-          Use Model
+          Loaded
         </button>
       );
     }
@@ -324,7 +400,7 @@ export function DiarizationPage({
                     Diarization Models
                   </h2>
                   <p className="text-xs text-gray-500 mt-1">
-                    Manage models for /v1/audio/diarizations.
+                    Manage pipeline models for /v1/audio/diarizations.
                   </p>
                 </div>
                 <button
@@ -342,122 +418,144 @@ export function DiarizationPage({
                     <Loader2 className="w-4 h-4 animate-spin" />
                     Loading models...
                   </div>
-                ) : diarizationModels.length === 0 ? (
+                ) : pipelineModels.length === 0 ? (
                   <div className="text-sm text-gray-400 py-4">
-                    No diarization models available for this route.
+                    No diarization pipeline models available for this route.
                   </div>
                 ) : (
-                  diarizationModels.map((model) => {
-                    const isSelected = resolvedSelectedModel === model.variant;
-                    const isIntent = modalIntentModel === model.variant;
-                    const isActiveModel = activeReadyModelVariant === model.variant;
-                    const progressValue = downloadProgress[model.variant];
-                    const progress =
-                      progressValue?.percent ?? model.download_progress ?? 0;
+                  pipelineModelGroups.map((group) => (
+                    <section key={group.key} className="space-y-2">
+                      <div className="px-1">
+                        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                          {group.title}
+                        </h3>
+                        <p className="text-[11px] text-gray-500 mt-0.5">
+                          {group.description}
+                        </p>
+                      </div>
+                      {group.models.length === 0 ? (
+                        <div className="rounded-lg border border-[#2a2a2a] bg-[#141414] p-3 text-xs text-gray-500">
+                          No {group.title.toLowerCase()} models found.
+                        </div>
+                      ) : (
+                        group.models.map((model) => {
+                          const isSelected = resolvedSelectedModel === model.variant;
+                          const isIntent = modalIntentModel === model.variant;
+                          const isActiveModel = activeReadyModelVariant === model.variant;
+                          const progressValue = downloadProgress[model.variant];
+                          const progress =
+                            progressValue?.percent ?? model.download_progress ?? 0;
 
-                    return (
-                      <div
-                        key={model.variant}
-                        className={clsx(
-                          "rounded-lg border p-3 sm:p-4 transition-colors",
-                          isIntent
-                            ? "border-white/35 bg-[#1a1a1a]"
-                            : isSelected
-                              ? "border-white/25 bg-[#181818]"
-                              : "border-[#2a2a2a] bg-[#141414]",
-                        )}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="text-sm font-medium text-white truncate">
-                              {model.variant}
-                            </div>
-                            <div className="mt-1 flex items-center gap-2 flex-wrap">
-                              <span
-                                className={clsx(
-                                  "inline-flex items-center rounded-md border px-2 py-0.5 text-[11px]",
-                                  getStatusClass(model.status),
-                                )}
-                              >
-                                {getStatusLabel(model.status)}
-                              </span>
-                              {isActiveModel && (
-                                <span className="inline-flex items-center gap-1 text-[11px] text-gray-300">
-                                  <CheckCircle2 className="w-3 h-3" />
-                                  Active
-                                </span>
+                          return (
+                            <div
+                              key={model.variant}
+                              className={clsx(
+                                "rounded-lg border p-3 sm:p-4 transition-colors",
+                                isIntent
+                                  ? "border-white/35 bg-[#1a1a1a]"
+                                  : isSelected
+                                    ? "border-white/25 bg-[#181818]"
+                                    : "border-[#2a2a2a] bg-[#141414]",
+                              )}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium text-white truncate">
+                                    {model.variant}
+                                  </div>
+                                  <div className="mt-1 flex items-center gap-2 flex-wrap">
+                                    <span
+                                      className={clsx(
+                                        "inline-flex items-center rounded-md border px-2 py-0.5 text-[11px]",
+                                        getStatusClass(model.status),
+                                      )}
+                                    >
+                                      {getStatusLabel(model.status)}
+                                    </span>
+                                    {isActiveModel && group.selectable && (
+                                      <span className="inline-flex items-center gap-1 text-[11px] text-gray-300">
+                                        <CheckCircle2 className="w-3 h-3" />
+                                        Active
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  {renderPrimaryAction(
+                                    model,
+                                    isActiveModel,
+                                    group.selectable,
+                                  )}
+                                  {model.status === "ready" && (
+                                    <button
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        onUnload(model.variant);
+                                      }}
+                                      className="btn btn-secondary text-xs"
+                                    >
+                                      Unload
+                                    </button>
+                                  )}
+                                  {model.status !== "downloading" && (
+                                    pendingDeleteVariant === model.variant ? (
+                                      <>
+                                        <button
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            setPendingDeleteVariant(null);
+                                          }}
+                                          className="btn btn-secondary text-xs"
+                                        >
+                                          Cancel
+                                        </button>
+                                        <button
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            onDelete(model.variant);
+                                            setPendingDeleteVariant(null);
+                                          }}
+                                          className="btn btn-danger text-xs"
+                                        >
+                                          Confirm Delete
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <button
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          setPendingDeleteVariant(model.variant);
+                                        }}
+                                        className="btn btn-danger text-xs"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                        Delete
+                                      </button>
+                                    )
+                                  )}
+                                </div>
+                              </div>
+
+                              {model.status === "downloading" && (
+                                <div className="mt-3">
+                                  <div className="h-1.5 rounded-full bg-[#252525] overflow-hidden">
+                                    <div
+                                      className="h-full bg-white transition-all duration-300"
+                                      style={{ width: `${progress}%` }}
+                                    />
+                                  </div>
+                                  <div className="mt-1 text-[11px] text-gray-500">
+                                    {progress.toFixed(1)}%
+                                  </div>
+                                </div>
                               )}
                             </div>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            {renderPrimaryAction(model, isActiveModel)}
-                            {model.status === "ready" && (
-                              <button
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  onUnload(model.variant);
-                                }}
-                                className="btn btn-secondary text-xs"
-                              >
-                                Unload
-                              </button>
-                            )}
-                            {model.status !== "downloading" && (
-                              pendingDeleteVariant === model.variant ? (
-                                <>
-                                  <button
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      setPendingDeleteVariant(null);
-                                    }}
-                                    className="btn btn-secondary text-xs"
-                                  >
-                                    Cancel
-                                  </button>
-                                  <button
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      onDelete(model.variant);
-                                      setPendingDeleteVariant(null);
-                                    }}
-                                    className="btn btn-danger text-xs"
-                                  >
-                                    Confirm Delete
-                                  </button>
-                                </>
-                              ) : (
-                                <button
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    setPendingDeleteVariant(model.variant);
-                                  }}
-                                  className="btn btn-danger text-xs"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                  Delete
-                                </button>
-                              )
-                            )}
-                          </div>
-                        </div>
-
-                        {model.status === "downloading" && (
-                          <div className="mt-3">
-                            <div className="h-1.5 rounded-full bg-[#252525] overflow-hidden">
-                              <div
-                                className="h-full bg-white transition-all duration-300"
-                                style={{ width: `${progress}%` }}
-                              />
-                            </div>
-                            <div className="mt-1 text-[11px] text-gray-500">
-                              {progress.toFixed(1)}%
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })
+                          );
+                        })
+                      )}
+                    </section>
+                  ))
                 )}
               </div>
             </motion.div>
@@ -467,4 +565,3 @@ export function DiarizationPage({
     </div>
   );
 }
-

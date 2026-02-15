@@ -131,19 +131,23 @@ impl RuntimeService {
         let messages = vec![
             ChatMessage {
                 role: ChatRole::System,
-                content: "You are a transcript editor. Improve punctuation and readability only. Do not invent content, do not change speaker labels, and do not change timestamps.".to_string(),
+                content: "You are a diarized transcript editor. Return only final transcript lines, with no analysis or hidden reasoning. Never output tags (including <think>), markdown, code fences, or commentary. Keep speaker labels and timestamps exactly unchanged. Only improve punctuation and readability of spoken text after the colon on each line."
+                    .to_string(),
             },
             ChatMessage {
                 role: ChatRole::User,
                 content: format!(
-                    "Rewrite the following transcript with minimal edits. Keep one line per utterance and preserve each leading speaker label + timestamp prefix exactly as-is.\n\n{}",
+                    "Rewrite this diarized transcript with minimal edits.\nRules:\n- Keep exactly one output line per input line.\n- Preserve each leading speaker label + timestamp prefix exactly as-is.\n- Edit only the spoken text after the colon.\n- Do not add, remove, or merge lines.\n- Output only the final transcript lines.\n\n{}",
                     raw_transcript
                 ),
             },
         ];
 
         let generation = self.chat_generate(llm_variant, messages, 1024).await?;
-        Ok(generation.text)
+        Ok(sanitize_refined_transcript(
+            &generation.text,
+            raw_transcript,
+        ))
     }
 }
 
@@ -354,6 +358,108 @@ fn format_utterance_transcript(utterances: &[DiarizationUtterance]) -> String {
         .join("\n")
 }
 
+fn sanitize_refined_transcript(candidate: &str, fallback: &str) -> String {
+    let stripped = strip_tagged_sections(candidate, "<think>", "</think>")
+        .replace("```text", "")
+        .replace("```", "");
+
+    let lines = stripped
+        .lines()
+        .filter_map(extract_utterance_line)
+        .collect::<Vec<_>>();
+    if !lines.is_empty() {
+        return lines.join("\n");
+    }
+
+    let fallback = fallback.trim();
+    if !fallback.is_empty() {
+        return fallback.to_string();
+    }
+
+    stripped.trim().to_string()
+}
+
+fn strip_tagged_sections(input: &str, start_tag: &str, end_tag: &str) -> String {
+    let mut output = input.to_string();
+    let start_tag = start_tag.to_ascii_lowercase();
+    let end_tag = end_tag.to_ascii_lowercase();
+    let start_len = start_tag.len();
+    let end_len = end_tag.len();
+
+    loop {
+        let lowered = output.to_ascii_lowercase();
+        let Some(start_idx) = lowered.find(&start_tag) else {
+            break;
+        };
+        let search_from = start_idx.saturating_add(start_len);
+        if let Some(end_rel) = lowered[search_from..].find(&end_tag) {
+            let end_idx = search_from + end_rel + end_len;
+            output.replace_range(start_idx..end_idx, "");
+        } else {
+            output.replace_range(start_idx..output.len(), "");
+            break;
+        }
+    }
+
+    output
+}
+
+fn extract_utterance_line(line: &str) -> Option<String> {
+    let mut candidate = line.trim();
+    if candidate.is_empty() {
+        return None;
+    }
+
+    if let Some(stripped) = candidate.strip_prefix("- ") {
+        candidate = stripped.trim();
+    } else if let Some(stripped) = candidate.strip_prefix("* ") {
+        candidate = stripped.trim();
+    } else {
+        let numeric_end = candidate
+            .bytes()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if numeric_end > 0 && candidate[numeric_end..].starts_with(". ") {
+            candidate = candidate[numeric_end + 2..].trim();
+        }
+    }
+
+    if is_utterance_line(candidate) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
+fn is_utterance_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some(header_end) = trimmed.find("]:") else {
+        return false;
+    };
+    let header = &trimmed[..=header_end];
+    let Some(bracket_start) = header.rfind('[') else {
+        return false;
+    };
+    if header[..bracket_start].trim().is_empty() {
+        return false;
+    }
+    let time_range = &header[bracket_start + 1..header.len() - 1];
+    let Some((start, end)) = time_range.split_once(" - ") else {
+        return false;
+    };
+    is_seconds_token(start) && is_seconds_token(end)
+}
+
+fn is_seconds_token(token: &str) -> bool {
+    let Some(value) = token.trim().strip_suffix('s') else {
+        return false;
+    };
+    value
+        .parse::<f32>()
+        .map(|parsed| parsed.is_finite() && parsed >= 0.0)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,5 +541,33 @@ mod tests {
         assert_eq!(utterances[0].speaker, "SPEAKER_00");
         assert!(utterances[0].text.contains("hello world"));
         assert_eq!(utterances[1].speaker, "SPEAKER_01");
+    }
+
+    #[test]
+    fn sanitize_refined_transcript_removes_thinking_and_keeps_lines() {
+        let fallback = "SPEAKER_00 [0.00s - 1.00s]: hello there";
+        let candidate = r#"
+<think>
+internal reasoning
+</think>
+Here is the refined transcript:
+- SPEAKER_00 [0.00s - 1.00s]: Hello there.
+- SPEAKER_01 [1.20s - 2.00s]: Thanks.
+"#;
+
+        let sanitized = sanitize_refined_transcript(candidate, fallback);
+        assert_eq!(
+            sanitized,
+            "SPEAKER_00 [0.00s - 1.00s]: Hello there.\nSPEAKER_01 [1.20s - 2.00s]: Thanks."
+        );
+    }
+
+    #[test]
+    fn sanitize_refined_transcript_falls_back_when_no_utterance_lines() {
+        let fallback = "SPEAKER_00 [0.00s - 1.00s]: hello there";
+        let candidate = "Here is the rewrite with cleaner punctuation.";
+
+        let sanitized = sanitize_refined_transcript(candidate, fallback);
+        assert_eq!(sanitized, fallback);
     }
 }

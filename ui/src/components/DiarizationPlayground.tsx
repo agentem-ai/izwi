@@ -13,8 +13,7 @@ import {
   Upload,
 } from "lucide-react";
 import clsx from "clsx";
-import { api, DiarizationSegment, DiarizationUtterance } from "../api";
-import { ASRStats, GenerationStats } from "./GenerationStats";
+import { api } from "../api";
 import {
   Select,
   SelectContent,
@@ -22,6 +21,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
+
+const PIPELINE_ASR_MODEL_ID = "Qwen3-ASR-0.6B";
+const PIPELINE_ALIGNER_MODEL_ID = "Qwen3-ForcedAligner-0.6B";
+const PIPELINE_LLM_MODEL_ID = "Gemma-3-1b-it";
 
 interface ModelOption {
   value: string;
@@ -133,6 +136,71 @@ async function transcodeToWav(
   }
 }
 
+interface TranscriptEntry {
+  speaker: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
+function normalizeDiarizedTranscript(
+  transcript: string,
+  rawTranscript: string,
+): string {
+  const source = (transcript || rawTranscript || "").trim();
+  if (!source) {
+    return "";
+  }
+
+  const withoutThink = source.replace(/<think>[\s\S]*?<\/think>/gi, " ");
+  const withoutFences = withoutThink
+    .replace(/```text/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
+  const lines = withoutFences
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*]\s+/, "").replace(/^\d+\.\s+/, ""))
+    .filter((line) =>
+      /^[A-Za-z0-9_]+\s+\[\d+(?:\.\d+)?s\s*-\s*\d+(?:\.\d+)?s\]:/.test(line),
+    );
+
+  if (lines.length > 0) {
+    return lines.join("\n");
+  }
+
+  return withoutFences;
+}
+
+function parseTranscriptEntries(transcript: string): TranscriptEntry[] {
+  return transcript
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line): TranscriptEntry | null => {
+      const match = line.match(
+        /^([A-Za-z0-9_]+)\s+\[([0-9]+(?:\.[0-9]+)?)s\s*-\s*([0-9]+(?:\.[0-9]+)?)s\]:\s*(.*)$/,
+      );
+      if (!match) {
+        return null;
+      }
+      const start = Number(match[2]);
+      const end = Number(match[3]);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+        return null;
+      }
+      return {
+        speaker: match[1],
+        start,
+        end,
+        text: match[4].trim(),
+      };
+    })
+    .filter((entry): entry is TranscriptEntry => entry !== null);
+}
+
 export function DiarizationPlayground({
   selectedModel,
   selectedModelReady = false,
@@ -142,19 +210,12 @@ export function DiarizationPlayground({
   onOpenModelManager,
   onModelRequired,
 }: DiarizationPlaygroundProps) {
-  const [segments, setSegments] = useState<DiarizationSegment[]>([]);
-  const [utterances, setUtterances] = useState<DiarizationUtterance[]>([]);
   const [speakerTranscript, setSpeakerTranscript] = useState("");
-  const [rawTranscript, setRawTranscript] = useState("");
-  const [alignmentCoverage, setAlignmentCoverage] = useState<number | null>(null);
-  const [unattributedWords, setUnattributedWords] = useState<number | null>(null);
-  const [speakerCount, setSpeakerCount] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [processingStats, setProcessingStats] = useState<ASRStats | null>(null);
   const [minSpeakers, setMinSpeakers] = useState(1);
   const [maxSpeakers, setMaxSpeakers] = useState(4);
   const [minSpeechMs, setMinSpeechMs] = useState(240);
@@ -187,14 +248,7 @@ export function DiarizationPlayground({
 
       setIsProcessing(true);
       setError(null);
-      setProcessingStats(null);
-      setSegments([]);
-      setUtterances([]);
       setSpeakerTranscript("");
-      setRawTranscript("");
-      setAlignmentCoverage(null);
-      setUnattributedWords(null);
-      setSpeakerCount(0);
 
       try {
         const wavBlob = await transcodeToWav(audioBlob, 16000);
@@ -210,26 +264,22 @@ export function DiarizationPlayground({
           audio_file: wavBlob,
           audio_filename: "audio.wav",
           model_id: selectedModel || undefined,
+          asr_model_id: PIPELINE_ASR_MODEL_ID,
+          aligner_model_id: PIPELINE_ALIGNER_MODEL_ID,
+          llm_model_id: PIPELINE_LLM_MODEL_ID,
+          enable_llm_refinement: true,
           min_speakers: minSpeakers,
           max_speakers: maxSpeakers,
           min_speech_duration_ms: minSpeechMs,
           min_silence_duration_ms: minSilenceMs,
         });
 
-        setSegments(response.segments);
-        setUtterances(response.utterances);
-        setSpeakerTranscript(response.transcript || "");
-        setRawTranscript(response.raw_transcript || "");
-        setAlignmentCoverage(response.alignment_coverage ?? null);
-        setUnattributedWords(response.unattributed_words ?? null);
-        setSpeakerCount(response.speaker_count);
-        if (response.stats) {
-          setProcessingStats({
-            processing_time_ms: response.stats.processing_time_ms,
-            audio_duration_secs: response.duration,
-            rtf: response.stats.rtf,
-          });
-        }
+        const cleanedTranscript = normalizeDiarizedTranscript(
+          response.transcript || "",
+          response.raw_transcript || "",
+        );
+
+        setSpeakerTranscript(cleanedTranscript);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Diarization failed");
       } finally {
@@ -315,36 +365,18 @@ export function DiarizationPlayground({
     if (audioUrl) {
       URL.revokeObjectURL(audioUrl);
     }
-    setSegments([]);
-    setUtterances([]);
     setSpeakerTranscript("");
-    setRawTranscript("");
-    setAlignmentCoverage(null);
-    setUnattributedWords(null);
-    setSpeakerCount(0);
     setAudioUrl(null);
     setError(null);
-    setProcessingStats(null);
     setIsProcessing(false);
   };
 
-  const asText = useMemo(
-    () => {
-      if (speakerTranscript.trim().length > 0) {
-        return speakerTranscript.trim();
-      }
-      if (rawTranscript.trim().length > 0) {
-        return rawTranscript.trim();
-      }
-      return segments
-        .map(
-          (segment) =>
-            `${segment.start.toFixed(2)}s - ${segment.end.toFixed(2)}s\t${segment.speaker}`,
-        )
-        .join("\n");
-    },
-    [rawTranscript, segments, speakerTranscript],
+  const transcriptEntries = useMemo(
+    () => parseTranscriptEntries(speakerTranscript),
+    [speakerTranscript],
   );
+
+  const asText = useMemo(() => speakerTranscript.trim(), [speakerTranscript]);
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(asText);
@@ -353,27 +385,13 @@ export function DiarizationPlayground({
   };
 
   const handleDownload = () => {
-    const blob = new Blob(
-      [
-        JSON.stringify(
-          {
-            transcript: speakerTranscript,
-            raw_transcript: rawTranscript,
-            utterances,
-            segments,
-          },
-          null,
-          2,
-        ),
-      ],
-      {
-        type: "application/json",
-      },
-    );
+    const blob = new Blob([asText], {
+      type: "text/plain; charset=utf-8",
+    });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `diarization-${Date.now()}.json`;
+    link.download = `diarization-${Date.now()}.txt`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -385,11 +403,7 @@ export function DiarizationPlayground({
   }, [minSpeakers, maxSpeakers]);
 
   const canRunInput = !isProcessing && !isRecording && selectedModelReady;
-  const hasOutput =
-    segments.length > 0 ||
-    utterances.length > 0 ||
-    speakerTranscript.trim().length > 0 ||
-    rawTranscript.trim().length > 0;
+  const hasOutput = speakerTranscript.trim().length > 0;
 
   return (
     <div className="grid xl:grid-cols-[360px,1fr] gap-4 lg:gap-6">
@@ -582,17 +596,7 @@ export function DiarizationPlayground({
       <div className="card p-4 sm:p-5 min-h-[560px] flex flex-col">
         <div className="flex items-center justify-between gap-2 mb-3">
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-medium text-white">Speaker Transcript</h3>
-            {speakerCount > 0 && (
-              <span className="text-[10px] px-1.5 py-0.5 bg-white/10 text-gray-300 rounded">
-                {speakerCount} speaker{speakerCount > 1 ? "s" : ""}
-              </span>
-            )}
-            {alignmentCoverage !== null && (
-              <span className="text-[10px] px-1.5 py-0.5 bg-white/10 text-gray-300 rounded">
-                {(alignmentCoverage * 100).toFixed(0)}% aligned
-              </span>
-            )}
+            <h3 className="text-sm font-medium text-white">Diarized Transcript</h3>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -624,54 +628,32 @@ export function DiarizationPlayground({
             </div>
           ) : hasOutput ? (
             <div className="space-y-3">
-              {(speakerTranscript.trim().length > 0 ||
-                rawTranscript.trim().length > 0) && (
-                <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3">
-                  <div className="text-xs text-gray-500 mb-2">
-                    Speaker-attributed transcript
-                  </div>
-                  <pre className="text-sm text-gray-200 whitespace-pre-wrap break-words">
-                    {speakerTranscript || rawTranscript}
-                  </pre>
-                  {unattributedWords !== null && (
-                    <div className="mt-2 text-[11px] text-gray-500">
-                      {unattributedWords} word
-                      {unattributedWords === 1 ? "" : "s"} assigned by fallback
-                      attribution.
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {segments.length > 0 && (
+              {transcriptEntries.length > 0 ? (
                 <div className="space-y-2">
-                  {segments.map((segment, index) => (
+                  {transcriptEntries.map((entry, index) => (
                     <div
-                      key={`${segment.speaker}-${segment.start}-${segment.end}-${index}`}
-                      className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 text-sm text-gray-200"
+                      key={`${entry.speaker}-${entry.start}-${entry.end}-${index}`}
+                      className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3"
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-medium">{segment.speaker}</span>
-                        <span className="text-xs text-gray-400">
-                          {(segment.end - segment.start).toFixed(2)}s
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <span className="text-xs font-medium text-gray-200">
+                          {entry.speaker}
+                        </span>
+                        <span className="text-[11px] text-gray-400">
+                          {entry.start.toFixed(2)}s - {entry.end.toFixed(2)}s
                         </span>
                       </div>
-                      <div className="mt-1 text-xs text-gray-400">
-                        {segment.start.toFixed(2)}s - {segment.end.toFixed(2)}s
-                        {typeof segment.confidence === "number" && (
-                          <span className="ml-2">
-                            confidence {(segment.confidence * 100).toFixed(0)}%
-                          </span>
-                        )}
-                      </div>
+                      <p className="text-sm text-gray-100 whitespace-pre-wrap break-words">
+                        {entry.text}
+                      </p>
                     </div>
                   ))}
                 </div>
-              )}
-              {utterances.length > 0 && (
-                <div className="text-[11px] text-gray-500">
-                  {utterances.length} utterance
-                  {utterances.length === 1 ? "" : "s"} generated.
+              ) : (
+                <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3">
+                  <pre className="text-sm text-gray-200 whitespace-pre-wrap break-words">
+                    {speakerTranscript}
+                  </pre>
                 </div>
               )}
             </div>
@@ -682,16 +664,12 @@ export function DiarizationPlayground({
                   Record audio or upload a file to start diarization.
                 </p>
                 <p className="text-xs text-gray-600 mt-1">
-                  Speaker-attributed transcript and segments will appear here.
+                  Your diarized transcript will appear here.
                 </p>
               </div>
             </div>
           )}
         </div>
-
-        {processingStats && !isProcessing && (
-          <GenerationStats stats={processingStats} type="asr" className="mt-3" />
-        )}
 
         <AnimatePresence>
           {error && (
