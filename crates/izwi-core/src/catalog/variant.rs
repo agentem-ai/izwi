@@ -9,6 +9,7 @@ pub enum ModelFamily {
     Qwen3Tts,
     Qwen3Asr,
     ParakeetAsr,
+    SortformerDiarization,
     Qwen3Chat,
     Gemma3Chat,
     Qwen3ForcedAligner,
@@ -21,6 +22,7 @@ pub enum ModelFamily {
 pub enum ModelTask {
     Tts,
     Asr,
+    Diarization,
     Chat,
     ForcedAlign,
     AudioChat,
@@ -96,6 +98,7 @@ impl ModelVariant {
             Qwen3Asr06B | Qwen3Asr06B4Bit | Qwen3Asr06B8Bit | Qwen3Asr06BBf16 | Qwen3Asr17B
             | Qwen3Asr17B4Bit | Qwen3Asr17B8Bit | Qwen3Asr17BBf16 => ModelFamily::Qwen3Asr,
             ParakeetTdt06BV2 | ParakeetTdt06BV3 => ModelFamily::ParakeetAsr,
+            DiarStreamingSortformer4SpkV21 => ModelFamily::SortformerDiarization,
             Qwen306B4Bit => ModelFamily::Qwen3Chat,
             Gemma31BIt | Gemma34BIt => ModelFamily::Gemma3Chat,
             Qwen3ForcedAligner06B => ModelFamily::Qwen3ForcedAligner,
@@ -107,6 +110,7 @@ impl ModelVariant {
         match self.family() {
             ModelFamily::Qwen3Tts => ModelTask::Tts,
             ModelFamily::Qwen3Asr | ModelFamily::ParakeetAsr => ModelTask::Asr,
+            ModelFamily::SortformerDiarization => ModelTask::Diarization,
             ModelFamily::Qwen3Chat | ModelFamily::Gemma3Chat => ModelTask::Chat,
             ModelFamily::Qwen3ForcedAligner => ModelTask::ForcedAlign,
             ModelFamily::Voxtral => ModelTask::AudioChat,
@@ -198,11 +202,36 @@ pub fn resolve_asr_model_variant(input: Option<&str>) -> ModelVariant {
     }
 }
 
+pub fn resolve_diarization_model_variant(input: Option<&str>) -> ModelVariant {
+    use ModelVariant::*;
+
+    let Some(raw) = input else {
+        return DiarStreamingSortformer4SpkV21;
+    };
+
+    match parse_model_variant(raw) {
+        Ok(variant) if variant.is_diarization() => variant,
+        Ok(_) => DiarStreamingSortformer4SpkV21,
+        Err(_) => {
+            let normalized = normalize_identifier(raw);
+            if normalized.contains("sortformer") || normalized.contains("diar") {
+                DiarStreamingSortformer4SpkV21
+            } else {
+                DiarStreamingSortformer4SpkV21
+            }
+        }
+    }
+}
+
 fn resolve_by_heuristic(normalized: &str) -> Option<ModelVariant> {
     use ModelVariant::*;
 
     if normalized.contains("voxtral") {
         return Some(VoxtralMini4BRealtime2602);
+    }
+
+    if normalized.contains("sortformer") && normalized.contains("diar") {
+        return Some(DiarStreamingSortformer4SpkV21);
     }
 
     if normalized.contains("parakeet") && normalized.contains("tdt") {
@@ -426,5 +455,17 @@ mod tests {
     fn resolve_asr_accepts_parakeet() {
         let resolved = resolve_asr_model_variant(Some("nvidia/parakeet-tdt-0.6b-v2"));
         assert_eq!(resolved, ModelVariant::ParakeetTdt06BV2);
+    }
+
+    #[test]
+    fn parse_diarization_by_repo_tail() {
+        let parsed = parse_model_variant("diar_streaming_sortformer_4spk-v2.1").unwrap();
+        assert_eq!(parsed, ModelVariant::DiarStreamingSortformer4SpkV21);
+    }
+
+    #[test]
+    fn resolve_diarization_defaults_to_sortformer() {
+        let resolved = resolve_diarization_model_variant(Some("unknown-model"));
+        assert_eq!(resolved, ModelVariant::DiarStreamingSortformer4SpkV21);
     }
 }

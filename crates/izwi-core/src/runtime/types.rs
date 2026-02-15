@@ -10,6 +10,34 @@ pub struct AsrTranscription {
     pub duration_secs: f32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiarizationSegment {
+    pub speaker: String,
+    pub start_secs: f32,
+    pub end_secs: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiarizationResult {
+    pub segments: Vec<DiarizationSegment>,
+    pub duration_secs: f32,
+    pub speaker_count: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiarizationConfig {
+    #[serde(default)]
+    pub min_speakers: Option<usize>,
+    #[serde(default)]
+    pub max_speakers: Option<usize>,
+    #[serde(default)]
+    pub min_speech_duration_ms: Option<f32>,
+    #[serde(default)]
+    pub min_silence_duration_ms: Option<f32>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatGeneration {
     pub text: String,

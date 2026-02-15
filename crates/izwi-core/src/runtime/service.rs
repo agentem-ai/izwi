@@ -537,9 +537,10 @@ impl RuntimeService {
                         drop(w);
                         telemetry.record_forced_failures(pending.len());
                         for (_, tx) in pending {
-                            let _ = tx.send(Err(Error::InferenceError(
-                                format!("Engine worker panicked: {}", panic_message),
-                            )));
+                            let _ = tx.send(Err(Error::InferenceError(format!(
+                                "Engine worker panicked: {}",
+                                panic_message
+                            ))));
                         }
                         error!(
                             "Engine step worker panicked ({}); continuing with isolated loop",
@@ -696,7 +697,8 @@ impl RuntimeService {
         let output = if let Some(output) = completion_result {
             output
         } else {
-            self.await_completion(&stream_request_id, completion_rx).await?
+            self.await_completion(&stream_request_id, completion_rx)
+                .await?
         };
         guard.disarm();
         // Allow pending tasks to progress before returning to upper layers.

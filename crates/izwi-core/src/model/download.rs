@@ -388,6 +388,16 @@ impl ModelDownloader {
             return has_config && has_vocab && has_chat_template && has_model;
         }
 
+        if variant.is_diarization() {
+            let nemo_file = match variant {
+                ModelVariant::DiarStreamingSortformer4SpkV21 => {
+                    "diar_streaming_sortformer_4spk-v2.1.nemo"
+                }
+                _ => unreachable!("checked by is_diarization"),
+            };
+            return path.join(nemo_file).exists();
+        }
+
         if variant.is_chat() {
             let has_config = path.join("config.json").exists();
             let has_tokenizer = path.join("tokenizer.json").exists()
@@ -871,6 +881,22 @@ impl ModelDownloader {
             return files;
         }
 
+        if variant.is_diarization() {
+            let nemo_file = match variant {
+                ModelVariant::DiarStreamingSortformer4SpkV21 => {
+                    "diar_streaming_sortformer_4spk-v2.1.nemo"
+                }
+                _ => unreachable!("checked by is_diarization"),
+            };
+            return vec![
+                nemo_file.to_string(),
+                "README.md".to_string(),
+                "bias.md".to_string(),
+                "privacy.md".to_string(),
+                "safety.md".to_string(),
+            ];
+        }
+
         if variant.is_chat() {
             let mut files = vec![
                 "config.json".to_string(),
@@ -1107,6 +1133,7 @@ impl ModelDownloader {
             match variant {
                 ModelVariant::ParakeetTdt06BV2 => 4_926_457_088,
                 ModelVariant::ParakeetTdt06BV3 => 10_036_761_167,
+                ModelVariant::DiarStreamingSortformer4SpkV21 => 510_000_000,
                 _ => 4_000_000_000,
             }
         } else if file.contains("tokenizer") && file.contains("safetensors") {

@@ -290,6 +290,14 @@ const MODEL_DETAILS: Record<
     capabilities: ["Transcription", "25 EU languages"],
     size: "9.3 GB",
   },
+  "diar_streaming_sortformer_4spk-v2.1": {
+    shortName: "Sortformer 4spk",
+    fullName: "Streaming Sortformer 4spk v2.1",
+    description: "Streaming speaker diarization model from NVIDIA in .nemo format",
+    category: "asr",
+    capabilities: ["Diarization", "Up to 4 speakers", "Streaming"],
+    size: "0.5 GB",
+  },
   // Voxtral
   "Voxtral-Mini-4B-Realtime-2602": {
     shortName: "Voxtral 4B",

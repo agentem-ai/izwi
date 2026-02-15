@@ -1,5 +1,6 @@
 //! OpenAI-compatible audio resources.
 
+pub mod diarizations;
 pub mod speech;
 pub mod speech_to_speech;
 pub mod transcriptions;
@@ -22,6 +23,10 @@ pub fn router() -> Router<AppState> {
             "/audio/transcriptions",
             post(transcriptions::transcriptions)
                 .layer(DefaultBodyLimit::max(AUDIO_UPLOAD_LIMIT_BYTES)),
+        )
+        .route(
+            "/audio/diarizations",
+            post(diarizations::diarizations).layer(DefaultBodyLimit::max(AUDIO_UPLOAD_LIMIT_BYTES)),
         )
         .route(
             "/audio/speech-to-speech",

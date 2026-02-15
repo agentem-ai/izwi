@@ -12,6 +12,6 @@ pub use crate::model::{
 };
 pub use variant::{
     parse_chat_model_variant, parse_model_variant, parse_tts_model_variant,
-    resolve_asr_model_variant, InferenceBackendHint, ModelFamily, ModelTask,
-    ParseModelVariantError,
+    resolve_asr_model_variant, resolve_diarization_model_variant, InferenceBackendHint,
+    ModelFamily, ModelTask, ParseModelVariantError,
 };

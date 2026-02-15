@@ -14,6 +14,8 @@ impl RuntimeService {
     pub async fn unload_model(&self, variant: ModelVariant) -> Result<()> {
         if variant.is_asr() || variant.is_forced_aligner() {
             self.model_registry.unload_asr(variant).await;
+        } else if variant.is_diarization() {
+            self.model_registry.unload_diarization(variant).await;
         } else if variant.is_chat() {
             self.model_registry.unload_chat(variant).await;
         } else if variant.is_lfm2() {
@@ -70,6 +72,14 @@ impl RuntimeService {
 
         if variant.is_asr() || variant.is_forced_aligner() {
             self.model_registry.load_asr(variant, &model_path).await?;
+            self.model_manager.mark_loaded(variant).await;
+            return Ok(());
+        }
+
+        if variant.is_diarization() {
+            self.model_registry
+                .load_diarization(variant, &model_path)
+                .await?;
             self.model_manager.mark_loaded(variant).await;
             return Ok(());
         }
