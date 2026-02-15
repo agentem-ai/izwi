@@ -7,8 +7,8 @@
 
 use candle_core::{DType, Device};
 use std::any::Any;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::error::Result;

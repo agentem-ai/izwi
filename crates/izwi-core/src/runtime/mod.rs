@@ -7,6 +7,7 @@
 mod asr;
 mod audio_io;
 mod chat;
+mod diarization;
 mod lfm2;
 mod model_router;
 mod service;
@@ -15,6 +16,7 @@ mod types;
 
 pub use service::{RuntimeService, RuntimeTelemetrySnapshot};
 pub use types::{
-    AsrTranscription, AudioChunk, ChatGeneration, ChunkStats, GenerationConfig, GenerationRequest,
-    GenerationResult, SpeechToSpeechGeneration,
+    AsrTranscription, AudioChunk, ChatGeneration, ChunkStats, DiarizationConfig, DiarizationResult,
+    DiarizationSegment, GenerationConfig, GenerationRequest, GenerationResult,
+    SpeechToSpeechGeneration,
 };

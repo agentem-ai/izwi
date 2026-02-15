@@ -8,6 +8,7 @@ import {
   VoiceCloningPage,
   VoiceDesignPage,
   TranscriptionPage,
+  DiarizationPage,
   ChatPage,
   VoicePage,
   MyModelsPage,
@@ -580,6 +581,7 @@ function App() {
             path="/transcription"
             element={<TranscriptionPage {...pageProps} />}
           />
+          <Route path="/diarization" element={<DiarizationPage {...pageProps} />} />
           <Route path="/chat" element={<ChatPage {...pageProps} />} />
           <Route
             path="/voice"

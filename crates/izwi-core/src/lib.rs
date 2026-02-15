@@ -49,7 +49,8 @@ pub use engine::{
 pub use config::EngineConfig;
 pub use error::{Error, Result};
 pub use runtime::{
-    AsrTranscription, ChatGeneration, ChunkStats, GenerationRequest, GenerationResult,
+    AsrTranscription, ChatGeneration, ChunkStats, DiarizationConfig, DiarizationResult,
+    DiarizationSegment, GenerationRequest, GenerationResult,
 };
 pub use runtime::{
     AudioChunk, GenerationConfig, RuntimeService, RuntimeTelemetrySnapshot,
@@ -59,8 +60,8 @@ pub use runtime::{
 // Catalog/model metadata re-exports
 pub use catalog::{
     parse_chat_model_variant, parse_model_variant, parse_tts_model_variant,
-    resolve_asr_model_variant, DownloadProgress, ModelInfo, ModelManager, ModelStatus,
-    ModelVariant,
+    resolve_asr_model_variant, resolve_diarization_model_variant, DownloadProgress, ModelInfo,
+    ModelManager, ModelStatus, ModelVariant,
 };
 
 // Native family/device registry re-exports

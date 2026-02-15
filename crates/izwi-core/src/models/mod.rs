@@ -12,6 +12,7 @@ pub use architectures::qwen3::asr as qwen3_asr;
 pub use architectures::qwen3::chat as qwen3_chat;
 pub use architectures::qwen3::core as qwen3;
 pub use architectures::qwen3::tts as qwen3_tts;
+pub use architectures::sortformer::diarization as sortformer_diarization;
 pub use architectures::voxtral::lm as voxtral_lm;
 pub use architectures::voxtral::realtime as voxtral;
 pub use shared::attention::batched as batched_attention;

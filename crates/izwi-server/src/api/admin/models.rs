@@ -348,22 +348,24 @@ fn model_sort_key(model: &ModelInfo) -> (u8, u8, u8, String) {
 }
 
 fn model_type_rank(variant: ModelVariant) -> u8 {
-    if variant.is_asr() {
+    if variant.is_diarization() {
         0
-    } else if variant.is_tts() {
+    } else if variant.is_asr() {
         1
-    } else if variant.is_chat() {
+    } else if variant.is_tts() {
         2
-    } else if variant.is_forced_aligner() {
+    } else if variant.is_chat() {
         3
-    } else if variant.is_tokenizer() {
+    } else if variant.is_forced_aligner() {
         4
-    } else if variant.is_lfm2() {
+    } else if variant.is_tokenizer() {
         5
-    } else if variant.is_voxtral() {
+    } else if variant.is_lfm2() {
         6
-    } else {
+    } else if variant.is_voxtral() {
         7
+    } else {
+        8
     }
 }
 

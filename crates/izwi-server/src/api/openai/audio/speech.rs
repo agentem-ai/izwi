@@ -278,8 +278,11 @@ async fn stream_speech(
 
         let (chunk_tx, mut chunk_rx) = mpsc::channel::<AudioChunk>(32);
         let generation_engine = engine.clone();
-        let generation_task =
-            tokio::spawn(async move { generation_engine.generate_streaming(gen_request, chunk_tx).await });
+        let generation_task = tokio::spawn(async move {
+            generation_engine
+                .generate_streaming(gen_request, chunk_tx)
+                .await
+        });
 
         let mut total_samples = 0usize;
         let stream_started = Instant::now();

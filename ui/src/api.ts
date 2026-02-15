@@ -216,6 +216,34 @@ export interface ASRTranscribeResponse {
   };
 }
 
+export interface DiarizationSegment {
+  speaker: string;
+  start: number;
+  end: number;
+  confidence?: number | null;
+}
+
+export interface DiarizationRequest {
+  audio_base64?: string;
+  audio_file?: Blob;
+  audio_filename?: string;
+  model_id?: string;
+  min_speakers?: number;
+  max_speakers?: number;
+  min_speech_duration_ms?: number;
+  min_silence_duration_ms?: number;
+}
+
+export interface DiarizationResponse {
+  segments: DiarizationSegment[];
+  speaker_count: number;
+  duration: number;
+  stats?: {
+    processing_time_ms: number;
+    rtf: number | null;
+  };
+}
+
 export type ASRStreamEvent =
   | { event: "start"; audio_duration_secs: number | null }
   | { event: "delta"; delta: string }
@@ -344,6 +372,7 @@ interface OpenAiResponseObject {
 }
 
 type AsrResponseFormat = "json" | "verbose_json";
+type DiarizationResponseFormat = "json" | "verbose_json" | "text";
 
 class ApiClient {
   readonly baseUrl: string;
@@ -654,6 +683,60 @@ class ApiClient {
     };
   }
 
+  async diarize(request: DiarizationRequest): Promise<DiarizationResponse> {
+    const response = await fetch(
+      `${this.baseUrl}/audio/diarizations`,
+      this.buildDiarizationRequestInit(request, "verbose_json"),
+    );
+
+    if (!response.ok) {
+      const error = await response
+        .json()
+        .catch(() => ({ error: { message: "Diarization failed" } }));
+      throw new Error(error.error?.message || "Diarization failed");
+    }
+
+    const payload = await response.json();
+    const rawSegments = Array.isArray(payload.segments) ? payload.segments : [];
+
+    const segments: DiarizationSegment[] = rawSegments
+      .map((segment: unknown): DiarizationSegment => {
+        const raw =
+          segment && typeof segment === "object"
+            ? (segment as Record<string, unknown>)
+            : {};
+        return {
+          speaker: String(raw.speaker ?? "SPEAKER_00"),
+          start: Number(raw.start ?? 0),
+          end: Number(raw.end ?? 0),
+          confidence:
+            typeof raw.confidence === "number" ? raw.confidence : null,
+        };
+      })
+      .filter(
+        (segment: DiarizationSegment) =>
+          Number.isFinite(segment.start) &&
+          Number.isFinite(segment.end) &&
+          segment.end > segment.start,
+      );
+
+    return {
+      segments,
+      speaker_count:
+        typeof payload.speaker_count === "number"
+          ? payload.speaker_count
+          : new Set(segments.map((segment) => segment.speaker)).size,
+      duration: typeof payload.duration === "number" ? payload.duration : 0,
+      stats:
+        typeof payload.processing_time_ms === "number"
+          ? {
+              processing_time_ms: payload.processing_time_ms,
+              rtf: typeof payload.rtf === "number" ? payload.rtf : null,
+            }
+          : undefined,
+    };
+  }
+
   asrTranscribeStream(
     request: ASRTranscribeRequest,
     callbacks: ASRStreamCallbacks,
@@ -925,6 +1008,64 @@ class ApiClient {
         language: request.language,
         response_format: responseFormat,
         stream,
+      }),
+    };
+  }
+
+  private buildDiarizationRequestInit(
+    request: DiarizationRequest,
+    responseFormat: DiarizationResponseFormat,
+  ): RequestInit {
+    if (request.audio_file) {
+      const form = new FormData();
+      form.append(
+        "file",
+        request.audio_file,
+        request.audio_filename || "audio.wav",
+      );
+      if (request.model_id) form.append("model", request.model_id);
+      if (typeof request.min_speakers === "number") {
+        form.append("min_speakers", String(request.min_speakers));
+      }
+      if (typeof request.max_speakers === "number") {
+        form.append("max_speakers", String(request.max_speakers));
+      }
+      if (typeof request.min_speech_duration_ms === "number") {
+        form.append(
+          "min_speech_duration_ms",
+          String(request.min_speech_duration_ms),
+        );
+      }
+      if (typeof request.min_silence_duration_ms === "number") {
+        form.append(
+          "min_silence_duration_ms",
+          String(request.min_silence_duration_ms),
+        );
+      }
+      form.append("response_format", responseFormat);
+      return {
+        method: "POST",
+        body: form,
+      };
+    }
+
+    if (!request.audio_base64) {
+      throw new Error("Missing audio input");
+    }
+
+    return {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        audio_base64: request.audio_base64,
+        model: request.model_id,
+        min_speakers: request.min_speakers,
+        max_speakers: request.max_speakers,
+        min_speech_duration_ms: request.min_speech_duration_ms,
+        min_silence_duration_ms: request.min_silence_duration_ms,
+        response_format: responseFormat,
       }),
     };
   }

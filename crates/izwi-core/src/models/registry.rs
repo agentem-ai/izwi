@@ -20,7 +20,9 @@ use super::qwen3_asr::{
 use super::qwen3_chat::{
     ChatDecodeState as Qwen3ChatDecodeState, ChatGenerationOutput, Qwen3ChatModel,
 };
+use super::sortformer_diarization::SortformerDiarizerModel;
 use super::voxtral::VoxtralRealtimeModel;
+use crate::runtime::{DiarizationConfig, DiarizationResult};
 
 pub enum NativeAsrModel {
     Qwen3(Qwen3AsrModel),
@@ -29,6 +31,10 @@ pub enum NativeAsrModel {
 
 pub enum NativeAsrDecodeState {
     Qwen3(Qwen3AsrDecodeState),
+}
+
+pub enum NativeDiarizationModel {
+    Sortformer(SortformerDiarizerModel),
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +115,19 @@ impl NativeAsrModel {
             _ => Err(Error::InvalidInput(
                 "ASR decode state does not match loaded ASR model".to_string(),
             )),
+        }
+    }
+}
+
+impl NativeDiarizationModel {
+    pub fn diarize(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        config: &DiarizationConfig,
+    ) -> Result<DiarizationResult> {
+        match self {
+            Self::Sortformer(model) => model.diarize(audio, sample_rate, config),
         }
     }
 }
@@ -208,6 +227,8 @@ pub struct ModelRegistry {
     models_dir: PathBuf,
     device: DeviceProfile,
     asr_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<NativeAsrModel>>>>>>,
+    diarization_models:
+        Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<NativeDiarizationModel>>>>>>,
     chat_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<NativeChatModel>>>>>>,
     voxtral_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<VoxtralRealtimeModel>>>>>>,
     lfm2_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<Lfm2AudioModel>>>>>>,
@@ -219,6 +240,7 @@ impl ModelRegistry {
             models_dir,
             device,
             asr_models: Arc::new(RwLock::new(HashMap::new())),
+            diarization_models: Arc::new(RwLock::new(HashMap::new())),
             chat_models: Arc::new(RwLock::new(HashMap::new())),
             voxtral_models: Arc::new(RwLock::new(HashMap::new())),
             lfm2_models: Arc::new(RwLock::new(HashMap::new())),
@@ -332,6 +354,56 @@ impl ModelRegistry {
         Ok(model.clone())
     }
 
+    pub async fn load_diarization(
+        &self,
+        variant: ModelVariant,
+        model_dir: &Path,
+    ) -> Result<Arc<NativeDiarizationModel>> {
+        if !variant.is_diarization() {
+            return Err(Error::InvalidInput(format!(
+                "Model variant {variant} is not a diarization model"
+            )));
+        }
+
+        let cell = {
+            let mut guard = self.diarization_models.write().await;
+            guard
+                .entry(variant)
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
+        };
+
+        info!("Loading native diarization model {variant} from {model_dir:?}");
+
+        let model = cell
+            .get_or_try_init({
+                let model_dir = model_dir.to_path_buf();
+                move || async move {
+                    tokio::task::spawn_blocking(move || {
+                        let model = match variant {
+                            ModelVariant::DiarStreamingSortformer4SpkV21 => {
+                                NativeDiarizationModel::Sortformer(SortformerDiarizerModel::load(
+                                    &model_dir, variant,
+                                )?)
+                            }
+                            _ => {
+                                return Err(Error::InvalidInput(format!(
+                                    "Unsupported diarization model variant: {variant}"
+                                )));
+                            }
+                        };
+                        Ok::<NativeDiarizationModel, Error>(model)
+                    })
+                    .await
+                    .map_err(|e| Error::ModelLoadError(e.to_string()))?
+                    .map(Arc::new)
+                }
+            })
+            .await?;
+
+        Ok(model.clone())
+    }
+
     pub async fn load_voxtral(
         &self,
         variant: ModelVariant,
@@ -418,6 +490,22 @@ impl ModelRegistry {
         guard.get(&variant).and_then(|cell| cell.get().cloned())
     }
 
+    pub async fn get_diarization(
+        &self,
+        variant: ModelVariant,
+    ) -> Option<Arc<NativeDiarizationModel>> {
+        let guard = self.diarization_models.read().await;
+        guard.get(&variant).and_then(|cell| cell.get().cloned())
+    }
+
+    pub fn try_get_diarization(
+        &self,
+        variant: ModelVariant,
+    ) -> Option<Arc<NativeDiarizationModel>> {
+        let guard = self.diarization_models.try_read().ok()?;
+        guard.get(&variant).and_then(|cell| cell.get().cloned())
+    }
+
     pub async fn get_chat(&self, variant: ModelVariant) -> Option<Arc<NativeChatModel>> {
         let guard = self.chat_models.read().await;
         guard.get(&variant).and_then(|cell| cell.get().cloned())
@@ -450,6 +538,11 @@ impl ModelRegistry {
 
     pub async fn unload_asr(&self, variant: ModelVariant) {
         let mut guard = self.asr_models.write().await;
+        guard.remove(&variant);
+    }
+
+    pub async fn unload_diarization(&self, variant: ModelVariant) {
+        let mut guard = self.diarization_models.write().await;
         guard.remove(&variant);
     }
 

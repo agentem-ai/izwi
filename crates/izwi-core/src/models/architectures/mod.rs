@@ -9,4 +9,5 @@ pub mod gemma3;
 pub mod lfm2;
 pub mod parakeet;
 pub mod qwen3;
+pub mod sortformer;
 pub mod voxtral;

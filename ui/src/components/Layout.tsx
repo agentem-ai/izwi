@@ -59,6 +59,13 @@ const TOP_NAV_ITEMS: NavItem[] = [
     icon: FileText,
     path: "/transcription",
   },
+  {
+    id: "diarization",
+    label: "Diarization",
+    description: "Speaker segmentation with timestamps",
+    icon: Users,
+    path: "/diarization",
+  },
 ];
 
 const CREATION_NAV_ITEMS: NavItem[] = [
