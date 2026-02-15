@@ -311,21 +311,7 @@ impl NativeExecutor {
     }
 
     fn run_blocking<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-        let unwind_result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            if matches!(
-                handle.runtime_flavor(),
-                tokio::runtime::RuntimeFlavor::MultiThread
-            ) {
-                tokio::task::block_in_place(|| {
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
-                })
-            } else {
-                // Current-thread runtimes do not permit block_in_place.
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
-            }
-        } else {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
-        };
+        let unwind_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
 
         match unwind_result {
             Ok(result) => result,
@@ -1691,5 +1677,16 @@ mod tests {
             panic!("expected inference error from panic");
         };
         assert!(message.contains("executor panic sentinel"));
+    }
+
+    #[test]
+    fn test_run_blocking_is_safe_inside_current_thread_runtime() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build runtime");
+
+        let result = runtime.block_on(async { NativeExecutor::run_blocking(|| Ok::<_, Error>(())) });
+        assert!(result.is_ok());
     }
 }
