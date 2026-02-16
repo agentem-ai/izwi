@@ -22,7 +22,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    image: izwi-audio:dev
+    image: izwi:dev
     container_name: izwi-dev
     stdin_open: true
     tty: true
@@ -71,7 +71,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    image: izwi-audio:dev
+    image: izwi:dev
     container_name: izwi-backend
     profiles:
       - services
@@ -94,7 +94,7 @@ services:
   # Frontend dev server (alternative to running in dev container)
   # ---------------------------------------------------------------------------
   frontend:
-    image: node:20-slim
+    image: node:24-slim
     container_name: izwi-frontend
     profiles:
       - services

@@ -17,21 +17,23 @@ services:
       context: .
       dockerfile: Dockerfile
       target: production
-    image: izwi-audio:latest
-    container_name: izwi-audio
+    image: izwi:latest
+    pull_policy: never
+    container_name: izwi
     restart: unless-stopped
     ports:
       - "8080:8080"
     volumes:
       - izwi-models:/app/models
       - izwi-data:/app/data
-      - ./config.toml:/app/config.toml:ro
     environment:
       - IZWI_CONFIG_PATH=/app/config.toml
+      - IZWI_UI_DIR=/app/ui/dist
+      - IZWI_MODELS_DIR=/app/models
       - HF_HOME=/app/models/huggingface
       - TRANSFORMERS_CACHE=/app/models/huggingface
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/models"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -50,8 +52,9 @@ services:
       context: .
       dockerfile: Dockerfile
       target: production-cuda
-    image: izwi-audio:cuda
-    container_name: izwi-audio-cuda
+    image: izwi:cuda
+    pull_policy: never
+    container_name: izwi-cuda
     profiles:
       - cuda
     restart: unless-stopped
@@ -60,9 +63,10 @@ services:
     volumes:
       - izwi-models:/app/models
       - izwi-data:/app/data
-      - ./config.toml:/app/config.toml:ro
     environment:
       - IZWI_CONFIG_PATH=/app/config.toml
+      - IZWI_UI_DIR=/app/ui/dist
+      - IZWI_MODELS_DIR=/app/models
       - HF_HOME=/app/models/huggingface
       - TRANSFORMERS_CACHE=/app/models/huggingface
       - NVIDIA_VISIBLE_DEVICES=all
@@ -74,7 +78,7 @@ services:
               count: 1
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/models"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3

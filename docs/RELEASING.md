@@ -15,7 +15,7 @@ For `v0.1.0-alpha-1`, update these files before tagging:
 3. `ui/package.json`
    - Set `"version": "0.1.0-alpha-1"` to keep frontend package metadata aligned.
 4. `crates/izwi-core/src/model/download.rs` (recommended)
-   - Update the hardcoded `User-Agent` version string (`izwi-audio/...`) to match.
+   - Update the hardcoded `User-Agent` version string (`izwi/...`) to match.
 
 ## Release steps (example: v0.1.0-alpha-1)
 
