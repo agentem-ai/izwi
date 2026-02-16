@@ -93,6 +93,9 @@ pub enum ModelVariant {
     /// Qwen3 0.6B text model (MLX 4-bit)
     #[serde(rename = "Qwen3-0.6B-4bit")]
     Qwen306B4Bit,
+    /// Qwen3 1.7B text model
+    #[serde(rename = "Qwen3-1.7B")]
+    Qwen317B,
     /// Gemma 3 1B instruction-tuned chat model
     #[serde(rename = "Gemma-3-1b-it")]
     Gemma31BIt,
@@ -152,6 +155,7 @@ impl ModelVariant {
             Self::ParakeetTdt06BV3 => "nvidia/parakeet-tdt-0.6b-v3",
             Self::DiarStreamingSortformer4SpkV21 => "nvidia/diar_streaming_sortformer_4spk-v2.1",
             Self::Qwen306B4Bit => "mlx-community/Qwen3-0.6B-4bit",
+            Self::Qwen317B => "Qwen/Qwen3-1.7B",
             Self::Gemma31BIt => "google/gemma-3-1b-it",
             Self::Gemma34BIt => "google/gemma-3-4b-it",
             Self::Qwen3ForcedAligner06B => "Qwen/Qwen3-ForcedAligner-0.6B",
@@ -191,6 +195,7 @@ impl ModelVariant {
             Self::ParakeetTdt06BV3 => "Parakeet TDT 0.6B v3",
             Self::DiarStreamingSortformer4SpkV21 => "Streaming Sortformer 4spk v2.1",
             Self::Qwen306B4Bit => "Qwen3 0.6B 4-bit",
+            Self::Qwen317B => "Qwen3 1.7B",
             Self::Gemma31BIt => "Gemma 3 1B Instruct",
             Self::Gemma34BIt => "Gemma 3 4B Instruct",
             Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner 0.6B",
@@ -230,6 +235,7 @@ impl ModelVariant {
             Self::ParakeetTdt06BV3 => "Parakeet-TDT-0.6B-v3",
             Self::DiarStreamingSortformer4SpkV21 => "diar_streaming_sortformer_4spk-v2.1",
             Self::Qwen306B4Bit => "Qwen3-0.6B-4bit",
+            Self::Qwen317B => "Qwen3-1.7B",
             Self::Gemma31BIt => "Gemma-3-1b-it",
             Self::Gemma34BIt => "Gemma-3-4b-it",
             Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner-0.6B",
@@ -269,6 +275,7 @@ impl ModelVariant {
             Self::ParakeetTdt06BV3 => 10_036_761_167,   // ~9.35 GB
             Self::DiarStreamingSortformer4SpkV21 => 510_000_000, // ~0.47 GB (est)
             Self::Qwen306B4Bit => 900_000_000,          // ~0.84 GB (est)
+            Self::Qwen317B => 4_080_000_000,            // ~3.80 GB (actual: 3.44GB + 622MB shards)
             Self::Gemma31BIt => 2_200_000_000,          // ~2.05 GB (est)
             Self::Gemma34BIt => 8_600_000_000,          // ~8.01 GB (est)
             Self::Qwen3ForcedAligner06B => 1_840_072_459, // ~1.71 GB
@@ -307,6 +314,7 @@ impl ModelVariant {
             Self::ParakeetTdt06BV3 => 12.0,
             Self::DiarStreamingSortformer4SpkV21 => 3.0,
             Self::Qwen306B4Bit => 2.0,
+            Self::Qwen317B => 5.0,
             Self::Gemma31BIt => 3.5,
             Self::Gemma34BIt => 11.0,
             Self::Qwen3ForcedAligner06B => 2.5,
@@ -355,7 +363,7 @@ impl ModelVariant {
     pub fn is_chat(&self) -> bool {
         matches!(
             self,
-            Self::Qwen306B4Bit | Self::Gemma31BIt | Self::Gemma34BIt
+            Self::Qwen306B4Bit | Self::Qwen317B | Self::Gemma31BIt | Self::Gemma34BIt
         )
     }
 
@@ -415,7 +423,7 @@ impl ModelVariant {
     /// Whether this variant is currently enabled in the application catalog.
     pub fn is_enabled(&self) -> bool {
         match self {
-            Self::Qwen306B4Bit | Self::Gemma31BIt => true,
+            Self::Qwen306B4Bit | Self::Qwen317B | Self::Gemma31BIt => true,
             Self::Gemma34BIt => false,
             Self::Lfm2Audio15B | Self::Lfm25Audio15B => true,
             Self::VoxtralMini4BRealtime2602 => false,
@@ -458,6 +466,7 @@ impl ModelVariant {
             Self::ParakeetTdt06BV3,
             Self::DiarStreamingSortformer4SpkV21,
             Self::Qwen306B4Bit,
+            Self::Qwen317B,
             Self::Gemma31BIt,
             Self::Gemma34BIt,
             Self::Qwen3ForcedAligner06B,

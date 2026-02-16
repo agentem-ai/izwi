@@ -43,6 +43,9 @@ function getChatModelName(variant: string): string {
   if (variant === "Qwen3-0.6B-4bit") {
     return withQwen3Prefix("Chat 0.6B 4-bit", variant);
   }
+  if (variant === "Qwen3-1.7B") {
+    return withQwen3Prefix("Chat 1.7B", variant);
+  }
   if (variant === "Gemma-3-1b-it") {
     return "Gemma 3 1B Instruct";
   }
@@ -53,7 +56,7 @@ function getChatModelName(variant: string): string {
 }
 
 function isThinkingChatModel(variant: string): boolean {
-  return variant === "Qwen3-0.6B-4bit";
+  return variant === "Qwen3-0.6B-4bit" || variant === "Qwen3-1.7B";
 }
 
 function getStatusLabel(status: ModelInfo["status"]): string {
@@ -120,9 +123,9 @@ export function ChatPage({
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [modalIntentModel, setModalIntentModel] = useState<string | null>(null);
   const [autoCloseOnIntentReady, setAutoCloseOnIntentReady] = useState(false);
-  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<string | null>(
-    null,
-  );
+  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<
+    string | null
+  >(null);
 
   const chatModels = useMemo(
     () =>
@@ -161,12 +164,7 @@ export function ChatPage({
     if (targetModel?.status === "ready") {
       closeModelModal();
     }
-  }, [
-    autoCloseOnIntentReady,
-    chatModels,
-    isModelModalOpen,
-    modalIntentModel,
-  ]);
+  }, [autoCloseOnIntentReady, chatModels, isModelModalOpen, modalIntentModel]);
 
   const handleModelSelect = (variant: string) => {
     const model = chatModels.find((m) => m.variant === variant);
@@ -303,9 +301,13 @@ export function ChatPage({
       <ChatPlayground
         selectedModel={resolvedSelectedModel}
         selectedModelReady={selectedModelReady}
-        modelLabel={selectedModelInfo ? getChatModelName(selectedModelInfo.variant) : null}
+        modelLabel={
+          selectedModelInfo ? getChatModelName(selectedModelInfo.variant) : null
+        }
         supportsThinking={
-          resolvedSelectedModel ? isThinkingChatModel(resolvedSelectedModel) : false
+          resolvedSelectedModel
+            ? isThinkingChatModel(resolvedSelectedModel)
+            : false
         }
         modelOptions={modelOptions}
         onSelectModel={handleModelSelect}
@@ -367,7 +369,8 @@ export function ChatPage({
                   chatModels.map((model) => {
                     const isSelected = resolvedSelectedModel === model.variant;
                     const isIntent = modalIntentModel === model.variant;
-                    const isActiveModel = activeReadyModelVariant === model.variant;
+                    const isActiveModel =
+                      activeReadyModelVariant === model.variant;
                     const progressValue = downloadProgress[model.variant];
                     const progress =
                       progressValue?.percent ?? model.download_progress ?? 0;
@@ -410,8 +413,8 @@ export function ChatPage({
                           <div className="flex items-center gap-2">
                             {renderModelPrimaryAction(model, isActiveModel)}
                             {(model.status === "downloaded" ||
-                              model.status === "ready") && (
-                              pendingDeleteVariant === model.variant ? (
+                              model.status === "ready") &&
+                              (pendingDeleteVariant === model.variant ? (
                                 <div className="flex items-center gap-1">
                                   <button
                                     onClick={(event) => {
@@ -446,8 +449,7 @@ export function ChatPage({
                                   <Trash2 className="w-3.5 h-3.5" />
                                   Delete
                                 </button>
-                              )
-                            )}
+                              ))}
                             {model.status === "ready" && (
                               <button
                                 onClick={(event) => {
@@ -473,13 +475,17 @@ export function ChatPage({
                             </div>
                             <div className="mt-1 text-[11px] text-gray-500">
                               Downloading {Math.round(progress)}%
-                              {progressValue && progressValue.totalBytes > 0 && (
-                                <>
-                                  {" "}
-                                  ({formatBytes(progressValue.downloadedBytes)} /{" "}
-                                  {formatBytes(progressValue.totalBytes)})
-                                </>
-                              )}
+                              {progressValue &&
+                                progressValue.totalBytes > 0 && (
+                                  <>
+                                    {" "}
+                                    (
+                                    {formatBytes(
+                                      progressValue.downloadedBytes,
+                                    )}{" "}
+                                    / {formatBytes(progressValue.totalBytes)})
+                                  </>
+                                )}
                             </div>
                             {progressValue?.currentFile && (
                               <div className="mt-0.5 text-[11px] text-gray-600 truncate">

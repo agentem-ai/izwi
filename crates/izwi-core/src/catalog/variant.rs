@@ -99,7 +99,7 @@ impl ModelVariant {
             | Qwen3Asr17B4Bit | Qwen3Asr17B8Bit | Qwen3Asr17BBf16 => ModelFamily::Qwen3Asr,
             ParakeetTdt06BV2 | ParakeetTdt06BV3 => ModelFamily::ParakeetAsr,
             DiarStreamingSortformer4SpkV21 => ModelFamily::SortformerDiarization,
-            Qwen306B4Bit => ModelFamily::Qwen3Chat,
+            Qwen306B4Bit | Qwen317B => ModelFamily::Qwen3Chat,
             Gemma31BIt | Gemma34BIt => ModelFamily::Gemma3Chat,
             Qwen3ForcedAligner06B => ModelFamily::Qwen3ForcedAligner,
             VoxtralMini4BRealtime2602 => ModelFamily::Voxtral,
@@ -160,6 +160,23 @@ pub fn parse_chat_model_variant(
     input: Option<&str>,
 ) -> Result<ModelVariant, ParseModelVariantError> {
     match input.unwrap_or("Qwen3-0.6B-4bit") {
+        id => {
+            let variant = parse_model_variant(id)?;
+            if variant.is_chat() {
+                Ok(variant)
+            } else {
+                Err(ParseModelVariantError::new(id))
+            }
+        }
+    }
+}
+
+/// Resolve the LLM variant for diarization transcript refinement.
+/// Defaults to Qwen3-1.7B which supports thinking mode for better reasoning.
+pub fn resolve_diarization_llm_variant(
+    input: Option<&str>,
+) -> Result<ModelVariant, ParseModelVariantError> {
+    match input.unwrap_or("Qwen3-1.7B") {
         id => {
             let variant = parse_model_variant(id)?;
             if variant.is_chat() {
