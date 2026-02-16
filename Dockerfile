@@ -6,7 +6,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Build the React UI
 # -----------------------------------------------------------------------------
-FROM node:20-slim AS ui-builder
+FROM node:24-slim AS ui-builder
 
 WORKDIR /app/ui
 
@@ -23,7 +23,7 @@ RUN npm run build
 # -----------------------------------------------------------------------------
 # Stage 2: Build the Rust backend
 # -----------------------------------------------------------------------------
-FROM rust:1.83-bookworm AS rust-builder
+FROM rust:1.88-bookworm AS rust-builder
 
 WORKDIR /app
 
@@ -37,8 +37,8 @@ RUN apt-get update && apt-get install -y \
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-# Build release binary
-RUN cargo build --release --bin izwi
+# Build release binary (server only for Docker)
+RUN cargo build --release --bin izwi-server
 
 # -----------------------------------------------------------------------------
 # Stage 3: Production runtime (CPU)
@@ -63,16 +63,18 @@ RUN apt-get update && apt-get install -y \
     && useradd -m -u 1000 izwi
 
 # Copy Rust binary
-COPY --from=rust-builder /app/target/release/izwi /usr/local/bin/izwi
+COPY --from=rust-builder /app/target/release/izwi-server /usr/local/bin/izwi-server
 
 # Copy built UI
 COPY --from=ui-builder /app/ui/dist /app/ui/dist
 
-# Copy configuration
-COPY config.toml /app/config.toml
+# Copy configuration (use Docker-specific config)
+COPY config.docker.toml /app/config.toml
 
 # Set up environment
 ENV IZWI_CONFIG_PATH=/app/config.toml
+ENV IZWI_UI_DIR=/app/ui/dist
+ENV IZWI_MODELS_DIR=/app/models
 
 # Create directories for models and data
 RUN mkdir -p /app/models /app/data && \
@@ -88,10 +90,10 @@ USER izwi
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8080/api/v1/models || exit 1
+    CMD curl -f http://localhost:8080/v1/health || exit 1
 
 # Start the server
-CMD ["izwi"]
+CMD ["izwi-server"]
 
 # -----------------------------------------------------------------------------
 # Stage 4: Production runtime with CUDA support
@@ -116,16 +118,18 @@ RUN apt-get update && apt-get install -y \
     && useradd -m -u 1000 izwi
 
 # Copy Rust binary
-COPY --from=rust-builder /app/target/release/izwi /usr/local/bin/izwi
+COPY --from=rust-builder /app/target/release/izwi-server /usr/local/bin/izwi-server
 
 # Copy built UI
 COPY --from=ui-builder /app/ui/dist /app/ui/dist
 
-# Copy configuration
-COPY config.toml /app/config.toml
+# Copy configuration (use Docker-specific config)
+COPY config.docker.toml /app/config.toml
 
 # Set up environment
 ENV IZWI_CONFIG_PATH=/app/config.toml
+ENV IZWI_UI_DIR=/app/ui/dist
+ENV IZWI_MODELS_DIR=/app/models
 
 # Create directories for models and data
 RUN mkdir -p /app/models /app/data && \
@@ -141,7 +145,7 @@ USER izwi
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD curl -f http://localhost:8080/api/v1/models || exit 1
+    CMD curl -f http://localhost:8080/v1/health || exit 1
 
 # Start the server
-CMD ["izwi"]
+CMD ["izwi-server"]

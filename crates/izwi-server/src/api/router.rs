@@ -27,12 +27,16 @@ pub fn create_router(state: AppState) -> Router {
         .merge(crate::api::openai::router())
         .merge(crate::api::admin::router());
 
+    // Get UI directory from environment or use default relative path
+    let ui_dir = std::env::var("IZWI_UI_DIR").unwrap_or_else(|_| "ui/dist".to_string());
+    let index_path = format!("{}/index.html", ui_dir);
+
     Router::new()
         .nest("/v1", v1_routes)
         // Serve static files for UI
         .fallback_service(
-            tower_http::services::ServeDir::new("ui/dist")
-                .fallback(tower_http::services::ServeFile::new("ui/dist/index.html")),
+            tower_http::services::ServeDir::new(&ui_dir)
+                .fallback(tower_http::services::ServeFile::new(&index_path)),
         )
         .layer(trace_layer)
         .layer(middleware::from_fn(attach_request_context))
