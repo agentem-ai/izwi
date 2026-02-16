@@ -22,7 +22,7 @@ Starts an interactive chat session with a loaded chat model. Type messages and r
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-m, --model <MODEL>` | Chat model to use | `qwen3-tts-1.7b-base` |
+| `-m, --model <MODEL>` | Chat model to use | `qwen3-0.6b-4bit` |
 | `-s, --system <PROMPT>` | System prompt | — |
 | `-v, --voice <VOICE>` | Voice for spoken responses | — |
 

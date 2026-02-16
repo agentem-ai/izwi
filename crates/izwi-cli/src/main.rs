@@ -271,8 +271,8 @@ pub enum Commands {
     /// Interactive chat with audio understanding capabilities.
     #[command(name = "chat")]
     Chat {
-        /// Model to use
-        #[arg(short, long, default_value = "qwen3-tts-1.7b-base")]
+        /// Model to use (e.g., qwen3-0.6b-4bit, qwen3-1.7b, gemma-3-1b-it)
+        #[arg(short, long, default_value = "qwen3-0.6b-4bit")]
         model: String,
 
         /// Initial system prompt
@@ -282,6 +282,63 @@ pub enum Commands {
         /// Voice to use for responses
         #[arg(short, long)]
         voice: Option<String>,
+    },
+
+    /// Speaker diarization
+    ///
+    /// Identify and separate multiple speakers in audio recordings.
+    #[command(name = "diarize", alias = "diar")]
+    Diarize {
+        /// Audio file to analyze
+        file: PathBuf,
+
+        /// Diarization model to use
+        #[arg(short, long, default_value = "sortformer-4spk")]
+        model: String,
+
+        /// Expected number of speakers (optional, auto-detect if not specified)
+        #[arg(short, long)]
+        num_speakers: Option<u32>,
+
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "text")]
+        format: TranscriptFormat,
+
+        /// Output file (default: stdout)
+        #[arg(short, long, value_name = "PATH")]
+        output: Option<PathBuf>,
+
+        /// Include transcription with speaker labels
+        #[arg(long)]
+        transcribe: bool,
+
+        /// ASR model for transcription (used with --transcribe)
+        #[arg(long, default_value = "qwen3-asr-0.6b")]
+        asr_model: String,
+    },
+
+    /// Forced alignment
+    ///
+    /// Align text to audio at word level for precise timing.
+    #[command(name = "align")]
+    Align {
+        /// Audio file to align
+        file: PathBuf,
+
+        /// Reference text to align
+        text: String,
+
+        /// Model to use
+        #[arg(short, long, default_value = "qwen3-forcedaligner-0.6b")]
+        model: String,
+
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "json")]
+        format: TranscriptFormat,
+
+        /// Output file (default: stdout)
+        #[arg(short, long, value_name = "PATH")]
+        output: Option<PathBuf>,
     },
 
     /// Run benchmarks
@@ -657,6 +714,50 @@ async fn main() -> Result<()> {
                 },
                 &cli.server,
                 &theme,
+            )
+            .await?;
+        }
+
+        Commands::Diarize {
+            file,
+            model,
+            num_speakers,
+            format,
+            output,
+            transcribe,
+            asr_model,
+        } => {
+            commands::diarize::execute(
+                commands::diarize::DiarizeArgs {
+                    file,
+                    model,
+                    num_speakers,
+                    format,
+                    output,
+                    transcribe,
+                    asr_model,
+                },
+                &cli.server,
+            )
+            .await?;
+        }
+
+        Commands::Align {
+            file,
+            text,
+            model,
+            format,
+            output,
+        } => {
+            commands::align::execute(
+                commands::align::AlignArgs {
+                    file,
+                    text,
+                    model,
+                    format,
+                    output,
+                },
+                &cli.server,
             )
             .await?;
         }

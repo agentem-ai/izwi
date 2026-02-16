@@ -1,7 +1,9 @@
+pub mod align;
 pub mod bench;
 pub mod chat;
 pub mod completions;
 pub mod config;
+pub mod diarize;
 pub mod list;
 pub mod models;
 pub mod pull;

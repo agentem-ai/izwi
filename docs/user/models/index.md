@@ -12,30 +12,44 @@ Izwi supports several model families optimized for different tasks:
 
 | Model | Size | Description |
 |-------|------|-------------|
-| `qwen3-tts-0.6b-base` | ~1.2 GB | Fast, general-purpose TTS |
-| `qwen3-tts-0.6b-customvoice` | ~1.2 GB | TTS with voice cloning support |
-| `qwen3-tts-0.6b-voicedesign` | ~1.2 GB | TTS with voice design from descriptions |
-| `qwen3-tts-1.7b-base` | ~3.4 GB | Higher quality TTS |
-| `qwen3-tts-1.7b-customvoice` | ~3.4 GB | Higher quality with voice cloning |
+| `Qwen3-TTS-12Hz-0.6B-Base` | ~2.3 GB | Fast, general-purpose TTS |
+| `Qwen3-TTS-12Hz-0.6B-CustomVoice` | ~2.3 GB | TTS with voice cloning support |
+| `Qwen3-TTS-12Hz-1.7B-Base` | ~4.2 GB | Higher quality TTS |
+| `Qwen3-TTS-12Hz-1.7B-CustomVoice` | ~4.2 GB | Higher quality with voice cloning |
+| `Qwen3-TTS-12Hz-1.7B-VoiceDesign` | ~4.2 GB | Voice design from descriptions |
+| `LFM2-Audio-1.5B` | ~2.8 GB | Liquid AI audio model |
+| `LFM2.5-Audio-1.5B` | ~3.0 GB | Liquid AI audio model (v2.5) |
 
 ### Speech Recognition (ASR)
 
 | Model | Size | Description |
 |-------|------|-------------|
-| `qwen3-asr-0.6b` | ~1.2 GB | Fast speech-to-text |
-| `qwen3-asr-1.7b` | ~3.4 GB | Higher accuracy transcription |
+| `Qwen3-ASR-0.6B` | ~1.8 GB | Fast speech-to-text |
+| `Qwen3-ASR-1.7B` | ~4.4 GB | Higher accuracy transcription |
+| `Parakeet-TDT-0.6B-v2` | ~4.6 GB | NVIDIA Parakeet ASR |
+| `Parakeet-TDT-0.6B-v3` | ~9.4 GB | NVIDIA Parakeet ASR (latest) |
+
+### Speaker Diarization
+
+| Model | Size | Description |
+|-------|------|-------------|
+| `diar_streaming_sortformer_4spk-v2.1` | ~0.5 GB | NVIDIA Sortformer, up to 4 speakers |
 
 ### Chat
 
 | Model | Size | Description |
 |-------|------|-------------|
-| `qwen3-chat-0.6b-4bit` | ~400 MB | Compact chat model |
+| `Qwen3-0.6B-4bit` | ~0.8 GB | Compact Qwen3 chat model |
+| `Qwen3-1.7B` | ~3.8 GB | Larger Qwen3 chat model |
+| `Gemma-3-1b-it` | ~2.0 GB | Google Gemma 3 1B Instruct |
+| `Gemma-3-4b-it` | ~8.0 GB | Google Gemma 3 4B Instruct |
 
 ### Specialized
 
 | Model | Size | Description |
 |-------|------|-------------|
-| `qwen3-forced-aligner` | ~600 MB | Word-level audio alignment |
+| `Qwen3-ForcedAligner-0.6B` | ~1.7 GB | Word-level audio alignment |
+| `Voxtral-Mini-4B-Realtime-2602` | ~7.5 GB | Mistral realtime audio (coming soon) |
 
 ---
 
