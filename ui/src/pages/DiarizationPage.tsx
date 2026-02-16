@@ -1,14 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
-import {
-  CheckCircle2,
-  Download,
-  Loader2,
-  Play,
-  Trash2,
-  X,
-} from "lucide-react";
+import { CheckCircle2, Download, Loader2, Play, Trash2, X } from "lucide-react";
 import { ModelInfo } from "../api";
 import { DiarizationPlayground } from "../components/DiarizationPlayground";
 
@@ -57,7 +50,7 @@ function isPipelineAlignerVariant(variant: string): boolean {
 }
 
 function isPipelineLlmVariant(variant: string): boolean {
-  return variant === "Gemma-3-1b-it";
+  return variant === "Qwen3-1.7B";
 }
 
 export function DiarizationPage({
@@ -76,9 +69,9 @@ export function DiarizationPage({
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [modalIntentModel, setModalIntentModel] = useState<string | null>(null);
   const [autoCloseOnIntentReady, setAutoCloseOnIntentReady] = useState(false);
-  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<string | null>(
-    null,
-  );
+  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<
+    string | null
+  >(null);
 
   const diarizationModels = useMemo(
     () =>
@@ -152,13 +145,17 @@ export function DiarizationPage({
       }
     }
 
-    const readyModel = diarizationModels.find((model) => model.status === "ready");
+    const readyModel = diarizationModels.find(
+      (model) => model.status === "ready",
+    );
     if (readyModel) {
       return readyModel.variant;
     }
 
     for (const variant of preferredModelOrder) {
-      const preferred = diarizationModels.find((model) => model.variant === variant);
+      const preferred = diarizationModels.find(
+        (model) => model.variant === variant,
+      );
       if (preferred) {
         return preferred.variant;
       }
@@ -168,8 +165,9 @@ export function DiarizationPage({
   })();
 
   const selectedModelInfo =
-    diarizationModels.find((model) => model.variant === resolvedSelectedModel) ??
-    null;
+    diarizationModels.find(
+      (model) => model.variant === resolvedSelectedModel,
+    ) ?? null;
   const selectedModelReady = selectedModelInfo?.status === "ready";
 
   const closeModelModal = () => {
@@ -332,7 +330,8 @@ export function DiarizationPage({
   };
 
   const activeReadyModelVariant =
-    diarizationModels.find((model) => model.status === "ready")?.variant ?? null;
+    diarizationModels.find((model) => model.status === "ready")?.variant ??
+    null;
 
   const modelOptions = diarizationModels.map((model) => ({
     value: model.variant,
@@ -439,12 +438,16 @@ export function DiarizationPage({
                         </div>
                       ) : (
                         group.models.map((model) => {
-                          const isSelected = resolvedSelectedModel === model.variant;
+                          const isSelected =
+                            resolvedSelectedModel === model.variant;
                           const isIntent = modalIntentModel === model.variant;
-                          const isActiveModel = activeReadyModelVariant === model.variant;
+                          const isActiveModel =
+                            activeReadyModelVariant === model.variant;
                           const progressValue = downloadProgress[model.variant];
                           const progress =
-                            progressValue?.percent ?? model.download_progress ?? 0;
+                            progressValue?.percent ??
+                            model.download_progress ??
+                            0;
 
                           return (
                             <div
@@ -498,8 +501,8 @@ export function DiarizationPage({
                                       Unload
                                     </button>
                                   )}
-                                  {model.status !== "downloading" && (
-                                    pendingDeleteVariant === model.variant ? (
+                                  {model.status !== "downloading" &&
+                                    (pendingDeleteVariant === model.variant ? (
                                       <>
                                         <button
                                           onClick={(event) => {
@@ -525,15 +528,16 @@ export function DiarizationPage({
                                       <button
                                         onClick={(event) => {
                                           event.stopPropagation();
-                                          setPendingDeleteVariant(model.variant);
+                                          setPendingDeleteVariant(
+                                            model.variant,
+                                          );
                                         }}
                                         className="btn btn-danger text-xs"
                                       >
                                         <Trash2 className="w-3.5 h-3.5" />
                                         Delete
                                       </button>
-                                    )
-                                  )}
+                                    ))}
                                 </div>
                               </div>
 

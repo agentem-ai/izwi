@@ -1,7 +1,7 @@
 //! Diarization runtime methods.
 
 use crate::catalog::{
-    parse_chat_model_variant, resolve_asr_model_variant, resolve_diarization_model_variant,
+    resolve_asr_model_variant, resolve_diarization_llm_variant, resolve_diarization_model_variant,
 };
 use crate::error::{Error, Result};
 use crate::runtime::audio_io::{base64_decode, decode_audio_bytes};
@@ -200,7 +200,7 @@ impl RuntimeService {
 }
 
 fn resolve_chat_variant(model_id: Option<&str>) -> Result<ModelVariant> {
-    parse_chat_model_variant(model_id).map_err(|err| Error::InvalidInput(err.to_string()))
+    resolve_diarization_llm_variant(model_id).map_err(|err| Error::InvalidInput(err.to_string()))
 }
 
 fn fallback_word_timings(text: &str, duration_secs: f32) -> Vec<(String, u32, u32)> {
