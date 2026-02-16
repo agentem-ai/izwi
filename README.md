@@ -4,166 +4,124 @@
 
 <h1 align="center">Izwi</h1>
 
-<p align="center"><strong>Local-first audio inference engine for TTS, ASR, and audio-chat workflows.</strong></p>
+<p align="center"><strong>Local-first audio inference engine for TTS, ASR, and voice AI workflows.</strong></p>
 
-<p align="center">Rust-native runtime with a unified CLI, OpenAI-style API, web UI, and desktop mode.</p>
+<p align="center">
+  <a href="https://izwiai.com">Website</a> •
+  <a href="https://izwiai.com/docs">Documentation</a> •
+  <a href="https://github.com/agentem-ai/izwi/releases">Releases</a> •
+  <a href="https://izwiai.com/docs/user/getting-started">Getting Started</a>
+</p>
+
+<p align="center">
+  <img src="images/screenshot.png" alt="Izwi Screenshot" width="800" />
+</p>
 
 ---
 
 ## Overview
 
-Izwi is a local inference stack for speech and audio workflows. It includes:
-- text-to-speech (TTS),
-- automatic speech recognition (ASR),
-- chat/audio-chat model support,
-- model lifecycle management (download, load, unload),
-- a CLI-first workflow (`izwi`) with web and desktop interfaces.
+Izwi is a privacy-focused audio AI platform that runs entirely on your machine. No cloud services, no API keys, no data leaving your device.
 
-The server exposes OpenAI-style routes under `/v1` and is designed to run locally.
+**Core capabilities:**
 
-![Izwi Screenshot](images/screenshot.png)
+- **Voice Mode** — Real-time voice conversations with AI
+- **Text-to-Speech** — Generate natural speech from text
+- **Speech Recognition** — Convert audio to text with high accuracy
+- **Speaker Diarization** — Identify and separate multiple speakers
+- **Voice Cloning** — Clone any voice from a short audio sample
+- **Voice Design** — Create custom voices from text descriptions
+- **Forced Alignment** — Word-level audio-text alignment
+- **Chat** — Text-based AI conversations
 
-## Features
+The server exposes OpenAI-compatible API routes under `/v1`.
 
-- Local-first Rust backend for audio inference workloads
-- Unified CLI for serving, model management, TTS, ASR, chat, and benchmarking
-- Built-in model download/load/unload flows from Hugging Face
-- Web UI (React + Vite) for interactive testing and operations
-- Tauri desktop app mode launched through the same CLI
-- Apple Silicon acceleration support (Metal) with native cross-platform builds
+---
 
-## Requirements
+## Quick Install
 
-- Rust toolchain (stable; Rust 1.83+ recommended)
-- Node.js 18+ and npm (for UI dependencies and local UI build/dev)
-- macOS or Linux
+### macOS
 
-Install Rust if needed:
+Download the latest `.dmg` from [GitHub Releases](https://github.com/agentem-ai/izwi/releases):
 
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
-rustup update stable
-```
+1. Open the `.dmg` file
+2. Drag **Izwi.app** to Applications
+3. Launch Izwi
 
-## Quick Start (Native)
-
-### 1. Install UI Dependencies
+### Linux
 
 ```bash
-cd ui
-npm install
-cd ..
+wget https://github.com/agentem-ai/izwi/releases/latest/download/izwi_amd64.deb
+sudo dpkg -i izwi_amd64.deb
 ```
 
-### 2. Build Release Binaries
+### Windows
 
-On macOS:
+Download and run the installer from [GitHub Releases](https://github.com/agentem-ai/izwi/releases).
 
-```bash
-cargo build --release --features metal
-```
+> **Full installation guides:** [macOS](https://izwiai.com/docs/user/installation/macos) • [Linux](https://izwiai.com/docs/user/installation/linux) • [Windows](https://izwiai.com/docs/user/installation/windows) • [From Source](https://izwiai.com/docs/user/installation/from-source)
 
-On Linux and other platforms:
+---
 
-```bash
-cargo build --release
-```
+## Quick Start
 
-### 3. Install CLI and Server Binaries
-
-```bash
-./scripts/install-cli.sh
-```
-
-The install script places `izwi`, `izwi-server`, and `izwi-desktop` in `~/.local/bin` and updates shell setup.
-
-### 4. Start Izwi
+### 1. Start the server
 
 ```bash
 izwi serve
 ```
 
-Server URL: `http://localhost:8080`
+Open `http://localhost:8080` in your browser.
 
-Desktop mode:
-
-```bash
-izwi serve --mode desktop
-```
-
-To serve the bundled UI from the same server endpoint, build it once:
+### 2. Download a model
 
 ```bash
-cd ui
-npm run build
-cd ..
+izwi pull Qwen3-TTS-12Hz-0.6B-Base
 ```
 
-### 5. Optional: Run UI in Dev Mode
+### 3. Generate speech
 
 ```bash
-cd ui
-npm run dev
+izwi tts "Hello from Izwi!" --output hello.wav
 ```
 
-Dev UI URL: `http://localhost:5173`
-
-## Releases
-
-GitHub tag releases build installers and terminal bundles for:
-- Windows (`NSIS .exe`)
-- Linux (`.deb`, includes `izwi` and `izwi-server` in `/usr/bin`)
-- macOS (`.dmg`, unsigned by default until signing is configured; app startup attempts to link `izwi` and `izwi-server` in PATH and may prompt for admin access)
-
-Release process details: `docs/RELEASING.md`  
-macOS install/uninstall instructions: `docs/MACOS.md`
-
-## First Commands to Run
-
-Use these commands to verify end-to-end setup:
+### 4. Transcribe audio
 
 ```bash
-izwi status
-izwi list --local
-izwi pull qwen3-tts-0.6b-base
-izwi tts "Hello from Izwi" --model qwen3-tts-0.6b-base --output /tmp/hello.wav
-izwi transcribe data/test.wav --model qwen3-asr-0.6b --format text
+izwi pull Qwen3-ASR-0.6B
+izwi transcribe audio.wav
 ```
 
-## CLI Command Overview
+---
 
-`izwi` is the primary interface. Core command groups:
+## Supported Models
 
-- `serve`: start the local API server
-- `list`, `pull`, `rm`, `models ...`: inspect/download/load/unload models
-- `tts`: generate speech from text
-- `transcribe`: convert audio to text
-- `chat`: chat with supported chat/audio-chat models
-- `bench`: run throughput and task-specific benchmarks
-- `status`: inspect health and runtime state
-- `config`: inspect or change CLI configuration
+| Category | Models |
+|----------|--------|
+| **TTS** | Qwen3-TTS (0.6B, 1.7B), LFM2-Audio |
+| **ASR** | Qwen3-ASR (0.6B, 1.7B), Parakeet TDT |
+| **Diarization** | Sortformer 4-speaker |
+| **Chat** | Qwen3 (0.6B, 1.7B), Gemma 3 (1B, 4B) |
+| **Alignment** | Qwen3-ForcedAligner |
 
-Get full command help:
+Run `izwi list` to see all available models.
 
-```bash
-izwi --help
-izwi models --help
-izwi tts --help
-izwi transcribe --help
-```
+> **Full model documentation:** [Models Guide](https://izwiai.com/docs/user/models)
 
-## Supported Model Families
+---
 
-The codebase currently includes variants for:
-- Qwen3 TTS (base/custom voice/voice design, including quantized variants)
-- Qwen3 ASR (0.6B/1.7B + quantized variants)
-- Qwen3 chat (0.6B 4-bit)
-- Qwen3 forced aligner
-- Voxtral realtime (coming soon)
-- LFM2-Audio (coming soon)
+## Documentation
 
-Run `izwi list` to view exact variants and local availability.
+| Resource | Link |
+|----------|------|
+| **Getting Started** | [izwiai.com/docs/user/getting-started](https://izwiai.com/docs/user/getting-started) |
+| **Installation** | [izwiai.com/docs/user/installation](https://izwiai.com/docs/user/installation) |
+| **Features** | [izwiai.com/docs/user/features](https://izwiai.com/docs/user/features) |
+| **CLI Reference** | [izwiai.com/docs/user/cli](https://izwiai.com/docs/user/cli) |
+| **Models** | [izwiai.com/docs/user/models](https://izwiai.com/docs/user/models) |
+| **Troubleshooting** | [izwiai.com/docs/user/troubleshooting](https://izwiai.com/docs/user/troubleshooting) |
+
+---
 
 ## License
 
@@ -172,5 +130,7 @@ Apache 2.0
 ## Acknowledgments
 
 - [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) by Alibaba
-- [MLX](https://github.com/ml-explore/mlx) by Apple
+- [Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) by NVIDIA
+- [Gemma](https://ai.google.dev/gemma) by Google
+- [LFM2-Audio](https://www.liquid.ai/) by Liquid AI
 - [HuggingFace Hub](https://huggingface.co/) for model hosting
