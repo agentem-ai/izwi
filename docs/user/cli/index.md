@@ -55,6 +55,8 @@ These options work with all commands:
 |---------|-------------|
 | [`tts`](./tts.md) | Text-to-speech generation |
 | [`transcribe`](./transcribe.md) | Speech-to-text transcription |
+| [`diarize`](./diarize.md) | Speaker diarization |
+| [`align`](./align.md) | Forced alignment |
 | [`chat`](./chat.md) | Interactive chat |
 
 ### Utilities
@@ -100,11 +102,24 @@ izwi transcribe audio.wav
 izwi transcribe audio.wav --format json
 ```
 
+### Speaker diarization
+
+```bash
+izwi diarize meeting.wav
+izwi diarize meeting.wav --transcribe --num-speakers 3
+```
+
+### Forced alignment
+
+```bash
+izwi align audio.wav "Hello world, this is a test."
+```
+
 ### Interactive chat
 
 ```bash
 izwi chat
-izwi chat --system "You are a helpful assistant"
+izwi chat --model gemma-3-1b-it --system "You are a helpful assistant"
 ```
 
 ---

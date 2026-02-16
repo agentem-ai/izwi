@@ -59,12 +59,13 @@ Different features require different models:
 | Feature | Required Models |
 |---------|-----------------|
 | Voice | TTS + ASR + Chat model |
-| Chat | Chat model |
+| Chat | Chat model (Qwen3 or Gemma) |
 | Text-to-Speech | TTS model |
-| Transcription | ASR model |
-| Diarization | ASR model |
-| Voice Cloning | TTS customvoice model |
-| Voice Design | TTS voicedesign model |
+| Transcription | ASR model (Qwen3 or Parakeet) |
+| Diarization | Diarization model (Sortformer) |
+| Forced Alignment | Forced aligner model |
+| Voice Cloning | TTS CustomVoice model |
+| Voice Design | TTS VoiceDesign model |
 
 ---
 
