@@ -84,9 +84,9 @@ npm install
 cd ..
 ```
 
-### Build the UI (Optional)
+### Build the UI
 
-To bundle the UI with the server:
+**Required for desktop app builds.** The UI must be built before compiling `izwi-desktop`:
 
 ```bash
 cd ui
@@ -250,6 +250,31 @@ Ensure CUDA toolkit is installed and `nvcc` is in PATH:
 ```bash
 nvcc --version
 ```
+
+### frontendDist path doesn't exist
+
+If you see this error when building:
+
+```
+error: proc macro panicked
+  --> crates/izwi-desktop/src/main.rs
+   |
+   |         .build(tauri::generate_context!())
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: message: The `frontendDist` configuration is set to `"../../ui/dist"` but this path doesn't exist
+```
+
+Build the UI first:
+
+```bash
+cd ui
+npm install
+npm run build
+cd ..
+```
+
+Then retry the build.
 
 ---
 
