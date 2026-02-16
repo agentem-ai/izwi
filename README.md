@@ -10,7 +10,7 @@
   <a href="https://izwiai.com">Website</a> •
   <a href="https://izwiai.com/docs">Documentation</a> •
   <a href="https://github.com/agentem-ai/izwi/releases">Releases</a> •
-  <a href="https://izwiai.com/docs/user/getting-started">Getting Started</a>
+  <a href="https://izwiai.com/docs/getting-started">Getting Started</a>
 </p>
 
 <p align="center">
@@ -59,7 +59,7 @@ sudo dpkg -i izwi_amd64.deb
 
 Download and run the installer from [GitHub Releases](https://github.com/agentem-ai/izwi/releases).
 
-> **Full installation guides:** [macOS](https://izwiai.com/docs/user/installation/macos) • [Linux](https://izwiai.com/docs/user/installation/linux) • [Windows](https://izwiai.com/docs/user/installation/windows) • [From Source](https://izwiai.com/docs/user/installation/from-source)
+> **Full installation guides:** [macOS](https://izwiai.com/docs/installation/macos) • [Linux](https://izwiai.com/docs/installation/linux) • [Windows](https://izwiai.com/docs/installation/windows) • [From Source](https://izwiai.com/docs/installation/from-source)
 
 ---
 
@@ -106,7 +106,7 @@ izwi transcribe audio.wav
 
 Run `izwi list` to see all available models.
 
-> **Full model documentation:** [Models Guide](https://izwiai.com/docs/user/models)
+> **Full model documentation:** [Models Guide](https://izwiai.com/docs/models)
 
 ---
 
@@ -114,12 +114,12 @@ Run `izwi list` to see all available models.
 
 | Resource | Link |
 |----------|------|
-| **Getting Started** | [izwiai.com/docs/user/getting-started](https://izwiai.com/docs/user/getting-started) |
-| **Installation** | [izwiai.com/docs/user/installation](https://izwiai.com/docs/user/installation) |
-| **Features** | [izwiai.com/docs/user/features](https://izwiai.com/docs/user/features) |
-| **CLI Reference** | [izwiai.com/docs/user/cli](https://izwiai.com/docs/user/cli) |
-| **Models** | [izwiai.com/docs/user/models](https://izwiai.com/docs/user/models) |
-| **Troubleshooting** | [izwiai.com/docs/user/troubleshooting](https://izwiai.com/docs/user/troubleshooting) |
+| **Getting Started** | [izwiai.com/docs/getting-started](https://izwiai.com/docs/getting-started) |
+| **Installation** | [izwiai.com/docs/installation](https://izwiai.com/docs/installation) |
+| **Features** | [izwiai.com/docs/features](https://izwiai.com/docs/features) |
+| **CLI Reference** | [izwiai.com/docs/cli](https://izwiai.com/docs/cli) |
+| **Models** | [izwiai.com/docs/models](https://izwiai.com/docs/models) |
+| **Troubleshooting** | [izwiai.com/docs/troubleshooting](https://izwiai.com/docs/troubleshooting) |
 
 ---
 
