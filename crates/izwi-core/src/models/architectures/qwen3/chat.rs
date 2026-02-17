@@ -136,7 +136,14 @@ impl Qwen3ChatModel {
         let config = parse_qwen3_config(&config_str)?;
 
         let tokenizer = ChatTokenizer::load(model_dir, config.vocab_size)?;
-        let dtype = device.select_dtype(None);
+        let dtype = match std::env::var("IZWI_CHAT_DTYPE") {
+            Ok(raw) if !raw.trim().is_empty() => device.select_dtype(Some(raw.trim())),
+            _ if device.kind.is_metal() => {
+                // Keep chat memory/latency practical on Apple Silicon.
+                DType::F16
+            }
+            _ => device.select_dtype(None),
+        };
 
         let index_path = model_dir.join("model.safetensors.index.json");
         let vb = if index_path.exists() {
@@ -166,7 +173,10 @@ impl Qwen3ChatModel {
 
         let text_model = Qwen3Model::load(config, vb)?;
 
-        info!("Loaded Qwen3 chat model on {:?}", device.kind);
+        info!(
+            "Loaded Qwen3 chat model on {:?} with dtype {:?}",
+            device.kind, dtype
+        );
 
         Ok(Self {
             device,
