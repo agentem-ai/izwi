@@ -136,8 +136,11 @@ impl Qwen3ChatModel {
         let config = parse_qwen3_config(&config_str)?;
 
         let tokenizer = ChatTokenizer::load(model_dir, config.vocab_size)?;
-        let dtype = match std::env::var("IZWI_CHAT_DTYPE") {
-            Ok(raw) if !raw.trim().is_empty() => device.select_dtype(Some(raw.trim())),
+        let dtype_override = std::env::var("IZWI_CHAT_DTYPE")
+            .ok()
+            .or_else(|| std::env::var("IZWI_QWEN_DTYPE").ok());
+        let dtype = match dtype_override.as_deref().map(str::trim) {
+            Some(raw) if !raw.is_empty() => device.select_dtype(Some(raw)),
             _ if device.kind.is_metal() => {
                 // Keep chat memory/latency practical on Apple Silicon.
                 DType::F16

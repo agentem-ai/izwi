@@ -189,9 +189,17 @@ impl Qwen3TtsModel {
         info!("Model type: {}", config.tts_model_type);
         info!("Model size: {}", config.tts_model_size);
 
-        // BF16 matmul coverage is incomplete across backends in Candle.
-        // Keep TTS inference on F32 for correctness/stability.
-        let dtype = DType::F32;
+        let dtype_override = std::env::var("IZWI_QWEN_TTS_DTYPE")
+            .ok()
+            .or_else(|| std::env::var("IZWI_QWEN_DTYPE").ok());
+        let dtype = match dtype_override.as_deref().map(str::trim) {
+            Some(raw) if !raw.is_empty() => device.select_dtype(Some(raw)),
+            _ if device.kind.is_metal() => {
+                // Reduce model residency on Apple Silicon while preserving speed.
+                DType::F16
+            }
+            _ => device.select_dtype(None),
+        };
 
         // Load tokenizer
         let specials = TtsSpecialTokens::from_configs(&config, &config.talker_config);
@@ -229,7 +237,10 @@ impl Qwen3TtsModel {
         let speech_tokenizer =
             SpeechTokenizerDecoder::load(&speech_tokenizer_path, device.device.clone(), dtype)?;
 
-        info!("Qwen3-TTS model loaded successfully on {:?}", device.kind);
+        info!(
+            "Qwen3-TTS model loaded successfully on {:?} with dtype {:?}",
+            device.kind, dtype
+        );
         let kv_quantization = KvCacheQuantization::from_dtype_hint(kv_cache_dtype);
 
         Ok(Self {
