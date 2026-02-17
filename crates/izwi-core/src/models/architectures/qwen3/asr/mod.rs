@@ -126,17 +126,30 @@ impl Qwen3AsrModel {
         // Quantized checkpoints are trained/evaluated in bf16 and can degrade
         // badly when forced through fp32 dequant paths. Audio conditioning is
         // especially sensitive to precision, so keep the audio tower in F32
-        // for stability and select the text dtype with backend-aware rules.
+        // by default and select the text dtype with backend-aware rules.
         let is_quantized = config.quantization.is_some() || config.quantization_config.is_some();
         if is_quantized {
             validate_quantization_config(&config)?;
         }
-        let audio_dtype = DType::F32;
-        let text_dtype = if is_quantized {
+        let audio_dtype_override = std::env::var("IZWI_QWEN_ASR_AUDIO_DTYPE").ok();
+        let audio_dtype = match audio_dtype_override.as_deref().map(str::trim) {
+            Some(raw) if !raw.is_empty() => device.select_dtype(Some(raw)),
+            _ => DType::F32,
+        };
+        let text_dtype_override = std::env::var("IZWI_QWEN_ASR_TEXT_DTYPE")
+            .ok()
+            .or_else(|| std::env::var("IZWI_QWEN_DTYPE").ok())
+            .as_deref()
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty())
+            .map(str::to_string);
+        let text_dtype = if let Some(raw) = text_dtype_override.as_deref() {
+            device.select_dtype(Some(raw))
+        } else if is_quantized {
             let requested =
                 parse_asr_dtype(config.thinker_config.dtype.as_deref()).unwrap_or(DType::BF16);
             let selected = match device.kind {
-                DeviceKind::Metal => DType::F32,
+                DeviceKind::Metal => DType::F16,
                 DeviceKind::Cpu => DType::F32,
                 DeviceKind::Cuda => {
                     if requested == DType::BF16 && !device.capabilities.supports_bf16 {
@@ -151,8 +164,10 @@ impl Qwen3AsrModel {
                 requested, selected, device.kind
             );
             selected
+        } else if device.kind.is_metal() {
+            DType::F16
         } else {
-            DType::F32
+            device.select_dtype(None)
         };
 
         // Check for sharded weights (1.7B model) vs single file (0.6B model)
@@ -239,7 +254,10 @@ impl Qwen3AsrModel {
         let audio_tower = AudioTower::load(audio_cfg, vb_audio.pp("audio_tower"))?;
         let text_model = Qwen3Model::load(text_cfg, vb_text)?;
 
-        info!("Loaded Qwen3-ASR model on {:?}", device.kind);
+        info!(
+            "Loaded Qwen3-ASR model on {:?} (audio_dtype={:?}, text_dtype={:?})",
+            device.kind, audio_dtype, text_dtype
+        );
 
         Ok(Self {
             device,
