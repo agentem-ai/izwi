@@ -59,6 +59,7 @@ export function VoiceCloningPage({
     "Qwen3-TTS-12Hz-0.6B-Base-8bit",
     "Qwen3-TTS-12Hz-0.6B-Base-bf16",
     "Qwen3-TTS-12Hz-0.6B-Base",
+    "Qwen3-TTS-12Hz-1.7B-Base-4bit",
     "Qwen3-TTS-12Hz-1.7B-Base",
   ];
 

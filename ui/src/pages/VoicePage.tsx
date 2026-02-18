@@ -460,9 +460,14 @@ export function VoicePage({
     ) {
       const preferredS2s =
         s2sModels.find(
+          (m) =>
+            m.variant === "LFM2.5-Audio-1.5B-4bit" && m.status === "ready",
+        ) ||
+        s2sModels.find(
           (m) => m.variant === "LFM2.5-Audio-1.5B" && m.status === "ready",
         ) ||
         s2sModels.find((m) => m.status === "ready") ||
+        s2sModels.find((m) => m.variant === "LFM2.5-Audio-1.5B-4bit") ||
         s2sModels.find((m) => m.variant === "LFM2.5-Audio-1.5B") ||
         s2sModels[0];
       setSelectedS2sModel(preferredS2s?.variant ?? null);
@@ -504,7 +509,11 @@ export function VoicePage({
         textModels.find(
           (m) => m.variant === "Qwen3-0.6B-4bit" && m.status === "ready",
         ) ||
+        textModels.find(
+          (m) => m.variant === "Qwen3-1.7B-4bit" && m.status === "ready",
+        ) ||
         textModels.find((m) => m.status === "ready") ||
+        textModels.find((m) => m.variant === "Qwen3-1.7B-4bit") ||
         textModels.find((m) => m.variant === "Qwen3-0.6B-4bit") ||
         textModels[0];
       setSelectedTextModel(preferredText?.variant ?? null);
@@ -524,11 +533,19 @@ export function VoicePage({
         ) ||
         ttsConfigModels.find(
           (m) =>
+            m.variant === "Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit" &&
+            m.status === "ready",
+        ) ||
+        ttsConfigModels.find(
+          (m) =>
             m.variant.includes("0.6B") &&
             m.variant.includes("4bit") &&
             m.status === "ready",
         ) ||
         ttsConfigModels.find((m) => m.status === "ready") ||
+        ttsConfigModels.find(
+          (m) => m.variant === "Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit",
+        ) ||
         ttsConfigModels.find(
           (m) => m.variant === "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
         ) ||

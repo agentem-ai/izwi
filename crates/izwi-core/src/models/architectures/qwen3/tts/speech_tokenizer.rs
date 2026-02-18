@@ -752,9 +752,7 @@ impl SnakeBeta {
         let beta = self.beta.unsqueeze(0)?.unsqueeze(2)?.exp()?;
         let sin2 = x.broadcast_mul(&alpha)?.sin()?.sqr()?;
         let eps = Tensor::new(1e-9f32, x.device())?.to_dtype(beta.dtype())?;
-        let inv_beta = beta
-            .broadcast_add(&eps)?
-            .recip()?;
+        let inv_beta = beta.broadcast_add(&eps)?.recip()?;
         x.broadcast_add(&sin2.broadcast_mul(&inv_beta)?)
             .map_err(Error::from)
     }
@@ -1503,8 +1501,11 @@ impl RVQRestQuantizer {
     fn decode(&self, codec_tokens: &[Vec<u32>], seq_len: usize, device: &Device) -> Result<Tensor> {
         let codebook = &self.codebooks[0];
         let codebook_dim = codebook.codebook_dim;
-        let mut rest_embed =
-            Tensor::zeros((1, seq_len, codebook_dim), codebook.embeddings.dtype(), device)?;
+        let mut rest_embed = Tensor::zeros(
+            (1, seq_len, codebook_dim),
+            codebook.embeddings.dtype(),
+            device,
+        )?;
         for (idx, codebook) in self.codebooks.iter().enumerate() {
             let group_tokens = codec_tokens.get(idx + 1);
             let mut values = Vec::with_capacity(seq_len);

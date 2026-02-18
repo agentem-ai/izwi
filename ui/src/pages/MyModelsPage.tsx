@@ -124,6 +124,14 @@ const MODEL_DETAILS: Record<
     capabilities: ["Voice Cloning"],
     size: "4.2 GB",
   },
+  "Qwen3-TTS-12Hz-1.7B-Base-4bit": {
+    shortName: "1.7B Base 4-bit",
+    fullName: "Qwen3-TTS 12Hz 1.7B Base (MLX 4-bit)",
+    description: "Quantized base model for lower-memory voice cloning",
+    category: "tts",
+    capabilities: ["Voice Cloning", "4-bit"],
+    size: "2.2 GB",
+  },
   // TTS 1.7B CustomVoice
   "Qwen3-TTS-12Hz-1.7B-CustomVoice": {
     shortName: "1.7B CustomVoice",
@@ -132,6 +140,14 @@ const MODEL_DETAILS: Record<
     category: "tts",
     capabilities: ["Text to Speech"],
     size: "4.2 GB",
+  },
+  "Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit": {
+    shortName: "1.7B Custom 4-bit",
+    fullName: "Qwen3-TTS 12Hz 1.7B CustomVoice (MLX 4-bit)",
+    description: "Quantized CustomVoice model with lower VRAM requirements",
+    category: "tts",
+    capabilities: ["Text to Speech", "4-bit"],
+    size: "2.2 GB",
   },
   // TTS 1.7B VoiceDesign models
   "Qwen3-TTS-12Hz-1.7B-VoiceDesign": {
@@ -183,6 +199,14 @@ const MODEL_DETAILS: Record<
     capabilities: ["TTS", "ASR", "Audio Chat"],
     size: "3.2 GB",
   },
+  "LFM2.5-Audio-1.5B-4bit": {
+    shortName: "LFM2.5 Audio 1.5B 4-bit",
+    fullName: "LFM2.5-Audio 1.5B (MLX 4-bit)",
+    description: "Quantized LFM2.5 audio model for lower memory usage",
+    category: "tts",
+    capabilities: ["TTS", "ASR", "Audio Chat", "4-bit"],
+    size: "0.8 GB",
+  },
   // Text Chat
   "Qwen3-0.6B-4bit": {
     shortName: "Qwen3 Chat 0.6B",
@@ -191,6 +215,14 @@ const MODEL_DETAILS: Record<
     category: "chat",
     capabilities: ["Text Chat", "4-bit"],
     size: "0.9 GB",
+  },
+  "Qwen3-1.7B-4bit": {
+    shortName: "Qwen3 Chat 1.7B",
+    fullName: "Qwen3 1.7B (MLX 4-bit)",
+    description: "Higher-quality 1.7B chat model in 4-bit precision",
+    category: "chat",
+    capabilities: ["Text Chat", "4-bit"],
+    size: "1.1 GB",
   },
   "Gemma-3-1b-it": {
     shortName: "Gemma 3 1B",
@@ -282,6 +314,14 @@ const MODEL_DETAILS: Record<
     capabilities: ["Forced Alignment", "Word timestamps"],
     size: "1.7 GB",
   },
+  "Qwen3-ForcedAligner-0.6B-4bit": {
+    shortName: "ForcedAligner 0.6B 4-bit",
+    fullName: "Qwen3-ForcedAligner 0.6B (MLX 4-bit)",
+    description: "Quantized forced aligner for low-memory alignment workflows",
+    category: "asr",
+    capabilities: ["Forced Alignment", "Word timestamps", "4-bit"],
+    size: "0.7 GB",
+  },
   "Parakeet-TDT-0.6B-v2": {
     shortName: "Parakeet v2",
     fullName: "Parakeet-TDT 0.6B v2",
@@ -290,6 +330,14 @@ const MODEL_DETAILS: Record<
     capabilities: ["Transcription", "Word timestamps"],
     size: "4.6 GB",
   },
+  "Parakeet-TDT-0.6B-v2-4bit": {
+    shortName: "Parakeet v2 4-bit",
+    fullName: "Parakeet-TDT 0.6B v2 (MLX 4-bit)",
+    description: "Quantized English Parakeet model for lower-memory ASR",
+    category: "asr",
+    capabilities: ["Transcription", "Word timestamps", "4-bit"],
+    size: "2.5 GB",
+  },
   "Parakeet-TDT-0.6B-v3": {
     shortName: "Parakeet v3",
     fullName: "Parakeet-TDT 0.6B v3",
@@ -297,6 +345,14 @@ const MODEL_DETAILS: Record<
     category: "asr",
     capabilities: ["Transcription", "25 EU languages"],
     size: "9.3 GB",
+  },
+  "Parakeet-TDT-0.6B-v3-4bit": {
+    shortName: "Parakeet v3 4-bit",
+    fullName: "Parakeet-TDT 0.6B v3 (MLX 4-bit)",
+    description: "Quantized multilingual Parakeet model for lower-memory ASR",
+    category: "asr",
+    capabilities: ["Transcription", "Word timestamps", "4-bit"],
+    size: "2.9 GB",
   },
   "diar_streaming_sortformer_4spk-v2.1": {
     shortName: "Sortformer 4spk",
