@@ -290,7 +290,6 @@ function App() {
       };
 
       eventSource.onerror = (err) => {
-        console.error("SSE error:", err);
         closeDownloadStream(variant);
 
         if (suppressReconnectRef.current.has(variant)) {
@@ -310,6 +309,10 @@ function App() {
           try {
             const model = await api.getModelInfo(variant);
             if (model.status === "downloading") {
+              console.warn(
+                `Download progress stream disconnected for ${variant}; reconnecting`,
+                err,
+              );
               connectDownloadStream(variant);
               return;
             }
