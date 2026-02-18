@@ -1,5 +1,4 @@
 import { useState, useMemo } from "react";
-import { motion, AnimatePresence } from "framer-motion";
 import {
   Download,
   Play,
@@ -7,8 +6,6 @@ import {
   Trash2,
   HardDrive,
   Search,
-  Filter,
-  ChevronDown,
   Loader2,
   X,
   RefreshCw,
@@ -414,20 +411,56 @@ function getStatusLabel(status: ModelInfo["status"]): string {
   }
 }
 
-function getStatusColor(status: ModelInfo["status"]): string {
+function getStatusDotClass(status: ModelInfo["status"]): string {
   switch (status) {
     case "ready":
-      return "bg-white";
+      return "bg-[var(--status-positive-solid)]";
     case "downloaded":
-      return "bg-gray-300";
+      return "bg-[var(--text-secondary)]";
     case "downloading":
     case "loading":
-      return "bg-gray-400";
+      return "bg-[var(--status-warning-text)]";
     case "error":
-      return "bg-gray-600";
+      return "bg-[var(--danger-text)]";
     default:
-      return "bg-gray-500";
+      return "bg-[var(--text-subtle)]";
   }
+}
+
+function getStatusBadgeClass(status: ModelInfo["status"]): string {
+  switch (status) {
+    case "ready":
+      return "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]";
+    case "downloaded":
+      return "bg-[var(--bg-surface-2)] border-[var(--border-strong)] text-[var(--text-secondary)]";
+    case "downloading":
+    case "loading":
+      return "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]";
+    case "error":
+      return "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]";
+    default:
+      return "bg-[var(--bg-surface-2)] border-[var(--border-muted)] text-[var(--text-muted)]";
+  }
+}
+
+function getCategoryLabel(category: CategoryType): string {
+  switch (category) {
+    case "tts":
+      return "Text to Speech";
+    case "asr":
+      return "Transcription";
+    case "chat":
+      return "Chat";
+    default:
+      return "Unknown";
+  }
+}
+
+function getPrecisionLabel(capabilities: string[]): string | null {
+  if (capabilities.some((cap) => /4-bit/i.test(cap))) return "4-bit";
+  if (capabilities.some((cap) => /8-bit/i.test(cap))) return "8-bit";
+  if (capabilities.some((cap) => /bf16/i.test(cap))) return "BF16";
+  return null;
 }
 
 function requiresManualDownload(variant: string): boolean {
@@ -448,7 +481,6 @@ export function MyModelsPage({
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<FilterType>("all");
   const [categoryFilter, setCategoryFilter] = useState<CategoryType>("all");
-  const [showFilters, setShowFilters] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -523,36 +555,37 @@ export function MyModelsPage({
   };
 
   const destructiveDeleteButtonClass =
-    "flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-red-500/45 bg-red-500/15 text-red-300 text-xs font-medium hover:bg-red-500/25 hover:text-red-200 transition-colors";
+    "flex items-center gap-1.5 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-2.5 py-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]";
 
   if (loading) {
     return (
       <div className="max-w-6xl mx-auto">
-        <div className="flex flex-col items-center justify-center py-24 gap-3">
-          <motion.div
-            className="w-8 h-8 border-2 border-white border-t-transparent rounded-full"
-            animate={{ rotate: 360 }}
-            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-          />
-          <p className="text-sm text-gray-400">Loading models...</p>
+        <div className="flex items-center justify-center gap-2 py-24 text-[var(--text-muted)]">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          <p className="text-sm">Loading models...</p>
         </div>
       </div>
     );
   }
 
+  const hasActiveFilters =
+    searchQuery.trim().length > 0 ||
+    statusFilter !== "all" ||
+    categoryFilter !== "all";
+
   return (
-    <div className="max-w-6xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+    <div className="max-w-6xl mx-auto space-y-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-white">Models</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Manage your downloaded models
+          <h1 className="text-xl font-semibold text-[var(--text-primary)]">
+            Models
+          </h1>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">
+            Download, load, and remove local models
           </p>
         </div>
 
-        {/* Stats and Refresh */}
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-2">
           {onRefresh && (
             <button
               onClick={async () => {
@@ -561,172 +594,133 @@ export function MyModelsPage({
                 setIsRefreshing(false);
               }}
               disabled={isRefreshing}
-              className="p-2 rounded-lg bg-[#161616] border border-[#2a2a2a] hover:bg-[#1f1f1f] transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-2)] disabled:opacity-60"
               title="Refresh models"
             >
               <RefreshCw
                 className={clsx(
-                  "w-4 h-4 text-gray-400",
+                  "w-3.5 h-3.5",
                   isRefreshing && "animate-spin",
                 )}
               />
+              Refresh
             </button>
           )}
-          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#141414] border border-[#262626]">
-            <HardDrive className="w-4 h-4 text-gray-500" />
+
+          <div className="flex items-center gap-2 rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2">
+            <HardDrive className="w-4 h-4 text-[var(--text-subtle)]" />
             <div className="text-sm">
-              <span className="text-white font-medium">
+              <span className="font-medium text-[var(--text-primary)]">
                 {formatBytes(stats.totalSize)}
               </span>
-              <span className="text-gray-500 ml-1">used</span>
+              <span className="ml-1 text-[var(--text-muted)]">used</span>
             </div>
           </div>
-          <div className="text-sm text-gray-500">
-            <span className="text-white font-medium">{stats.loaded}</span>
-            <span className="mx-1">/</span>
-            <span>{stats.downloaded} loaded</span>
+
+          <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2 text-sm">
+            <span className="font-medium text-[var(--text-primary)]">
+              {stats.loaded}
+            </span>
+            <span className="ml-1 text-[var(--text-muted)]">loaded</span>
+            <span className="mx-1 text-[var(--text-subtle)]">/</span>
+            <span className="text-[var(--text-muted)]">{stats.downloaded}</span>
+            <span className="ml-1 text-[var(--text-subtle)]">downloaded</span>
           </div>
         </div>
       </div>
 
-      {/* Search and filters */}
-      <div className="flex flex-col sm:flex-row gap-3 mb-6">
-        {/* Search */}
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search models..."
-            className="w-full pl-10 pr-4 py-2.5 bg-[#161616] border border-[#2a2a2a] rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-[#404040]"
-          />
-        </div>
+      <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3 sm:p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-subtle)]" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search models..."
+              className="w-full rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] py-2.5 pl-10 pr-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-subtle)] focus:border-[var(--border-strong)] focus:outline-none"
+            />
+          </div>
 
-        {/* Filter button */}
-        <button
-          onClick={() => setShowFilters(!showFilters)}
-          className={clsx(
-            "flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm transition-colors",
-            showFilters
-              ? "bg-[#1a1a1a] border-[#404040] text-white"
-              : "bg-[#141414] border-[#262626] text-gray-400 hover:text-white",
-          )}
-        >
-          <Filter className="w-4 h-4" />
-          Filters
-          {(statusFilter !== "all" || categoryFilter !== "all") && (
-            <span className="w-1.5 h-1.5 rounded-full bg-white" />
-          )}
-          <ChevronDown
-            className={clsx(
-              "w-3.5 h-3.5 transition-transform",
-              showFilters && "rotate-180",
+          <div className="flex flex-wrap items-center gap-1.5">
+            {[
+              { id: "all" as FilterType, label: "All" },
+              { id: "loaded" as FilterType, label: "Loaded" },
+              { id: "downloaded" as FilterType, label: "Downloaded" },
+              { id: "not_downloaded" as FilterType, label: "Not downloaded" },
+            ].map((option) => (
+              <button
+                key={option.id}
+                onClick={() => setStatusFilter(option.id)}
+                className={clsx(
+                  "rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
+                  statusFilter === option.id
+                    ? "border-[var(--border-strong)] bg-[var(--bg-surface-3)] text-[var(--text-primary)]"
+                    : "border-[var(--border-muted)] bg-[var(--bg-surface-1)] text-[var(--text-muted)] hover:text-[var(--text-primary)]",
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <select
+              value={categoryFilter}
+              onChange={(event) =>
+                setCategoryFilter(event.target.value as CategoryType)
+              }
+              className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] focus:border-[var(--border-strong)] focus:outline-none"
+              aria-label="Filter models by category"
+            >
+              <option value="all">All categories</option>
+              <option value="tts">Text to Speech</option>
+              <option value="asr">Transcription</option>
+              <option value="chat">Chat</option>
+            </select>
+
+            {hasActiveFilters && (
+              <button
+                onClick={() => {
+                  setSearchQuery("");
+                  setStatusFilter("all");
+                  setCategoryFilter("all");
+                }}
+                className="flex items-center gap-1 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-1.5 text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              >
+                <X className="h-3.5 w-3.5" />
+                Clear
+              </button>
             )}
-          />
-        </button>
+          </div>
+        </div>
       </div>
 
-      {/* Filter options */}
-      <AnimatePresence>
-        {showFilters && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            className="overflow-hidden mb-6"
-          >
-            <div className="p-4 rounded-lg bg-[#141414] border border-[#262626]">
-              <div className="flex flex-wrap gap-6">
-                {/* Status filter */}
-                <div>
-                  <label className="block text-xs text-gray-500 mb-2">
-                    Status
-                  </label>
-                  <div className="flex gap-2">
-                    {[
-                      { id: "all" as FilterType, label: "All" },
-                      { id: "loaded" as FilterType, label: "Loaded" },
-                      { id: "downloaded" as FilterType, label: "Downloaded" },
-                      {
-                        id: "not_downloaded" as FilterType,
-                        label: "Not Downloaded",
-                      },
-                    ].map((option) => (
-                      <button
-                        key={option.id}
-                        onClick={() => setStatusFilter(option.id)}
-                        className={clsx(
-                          "px-3 py-1.5 rounded text-xs transition-colors",
-                          statusFilter === option.id
-                            ? "bg-white text-black"
-                            : "bg-[#1f1f1f] text-gray-400 hover:text-white",
-                        )}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Category filter */}
-                <div>
-                  <label className="block text-xs text-gray-500 mb-2">
-                    Category
-                  </label>
-                  <div className="flex gap-2">
-                    {[
-                      { id: "all" as CategoryType, label: "All" },
-                      { id: "tts" as CategoryType, label: "Text to Speech" },
-                      { id: "asr" as CategoryType, label: "Transcription" },
-                      { id: "chat" as CategoryType, label: "Chat" },
-                    ].map((option) => (
-                      <button
-                        key={option.id}
-                        onClick={() => setCategoryFilter(option.id)}
-                        className={clsx(
-                          "px-3 py-1.5 rounded text-xs transition-colors",
-                          categoryFilter === option.id
-                            ? "bg-white text-black"
-                            : "bg-[#1f1f1f] text-gray-400 hover:text-white",
-                        )}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Models grid */}
       {filteredModels.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="w-16 h-16 rounded-full bg-[#161616] flex items-center justify-center mb-4">
-            <HardDrive className="w-7 h-7 text-gray-600" />
+        <div className="flex flex-col items-center justify-center rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] py-16 text-center">
+          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-2)]">
+            <HardDrive className="h-5 w-5 text-[var(--text-subtle)]" />
           </div>
-          <h3 className="text-base font-medium text-gray-300 mb-1">
+          <h3 className="text-base font-medium text-[var(--text-primary)]">
             No models found
           </h3>
-          <p className="text-sm text-gray-600 max-w-xs">
-            {searchQuery || statusFilter !== "all" || categoryFilter !== "all"
-              ? "Try adjusting your search or filters"
-              : "Download models to get started"}
+          <p className="mt-1 max-w-sm text-sm text-[var(--text-muted)]">
+            {hasActiveFilters
+              ? "Try adjusting your filters."
+              : "Download a model to get started."}
           </p>
         </div>
       ) : (
-        <div className="grid gap-2">
+        <div className="space-y-2">
           {filteredModels.map((model) => {
             const details = MODEL_DETAILS[model.variant];
             if (!details) return null;
+
             const displayName = withQwen3Prefix(
               details.shortName,
               model.variant,
             );
-
+            const precisionLabel = getPrecisionLabel(details.capabilities);
             const isDownloading = model.status === "downloading";
             const isLoading = model.status === "loading";
             const isReady = model.status === "ready";
@@ -738,147 +732,125 @@ export function MyModelsPage({
             return (
               <div
                 key={model.variant}
-                className="p-3 rounded-lg bg-[#141414] border border-[#262626] hover:border-[#333333] transition-colors"
+                className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3 sm:p-4"
               >
-                <div className="flex items-center gap-3">
-                  {/* Status indicator */}
-                  <div className="flex-shrink-0">
-                    {isDownloading || isLoading ? (
-                      <Loader2 className="w-4 h-4 text-white animate-spin" />
-                    ) : (
-                      <div
-                        className={clsx(
-                          "w-2 h-2 rounded-full",
-                          getStatusColor(model.status),
-                        )}
-                      />
-                    )}
-                  </div>
-
-                  {/* Model info - more horizontal layout */}
-                  <div className="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <h3 className="text-sm font-medium text-white truncate">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {isDownloading || isLoading ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--status-warning-text)]" />
+                      ) : (
+                        <span
+                          className={clsx(
+                            "h-2 w-2 rounded-full",
+                            getStatusDotClass(model.status),
+                          )}
+                        />
+                      )}
+                      <h3 className="truncate text-sm font-medium text-[var(--text-primary)]">
                         {displayName}
                       </h3>
                       <span
                         className={clsx(
-                          "text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap bg-[#1a1a1a] border border-[#2a2a2a]",
-                          isReady
-                            ? "text-white"
-                            : isDownloaded
-                              ? "text-gray-300"
-                              : "text-gray-500",
+                          "rounded border px-2 py-0.5 text-[11px] font-medium",
+                          getStatusBadgeClass(model.status),
                         )}
                       >
                         {getStatusLabel(model.status)}
                       </span>
                     </div>
-                    <p className="text-xs text-gray-500 truncate hidden md:block">
-                      {details.description}
-                    </p>
-                    <div className="flex items-center gap-3 sm:ml-auto">
-                      <div className="flex items-center gap-1.5">
-                        {details.capabilities.map((cap) => (
-                          <span
-                            key={cap}
-                            className="text-[10px] px-1.5 py-0.5 rounded bg-[#1f1f1f] text-gray-400 whitespace-nowrap"
-                          >
-                            {cap}
-                          </span>
-                        ))}
-                      </div>
-                      <span className="text-xs text-gray-600 whitespace-nowrap">
-                        {details.size}
-                      </span>
+
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-subtle)]">
+                      <span>{getCategoryLabel(details.category)}</span>
+                      {precisionLabel && (
+                        <>
+                          <span aria-hidden>•</span>
+                          <span>{precisionLabel}</span>
+                        </>
+                      )}
+                      <span aria-hidden>•</span>
+                      <span>{details.size}</span>
                     </div>
+
+                    {isDownloading && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <div className="h-1.5 w-full max-w-[220px] overflow-hidden rounded-full bg-[var(--bg-surface-3)]">
+                          <div
+                            className="h-full rounded-full bg-[var(--accent-solid)] transition-all duration-300"
+                            style={{ width: `${progress}%` }}
+                          />
+                        </div>
+                        <span className="text-xs text-[var(--text-muted)]">
+                          {Math.round(progress)}%
+                        </span>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Actions */}
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    {model.status === "not_downloaded" && (
-                      requiresManualDownload(model.variant) ? (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {model.status === "not_downloaded" &&
+                      (requiresManualDownload(model.variant) ? (
                         <button
-                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#262626] border border-[#303030] text-gray-300 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] disabled:cursor-not-allowed disabled:opacity-60"
                           disabled
                           title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
                         >
-                          <Download className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">Manual download</span>
-                          <span className="sm:hidden">Manual</span>
+                          <Download className="h-3.5 w-3.5" />
+                          Manual download
                         </button>
                       ) : (
                         <button
                           onClick={() => onDownload(model.variant)}
-                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-white text-black text-xs font-medium hover:bg-gray-200 transition-colors"
+                          className="flex items-center gap-1.5 rounded-md bg-[var(--accent-solid)] px-3 py-1.5 text-xs font-medium text-[var(--text-on-accent)] transition-opacity hover:opacity-90"
                         >
-                          <Download className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">Download</span>
+                          <Download className="h-3.5 w-3.5" />
+                          Download
                         </button>
-                      )
-                    )}
+                      ))}
 
-                    {isDownloading && (
-                      <div className="flex items-center gap-2 px-2 py-1.5">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-gray-500">
-                            {Math.round(progress)}%
-                          </span>
-                          <div className="w-16 h-1 bg-[#1f1f1f] rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-white rounded-full transition-all duration-300"
-                              style={{ width: `${progress}%` }}
-                            />
-                          </div>
-                        </div>
-                        {onCancelDownload && (
-                          <button
-                            onClick={() => onCancelDownload(model.variant)}
-                            className="flex items-center gap-1 px-2 py-1 rounded bg-[var(--danger-bg)] border border-[var(--danger-border)] text-[11px] text-[var(--danger-text)] hover:bg-[var(--danger-bg-hover)] transition-colors"
-                          >
-                            <X className="w-3 h-3" />
-                            Cancel
-                          </button>
-                        )}
-                      </div>
+                    {isDownloading && onCancelDownload && (
+                      <button
+                        onClick={() => onCancelDownload(model.variant)}
+                        className="flex items-center gap-1 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-2.5 py-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                        Cancel
+                      </button>
                     )}
 
                     {isDownloaded && (
                       <>
                         <button
                           onClick={() => onLoad(model.variant)}
-                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-white text-black text-xs font-medium hover:bg-gray-200 transition-colors"
+                          className="flex items-center gap-1.5 rounded-md bg-[var(--accent-solid)] px-3 py-1.5 text-xs font-medium text-[var(--text-on-accent)] transition-opacity hover:opacity-90"
                         >
-                          <Play className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">Load</span>
+                          <Play className="h-3.5 w-3.5" />
+                          Load
                         </button>
                         {confirmDelete === model.variant ? (
-                          <div className="flex items-center gap-1.5">
+                          <>
                             <button
                               onClick={() => setConfirmDelete(null)}
-                              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#262626] border border-[#303030] text-gray-300 text-xs font-medium hover:text-white hover:bg-[#2e2e2e] transition-colors"
-                              title="Cancel"
+                              className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-3)]"
                             >
-                              <X className="w-3.5 h-3.5" />
+                              <X className="h-3.5 w-3.5" />
                               Cancel
                             </button>
                             <button
                               onClick={() => handleDelete(model.variant)}
                               className={destructiveDeleteButtonClass}
-                              title="Confirm delete"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              Confirm Delete
+                              <Trash2 className="h-3.5 w-3.5" />
+                              Confirm
                             </button>
-                          </div>
+                          </>
                         ) : (
                           <button
                             onClick={() => setConfirmDelete(model.variant)}
                             className={destructiveDeleteButtonClass}
-                            title="Delete model"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">Delete</span>
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Delete
                           </button>
                         )}
                       </>
@@ -888,38 +860,35 @@ export function MyModelsPage({
                       <>
                         <button
                           onClick={() => onUnload(model.variant)}
-                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#1f1f1f] border border-[#262626] text-white text-xs font-medium hover:bg-[#262626] transition-colors"
+                          className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-surface-3)]"
                         >
-                          <Square className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">Unload</span>
+                          <Square className="h-3.5 w-3.5" />
+                          Unload
                         </button>
                         {confirmDelete === model.variant ? (
-                          <div className="flex items-center gap-1.5">
+                          <>
                             <button
                               onClick={() => setConfirmDelete(null)}
-                              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#262626] border border-[#303030] text-gray-300 text-xs font-medium hover:text-white hover:bg-[#2e2e2e] transition-colors"
-                              title="Cancel"
+                              className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-3)]"
                             >
-                              <X className="w-3.5 h-3.5" />
+                              <X className="h-3.5 w-3.5" />
                               Cancel
                             </button>
                             <button
                               onClick={() => handleDelete(model.variant)}
                               className={destructiveDeleteButtonClass}
-                              title="Confirm delete"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              Confirm Delete
+                              <Trash2 className="h-3.5 w-3.5" />
+                              Confirm
                             </button>
-                          </div>
+                          </>
                         ) : (
                           <button
                             onClick={() => setConfirmDelete(model.variant)}
                             className={destructiveDeleteButtonClass}
-                            title="Delete model"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">Delete</span>
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Delete
                           </button>
                         )}
                       </>
