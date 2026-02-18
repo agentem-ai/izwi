@@ -7,6 +7,8 @@ use axum::{
 };
 use futures::stream::Stream;
 use serde::Serialize;
+use std::convert::Infallible;
+use std::pin::Pin;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
@@ -163,82 +165,117 @@ pub async fn download_progress_stream(
     let variant = parse_variant(&variant)?;
     info!("Starting SSE progress stream for: {}", variant);
 
-    // Get progress receiver from engine
-    let mut progress_rx = state
+    // Get progress receiver from engine.
+    // If no active stream exists (normal race after completion), emit a terminal
+    // one-shot event instead of returning 500 so EventSource clients don't log errors.
+    let mut progress_rx = match state
         .runtime
         .model_manager()
         .subscribe_progress(variant)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to subscribe to progress: {}", e)))?;
+    {
+        Ok(rx) => rx,
+        Err(err) => {
+            warn!(
+                "No active progress stream for {} ({}); returning terminal progress snapshot",
+                variant, err
+            );
+            let fallback_event = terminal_progress_event(&state, variant).await;
+            let stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+                Box::pin(async_stream::stream! {
+                    let json = serde_json::to_string(&fallback_event).unwrap_or_default();
+                    yield Ok::<Event, Infallible>(Event::default().data(json));
+                });
+            return Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()));
+        }
+    };
 
-    let stream = async_stream::stream! {
-        let mut last_event: Option<ProgressEvent> = None;
-        loop {
-            match progress_rx.recv().await {
-                Ok(progress) => {
-                    let is_completed = progress.files_total > 0
-                        && progress.files_completed >= progress.files_total
-                        && (progress.total_bytes == 0
-                            || progress.downloaded_bytes >= progress.total_bytes);
+    let stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> = Box::pin(
+        async_stream::stream! {
+            let mut last_event: Option<ProgressEvent> = None;
+            loop {
+                match progress_rx.recv().await {
+                    Ok(progress) => {
+                        let is_completed = progress.files_total > 0
+                            && progress.files_completed >= progress.files_total
+                            && (progress.total_bytes == 0
+                                || progress.downloaded_bytes >= progress.total_bytes);
 
-                    let event = ProgressEvent {
-                        variant: progress.variant.dir_name().to_string(),
-                        downloaded_bytes: progress.downloaded_bytes,
-                        total_bytes: progress.total_bytes,
-                        current_file: progress.current_file.clone(),
-                        current_file_downloaded: progress.current_file_downloaded,
-                        current_file_total: progress.current_file_total,
-                        files_completed: progress.files_completed,
-                        files_total: progress.files_total,
-                        percent: progress.total_percent(),
-                        status: if is_completed {
-                            "completed".to_string()
-                        } else {
-                            "downloading".to_string()
-                        },
-                    };
-
-                    let json = serde_json::to_string(&event).unwrap_or_default();
-                    yield Ok(Event::default().data(json));
-                    last_event = Some(event.clone());
-
-                    // Stop if download is complete
-                    if event.status == "completed" {
-                        break;
-                    }
-                }
-                Err(RecvError::Lagged(skipped)) => {
-                    warn!(
-                        "Download progress stream lagged for {} (skipped {} updates); continuing",
-                        variant, skipped
-                    );
-                    continue;
-                }
-                Err(RecvError::Closed) => {
-                    // Channel closed: the download task has exited. Emit one final state
-                    // so clients do not see a silent stream cutoff.
-                    let final_state = state
-                        .runtime
-                        .model_manager()
-                        .get_download_state(variant)
-                        .await;
-
-                    match final_state {
-                        DownloadState::Downloaded => {
-                            if let Some(mut event) = last_event.clone() {
-                                event.status = "completed".to_string();
-                                if event.total_bytes > 0 {
-                                    event.downloaded_bytes = event.total_bytes;
-                                    event.percent = 100.0;
-                                }
-                                event.files_completed = event.files_total.max(event.files_completed);
-                                event.current_file = String::new();
-                                event.current_file_downloaded = 0;
-                                event.current_file_total = 0;
-                                let json = serde_json::to_string(&event).unwrap_or_default();
-                                yield Ok(Event::default().data(json));
+                        let event = ProgressEvent {
+                            variant: progress.variant.dir_name().to_string(),
+                            downloaded_bytes: progress.downloaded_bytes,
+                            total_bytes: progress.total_bytes,
+                            current_file: progress.current_file.clone(),
+                            current_file_downloaded: progress.current_file_downloaded,
+                            current_file_total: progress.current_file_total,
+                            files_completed: progress.files_completed,
+                            files_total: progress.files_total,
+                            percent: progress.total_percent(),
+                            status: if is_completed {
+                                "completed".to_string()
                             } else {
-                                let event = ProgressEvent {
+                                "downloading".to_string()
+                            },
+                        };
+
+                        let json = serde_json::to_string(&event).unwrap_or_default();
+                        yield Ok(Event::default().data(json));
+                        last_event = Some(event.clone());
+
+                        // Stop if download is complete
+                        if event.status == "completed" {
+                            break;
+                        }
+                    }
+                    Err(RecvError::Lagged(skipped)) => {
+                        warn!(
+                            "Download progress stream lagged for {} (skipped {} updates); continuing",
+                            variant, skipped
+                        );
+                        continue;
+                    }
+                    Err(RecvError::Closed) => {
+                        // Channel closed: the download task has exited. Emit one final state
+                        // so clients do not see a silent stream cutoff.
+                        let final_state = state
+                            .runtime
+                            .model_manager()
+                            .get_download_state(variant)
+                            .await;
+
+                        match final_state {
+                            DownloadState::Downloaded => {
+                                if let Some(mut event) = last_event.clone() {
+                                    event.status = "completed".to_string();
+                                    if event.total_bytes > 0 {
+                                        event.downloaded_bytes = event.total_bytes;
+                                        event.percent = 100.0;
+                                    }
+                                    event.files_completed = event.files_total.max(event.files_completed);
+                                    event.current_file = String::new();
+                                    event.current_file_downloaded = 0;
+                                    event.current_file_total = 0;
+                                    let json = serde_json::to_string(&event).unwrap_or_default();
+                                    yield Ok(Event::default().data(json));
+                                } else {
+                                    let event = ProgressEvent {
+                                        variant: variant.dir_name().to_string(),
+                                        downloaded_bytes: 0,
+                                        total_bytes: 0,
+                                        current_file: String::new(),
+                                        current_file_downloaded: 0,
+                                        current_file_total: 0,
+                                        files_completed: 0,
+                                        files_total: 0,
+                                        percent: 100.0,
+                                        status: "completed".to_string(),
+                                    };
+                                    let json = serde_json::to_string(&event).unwrap_or_default();
+                                    yield Ok(Event::default().data(json));
+                                }
+                            }
+                            DownloadState::Error => {
+                                let mut event = last_event.clone().unwrap_or(ProgressEvent {
                                     variant: variant.dir_name().to_string(),
                                     downloaded_bytes: 0,
                                     total_bytes: 0,
@@ -247,56 +284,106 @@ pub async fn download_progress_stream(
                                     current_file_total: 0,
                                     files_completed: 0,
                                     files_total: 0,
-                                    percent: 100.0,
-                                    status: "completed".to_string(),
-                                };
+                                    percent: 0.0,
+                                    status: "error".to_string(),
+                                });
+                                event.status = "error".to_string();
                                 let json = serde_json::to_string(&event).unwrap_or_default();
                                 yield Ok(Event::default().data(json));
                             }
+                            DownloadState::NotDownloaded => {
+                                let mut event = last_event.clone().unwrap_or(ProgressEvent {
+                                    variant: variant.dir_name().to_string(),
+                                    downloaded_bytes: 0,
+                                    total_bytes: 0,
+                                    current_file: String::new(),
+                                    current_file_downloaded: 0,
+                                    current_file_total: 0,
+                                    files_completed: 0,
+                                    files_total: 0,
+                                    percent: 0.0,
+                                    status: "cancelled".to_string(),
+                                });
+                                event.status = "cancelled".to_string();
+                                let json = serde_json::to_string(&event).unwrap_or_default();
+                                yield Ok(Event::default().data(json));
+                            }
+                            DownloadState::Downloading => {}
                         }
-                        DownloadState::Error => {
-                            let mut event = last_event.clone().unwrap_or(ProgressEvent {
-                                variant: variant.dir_name().to_string(),
-                                downloaded_bytes: 0,
-                                total_bytes: 0,
-                                current_file: String::new(),
-                                current_file_downloaded: 0,
-                                current_file_total: 0,
-                                files_completed: 0,
-                                files_total: 0,
-                                percent: 0.0,
-                                status: "error".to_string(),
-                            });
-                            event.status = "error".to_string();
-                            let json = serde_json::to_string(&event).unwrap_or_default();
-                            yield Ok(Event::default().data(json));
-                        }
-                        DownloadState::NotDownloaded => {
-                            let mut event = last_event.clone().unwrap_or(ProgressEvent {
-                                variant: variant.dir_name().to_string(),
-                                downloaded_bytes: 0,
-                                total_bytes: 0,
-                                current_file: String::new(),
-                                current_file_downloaded: 0,
-                                current_file_total: 0,
-                                files_completed: 0,
-                                files_total: 0,
-                                percent: 0.0,
-                                status: "cancelled".to_string(),
-                            });
-                            event.status = "cancelled".to_string();
-                            let json = serde_json::to_string(&event).unwrap_or_default();
-                            yield Ok(Event::default().data(json));
-                        }
-                        DownloadState::Downloading => {}
+                        break;
                     }
-                    break;
                 }
             }
-        }
-    };
+        },
+    );
 
     Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
+}
+
+async fn terminal_progress_event(state: &AppState, variant: ModelVariant) -> ProgressEvent {
+    let download_state = state
+        .runtime
+        .model_manager()
+        .get_download_state(variant)
+        .await;
+    let known_size = state
+        .runtime
+        .model_manager()
+        .get_model_info(variant)
+        .await
+        .and_then(|info| info.size_bytes)
+        .unwrap_or(0);
+
+    match download_state {
+        DownloadState::Downloaded => ProgressEvent {
+            variant: variant.dir_name().to_string(),
+            downloaded_bytes: known_size,
+            total_bytes: known_size,
+            current_file: String::new(),
+            current_file_downloaded: 0,
+            current_file_total: 0,
+            files_completed: 1,
+            files_total: 1,
+            percent: 100.0,
+            status: "completed".to_string(),
+        },
+        DownloadState::Error => ProgressEvent {
+            variant: variant.dir_name().to_string(),
+            downloaded_bytes: 0,
+            total_bytes: known_size,
+            current_file: String::new(),
+            current_file_downloaded: 0,
+            current_file_total: 0,
+            files_completed: 0,
+            files_total: 0,
+            percent: 0.0,
+            status: "error".to_string(),
+        },
+        DownloadState::NotDownloaded => ProgressEvent {
+            variant: variant.dir_name().to_string(),
+            downloaded_bytes: 0,
+            total_bytes: known_size,
+            current_file: String::new(),
+            current_file_downloaded: 0,
+            current_file_total: 0,
+            files_completed: 0,
+            files_total: 0,
+            percent: 0.0,
+            status: "cancelled".to_string(),
+        },
+        DownloadState::Downloading => ProgressEvent {
+            variant: variant.dir_name().to_string(),
+            downloaded_bytes: 0,
+            total_bytes: known_size,
+            current_file: String::new(),
+            current_file_downloaded: 0,
+            current_file_total: 0,
+            files_completed: 0,
+            files_total: 0,
+            percent: 0.0,
+            status: "error".to_string(),
+        },
+    }
 }
 
 /// Cancel an active download
