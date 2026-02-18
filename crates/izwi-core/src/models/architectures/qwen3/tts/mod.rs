@@ -195,14 +195,18 @@ impl Qwen3TtsModel {
             .to_ascii_lowercase()
             .replace(['-', '_'], "");
         let is_custom_voice_model = model_type_normalized == "customvoice";
+        let is_voice_clone_model = model_type_normalized == "base"
+            || model_type_normalized == "voiceclone"
+            || model_type_normalized == "voicecloning"
+            || config.talker_config.spk_id.is_empty();
         let dtype_override = std::env::var("IZWI_QWEN_TTS_DTYPE")
             .ok()
             .or_else(|| std::env::var("IZWI_QWEN_DTYPE").ok());
         let dtype = match dtype_override.as_deref().map(str::trim) {
             Some(raw) if !raw.is_empty() => device.select_dtype(Some(raw)),
-            _ if is_custom_voice_model => {
-                // CustomVoice generation is sensitive to precision and can fail to terminate
-                // under fp16. Keep default inference in fp32 unless explicitly overridden.
+            _ if is_custom_voice_model || is_voice_clone_model => {
+                // Voice-clone and CustomVoice generation are sensitive to precision and can
+                // become unstable under fp16. Keep default inference in fp32 unless overridden.
                 DType::F32
             }
             _ if device.kind.is_metal() => {
