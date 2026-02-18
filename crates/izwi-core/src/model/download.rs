@@ -364,12 +364,22 @@ impl ModelDownloader {
 
         if variant.is_asr() {
             if variant.is_parakeet() {
-                let nemo_file = match variant {
-                    ModelVariant::ParakeetTdt06BV2 => "parakeet-tdt-0.6b-v2.nemo",
-                    ModelVariant::ParakeetTdt06BV3 => "parakeet-tdt-0.6b-v3.nemo",
-                    _ => unreachable!("checked by is_parakeet"),
-                };
-                return path.join(nemo_file).exists();
+                if variant.is_parakeet_nemo() {
+                    let nemo_file = match variant {
+                        ModelVariant::ParakeetTdt06BV2 => "parakeet-tdt-0.6b-v2.nemo",
+                        ModelVariant::ParakeetTdt06BV3 => "parakeet-tdt-0.6b-v3.nemo",
+                        _ => unreachable!("checked by is_parakeet_nemo"),
+                    };
+                    return path.join(nemo_file).exists();
+                }
+
+                let has_config = path.join("config.json").exists();
+                let has_model = path.join("model.safetensors").exists();
+                let has_tokenizer = path.join("tokenizer.json").exists()
+                    || path.join("tokenizer.model").exists()
+                    || path.join("vocab.txt").exists()
+                    || path.join("tokenizer.vocab").exists();
+                return has_config && has_model && has_tokenizer;
             }
 
             // Qwen3-ASR requires config.json, vocab.json, chat_template.json, and model weights
@@ -847,12 +857,26 @@ impl ModelDownloader {
         // Qwen3-ASR models
         if variant.is_asr() {
             if variant.is_parakeet() {
-                let nemo_file = match variant {
-                    ModelVariant::ParakeetTdt06BV2 => "parakeet-tdt-0.6b-v2.nemo",
-                    ModelVariant::ParakeetTdt06BV3 => "parakeet-tdt-0.6b-v3.nemo",
-                    _ => unreachable!("checked by is_parakeet"),
-                };
-                return vec![nemo_file.to_string(), "README.md".to_string()];
+                if variant.is_parakeet_nemo() {
+                    let nemo_file = match variant {
+                        ModelVariant::ParakeetTdt06BV2 => "parakeet-tdt-0.6b-v2.nemo",
+                        ModelVariant::ParakeetTdt06BV3 => "parakeet-tdt-0.6b-v3.nemo",
+                        _ => unreachable!("checked by is_parakeet_nemo"),
+                    };
+                    return vec![nemo_file.to_string(), "README.md".to_string()];
+                }
+
+                return vec![
+                    "config.json".to_string(),
+                    "generation_config.json".to_string(),
+                    "model.safetensors".to_string(),
+                    "tokenizer.json".to_string(),
+                    "tokenizer.model".to_string(),
+                    "tokenizer_config.json".to_string(),
+                    "special_tokens_map.json".to_string(),
+                    "vocab.txt".to_string(),
+                    "tokenizer.vocab".to_string(),
+                ];
             }
 
             let mut files = vec![
@@ -923,7 +947,7 @@ impl ModelDownloader {
 
         // Qwen3-ForcedAligner model
         if variant.is_forced_aligner() {
-            return vec![
+            let mut files = vec![
                 "config.json".to_string(),
                 "generation_config.json".to_string(),
                 "merges.txt".to_string(),
@@ -932,6 +956,10 @@ impl ModelDownloader {
                 "tokenizer_config.json".to_string(),
                 "vocab.json".to_string(),
             ];
+            if variant.is_quantized() {
+                files.push("model.safetensors.index.json".to_string());
+            }
+            return files;
         }
 
         // Voxtral Mini 4B Realtime model - single consolidated safetensors file
@@ -1117,11 +1145,18 @@ impl ModelDownloader {
                 match variant {
                     ModelVariant::Qwen3Tts12Hz06BBase
                     | ModelVariant::Qwen3Tts12Hz06BCustomVoice => 1_800_000_000,
+                    ModelVariant::Qwen3Tts12Hz17BBase4Bit
+                    | ModelVariant::Qwen3Tts12Hz17BCustomVoice4Bit => 2_330_000_000,
                     ModelVariant::Qwen3Tts12Hz17BBase
                     | ModelVariant::Qwen3Tts12Hz17BCustomVoice
                     | ModelVariant::Qwen3Tts12Hz17BVoiceDesign => 3_850_000_000,
                     ModelVariant::Qwen3Asr06B => 1_800_000_000,
                     ModelVariant::Qwen306B4Bit => 800_000_000,
+                    ModelVariant::Qwen317B4Bit => 1_115_000_000,
+                    ModelVariant::Qwen3ForcedAligner06B4Bit => 703_000_000,
+                    ModelVariant::Lfm25Audio15B4Bit => 884_000_000,
+                    ModelVariant::ParakeetTdt06BV24Bit => 2_656_300_000,
+                    ModelVariant::ParakeetTdt06BV34Bit => 3_160_000_000,
                     ModelVariant::Gemma31BIt => 2_100_000_000,
                     ModelVariant::Gemma34BIt => 2_400_000_000,
                     ModelVariant::Lfm2Audio15B | ModelVariant::Lfm25Audio15B => 2_900_000_000,

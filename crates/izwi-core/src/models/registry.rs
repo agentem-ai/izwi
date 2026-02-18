@@ -327,7 +327,9 @@ impl ModelRegistry {
                 move || async move {
                     tokio::task::spawn_blocking(move || {
                         let model = match variant {
-                            ModelVariant::Qwen306B4Bit | ModelVariant::Qwen317B => {
+                            ModelVariant::Qwen306B4Bit
+                            | ModelVariant::Qwen317B
+                            | ModelVariant::Qwen317B4Bit => {
                                 NativeChatModel::Qwen3(Qwen3ChatModel::load(&model_dir, device)?)
                             }
                             ModelVariant::Gemma31BIt | ModelVariant::Gemma34BIt => {

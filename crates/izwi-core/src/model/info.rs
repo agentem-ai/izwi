@@ -33,9 +33,15 @@ pub enum ModelVariant {
     /// 1.7B parameter base model
     #[serde(rename = "Qwen3-TTS-12Hz-1.7B-Base")]
     Qwen3Tts12Hz17BBase,
+    /// 1.7B parameter base model (MLX 4-bit)
+    #[serde(rename = "Qwen3-TTS-12Hz-1.7B-Base-4bit")]
+    Qwen3Tts12Hz17BBase4Bit,
     /// 1.7B parameter custom voice model  
     #[serde(rename = "Qwen3-TTS-12Hz-1.7B-CustomVoice")]
     Qwen3Tts12Hz17BCustomVoice,
+    /// 1.7B parameter custom voice model (MLX 4-bit)
+    #[serde(rename = "Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit")]
+    Qwen3Tts12Hz17BCustomVoice4Bit,
     /// 1.7B parameter voice design model
     #[serde(rename = "Qwen3-TTS-12Hz-1.7B-VoiceDesign")]
     Qwen3Tts12Hz17BVoiceDesign,
@@ -57,6 +63,9 @@ pub enum ModelVariant {
     /// LFM2.5-Audio 1.5B model from Liquid AI
     #[serde(rename = "LFM2.5-Audio-1.5B")]
     Lfm25Audio15B,
+    /// LFM2.5-Audio 1.5B model from Liquid AI (MLX 4-bit)
+    #[serde(rename = "LFM2.5-Audio-1.5B-4bit")]
+    Lfm25Audio15B4Bit,
     /// Qwen3-ASR 0.6B model
     #[serde(rename = "Qwen3-ASR-0.6B")]
     Qwen3Asr06B,
@@ -87,6 +96,12 @@ pub enum ModelVariant {
     /// Parakeet TDT 0.6B v3 ASR model (.nemo)
     #[serde(rename = "Parakeet-TDT-0.6B-v3")]
     ParakeetTdt06BV3,
+    /// Parakeet TDT 0.6B v2 ASR model (MLX 4-bit)
+    #[serde(rename = "Parakeet-TDT-0.6B-v2-4bit")]
+    ParakeetTdt06BV24Bit,
+    /// Parakeet TDT 0.6B v3 ASR model (MLX 4-bit)
+    #[serde(rename = "Parakeet-TDT-0.6B-v3-4bit")]
+    ParakeetTdt06BV34Bit,
     /// Streaming Sortformer 4-speaker diarization model (.nemo)
     #[serde(rename = "diar_streaming_sortformer_4spk-v2.1")]
     DiarStreamingSortformer4SpkV21,
@@ -96,6 +111,9 @@ pub enum ModelVariant {
     /// Qwen3 1.7B text model
     #[serde(rename = "Qwen3-1.7B")]
     Qwen317B,
+    /// Qwen3 1.7B text model (MLX 4-bit)
+    #[serde(rename = "Qwen3-1.7B-4bit")]
+    Qwen317B4Bit,
     /// Gemma 3 1B instruction-tuned chat model
     #[serde(rename = "Gemma-3-1b-it")]
     Gemma31BIt,
@@ -105,6 +123,9 @@ pub enum ModelVariant {
     /// Qwen3-ForcedAligner 0.6B model
     #[serde(rename = "Qwen3-ForcedAligner-0.6B")]
     Qwen3ForcedAligner06B,
+    /// Qwen3-ForcedAligner 0.6B model (MLX 4-bit)
+    #[serde(rename = "Qwen3-ForcedAligner-0.6B-4bit")]
+    Qwen3ForcedAligner06B4Bit,
     /// Voxtral Mini 4B Realtime model from Mistral AI
     #[serde(rename = "Voxtral-Mini-4B-Realtime-2602")]
     VoxtralMini4BRealtime2602,
@@ -129,7 +150,11 @@ impl ModelVariant {
                 "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
             }
             Self::Qwen3Tts12Hz17BBase => "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+            Self::Qwen3Tts12Hz17BBase4Bit => "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit",
             Self::Qwen3Tts12Hz17BCustomVoice => "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            Self::Qwen3Tts12Hz17BCustomVoice4Bit => {
+                "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit"
+            }
             Self::Qwen3Tts12Hz17BVoiceDesign => "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
             Self::Qwen3Tts12Hz17BVoiceDesign4Bit => {
                 "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit"
@@ -143,6 +168,7 @@ impl ModelVariant {
             Self::Qwen3TtsTokenizer12Hz => "Qwen/Qwen3-TTS-Tokenizer-12Hz",
             Self::Lfm2Audio15B => "LiquidAI/LFM2-Audio-1.5B",
             Self::Lfm25Audio15B => "LiquidAI/LFM2.5-Audio-1.5B",
+            Self::Lfm25Audio15B4Bit => "mlx-community/LFM2.5-Audio-1.5B-4bit",
             Self::Qwen3Asr06B => "Qwen/Qwen3-ASR-0.6B",
             Self::Qwen3Asr06B4Bit => "mlx-community/Qwen3-ASR-0.6B-4bit",
             Self::Qwen3Asr06B8Bit => "mlx-community/Qwen3-ASR-0.6B-8bit",
@@ -153,12 +179,16 @@ impl ModelVariant {
             Self::Qwen3Asr17BBf16 => "mlx-community/Qwen3-ASR-1.7B-bf16",
             Self::ParakeetTdt06BV2 => "nvidia/parakeet-tdt-0.6b-v2",
             Self::ParakeetTdt06BV3 => "nvidia/parakeet-tdt-0.6b-v3",
+            Self::ParakeetTdt06BV24Bit => "mlx-community/parakeet-tdt-0.6b-v2",
+            Self::ParakeetTdt06BV34Bit => "mlx-community/parakeet-tdt-0.6b-v3",
             Self::DiarStreamingSortformer4SpkV21 => "nvidia/diar_streaming_sortformer_4spk-v2.1",
             Self::Qwen306B4Bit => "mlx-community/Qwen3-0.6B-4bit",
             Self::Qwen317B => "Qwen/Qwen3-1.7B",
+            Self::Qwen317B4Bit => "mlx-community/Qwen3-1.7B-4bit",
             Self::Gemma31BIt => "google/gemma-3-1b-it",
             Self::Gemma34BIt => "google/gemma-3-4b-it",
             Self::Qwen3ForcedAligner06B => "Qwen/Qwen3-ForcedAligner-0.6B",
+            Self::Qwen3ForcedAligner06B4Bit => "mlx-community/Qwen3-ForcedAligner-0.6B-4bit",
             Self::VoxtralMini4BRealtime2602 => "mistralai/Voxtral-Mini-4B-Realtime-2602",
         }
     }
@@ -175,7 +205,9 @@ impl ModelVariant {
             Self::Qwen3Tts12Hz06BCustomVoice8Bit => "Qwen3-TTS 0.6B CustomVoice 8-bit",
             Self::Qwen3Tts12Hz06BCustomVoiceBf16 => "Qwen3-TTS 0.6B CustomVoice bf16",
             Self::Qwen3Tts12Hz17BBase => "Qwen3-TTS 1.7B Base",
+            Self::Qwen3Tts12Hz17BBase4Bit => "Qwen3-TTS 1.7B Base 4-bit",
             Self::Qwen3Tts12Hz17BCustomVoice => "Qwen3-TTS 1.7B CustomVoice",
+            Self::Qwen3Tts12Hz17BCustomVoice4Bit => "Qwen3-TTS 1.7B CustomVoice 4-bit",
             Self::Qwen3Tts12Hz17BVoiceDesign => "Qwen3-TTS 1.7B VoiceDesign",
             Self::Qwen3Tts12Hz17BVoiceDesign4Bit => "Qwen3-TTS 1.7B VoiceDesign 4-bit",
             Self::Qwen3Tts12Hz17BVoiceDesign8Bit => "Qwen3-TTS 1.7B VoiceDesign 8-bit",
@@ -183,6 +215,7 @@ impl ModelVariant {
             Self::Qwen3TtsTokenizer12Hz => "Qwen3-TTS Tokenizer 12Hz",
             Self::Lfm2Audio15B => "LFM2-Audio 1.5B",
             Self::Lfm25Audio15B => "LFM2.5-Audio 1.5B",
+            Self::Lfm25Audio15B4Bit => "LFM2.5-Audio 1.5B 4-bit",
             Self::Qwen3Asr06B => "Qwen3-ASR 0.6B",
             Self::Qwen3Asr06B4Bit => "Qwen3-ASR 0.6B 4-bit",
             Self::Qwen3Asr06B8Bit => "Qwen3-ASR 0.6B 8-bit",
@@ -193,12 +226,16 @@ impl ModelVariant {
             Self::Qwen3Asr17BBf16 => "Qwen3-ASR 1.7B bf16",
             Self::ParakeetTdt06BV2 => "Parakeet TDT 0.6B v2",
             Self::ParakeetTdt06BV3 => "Parakeet TDT 0.6B v3",
+            Self::ParakeetTdt06BV24Bit => "Parakeet TDT 0.6B v2 4-bit",
+            Self::ParakeetTdt06BV34Bit => "Parakeet TDT 0.6B v3 4-bit",
             Self::DiarStreamingSortformer4SpkV21 => "Streaming Sortformer 4spk v2.1",
             Self::Qwen306B4Bit => "Qwen3 0.6B 4-bit",
             Self::Qwen317B => "Qwen3 1.7B",
+            Self::Qwen317B4Bit => "Qwen3 1.7B 4-bit",
             Self::Gemma31BIt => "Gemma 3 1B Instruct",
             Self::Gemma34BIt => "Gemma 3 4B Instruct",
             Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner 0.6B",
+            Self::Qwen3ForcedAligner06B4Bit => "Qwen3-ForcedAligner 0.6B 4-bit",
             Self::VoxtralMini4BRealtime2602 => "Voxtral Mini 4B Realtime",
         }
     }
@@ -215,7 +252,9 @@ impl ModelVariant {
             Self::Qwen3Tts12Hz06BCustomVoice8Bit => "Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit",
             Self::Qwen3Tts12Hz06BCustomVoiceBf16 => "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",
             Self::Qwen3Tts12Hz17BBase => "Qwen3-TTS-12Hz-1.7B-Base",
+            Self::Qwen3Tts12Hz17BBase4Bit => "Qwen3-TTS-12Hz-1.7B-Base-4bit",
             Self::Qwen3Tts12Hz17BCustomVoice => "Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            Self::Qwen3Tts12Hz17BCustomVoice4Bit => "Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit",
             Self::Qwen3Tts12Hz17BVoiceDesign => "Qwen3-TTS-12Hz-1.7B-VoiceDesign",
             Self::Qwen3Tts12Hz17BVoiceDesign4Bit => "Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit",
             Self::Qwen3Tts12Hz17BVoiceDesign8Bit => "Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit",
@@ -223,6 +262,7 @@ impl ModelVariant {
             Self::Qwen3TtsTokenizer12Hz => "Qwen3-TTS-Tokenizer-12Hz",
             Self::Lfm2Audio15B => "LFM2-Audio-1.5B",
             Self::Lfm25Audio15B => "LFM2.5-Audio-1.5B",
+            Self::Lfm25Audio15B4Bit => "LFM2.5-Audio-1.5B-4bit",
             Self::Qwen3Asr06B => "Qwen3-ASR-0.6B",
             Self::Qwen3Asr06B4Bit => "Qwen3-ASR-0.6B-4bit",
             Self::Qwen3Asr06B8Bit => "Qwen3-ASR-0.6B-8bit",
@@ -233,12 +273,16 @@ impl ModelVariant {
             Self::Qwen3Asr17BBf16 => "Qwen3-ASR-1.7B-bf16",
             Self::ParakeetTdt06BV2 => "Parakeet-TDT-0.6B-v2",
             Self::ParakeetTdt06BV3 => "Parakeet-TDT-0.6B-v3",
+            Self::ParakeetTdt06BV24Bit => "Parakeet-TDT-0.6B-v2-4bit",
+            Self::ParakeetTdt06BV34Bit => "Parakeet-TDT-0.6B-v3-4bit",
             Self::DiarStreamingSortformer4SpkV21 => "diar_streaming_sortformer_4spk-v2.1",
             Self::Qwen306B4Bit => "Qwen3-0.6B-4bit",
             Self::Qwen317B => "Qwen3-1.7B",
+            Self::Qwen317B4Bit => "Qwen3-1.7B-4bit",
             Self::Gemma31BIt => "Gemma-3-1b-it",
             Self::Gemma34BIt => "Gemma-3-4b-it",
             Self::Qwen3ForcedAligner06B => "Qwen3-ForcedAligner-0.6B",
+            Self::Qwen3ForcedAligner06B4Bit => "Qwen3-ForcedAligner-0.6B-4bit",
             Self::VoxtralMini4BRealtime2602 => "Voxtral-Mini-4B-Realtime-2602",
         }
     }
@@ -255,7 +299,9 @@ impl ModelVariant {
             Self::Qwen3Tts12Hz06BCustomVoice8Bit => 1_973_575_388, // ~1.84 GB
             Self::Qwen3Tts12Hz06BCustomVoiceBf16 => 2_498_419_405, // ~2.33 GB
             Self::Qwen3Tts12Hz17BBase => 4_544_229_700, // ~4.23 GB
+            Self::Qwen3Tts12Hz17BBase4Bit => 2_335_000_000, // ~2.17 GB (est)
             Self::Qwen3Tts12Hz17BCustomVoice => 4_520_218_951, // ~4.21 GB
+            Self::Qwen3Tts12Hz17BCustomVoice4Bit => 2_330_000_000, // ~2.17 GB (est)
             Self::Qwen3Tts12Hz17BVoiceDesign => 4_520_163_832, // ~4.21 GB
             Self::Qwen3Tts12Hz17BVoiceDesign4Bit => 2_312_058_795, // ~2.15 GB
             Self::Qwen3Tts12Hz17BVoiceDesign8Bit => 3_080_140_867, // ~2.87 GB
@@ -263,6 +309,7 @@ impl ModelVariant {
             Self::Qwen3TtsTokenizer12Hz => 682_300_739, // ~0.64 GB
             Self::Lfm2Audio15B => 3_000_000_000,        // ~2.79 GB (est)
             Self::Lfm25Audio15B => 3_200_000_000,       // ~2.98 GB (est)
+            Self::Lfm25Audio15B4Bit => 884_000_000,     // ~0.82 GB
             Self::Qwen3Asr06B => 1_880_619_678,         // ~1.75 GB
             Self::Qwen3Asr06B4Bit => 712_781_279,       // ~0.66 GB
             Self::Qwen3Asr06B8Bit => 1_010_773_761,     // ~0.94 GB
@@ -273,12 +320,16 @@ impl ModelVariant {
             Self::Qwen3Asr17BBf16 => 4_080_710_353,     // ~3.80 GB
             Self::ParakeetTdt06BV2 => 4_926_457_088,    // ~4.59 GB
             Self::ParakeetTdt06BV3 => 10_036_761_167,   // ~9.35 GB
+            Self::ParakeetTdt06BV24Bit => 2_656_300_000, // ~2.47 GB
+            Self::ParakeetTdt06BV34Bit => 3_160_000_000, // ~2.94 GB (est)
             Self::DiarStreamingSortformer4SpkV21 => 510_000_000, // ~0.47 GB (est)
             Self::Qwen306B4Bit => 900_000_000,          // ~0.84 GB (est)
             Self::Qwen317B => 4_080_000_000,            // ~3.80 GB (actual: 3.44GB + 622MB shards)
+            Self::Qwen317B4Bit => 1_115_700_000,        // ~1.04 GB
             Self::Gemma31BIt => 2_200_000_000,          // ~2.05 GB (est)
             Self::Gemma34BIt => 8_600_000_000,          // ~8.01 GB (est)
             Self::Qwen3ForcedAligner06B => 1_840_072_459, // ~1.71 GB
+            Self::Qwen3ForcedAligner06B4Bit => 703_200_000, // ~0.65 GB
             Self::VoxtralMini4BRealtime2602 => 8_000_000_000, // ~7.45 GB (est)
         }
     }
@@ -295,13 +346,16 @@ impl ModelVariant {
             | Self::Qwen3Tts12Hz06BCustomVoice8Bit
             | Self::Qwen3Tts12Hz06BCustomVoiceBf16 => 2.5,
             Self::Qwen3Tts12Hz17BBase
+            | Self::Qwen3Tts12Hz17BBase4Bit
             | Self::Qwen3Tts12Hz17BCustomVoice
+            | Self::Qwen3Tts12Hz17BCustomVoice4Bit
             | Self::Qwen3Tts12Hz17BVoiceDesign
             | Self::Qwen3Tts12Hz17BVoiceDesign4Bit
             | Self::Qwen3Tts12Hz17BVoiceDesign8Bit
             | Self::Qwen3Tts12Hz17BVoiceDesignBf16 => 6.0,
             Self::Qwen3TtsTokenizer12Hz => 1.0,
             Self::Lfm2Audio15B | Self::Lfm25Audio15B => 6.0,
+            Self::Lfm25Audio15B4Bit => 3.0,
             Self::Qwen3Asr06B
             | Self::Qwen3Asr06B4Bit
             | Self::Qwen3Asr06B8Bit
@@ -312,12 +366,16 @@ impl ModelVariant {
             | Self::Qwen3Asr17BBf16 => 6.0,
             Self::ParakeetTdt06BV2 => 8.0,
             Self::ParakeetTdt06BV3 => 12.0,
+            Self::ParakeetTdt06BV24Bit => 4.0,
+            Self::ParakeetTdt06BV34Bit => 5.0,
             Self::DiarStreamingSortformer4SpkV21 => 3.0,
             Self::Qwen306B4Bit => 2.0,
             Self::Qwen317B => 5.0,
+            Self::Qwen317B4Bit => 3.0,
             Self::Gemma31BIt => 3.5,
             Self::Gemma34BIt => 11.0,
             Self::Qwen3ForcedAligner06B => 2.5,
+            Self::Qwen3ForcedAligner06B4Bit => 1.5,
             Self::VoxtralMini4BRealtime2602 => 16.0,
         }
     }
@@ -329,7 +387,10 @@ impl ModelVariant {
 
     /// Whether this is an LFM2-Audio model
     pub fn is_lfm2(&self) -> bool {
-        matches!(self, Self::Lfm2Audio15B | Self::Lfm25Audio15B)
+        matches!(
+            self,
+            Self::Lfm2Audio15B | Self::Lfm25Audio15B | Self::Lfm25Audio15B4Bit
+        )
     }
 
     /// Whether this is a Qwen3-ASR model
@@ -346,6 +407,8 @@ impl ModelVariant {
                 | Self::Qwen3Asr17BBf16
                 | Self::ParakeetTdt06BV2
                 | Self::ParakeetTdt06BV3
+                | Self::ParakeetTdt06BV24Bit
+                | Self::ParakeetTdt06BV34Bit
         )
     }
 
@@ -356,14 +419,21 @@ impl ModelVariant {
 
     /// Whether this is a forced aligner model
     pub fn is_forced_aligner(&self) -> bool {
-        matches!(self, Self::Qwen3ForcedAligner06B)
+        matches!(
+            self,
+            Self::Qwen3ForcedAligner06B | Self::Qwen3ForcedAligner06B4Bit
+        )
     }
 
     /// Whether this is a text chat model
     pub fn is_chat(&self) -> bool {
         matches!(
             self,
-            Self::Qwen306B4Bit | Self::Qwen317B | Self::Gemma31BIt | Self::Gemma34BIt
+            Self::Qwen306B4Bit
+                | Self::Qwen317B
+                | Self::Qwen317B4Bit
+                | Self::Gemma31BIt
+                | Self::Gemma34BIt
         )
     }
 
@@ -379,7 +449,9 @@ impl ModelVariant {
                 | Self::Qwen3Tts12Hz06BCustomVoice8Bit
                 | Self::Qwen3Tts12Hz06BCustomVoiceBf16
                 | Self::Qwen3Tts12Hz17BBase
+                | Self::Qwen3Tts12Hz17BBase4Bit
                 | Self::Qwen3Tts12Hz17BCustomVoice
+                | Self::Qwen3Tts12Hz17BCustomVoice4Bit
                 | Self::Qwen3Tts12Hz17BVoiceDesign
                 | Self::Qwen3Tts12Hz17BVoiceDesign4Bit
                 | Self::Qwen3Tts12Hz17BVoiceDesign8Bit
@@ -394,7 +466,26 @@ impl ModelVariant {
 
     /// Whether this is a Parakeet ASR model.
     pub fn is_parakeet(&self) -> bool {
+        matches!(
+            self,
+            Self::ParakeetTdt06BV2
+                | Self::ParakeetTdt06BV3
+                | Self::ParakeetTdt06BV24Bit
+                | Self::ParakeetTdt06BV34Bit
+        )
+    }
+
+    /// Whether this is a legacy .nemo Parakeet variant.
+    pub fn is_parakeet_nemo(&self) -> bool {
         matches!(self, Self::ParakeetTdt06BV2 | Self::ParakeetTdt06BV3)
+    }
+
+    /// Whether this is an MLX-exported Parakeet variant.
+    pub fn is_parakeet_mlx(&self) -> bool {
+        matches!(
+            self,
+            Self::ParakeetTdt06BV24Bit | Self::ParakeetTdt06BV34Bit
+        )
     }
 
     /// Whether this is a quantized mlx-community model (uses GGUF format)
@@ -407,27 +498,49 @@ impl ModelVariant {
                 | Self::Qwen3Tts12Hz06BCustomVoice4Bit
                 | Self::Qwen3Tts12Hz06BCustomVoice8Bit
                 | Self::Qwen3Tts12Hz06BCustomVoiceBf16
+                | Self::Qwen3Tts12Hz17BBase4Bit
+                | Self::Qwen3Tts12Hz17BCustomVoice4Bit
                 | Self::Qwen3Tts12Hz17BVoiceDesign4Bit
                 | Self::Qwen3Tts12Hz17BVoiceDesign8Bit
                 | Self::Qwen3Tts12Hz17BVoiceDesignBf16
+                | Self::Lfm25Audio15B4Bit
                 | Self::Qwen3Asr06B4Bit
                 | Self::Qwen3Asr06B8Bit
                 | Self::Qwen3Asr06BBf16
                 | Self::Qwen3Asr17B4Bit
                 | Self::Qwen3Asr17B8Bit
                 | Self::Qwen3Asr17BBf16
+                | Self::ParakeetTdt06BV24Bit
+                | Self::ParakeetTdt06BV34Bit
                 | Self::Qwen306B4Bit
+                | Self::Qwen317B4Bit
+                | Self::Qwen3ForcedAligner06B4Bit
         )
     }
 
     /// Whether this variant is currently enabled in the application catalog.
     pub fn is_enabled(&self) -> bool {
         match self {
-            Self::Qwen306B4Bit | Self::Qwen317B | Self::Gemma31BIt => true,
+            Self::Qwen306B4Bit
+            | Self::Qwen317B
+            | Self::Qwen317B4Bit
+            | Self::Gemma31BIt
+            | Self::Qwen3Asr06B4Bit
+            | Self::Qwen3Asr17B4Bit
+            | Self::Qwen3Tts12Hz06BBase4Bit
+            | Self::Qwen3Tts12Hz06BCustomVoice4Bit
+            | Self::Qwen3Tts12Hz17BBase4Bit
+            | Self::Qwen3Tts12Hz17BCustomVoice4Bit
+            | Self::Qwen3Tts12Hz17BVoiceDesign4Bit
+            | Self::Qwen3ForcedAligner06B4Bit
+            | Self::Lfm25Audio15B4Bit => true,
             Self::Gemma34BIt => false,
             Self::Lfm2Audio15B | Self::Lfm25Audio15B => true,
             Self::VoxtralMini4BRealtime2602 => false,
-            Self::ParakeetTdt06BV2 | Self::ParakeetTdt06BV3 => true,
+            Self::ParakeetTdt06BV2
+            | Self::ParakeetTdt06BV3
+            | Self::ParakeetTdt06BV24Bit
+            | Self::ParakeetTdt06BV34Bit => true,
             Self::DiarStreamingSortformer4SpkV21 => true,
             Self::Qwen3ForcedAligner06B => true,
             _ => !self.is_quantized(),
@@ -446,7 +559,9 @@ impl ModelVariant {
             Self::Qwen3Tts12Hz06BCustomVoice8Bit,
             Self::Qwen3Tts12Hz06BCustomVoiceBf16,
             Self::Qwen3Tts12Hz17BBase,
+            Self::Qwen3Tts12Hz17BBase4Bit,
             Self::Qwen3Tts12Hz17BCustomVoice,
+            Self::Qwen3Tts12Hz17BCustomVoice4Bit,
             Self::Qwen3Tts12Hz17BVoiceDesign,
             Self::Qwen3Tts12Hz17BVoiceDesign4Bit,
             Self::Qwen3Tts12Hz17BVoiceDesign8Bit,
@@ -454,6 +569,7 @@ impl ModelVariant {
             Self::Qwen3TtsTokenizer12Hz,
             Self::Lfm2Audio15B,
             Self::Lfm25Audio15B,
+            Self::Lfm25Audio15B4Bit,
             Self::Qwen3Asr06B,
             Self::Qwen3Asr06B4Bit,
             Self::Qwen3Asr06B8Bit,
@@ -464,12 +580,16 @@ impl ModelVariant {
             Self::Qwen3Asr17BBf16,
             Self::ParakeetTdt06BV2,
             Self::ParakeetTdt06BV3,
+            Self::ParakeetTdt06BV24Bit,
+            Self::ParakeetTdt06BV34Bit,
             Self::DiarStreamingSortformer4SpkV21,
             Self::Qwen306B4Bit,
             Self::Qwen317B,
+            Self::Qwen317B4Bit,
             Self::Gemma31BIt,
             Self::Gemma34BIt,
             Self::Qwen3ForcedAligner06B,
+            Self::Qwen3ForcedAligner06B4Bit,
             Self::VoxtralMini4BRealtime2602,
         ]
     }

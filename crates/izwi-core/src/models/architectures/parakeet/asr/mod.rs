@@ -14,6 +14,7 @@ use candle_nn::{
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::mlx_compat;
+use crate::tokenizer::Tokenizer;
 
 use decode::decode_tokens;
 use nemo::{ensure_parakeet_artifacts, ParakeetArtifacts};
@@ -34,13 +35,30 @@ const DEFAULT_MAX_SYMBOLS: usize = 10;
 
 pub struct ParakeetAsrModel {
     variant: ModelVariant,
-    _artifacts: ParakeetArtifacts,
-    tokenizer_vocab: Vec<String>,
+    _artifacts: Option<ParakeetArtifacts>,
+    decoder: ParakeetDecoder,
     preprocessor: ParakeetPreprocessor,
     network: ParakeetNetwork,
     blank_idx: usize,
     num_durations: usize,
     max_symbols: usize,
+}
+
+enum ParakeetDecoder {
+    Vocab(Vec<String>),
+    HfTokenizer(Tokenizer),
+}
+
+impl ParakeetDecoder {
+    fn decode(&self, ids: &[usize]) -> String {
+        match self {
+            Self::Vocab(vocab) => decode_tokens(ids, vocab),
+            Self::HfTokenizer(tokenizer) => {
+                let token_ids: Vec<u32> = ids.iter().map(|id| *id as u32).collect();
+                tokenizer.decode(&token_ids).unwrap_or_default()
+            }
+        }
+    }
 }
 
 impl ParakeetAsrModel {
@@ -52,19 +70,40 @@ impl ParakeetAsrModel {
             )));
         }
 
-        let artifacts = ensure_parakeet_artifacts(model_dir, variant)?;
-
-        let tokenizer_vocab = decode::load_tokenizer_vocab(&artifacts.tokenizer_vocab_path)?;
-
         let device = select_device_for_parakeet();
-        let vb =
-            VarBuilder::from_pth(&artifacts.checkpoint_path, DType::F32, &device).map_err(|e| {
-                Error::ModelLoadError(format!(
-                    "Failed to load Parakeet checkpoint {}: {}",
-                    artifacts.checkpoint_path.display(),
-                    e
-                ))
+        let (artifacts, decoder, vb) = if variant.is_parakeet_nemo() {
+            let artifacts = ensure_parakeet_artifacts(model_dir, variant)?;
+            let tokenizer_vocab = decode::load_tokenizer_vocab(&artifacts.tokenizer_vocab_path)?;
+            let vb = VarBuilder::from_pth(&artifacts.checkpoint_path, DType::F32, &device)
+                .map_err(|e| {
+                    Error::ModelLoadError(format!(
+                        "Failed to load Parakeet checkpoint {}: {}",
+                        artifacts.checkpoint_path.display(),
+                        e
+                    ))
+                })?;
+            (Some(artifacts), ParakeetDecoder::Vocab(tokenizer_vocab), vb)
+        } else if variant.is_parakeet_mlx() {
+            let weights_path = model_dir.join("model.safetensors");
+            if !weights_path.exists() {
+                return Err(Error::ModelNotFound(format!(
+                    "Missing Parakeet MLX weights at {}",
+                    weights_path.display()
+                )));
+            }
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)
+            }
+            .map_err(|e| {
+                Error::ModelLoadError(format!("Failed to load Parakeet MLX weights: {e}"))
             })?;
+            (None, load_mlx_decoder(model_dir)?, vb)
+        } else {
+            return Err(Error::InvalidInput(format!(
+                "Unsupported Parakeet variant: {}",
+                variant.dir_name()
+            )));
+        };
 
         let preprocessor = ParakeetPreprocessor::load(&vb)?;
         let network = ParakeetNetwork::load(&vb)?;
@@ -75,7 +114,7 @@ impl ParakeetAsrModel {
         Ok(Self {
             variant,
             _artifacts: artifacts,
-            tokenizer_vocab,
+            decoder,
             preprocessor,
             network,
             blank_idx,
@@ -119,7 +158,7 @@ impl ParakeetAsrModel {
 
         let mut on_token = |token_id: usize| {
             token_ids.push(token_id);
-            let decoded = decode_tokens(&token_ids, &self.tokenizer_vocab);
+            let decoded = self.decoder.decode(&token_ids);
             let delta = text_delta(&assembled, &decoded);
             if !delta.is_empty() {
                 on_delta(delta.as_str());
@@ -137,11 +176,30 @@ impl ParakeetAsrModel {
         )?;
 
         if assembled.is_empty() {
-            assembled = decode_tokens(&token_ids, &self.tokenizer_vocab);
+            assembled = self.decoder.decode(&token_ids);
         }
 
         Ok(assembled)
     }
+}
+
+fn load_mlx_decoder(model_dir: &Path) -> Result<ParakeetDecoder> {
+    if let Ok(tokenizer) = Tokenizer::from_path(model_dir) {
+        return Ok(ParakeetDecoder::HfTokenizer(tokenizer));
+    }
+
+    for candidate in ["vocab.txt", "tokenizer.vocab"] {
+        let vocab_path = model_dir.join(candidate);
+        if vocab_path.exists() {
+            let vocab = decode::load_tokenizer_vocab(&vocab_path)?;
+            return Ok(ParakeetDecoder::Vocab(vocab));
+        }
+    }
+
+    Err(Error::ModelLoadError(format!(
+        "Unable to locate tokenizer assets for Parakeet MLX model at {}",
+        model_dir.display()
+    )))
 }
 
 fn select_device_for_parakeet() -> Device {

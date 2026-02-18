@@ -55,8 +55,10 @@ export function TextToSpeechPage({
   );
 
   const preferredModelOrder = [
+    "LFM2.5-Audio-1.5B-4bit",
     "LFM2.5-Audio-1.5B",
     "LFM2-Audio-1.5B",
+    "Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit",
     "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
     "Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit",
     "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",

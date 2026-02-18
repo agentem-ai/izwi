@@ -46,11 +46,14 @@ function isPipelineAsrVariant(variant: string): boolean {
 }
 
 function isPipelineAlignerVariant(variant: string): boolean {
-  return variant === "Qwen3-ForcedAligner-0.6B";
+  return (
+    variant === "Qwen3-ForcedAligner-0.6B" ||
+    variant === "Qwen3-ForcedAligner-0.6B-4bit"
+  );
 }
 
 function isPipelineLlmVariant(variant: string): boolean {
-  return variant === "Qwen3-1.7B";
+  return variant === "Qwen3-1.7B" || variant === "Qwen3-1.7B-4bit";
 }
 
 export function DiarizationPage({
