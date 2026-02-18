@@ -1120,7 +1120,7 @@ impl EncoderCodebook {
             .get((codebook_size,), "codebook.cluster_usage")?
             .clamp(1e-7f64, f64::MAX)?;
         let embeddings = embedding_sum.broadcast_div(&cluster_usage.unsqueeze(1)?)?;
-        let embeddings_2d = embeddings.to_vec2::<f32>()?;
+        let embeddings_2d = embeddings.to_dtype(DType::F32)?.to_vec2::<f32>()?;
         let mut flat = Vec::with_capacity(codebook_size * codebook_dim);
         let mut norms = Vec::with_capacity(codebook_size);
         for row in &embeddings_2d {
@@ -1224,7 +1224,7 @@ impl EncoderResidualVectorQuantizer {
         let mut all_indices = Vec::with_capacity(num_quantizers);
         for layer in self.codebooks.iter().take(num_quantizers) {
             let residual_bt = residual.i(0)?.transpose(0, 1)?;
-            let frames = residual_bt.to_vec2::<f32>()?;
+            let frames = residual_bt.to_dtype(DType::F32)?.to_vec2::<f32>()?;
             let mut indices = Vec::with_capacity(seq_len);
             let mut quantized = vec![0f32; dim * seq_len];
 
@@ -1496,8 +1496,10 @@ impl RVQRestQuantizer {
     }
 
     fn decode(&self, codec_tokens: &[Vec<u32>], seq_len: usize, device: &Device) -> Result<Tensor> {
-        let codebook_dim = self.codebooks[0].codebook_dim;
-        let mut rest_embed = Tensor::zeros((1, seq_len, codebook_dim), DType::F32, device)?;
+        let codebook = &self.codebooks[0];
+        let codebook_dim = codebook.codebook_dim;
+        let mut rest_embed =
+            Tensor::zeros((1, seq_len, codebook_dim), codebook.embeddings.dtype(), device)?;
         for (idx, codebook) in self.codebooks.iter().enumerate() {
             let group_tokens = codec_tokens.get(idx + 1);
             let mut values = Vec::with_capacity(seq_len);
@@ -1759,6 +1761,7 @@ impl SpeechTokenizerDecoder {
         audio
             .squeeze(0)?
             .squeeze(0)?
+            .to_dtype(DType::F32)?
             .to_vec1::<f32>()
             .map_err(Error::from)
     }
