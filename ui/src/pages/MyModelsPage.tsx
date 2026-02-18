@@ -32,7 +32,7 @@ interface MyModelsPageProps {
 type FilterType = "all" | "downloaded" | "loaded" | "not_downloaded";
 type CategoryType = "all" | "tts" | "asr" | "chat";
 
-const MODEL_DETAILS: Record<
+export const MODEL_DETAILS: Record<
   string,
   {
     shortName: string;
