@@ -1238,7 +1238,8 @@ impl EncoderResidualVectorQuantizer {
                 }
             }
 
-            let quantized = Tensor::from_vec(quantized, (1, dim, seq_len), residual.device())?;
+            let quantized = Tensor::from_vec(quantized, (1, dim, seq_len), residual.device())?
+                .to_dtype(residual.dtype())?;
             residual = residual.broadcast_sub(&quantized)?;
             all_indices.push(indices);
         }
@@ -1303,6 +1304,7 @@ struct SpeechTokenizerEncoder {
     quantizer: EncoderSplitResidualVectorQuantizer,
     config: EncoderConfig,
     device: Device,
+    dtype: DType,
 }
 
 impl SpeechTokenizerEncoder {
@@ -1338,6 +1340,7 @@ impl SpeechTokenizerEncoder {
             quantizer,
             config,
             device,
+            dtype: vb.dtype(),
         })
     }
 
@@ -1350,7 +1353,8 @@ impl SpeechTokenizerEncoder {
             audio_samples.to_vec(),
             (1, self.config.audio_channels, audio_samples.len()),
             &self.device,
-        )?;
+        )?
+        .to_dtype(self.dtype)?;
         hidden = self.encoder_net.forward(&hidden)?;
         hidden = hidden.transpose(1, 2)?;
         hidden = self.encoder_transformer.forward(&hidden)?;
