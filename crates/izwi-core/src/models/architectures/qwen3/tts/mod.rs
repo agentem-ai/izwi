@@ -189,11 +189,22 @@ impl Qwen3TtsModel {
         info!("Model type: {}", config.tts_model_type);
         info!("Model size: {}", config.tts_model_size);
 
+        let model_type_normalized = config
+            .tts_model_type
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', '_'], "");
+        let is_custom_voice_model = model_type_normalized == "customvoice";
         let dtype_override = std::env::var("IZWI_QWEN_TTS_DTYPE")
             .ok()
             .or_else(|| std::env::var("IZWI_QWEN_DTYPE").ok());
         let dtype = match dtype_override.as_deref().map(str::trim) {
             Some(raw) if !raw.is_empty() => device.select_dtype(Some(raw)),
+            _ if is_custom_voice_model => {
+                // CustomVoice generation is sensitive to precision and can fail to terminate
+                // under fp16. Keep default inference in fp32 unless explicitly overridden.
+                DType::F32
+            }
             _ if device.kind.is_metal() => {
                 // Reduce model residency on Apple Silicon while preserving speed.
                 DType::F16
