@@ -751,8 +751,9 @@ impl SnakeBeta {
         let alpha = self.alpha.unsqueeze(0)?.unsqueeze(2)?.exp()?;
         let beta = self.beta.unsqueeze(0)?.unsqueeze(2)?.exp()?;
         let sin2 = x.broadcast_mul(&alpha)?.sin()?.sqr()?;
+        let eps = Tensor::new(1e-9f32, x.device())?.to_dtype(beta.dtype())?;
         let inv_beta = beta
-            .broadcast_add(&Tensor::new(1e-9f32, x.device())?)?
+            .broadcast_add(&eps)?
             .recip()?;
         x.broadcast_add(&sin2.broadcast_mul(&inv_beta)?)
             .map_err(Error::from)
