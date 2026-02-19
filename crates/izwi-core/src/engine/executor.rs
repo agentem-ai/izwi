@@ -313,17 +313,27 @@ impl NativeExecutor {
     }
 
     fn run_blocking<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-        let unwind_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-
-        match unwind_result {
-            Ok(result) => result,
-            Err(payload) => {
-                let message = panic_payload_to_string(payload.as_ref());
-                error!("Model execution panicked: {message}");
-                Err(Error::InferenceError(format!(
-                    "Model execution panicked: {message}"
-                )))
+        let run_catching_panic = || {
+            let unwind_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            match unwind_result {
+                Ok(result) => result,
+                Err(payload) => {
+                    let message = panic_payload_to_string(payload.as_ref());
+                    error!("Model execution panicked: {message}");
+                    Err(Error::InferenceError(format!(
+                        "Model execution panicked: {message}"
+                    )))
+                }
             }
+        };
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                // Long-running CPU inference should not monopolize Tokio workers; this allows
+                // async tasks (including SSE stream forwarding) to continue making progress.
+                tokio::task::block_in_place(run_catching_panic)
+            }
+            _ => run_catching_panic(),
         }
     }
 

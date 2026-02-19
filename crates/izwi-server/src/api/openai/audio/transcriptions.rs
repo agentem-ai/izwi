@@ -4,7 +4,10 @@ use axum::{
     body::Body,
     extract::{Extension, Multipart, Request, State},
     http::{header, StatusCode},
-    response::Response,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     Json, RequestExt,
 };
 use base64::Engine;
@@ -266,16 +269,25 @@ async fn transcriptions_stream(
 
     let stream = async_stream::stream! {
         while let Some(payload) = event_rx.recv().await {
-            yield Ok::<_, Infallible>(format!("data: {payload}\n\n"));
+            yield Ok::<_, Infallible>(Event::default().data(payload));
         }
     };
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/event-stream")
-        .header(header::CACHE_CONTROL, "no-cache")
-        .body(Body::from_stream(stream))
-        .unwrap())
+    let mut response = Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache"),
+    );
+    response.headers_mut().insert(
+        header::CONNECTION,
+        header::HeaderValue::from_static("keep-alive"),
+    );
+    response
+        .headers_mut()
+        .insert("x-accel-buffering", header::HeaderValue::from_static("no"));
+    Ok(response)
 }
 
 #[derive(Debug, serde::Deserialize)]
