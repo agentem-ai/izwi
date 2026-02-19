@@ -132,6 +132,12 @@ pub enum ModelVariant {
 }
 
 impl ModelVariant {
+    /// Official Qwen3-TTS generation limit from upstream generation configs
+    /// (`max_new_tokens` in Hugging Face `generation_config.json`).
+    pub const QWEN3_TTS_MAX_OUTPUT_FRAMES: usize = 8192;
+    /// Qwen3-TTS codec frame rate encoded in model variant naming ("12Hz").
+    pub const QWEN3_TTS_FRAME_RATE_HZ: f32 = 12.0;
+
     /// Get HuggingFace repository ID
     pub fn repo_id(&self) -> &'static str {
         match self {
@@ -459,6 +465,35 @@ impl ModelVariant {
         )
     }
 
+    /// Max output codec frames for this TTS variant, if known.
+    pub fn tts_max_output_frames_hint(&self) -> Option<usize> {
+        if self.is_tts() {
+            Some(Self::QWEN3_TTS_MAX_OUTPUT_FRAMES)
+        } else {
+            None
+        }
+    }
+
+    /// Codec frame-rate hint for this TTS variant, if known.
+    pub fn tts_output_frame_rate_hz_hint(&self) -> Option<f32> {
+        if self.is_tts() {
+            Some(Self::QWEN3_TTS_FRAME_RATE_HZ)
+        } else {
+            None
+        }
+    }
+
+    /// Max output duration hint in seconds for this TTS variant, if known.
+    pub fn tts_max_output_seconds_hint(&self) -> Option<f32> {
+        let frames = self.tts_max_output_frames_hint()?;
+        let hz = self.tts_output_frame_rate_hz_hint()?;
+        if hz > 0.0 {
+            Some(frames as f32 / hz)
+        } else {
+            None
+        }
+    }
+
     /// Whether this is a Voxtral model
     pub fn is_voxtral(&self) -> bool {
         matches!(self, Self::VoxtralMini4BRealtime2602)
@@ -648,5 +683,37 @@ impl ModelInfo {
         self.local_path = Some(path);
         self.status = ModelStatus::Downloaded;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ModelVariant;
+
+    #[test]
+    fn qwen3_tts_variants_expose_output_hints() {
+        let variant = ModelVariant::Qwen3Tts12Hz17BVoiceDesign;
+        assert_eq!(
+            variant.tts_max_output_frames_hint(),
+            Some(ModelVariant::QWEN3_TTS_MAX_OUTPUT_FRAMES)
+        );
+        assert_eq!(
+            variant.tts_output_frame_rate_hz_hint(),
+            Some(ModelVariant::QWEN3_TTS_FRAME_RATE_HZ)
+        );
+        assert!(
+            variant
+                .tts_max_output_seconds_hint()
+                .is_some_and(|seconds| seconds > 600.0),
+            "expected >10 minutes max-output hint"
+        );
+    }
+
+    #[test]
+    fn non_qwen3_tts_variants_do_not_expose_qwen_output_hints() {
+        let variant = ModelVariant::Lfm2Audio15B;
+        assert_eq!(variant.tts_max_output_frames_hint(), None);
+        assert_eq!(variant.tts_output_frame_rate_hz_hint(), None);
+        assert_eq!(variant.tts_max_output_seconds_hint(), None);
     }
 }
