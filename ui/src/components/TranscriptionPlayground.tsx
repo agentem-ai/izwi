@@ -43,6 +43,11 @@ interface TranscriptionPlaygroundProps {
   onModelRequired: () => void;
 }
 
+interface ProcessAudioOptions {
+  filename?: string;
+  transcode?: boolean;
+}
+
 const LANGUAGE_OPTIONS = [
   "English",
   "Chinese",
@@ -227,7 +232,7 @@ export function TranscriptionPlayground({
   }, [selectedModel, selectedModelReady, onModelRequired]);
 
   const processAudio = useCallback(
-    async (audioBlob: Blob) => {
+    async (audioBlob: Blob, options: ProcessAudioOptions = {}) => {
       if (!requireReadyModel()) {
         return;
       }
@@ -238,9 +243,18 @@ export function TranscriptionPlayground({
       setTranscription("");
 
       try {
-        const wavBlob = await transcodeToWav(audioBlob, 16000);
+        const shouldTranscode =
+          options.transcode ?? !(audioBlob instanceof File);
+        const uploadBlob = shouldTranscode
+          ? await transcodeToWav(audioBlob, 16000)
+          : audioBlob;
+        const uploadFilename =
+          options.filename?.trim() ||
+          (audioBlob instanceof File && audioBlob.name
+            ? audioBlob.name
+            : "audio.wav");
 
-        const url = URL.createObjectURL(wavBlob);
+        const url = URL.createObjectURL(uploadBlob);
         setAudioUrl((previousUrl) => {
           if (previousUrl) {
             URL.revokeObjectURL(previousUrl);
@@ -255,8 +269,8 @@ export function TranscriptionPlayground({
 
           streamAbortRef.current = api.asrTranscribeStream(
             {
-              audio_file: wavBlob,
-              audio_filename: "audio.wav",
+              audio_file: uploadBlob,
+              audio_filename: uploadFilename,
               model_id: selectedModel || undefined,
               language: selectedLanguage,
             },
@@ -296,8 +310,8 @@ export function TranscriptionPlayground({
           );
         } else {
           const response = await api.asrTranscribe({
-            audio_file: wavBlob,
-            audio_filename: "audio.wav",
+            audio_file: uploadBlob,
+            audio_filename: uploadFilename,
             model_id: selectedModel || undefined,
             language: selectedLanguage,
           });
@@ -384,7 +398,10 @@ export function TranscriptionPlayground({
     if (!file) {
       return;
     }
-    await processAudio(file);
+    await processAudio(file, {
+      filename: file.name,
+      transcode: false,
+    });
     event.target.value = "";
   };
 
