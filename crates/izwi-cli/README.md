@@ -112,6 +112,17 @@ izwi transcribe audio.wav --format verbose-json
 izwi transcribe audio.wav --language English --output transcript.txt
 ```
 
+Long recordings are transcribed end-to-end using automatic chunking and overlap
+stitching across ASR backends.
+
+Optional chunking controls:
+
+```bash
+IZWI_ASR_CHUNK_TARGET_SECS=24
+IZWI_ASR_CHUNK_MAX_SECS=30
+IZWI_ASR_CHUNK_OVERLAP_SECS=3
+```
+
 Note: `--word-timestamps` is accepted by the CLI but currently ignored by the server.
 
 ### Chat

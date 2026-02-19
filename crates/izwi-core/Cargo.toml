@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+izwi-asr-toolkit = { path = "../izwi-asr-toolkit" }
+
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 futures = { workspace = true }

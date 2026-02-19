@@ -1,5 +1,6 @@
 //! Model executor - handles forward pass execution.
 
+use izwi_asr_toolkit::{plan_audio_chunks, AsrLongFormConfig, AudioChunk, TranscriptAssembler};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -386,6 +387,88 @@ impl NativeExecutor {
         Self::stream_audio(tx, request_id, sequence, Vec::new(), 0, true)
     }
 
+    fn env_f32(key: &str) -> Option<f32> {
+        std::env::var(key)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+    }
+
+    fn asr_long_form_config() -> AsrLongFormConfig {
+        let mut cfg = AsrLongFormConfig::default();
+        if let Some(v) = Self::env_f32("IZWI_ASR_CHUNK_TARGET_SECS") {
+            cfg.target_chunk_secs = v;
+        }
+        if let Some(v) = Self::env_f32("IZWI_ASR_CHUNK_MAX_SECS") {
+            cfg.hard_max_chunk_secs = v;
+        }
+        if let Some(v) = Self::env_f32("IZWI_ASR_CHUNK_OVERLAP_SECS") {
+            cfg.overlap_secs = v;
+        }
+        cfg
+    }
+
+    fn asr_chunk_plan(
+        samples: &[f32],
+        sample_rate: u32,
+        model_max_chunk_secs: Option<f32>,
+    ) -> (AsrLongFormConfig, Vec<AudioChunk>) {
+        let cfg = Self::asr_long_form_config();
+        let tuned_limit = model_max_chunk_secs
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map(|v| (v * 0.95).max(cfg.min_chunk_secs.max(1.0)));
+        let chunks = plan_audio_chunks(samples, sample_rate, &cfg, tuned_limit);
+        (cfg, chunks)
+    }
+
+    fn transcribe_with_chunk_plan<F>(
+        request_id: &str,
+        stream_tx: Option<&mpsc::UnboundedSender<StreamingOutput>>,
+        sequence: &mut usize,
+        samples: &[f32],
+        sample_rate: u32,
+        chunk_plan: &[AudioChunk],
+        chunk_cfg: &AsrLongFormConfig,
+        mut transcribe_chunk: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&[f32], u32) -> Result<String>,
+    {
+        if chunk_plan.is_empty() {
+            return Err(Error::InvalidInput(
+                "ASR chunk planner produced no chunks".to_string(),
+            ));
+        }
+
+        debug!(
+            "ASR long-form chunking enabled for request {}: {} chunks (~{:.1}s audio)",
+            request_id,
+            chunk_plan.len(),
+            samples.len() as f32 / sample_rate.max(1) as f32
+        );
+
+        let mut assembler = TranscriptAssembler::new(chunk_cfg.clone());
+        for chunk in chunk_plan {
+            if chunk.end_sample <= chunk.start_sample || chunk.end_sample > samples.len() {
+                continue;
+            }
+            let chunk_audio = &samples[chunk.start_sample..chunk.end_sample];
+            let chunk_text = transcribe_chunk(chunk_audio, sample_rate)?;
+            let delta = assembler.push_chunk_text(&chunk_text);
+            if !delta.is_empty() {
+                if let Some(tx) = stream_tx {
+                    Self::stream_text(tx, request_id, sequence, delta)?;
+                }
+            }
+        }
+
+        if let Some(tx) = stream_tx {
+            Self::stream_final_marker(tx, request_id, sequence)?;
+        }
+
+        Ok(assembler.finish())
+    }
+
     fn find_request<'a>(
         requests: &'a [&EngineCoreRequest],
         scheduled: &ScheduledRequest,
@@ -638,7 +721,56 @@ impl NativeExecutor {
                             Error::InvalidInput("ASR request missing audio input".to_string())
                         })?;
                         let (samples, sample_rate) = decode_audio_base64_with_rate(audio_b64)?;
-                        let max_new_tokens = request.params.max_tokens.clamp(1, 1024);
+                        let samples_len = samples.len();
+
+                        let (chunk_cfg, chunk_plan) = Self::asr_chunk_plan(
+                            &samples,
+                            sample_rate,
+                            model.max_audio_seconds_hint(),
+                        );
+                        if chunk_plan.len() > 1 {
+                            let mut sequence = 0usize;
+                            let text = Self::run_blocking(|| {
+                                Self::transcribe_with_chunk_plan(
+                                    &request.id,
+                                    Some(tx),
+                                    &mut sequence,
+                                    &samples,
+                                    sample_rate,
+                                    &chunk_plan,
+                                    &chunk_cfg,
+                                    |chunk_audio, sr| {
+                                        let mut sink = |_delta: &str| {};
+                                        model.transcribe_with_callback(
+                                            chunk_audio,
+                                            sr,
+                                            language,
+                                            &mut sink,
+                                        )
+                                    },
+                                )
+                            })?;
+
+                            return Ok(ExecutorOutput {
+                                request_id: request.id.clone(),
+                                audio: Some(AudioOutput {
+                                    samples: Vec::new(),
+                                    sample_rate,
+                                    duration_secs: if sample_rate > 0 {
+                                        samples_len as f32 / sample_rate as f32
+                                    } else {
+                                        0.0
+                                    },
+                                }),
+                                text: Some(text),
+                                tokens_processed: request.num_prompt_tokens(),
+                                tokens_generated: (samples_len / 256).max(1),
+                                finished: true,
+                                error: None,
+                            });
+                        }
+
+                        let max_new_tokens = request.params.max_tokens.clamp(1, 4096);
                         let decode_state = Self::run_blocking(|| {
                             model.start_decode_state(
                                 &samples,
@@ -654,7 +786,7 @@ impl NativeExecutor {
                             last_tokens_generated: 0,
                             stream_sequence: 0,
                             input_sample_rate: sample_rate,
-                            input_sample_count: samples.len(),
+                            input_sample_count: samples_len,
                         }
                     };
 
@@ -735,6 +867,24 @@ impl NativeExecutor {
                         ))
                     })
                 })?;
+
+                let (chunk_cfg, chunk_plan) = Self::asr_chunk_plan(&samples, sample_rate, None);
+                if chunk_plan.len() > 1 {
+                    return Self::transcribe_with_chunk_plan(
+                        &request.id,
+                        stream_tx.as_ref(),
+                        &mut sequence,
+                        &samples,
+                        sample_rate,
+                        &chunk_plan,
+                        &chunk_cfg,
+                        |chunk_audio, sr| {
+                            let mut sink = |_delta: &str| {};
+                            model.transcribe_with_callback(chunk_audio, sr, language, &mut sink)
+                        },
+                    );
+                }
+
                 if let Some(tx) = stream_tx.as_ref() {
                     let mut stream_err: Option<Error> = None;
                     let mut emit = |delta: &str| {
@@ -767,6 +917,24 @@ impl NativeExecutor {
                         Error::ModelNotFound(format!("LFM2 model {variant} is not loaded"))
                     })
                 })?;
+
+                let (chunk_cfg, chunk_plan) = Self::asr_chunk_plan(&samples, sample_rate, None);
+                if chunk_plan.len() > 1 {
+                    return Self::transcribe_with_chunk_plan(
+                        &request.id,
+                        stream_tx.as_ref(),
+                        &mut sequence,
+                        &samples,
+                        sample_rate,
+                        &chunk_plan,
+                        &chunk_cfg,
+                        |chunk_audio, sr| {
+                            let mut sink = |_delta: &str| {};
+                            model.transcribe_with_callback(chunk_audio, sr, language, &mut sink)
+                        },
+                    );
+                }
+
                 if let Some(tx) = stream_tx.as_ref() {
                     let mut stream_err: Option<Error> = None;
                     let mut emit = |delta: &str| {
@@ -799,6 +967,25 @@ impl NativeExecutor {
                     Error::ModelNotFound(format!("ASR model {variant} is not loaded"))
                 })
             })?;
+
+            let (chunk_cfg, chunk_plan) =
+                Self::asr_chunk_plan(&samples, sample_rate, model.max_audio_seconds_hint());
+            if chunk_plan.len() > 1 {
+                return Self::transcribe_with_chunk_plan(
+                    &request.id,
+                    stream_tx.as_ref(),
+                    &mut sequence,
+                    &samples,
+                    sample_rate,
+                    &chunk_plan,
+                    &chunk_cfg,
+                    |chunk_audio, sr| {
+                        let mut sink = |_delta: &str| {};
+                        model.transcribe_with_callback(chunk_audio, sr, language, &mut sink)
+                    },
+                );
+            }
+
             if let Some(tx) = stream_tx.as_ref() {
                 let mut stream_err: Option<Error> = None;
                 let mut emit = |delta: &str| {

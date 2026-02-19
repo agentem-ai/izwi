@@ -81,6 +81,13 @@ impl NativeAsrModel {
         matches!(self, Self::Qwen3(_))
     }
 
+    pub fn max_audio_seconds_hint(&self) -> Option<f32> {
+        match self {
+            Self::Qwen3(model) => model.max_audio_seconds_hint(),
+            Self::Parakeet(_) => None,
+        }
+    }
+
     pub fn start_decode_state(
         &self,
         audio: &[f32],
