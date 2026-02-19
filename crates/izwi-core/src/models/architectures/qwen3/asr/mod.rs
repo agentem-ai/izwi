@@ -285,6 +285,19 @@ impl Qwen3AsrModel {
         self.transcribe_with_callback(audio, sample_rate, language, &mut no_op)
     }
 
+    /// Upper-bound hint for chunk sizing in long-form ASR orchestration.
+    pub fn max_audio_seconds_hint(&self) -> Option<f32> {
+        let sample_rate = self.mel.config().sample_rate.max(1) as f32;
+        if self.preprocessor.nb_max_frames > 0 {
+            let hop = self.mel.config().hop_length.max(1) as f32;
+            return Some(self.preprocessor.nb_max_frames as f32 * hop / sample_rate);
+        }
+        if self.preprocessor.n_samples > 0 {
+            return Some(self.preprocessor.n_samples as f32 / sample_rate);
+        }
+        None
+    }
+
     pub fn transcribe_with_callback(
         &self,
         audio: &[f32],

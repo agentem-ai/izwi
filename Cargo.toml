@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/izwi-asr-toolkit",
     "crates/izwi-core",
     "crates/izwi-server",
     "crates/izwi-cli",

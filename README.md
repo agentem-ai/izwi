@@ -92,6 +92,18 @@ izwi pull Qwen3-ASR-0.6B
 izwi transcribe audio.wav
 ```
 
+Long-form ASR is handled automatically: Izwi now chunks long recordings,
+stitches overlapping transcripts, and returns a full transcript instead of
+only the first model window.
+
+Optional tuning knobs:
+
+```bash
+IZWI_ASR_CHUNK_TARGET_SECS=24
+IZWI_ASR_CHUNK_MAX_SECS=30
+IZWI_ASR_CHUNK_OVERLAP_SECS=3
+```
+
 ---
 
 ## Supported Models
