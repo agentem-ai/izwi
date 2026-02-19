@@ -18,7 +18,9 @@ use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::AppState;
 use izwi_core::audio::AudioFormat;
-use izwi_core::{parse_tts_model_variant, AudioChunk, GenerationConfig, GenerationRequest};
+use izwi_core::{
+    parse_tts_model_variant, AudioChunk, GenerationConfig, GenerationRequest, ModelVariant,
+};
 
 /// OpenAI-compatible speech synthesis request.
 #[derive(Debug, Deserialize)]
@@ -111,7 +113,11 @@ pub async fn speech(
 
     let _permit = state.acquire_permit().await;
 
-    let timeout = Duration::from_secs(state.request_timeout_secs);
+    let timeout = Duration::from_secs(resolve_speech_timeout_secs(
+        state.request_timeout_secs,
+        variant,
+        &req,
+    ));
     let format = parse_response_format(req.response_format.as_deref().unwrap_or("wav"))?;
 
     let result = tokio::time::timeout(timeout, async {
@@ -173,6 +179,53 @@ pub async fn speech(
         )
         .body(Body::from(audio_bytes))
         .unwrap())
+}
+
+fn resolve_speech_timeout_secs(
+    default_timeout_secs: u64,
+    variant: ModelVariant,
+    req: &SpeechRequest,
+) -> u64 {
+    // Keep global timeout behavior for non-Qwen TTS families (e.g. LFM2).
+    let Some(model_max_frames) = variant.tts_max_output_frames_hint() else {
+        return default_timeout_secs.max(1);
+    };
+    let Some(frame_rate_hz) = variant.tts_output_frame_rate_hz_hint() else {
+        return default_timeout_secs.max(1);
+    };
+
+    // `0` means auto for TTS; treat that as native model max.
+    let requested_frames = req.max_output_tokens.or(req.max_tokens);
+    let effective_frames = match requested_frames {
+        Some(0) | None => model_max_frames,
+        Some(value) => value.clamp(1, model_max_frames),
+    };
+
+    // Estimate output duration from codec frame budget and requested speed.
+    let speed = req.speed.unwrap_or(1.0).clamp(0.25, 4.0) as f64;
+    let estimated_audio_secs = ((effective_frames as f64) / (frame_rate_hz as f64)) / speed;
+
+    // Conservative real-time-factor multiplier for non-stream long-form synthesis.
+    let timeout_rtf = std::env::var("IZWI_TTS_TIMEOUT_RTF")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 1.0)
+        .unwrap_or(8.0);
+    let timeout_padding_secs = std::env::var("IZWI_TTS_TIMEOUT_PADDING_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(30);
+    let timeout_max_secs = std::env::var("IZWI_TTS_TIMEOUT_MAX_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(6 * 60 * 60);
+
+    let adaptive_secs = (estimated_audio_secs * timeout_rtf).ceil() as u64;
+    let suggested_secs = adaptive_secs
+        .saturating_add(timeout_padding_secs)
+        .min(timeout_max_secs.max(1));
+
+    default_timeout_secs.max(suggested_secs).max(1)
 }
 
 async fn stream_speech(
@@ -456,5 +509,81 @@ fn stream_audio_format_label(format: AudioFormat) -> &'static str {
         AudioFormat::Wav => "wav",
         AudioFormat::RawF32 => "pcm_f32",
         AudioFormat::RawI16 => "pcm_i16",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qwen_auto_timeout_expands_for_long_form() {
+        let req = SpeechRequest {
+            model: "Qwen3-TTS-12Hz-0.6B-CustomVoice".to_string(),
+            input: "hello".to_string(),
+            voice: Some("Aiden".to_string()),
+            response_format: Some("wav".to_string()),
+            speed: None,
+            language: None,
+            temperature: None,
+            max_tokens: Some(0),
+            max_output_tokens: None,
+            top_k: None,
+            stream: Some(false),
+            instructions: None,
+            reference_audio: None,
+            reference_text: None,
+        };
+
+        let timeout =
+            resolve_speech_timeout_secs(300, ModelVariant::Qwen3Tts12Hz06BCustomVoice, &req);
+        assert!(timeout > 300, "expected adaptive timeout > default");
+    }
+
+    #[test]
+    fn explicit_small_frame_budget_keeps_timeout_near_default() {
+        let req = SpeechRequest {
+            model: "Qwen3-TTS-12Hz-0.6B-CustomVoice".to_string(),
+            input: "hello".to_string(),
+            voice: Some("Aiden".to_string()),
+            response_format: Some("wav".to_string()),
+            speed: Some(1.0),
+            language: None,
+            temperature: None,
+            max_tokens: Some(256),
+            max_output_tokens: None,
+            top_k: None,
+            stream: Some(false),
+            instructions: None,
+            reference_audio: None,
+            reference_text: None,
+        };
+
+        let timeout =
+            resolve_speech_timeout_secs(300, ModelVariant::Qwen3Tts12Hz06BCustomVoice, &req);
+        assert_eq!(timeout, 300);
+    }
+
+    #[test]
+    fn non_qwen_tts_uses_default_timeout() {
+        let req = SpeechRequest {
+            model: "LFM2-Audio-1.5B".to_string(),
+            input: "hello".to_string(),
+            voice: None,
+            response_format: Some("wav".to_string()),
+            speed: None,
+            language: None,
+            temperature: None,
+            max_tokens: Some(0),
+            max_output_tokens: None,
+            top_k: None,
+            stream: Some(false),
+            instructions: None,
+            reference_audio: None,
+            reference_text: None,
+        };
+
+        let timeout = resolve_speech_timeout_secs(300, ModelVariant::Lfm2Audio15B, &req);
+        assert_eq!(timeout, 300);
     }
 }
