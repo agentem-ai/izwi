@@ -52,7 +52,7 @@ impl Default for TtsGenerationParams {
             top_p: 1.0,
             top_k: 50,
             repetition_penalty: 1.05,
-            max_frames: 512,
+            max_frames: crate::model::ModelVariant::QWEN3_TTS_MAX_OUTPUT_FRAMES,
         }
     }
 }
@@ -74,6 +74,20 @@ impl Default for TtsStreamingConfig {
             min_frames_before_stream: 6,
             decode_interval_frames: 4,
             decode_lookahead_frames: 2,
+        }
+    }
+}
+
+impl TtsStreamingConfig {
+    /// Decode audio only at completion.
+    ///
+    /// This avoids repeatedly decoding the full codec timeline for non-streaming
+    /// generation paths, which materially improves long-form performance.
+    pub fn final_only() -> Self {
+        Self {
+            min_frames_before_stream: usize::MAX,
+            decode_interval_frames: usize::MAX,
+            decode_lookahead_frames: 0,
         }
     }
 }
@@ -138,10 +152,10 @@ impl TtsGenerationParams {
             top_k: if cfg.top_k == 0 { 50 } else { cfg.top_k },
             repetition_penalty: cfg.repetition_penalty.max(1.0),
             max_frames: if cfg.max_tokens == 0 {
-                // Keep unconstrained requests within a practical latency envelope.
-                512
+                crate::model::ModelVariant::QWEN3_TTS_MAX_OUTPUT_FRAMES
             } else {
-                cfg.max_tokens.clamp(16, 8192)
+                cfg.max_tokens
+                    .clamp(16, crate::model::ModelVariant::QWEN3_TTS_MAX_OUTPUT_FRAMES)
             },
         }
     }
@@ -1480,7 +1494,10 @@ impl Qwen3TtsModel {
         params: &TtsGenerationParams,
         mut stream_state: Option<&mut ProgressiveStreamState<'_>>,
     ) -> Result<Vec<Vec<u32>>> {
-        let stream_config = stream_state.as_ref().map(|s| s.config).unwrap_or_default();
+        let stream_config = stream_state
+            .as_ref()
+            .map(|s| s.config)
+            .unwrap_or_else(TtsStreamingConfig::final_only);
         let mut state = self.start_decode_from_prefill(
             prefill_embeds,
             trailing_text_hidden,

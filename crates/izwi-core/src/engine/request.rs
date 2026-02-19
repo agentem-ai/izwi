@@ -306,7 +306,11 @@ impl RequestProcessor {
         }
 
         // Validate and clamp parameters
-        self.validate_params(request.task_type, &mut request.params)?;
+        self.validate_params(
+            request.task_type,
+            request.model_variant,
+            &mut request.params,
+        )?;
 
         // Set model type from config if not specified
         if request.model_type == ModelType::default() {
@@ -327,7 +331,12 @@ impl RequestProcessor {
     }
 
     /// Validate and clamp generation parameters.
-    fn validate_params(&self, task_type: TaskType, params: &mut GenerationParams) -> Result<()> {
+    fn validate_params(
+        &self,
+        task_type: TaskType,
+        model_variant: Option<crate::model::ModelVariant>,
+        params: &mut GenerationParams,
+    ) -> Result<()> {
         // Clamp temperature
         params.temperature = params.temperature.clamp(0.0, 2.0);
 
@@ -339,7 +348,18 @@ impl RequestProcessor {
             params.max_tokens = 2048;
         }
         if params.max_tokens > 0 {
-            params.max_tokens = params.max_tokens.min(self.config.max_seq_len);
+            params.max_tokens = match task_type {
+                TaskType::TTS => {
+                    if let Some(tts_limit) =
+                        model_variant.and_then(|variant| variant.tts_max_output_frames_hint())
+                    {
+                        params.max_tokens.min(tts_limit)
+                    } else {
+                        params.max_tokens.min(self.config.max_seq_len)
+                    }
+                }
+                _ => params.max_tokens.min(self.config.max_seq_len),
+            };
         }
 
         // Clamp speed
@@ -518,6 +538,7 @@ impl RequestBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ModelVariant;
     use crate::models::chat_types::ChatRole;
 
     #[test]
@@ -561,6 +582,35 @@ mod tests {
 
         let processed = processor.process(request).expect("request should process");
         assert_eq!(processed.params.max_tokens, 0);
+    }
+
+    #[test]
+    fn test_request_processor_clamps_tts_to_model_native_limit() {
+        let config = EngineCoreConfig::default();
+        let processor = RequestProcessor::new(config);
+
+        let mut request = EngineCoreRequest::tts("Test");
+        request.model_variant = Some(ModelVariant::Qwen3Tts12Hz17BVoiceDesign);
+        request.params.max_tokens = 20_000;
+
+        let processed = processor.process(request).expect("request should process");
+        assert_eq!(
+            processed.params.max_tokens,
+            ModelVariant::QWEN3_TTS_MAX_OUTPUT_FRAMES
+        );
+    }
+
+    #[test]
+    fn test_request_processor_keeps_tts_above_engine_seq_len_when_model_allows() {
+        let config = EngineCoreConfig::default();
+        let processor = RequestProcessor::new(config);
+
+        let mut request = EngineCoreRequest::tts("Test");
+        request.model_variant = Some(ModelVariant::Qwen3Tts12Hz06BBase);
+        request.params.max_tokens = 5000;
+
+        let processed = processor.process(request).expect("request should process");
+        assert_eq!(processed.params.max_tokens, 5000);
     }
 
     #[test]

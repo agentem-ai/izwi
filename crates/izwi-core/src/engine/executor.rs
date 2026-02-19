@@ -490,6 +490,10 @@ impl NativeExecutor {
     }
 
     fn to_tts_params(request: &EngineCoreRequest) -> TtsGenerationParams {
+        let model_max_frames = request
+            .model_variant
+            .and_then(|variant| variant.tts_max_output_frames_hint())
+            .unwrap_or(crate::model::ModelVariant::QWEN3_TTS_MAX_OUTPUT_FRAMES);
         TtsGenerationParams {
             temperature: request.params.temperature.max(0.0),
             top_p: request.params.top_p.clamp(0.0, 1.0),
@@ -500,9 +504,12 @@ impl NativeExecutor {
             },
             repetition_penalty: request.params.repetition_penalty.max(1.0),
             max_frames: if request.params.max_tokens == 0 {
-                512
+                model_max_frames
             } else {
-                request.params.max_tokens.clamp(16, 8192)
+                request
+                    .params
+                    .max_tokens
+                    .clamp(16, model_max_frames.max(16))
             },
         }
     }
@@ -577,6 +584,11 @@ impl NativeExecutor {
                     .or(request.params.voice.as_deref())
                     .filter(|s| !s.trim().is_empty());
                 let reference = Self::reference_from_request(request)?;
+                let stream_config = if stream_tx.is_some() {
+                    TtsStreamingConfig::default()
+                } else {
+                    TtsStreamingConfig::final_only()
+                };
 
                 let decode_state = if let Some(reference) = reference {
                     Self::run_blocking(|| {
@@ -585,7 +597,7 @@ impl NativeExecutor {
                             &reference,
                             language,
                             &params,
-                            TtsStreamingConfig::default(),
+                            stream_config,
                         )
                     })?
                 } else if available_speakers.is_empty() {
@@ -595,7 +607,7 @@ impl NativeExecutor {
                             language,
                             request.voice_description.as_deref(),
                             &params,
-                            TtsStreamingConfig::default(),
+                            stream_config,
                         )
                     })?
                 } else {
@@ -608,7 +620,7 @@ impl NativeExecutor {
                             language,
                             request.voice_description.as_deref(),
                             &params,
-                            TtsStreamingConfig::default(),
+                            stream_config,
                         )
                     })?
                 };
@@ -1824,6 +1836,7 @@ fn decode_audio_base64_with_rate(audio_b64: &str) -> Result<(Vec<f32>, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ModelVariant;
     use base64::Engine;
 
     #[test]
@@ -1906,6 +1919,26 @@ mod tests {
             panic!("expected inference error when streaming channel is closed");
         };
         assert!(message.contains("Streaming output channel closed"));
+    }
+
+    #[test]
+    fn test_to_tts_params_uses_model_native_auto_limit() {
+        let mut request = EngineCoreRequest::tts("Long-form synthesis");
+        request.model_variant = Some(ModelVariant::Qwen3Tts12Hz17BVoiceDesign);
+        request.params.max_tokens = 0;
+
+        let params = NativeExecutor::to_tts_params(&request);
+        assert_eq!(params.max_frames, ModelVariant::QWEN3_TTS_MAX_OUTPUT_FRAMES);
+    }
+
+    #[test]
+    fn test_to_tts_params_clamps_to_model_native_limit() {
+        let mut request = EngineCoreRequest::tts("Long-form synthesis");
+        request.model_variant = Some(ModelVariant::Qwen3Tts12Hz06BCustomVoice);
+        request.params.max_tokens = 50_000;
+
+        let params = NativeExecutor::to_tts_params(&request);
+        assert_eq!(params.max_frames, ModelVariant::QWEN3_TTS_MAX_OUTPUT_FRAMES);
     }
 
     #[test]
