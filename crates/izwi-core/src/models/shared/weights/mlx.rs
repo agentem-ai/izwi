@@ -9,7 +9,7 @@
 //! layers can be reused without model-specific branching.
 
 use candle_core::{DType, Tensor};
-use candle_nn::{Conv2d, Conv2dConfig, Embedding, Linear, VarBuilder};
+use candle_nn::{Conv1d, Conv1dConfig, Conv2d, Conv2dConfig, Embedding, Linear, VarBuilder};
 
 use crate::error::{Error, Result};
 
@@ -319,6 +319,38 @@ pub fn load_conv2d(
         None
     };
     Ok(Conv2d::new(ws, bias, cfg))
+}
+
+pub fn load_conv1d_no_bias(
+    in_channels: usize,
+    out_channels: usize,
+    kernel_size: usize,
+    cfg: Conv1dConfig,
+    vb: VarBuilder,
+) -> Result<Conv1d> {
+    if cfg.groups == 0 || in_channels % cfg.groups != 0 {
+        return Err(Error::ModelLoadError(format!(
+            "Invalid Conv1d groups for shape inference: in_channels={in_channels}, groups={}",
+            cfg.groups
+        )));
+    }
+
+    let in_per_group = in_channels / cfg.groups;
+    let expected_oik = (out_channels, in_per_group, kernel_size);
+    let expected_oki = (out_channels, kernel_size, in_per_group);
+
+    let mut ws = vb.get_unchecked_dtype("weight", vb.dtype())?;
+    let dims = ws.dims3()?;
+
+    if dims == expected_oki {
+        ws = ws.permute((0, 2, 1))?;
+    } else if dims != expected_oik {
+        return Err(Error::ModelLoadError(format!(
+            "Conv1d weight shape mismatch: got={dims:?}, expected OIK={expected_oik:?} or OKI={expected_oki:?}"
+        )));
+    }
+
+    Ok(Conv1d::new(ws, None, cfg))
 }
 
 #[cfg(test)]

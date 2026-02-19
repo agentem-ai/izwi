@@ -7,8 +7,8 @@ use std::path::Path;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::ops;
 use candle_nn::{
-    batch_norm, conv1d_no_bias, layer_norm, Conv1d, Conv1dConfig, Conv2d, Conv2dConfig, LayerNorm,
-    Linear, Module, ModuleT, VarBuilder,
+    batch_norm, layer_norm, Conv1d, Conv1dConfig, Conv2d, Conv2dConfig, LayerNorm, Linear, Module,
+    ModuleT, VarBuilder,
 };
 
 use crate::error::{Error, Result};
@@ -105,7 +105,7 @@ impl ParakeetAsrModel {
             )));
         };
 
-        let preprocessor = ParakeetPreprocessor::load(&vb)?;
+        let preprocessor = ParakeetPreprocessor::load(&vb, model_dir)?;
         let network = ParakeetNetwork::load(&vb)?;
 
         let blank_idx = network.blank_idx;
@@ -188,7 +188,9 @@ fn load_mlx_decoder(model_dir: &Path) -> Result<ParakeetDecoder> {
         return Ok(ParakeetDecoder::HfTokenizer(tokenizer));
     }
 
-    for candidate in ["vocab.txt", "tokenizer.vocab"] {
+    // Prefer tokenizer.vocab for MLX Parakeet exports. vocab.txt can be a
+    // truncated/auxiliary list with different indexing.
+    for candidate in ["tokenizer.vocab", "vocab.txt"] {
         let vocab_path = model_dir.join(candidate);
         if vocab_path.exists() {
             let vocab = decode::load_tokenizer_vocab(&vocab_path)?;
@@ -555,7 +557,7 @@ struct ConformerConv {
 
 impl ConformerConv {
     fn load(vb: VarBuilder) -> Result<Self> {
-        let pointwise_conv1 = conv1d_no_bias(
+        let pointwise_conv1 = mlx_compat::load_conv1d_no_bias(
             ENCODER_DIM,
             ENCODER_DIM * 2,
             1,
@@ -563,7 +565,7 @@ impl ConformerConv {
             vb.pp("pointwise_conv1"),
         )?;
 
-        let depthwise_conv = conv1d_no_bias(
+        let depthwise_conv = mlx_compat::load_conv1d_no_bias(
             ENCODER_DIM,
             ENCODER_DIM,
             CONV_KERNEL_1D,
@@ -577,7 +579,7 @@ impl ConformerConv {
 
         let batch_norm = batch_norm(ENCODER_DIM, 1e-5, vb.pp("batch_norm"))?;
 
-        let pointwise_conv2 = conv1d_no_bias(
+        let pointwise_conv2 = mlx_compat::load_conv1d_no_bias(
             ENCODER_DIM,
             ENCODER_DIM,
             1,
@@ -790,10 +792,38 @@ impl LstmCell {
         let w_hh_name = format!("weight_hh_l{layer}");
         let b_ih_name = format!("bias_ih_l{layer}");
         let b_hh_name = format!("bias_hh_l{layer}");
-        let w_ih = vb.get((PRED_HIDDEN * 4, PRED_HIDDEN), &w_ih_name)?;
-        let w_hh = vb.get((PRED_HIDDEN * 4, PRED_HIDDEN), &w_hh_name)?;
-        let b_ih = vb.get(PRED_HIDDEN * 4, &b_ih_name)?;
-        let b_hh = vb.get(PRED_HIDDEN * 4, &b_hh_name)?;
+        if vb.contains_tensor(&w_ih_name) {
+            let w_ih = vb.get((PRED_HIDDEN * 4, PRED_HIDDEN), &w_ih_name)?;
+            let w_hh = vb.get((PRED_HIDDEN * 4, PRED_HIDDEN), &w_hh_name)?;
+            let b_ih = vb.get(PRED_HIDDEN * 4, &b_ih_name)?;
+            let b_hh = vb.get(PRED_HIDDEN * 4, &b_hh_name)?;
+            return Ok(Self {
+                w_ih,
+                w_hh,
+                b_ih,
+                b_hh,
+            });
+        }
+
+        // MLX Parakeet exports LSTM params as dec_rnn.lstm.{layer}.Wx/.Wh/.bias.
+        let w_x_name = format!("{layer}.Wx");
+        let w_h_name = format!("{layer}.Wh");
+        let bias_name = format!("{layer}.bias");
+        if !vb.contains_tensor(&w_x_name) || !vb.contains_tensor(&w_h_name) {
+            return Err(Error::ModelLoadError(format!(
+                "Missing Parakeet LSTM tensors for layer {layer}: expected either weight_ih/weight_hh or {w_x_name}/{w_h_name}"
+            )));
+        }
+
+        let w_ih = vb.get((PRED_HIDDEN * 4, PRED_HIDDEN), &w_x_name)?;
+        let w_hh = vb.get((PRED_HIDDEN * 4, PRED_HIDDEN), &w_h_name)?;
+        let b_ih = if vb.contains_tensor(&bias_name) {
+            vb.get(PRED_HIDDEN * 4, &bias_name)?
+        } else {
+            Tensor::zeros(PRED_HIDDEN * 4, DType::F32, vb.device())?
+        };
+        let b_hh = Tensor::zeros(PRED_HIDDEN * 4, DType::F32, vb.device())?;
+
         Ok(Self {
             w_ih,
             w_hh,
