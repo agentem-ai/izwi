@@ -30,6 +30,12 @@ pub struct TranscriptionRecordListResponse {
     pub records: Vec<TranscriptionRecordSummary>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct DeleteTranscriptionRecordResponse {
+    pub id: String,
+    pub deleted: bool,
+}
+
 #[derive(Debug, Default)]
 struct ParsedTranscriptionCreateRequest {
     audio_bytes: Vec<u8>,
@@ -119,6 +125,26 @@ pub async fn get_record_audio(
         .ok_or_else(|| ApiError::not_found("Transcription audio not found"))?;
 
     Ok(audio_response(audio))
+}
+
+pub async fn delete_record(
+    State(state): State<AppState>,
+    Path(record_id): Path<String>,
+) -> Result<Json<DeleteTranscriptionRecordResponse>, ApiError> {
+    let deleted = state
+        .transcription_store
+        .delete_record(record_id.clone())
+        .await
+        .map_err(map_store_error)?;
+
+    if !deleted {
+        return Err(ApiError::not_found("Transcription record not found"));
+    }
+
+    Ok(Json(DeleteTranscriptionRecordResponse {
+        id: record_id,
+        deleted: true,
+    }))
 }
 
 pub async fn create_record(

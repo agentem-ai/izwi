@@ -934,6 +934,14 @@ class ApiClient {
     return `${this.baseUrl}/transcription/records/${encodeURIComponent(recordId)}/audio`;
   }
 
+  async deleteTranscriptionRecord(
+    recordId: string,
+  ): Promise<{ id: string; deleted: boolean }> {
+    return this.request(`/transcription/records/${encodeURIComponent(recordId)}`, {
+      method: "DELETE",
+    });
+  }
+
   async asrStatus(): Promise<ASRStatusResponse> {
     // Legacy method retained for UI compatibility.
     return {
