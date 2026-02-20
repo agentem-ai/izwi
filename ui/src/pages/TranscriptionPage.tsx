@@ -175,11 +175,14 @@ export function TranscriptionPage({
   };
 
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="max-w-[1460px] mx-auto">
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-[var(--text-primary)]">
           Transcription
         </h1>
+        <p className="text-sm text-[var(--text-muted)] mt-1">
+          Capture audio, transcribe live, and browse saved transcription history.
+        </p>
       </div>
 
       <TranscriptionPlayground

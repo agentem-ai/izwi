@@ -8,6 +8,7 @@ mod api;
 mod chat_store;
 mod error;
 mod state;
+mod transcription_store;
 
 use izwi_core::{EngineConfig, RuntimeService};
 use state::AppState;

@@ -309,6 +309,56 @@ export interface ASRTranscribeResponse {
   };
 }
 
+export interface TranscriptionRecordSummary {
+  id: string;
+  created_at: number;
+  model_id: string | null;
+  language: string | null;
+  duration_secs: number | null;
+  processing_time_ms: number;
+  rtf: number | null;
+  audio_mime_type: string;
+  audio_filename: string | null;
+  transcription_preview: string;
+  transcription_chars: number;
+}
+
+export interface TranscriptionRecord {
+  id: string;
+  created_at: number;
+  model_id: string | null;
+  language: string | null;
+  duration_secs: number | null;
+  processing_time_ms: number;
+  rtf: number | null;
+  audio_mime_type: string;
+  audio_filename: string | null;
+  transcription: string;
+}
+
+export interface TranscriptionRecordCreateRequest {
+  audio_base64?: string;
+  audio_file?: Blob;
+  audio_filename?: string;
+  model_id?: string;
+  language?: string;
+}
+
+type TranscriptionRecordStreamEvent =
+  | { event: "start" }
+  | { event: "delta"; delta: string }
+  | { event: "final"; record: TranscriptionRecord }
+  | { event: "error"; error: string }
+  | { event: "done" };
+
+export interface TranscriptionRecordStreamCallbacks {
+  onStart?: () => void;
+  onDelta?: (delta: string) => void;
+  onFinal?: (record: TranscriptionRecord) => void;
+  onError?: (error: string) => void;
+  onDone?: () => void;
+}
+
 export interface DiarizationSegment {
   speaker: string;
   start: number;
@@ -763,6 +813,127 @@ class ApiClient {
   // OpenAI-compatible ASR API
   // ========================================================================
 
+  async listTranscriptionRecords(): Promise<TranscriptionRecordSummary[]> {
+    const payload = await this.request<{ records: TranscriptionRecordSummary[] }>(
+      "/transcription/records",
+    );
+    return payload.records ?? [];
+  }
+
+  async getTranscriptionRecord(recordId: string): Promise<TranscriptionRecord> {
+    return this.request(
+      `/transcription/records/${encodeURIComponent(recordId)}`,
+    );
+  }
+
+  async createTranscriptionRecord(
+    request: TranscriptionRecordCreateRequest,
+  ): Promise<TranscriptionRecord> {
+    const response = await fetch(`${this.baseUrl}/transcription/records`, {
+      ...this.buildTranscriptionRecordRequestInit(request, false),
+    });
+
+    if (!response.ok) {
+      const error = await response
+        .json()
+        .catch(() => ({ error: { message: "Transcription failed" } }));
+      throw new Error(error.error?.message || "Transcription failed");
+    }
+
+    return response.json();
+  }
+
+  createTranscriptionRecordStream(
+    request: TranscriptionRecordCreateRequest,
+    callbacks: TranscriptionRecordStreamCallbacks,
+  ): AbortController {
+    const abortController = new AbortController();
+
+    const startStream = async () => {
+      try {
+        const response = await fetch(`${this.baseUrl}/transcription/records`, {
+          ...this.buildTranscriptionRecordRequestInit(request, true),
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({
+            error: { message: "Streaming transcription failed" },
+          }));
+          callbacks.onError?.(
+            error.error?.message || "Streaming transcription failed",
+          );
+          callbacks.onDone?.();
+          return;
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          callbacks.onError?.("No response body");
+          callbacks.onDone?.();
+          return;
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (!data) continue;
+
+            try {
+              const event = JSON.parse(data) as TranscriptionRecordStreamEvent;
+              switch (event.event) {
+                case "start":
+                  callbacks.onStart?.();
+                  break;
+                case "delta":
+                  callbacks.onDelta?.(event.delta);
+                  break;
+                case "final":
+                  callbacks.onFinal?.(event.record);
+                  break;
+                case "error":
+                  callbacks.onError?.(event.error);
+                  break;
+                case "done":
+                  callbacks.onDone?.();
+                  return;
+              }
+            } catch {
+              // Skip malformed SSE payloads.
+            }
+          }
+        }
+
+        callbacks.onDone?.();
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") {
+          callbacks.onError?.(
+            error instanceof Error ? error.message : "Transcription stream error",
+          );
+        }
+        callbacks.onDone?.();
+      }
+    };
+
+    startStream();
+    return abortController;
+  }
+
+  transcriptionRecordAudioUrl(recordId: string): string {
+    return `${this.baseUrl}/transcription/records/${encodeURIComponent(recordId)}/audio`;
+  }
+
   async asrStatus(): Promise<ASRStatusResponse> {
     // Legacy method retained for UI compatibility.
     return {
@@ -1203,6 +1374,44 @@ class ApiClient {
         model: request.model_id,
         language: request.language,
         response_format: responseFormat,
+        stream,
+      }),
+    };
+  }
+
+  private buildTranscriptionRecordRequestInit(
+    request: TranscriptionRecordCreateRequest,
+    stream: boolean,
+  ): RequestInit {
+    if (request.audio_file) {
+      const form = new FormData();
+      form.append(
+        "file",
+        request.audio_file,
+        request.audio_filename || "audio.wav",
+      );
+      if (request.model_id) form.append("model", request.model_id);
+      if (request.language) form.append("language", request.language);
+      if (stream) form.append("stream", "true");
+      return {
+        method: "POST",
+        body: form,
+      };
+    }
+
+    if (!request.audio_base64) {
+      throw new Error("Missing audio input");
+    }
+
+    return {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        audio_base64: request.audio_base64,
+        model: request.model_id,
+        language: request.language,
         stream,
       }),
     };

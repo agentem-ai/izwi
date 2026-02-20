@@ -1,6 +1,7 @@
 //! Application state management with high-concurrency optimizations
 
 use crate::chat_store::ChatStore;
+use crate::transcription_store::TranscriptionStore;
 use izwi_core::RuntimeService;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -39,6 +40,8 @@ pub struct AppState {
     pub response_store: Arc<RwLock<HashMap<String, StoredResponseRecord>>>,
     /// SQLite-backed chat thread/message store.
     pub chat_store: Arc<ChatStore>,
+    /// SQLite-backed transcription history store.
+    pub transcription_store: Arc<TranscriptionStore>,
 }
 
 impl AppState {
@@ -56,6 +59,7 @@ impl AppState {
             .unwrap_or(300); // 5 minutes default
 
         let chat_store = Arc::new(ChatStore::initialize()?);
+        let transcription_store = Arc::new(TranscriptionStore::initialize()?);
 
         Ok(Self {
             runtime: Arc::new(runtime),
@@ -63,6 +67,7 @@ impl AppState {
             request_timeout_secs: timeout,
             response_store: Arc::new(RwLock::new(HashMap::new())),
             chat_store,
+            transcription_store,
         })
     }
 
