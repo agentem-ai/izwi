@@ -4,9 +4,12 @@ use candle_core::{IndexOp, Module, Tensor, D};
 use candle_nn::ops;
 use candle_nn::{layer_norm, Conv2d, Conv2dConfig, LayerNorm, Linear, VarBuilder};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::models::mlx_compat;
 use crate::models::qwen3_asr::config::AudioConfig;
+use crate::models::shared::attention::flash::{
+    flash_attention_requested, try_fused_self_attention,
+};
 
 /// Compute output length after feature extraction/downsampling.
 /// Matches upstream Qwen3-ASR `_get_feat_extract_output_lengths`.
@@ -135,6 +138,24 @@ impl AudioAttention {
             .reshape((1, seq_len, self.num_heads, self.head_dim))?
             .transpose(1, 2)?;
 
+        let mask = create_chunked_attention_mask(seq_len, cu_seqlens, x.device(), q.dtype())?;
+        if flash_attention_requested() {
+            let sdpa_mask =
+                mask.unsqueeze(0)?
+                    .unsqueeze(0)?
+                    .expand((1, self.num_heads, seq_len, seq_len))?;
+            if let Some(fused_out) =
+                try_fused_self_attention(&q, &k, &v, Some(&sdpa_mask), self.head_dim, false)?
+            {
+                let out = fused_out.transpose(1, 2)?.reshape((
+                    1,
+                    seq_len,
+                    self.num_heads * self.head_dim,
+                ))?;
+                return self.out_proj.forward(&out).map_err(Error::from);
+            }
+        }
+
         let q = q.reshape((self.num_heads, seq_len, self.head_dim))?;
         let k = k.reshape((self.num_heads, seq_len, self.head_dim))?;
         let v = v.reshape((self.num_heads, seq_len, self.head_dim))?;
@@ -147,7 +168,6 @@ impl AudioAttention {
         )?;
 
         // Apply chunked attention mask
-        let mask = create_chunked_attention_mask(seq_len, cu_seqlens, x.device(), attn.dtype())?;
         attn = attn.broadcast_add(&mask.unsqueeze(0)?)?;
 
         let attn = ops::softmax(&attn, D::Minus1)?;
@@ -157,9 +177,7 @@ impl AudioAttention {
             .reshape((1, self.num_heads, seq_len, self.head_dim))?
             .transpose(1, 2)?
             .reshape((1, seq_len, self.num_heads * self.head_dim))?;
-        self.out_proj
-            .forward(&out)
-            .map_err(|e| crate::error::Error::InferenceError(e.to_string()))
+        self.out_proj.forward(&out).map_err(Error::from)
     }
 }
 
