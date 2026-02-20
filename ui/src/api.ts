@@ -518,6 +518,64 @@ export interface DiarizationResponse {
   };
 }
 
+export interface DiarizationRecordSummary {
+  id: string;
+  created_at: number;
+  model_id: string | null;
+  speaker_count: number;
+  duration_secs: number | null;
+  processing_time_ms: number;
+  rtf: number | null;
+  audio_mime_type: string;
+  audio_filename: string | null;
+  transcript_preview: string;
+  transcript_chars: number;
+}
+
+export interface DiarizationRecord {
+  id: string;
+  created_at: number;
+  model_id: string | null;
+  asr_model_id: string | null;
+  aligner_model_id: string | null;
+  llm_model_id: string | null;
+  min_speakers: number | null;
+  max_speakers: number | null;
+  min_speech_duration_ms: number | null;
+  min_silence_duration_ms: number | null;
+  enable_llm_refinement: boolean;
+  processing_time_ms: number;
+  duration_secs: number | null;
+  rtf: number | null;
+  speaker_count: number;
+  alignment_coverage: number | null;
+  unattributed_words: number;
+  llm_refined: boolean;
+  asr_text: string;
+  raw_transcript: string;
+  transcript: string;
+  segments: DiarizationSegment[];
+  words: DiarizationWord[];
+  utterances: DiarizationUtterance[];
+  audio_mime_type: string;
+  audio_filename: string | null;
+}
+
+export interface DiarizationRecordCreateRequest {
+  audio_base64?: string;
+  audio_file?: Blob;
+  audio_filename?: string;
+  model_id?: string;
+  asr_model_id?: string;
+  aligner_model_id?: string;
+  llm_model_id?: string;
+  min_speakers?: number;
+  max_speakers?: number;
+  min_speech_duration_ms?: number;
+  min_silence_duration_ms?: number;
+  enable_llm_refinement?: boolean;
+}
+
 export type ASRStreamEvent =
   | { event: "start"; audio_duration_secs: number | null }
   | { event: "delta"; delta: string }
@@ -1367,6 +1425,46 @@ class ApiClient {
     };
   }
 
+  async listDiarizationRecords(): Promise<DiarizationRecordSummary[]> {
+    const payload = await this.request<{ records: DiarizationRecordSummary[] }>(
+      "/diarization/records",
+    );
+    return payload.records ?? [];
+  }
+
+  async getDiarizationRecord(recordId: string): Promise<DiarizationRecord> {
+    return this.request(`/diarization/records/${encodeURIComponent(recordId)}`);
+  }
+
+  async createDiarizationRecord(
+    request: DiarizationRecordCreateRequest,
+  ): Promise<DiarizationRecord> {
+    const response = await fetch(`${this.baseUrl}/diarization/records`, {
+      ...this.buildDiarizationRecordRequestInit(request),
+    });
+
+    if (!response.ok) {
+      const error = await response
+        .json()
+        .catch(() => ({ error: { message: "Diarization failed" } }));
+      throw new Error(error.error?.message || "Diarization failed");
+    }
+
+    return response.json();
+  }
+
+  diarizationRecordAudioUrl(recordId: string): string {
+    return `${this.baseUrl}/diarization/records/${encodeURIComponent(recordId)}/audio`;
+  }
+
+  async deleteDiarizationRecord(
+    recordId: string,
+  ): Promise<{ id: string; deleted: boolean }> {
+    return this.request(`/diarization/records/${encodeURIComponent(recordId)}`, {
+      method: "DELETE",
+    });
+  }
+
   async diarize(request: DiarizationRequest): Promise<DiarizationResponse> {
     const response = await fetch(
       `${this.baseUrl}/audio/diarizations`,
@@ -1803,6 +1901,77 @@ class ApiClient {
         model: request.model_id,
         language: request.language,
         stream,
+      }),
+    };
+  }
+
+  private buildDiarizationRecordRequestInit(
+    request: DiarizationRecordCreateRequest,
+  ): RequestInit {
+    if (request.audio_file) {
+      const form = new FormData();
+      form.append(
+        "file",
+        request.audio_file,
+        request.audio_filename || "audio.wav",
+      );
+      if (request.model_id) form.append("model", request.model_id);
+      if (request.asr_model_id) form.append("asr_model", request.asr_model_id);
+      if (request.aligner_model_id) {
+        form.append("aligner_model", request.aligner_model_id);
+      }
+      if (request.llm_model_id) form.append("llm_model", request.llm_model_id);
+      if (typeof request.enable_llm_refinement === "boolean") {
+        form.append(
+          "enable_llm_refinement",
+          request.enable_llm_refinement ? "true" : "false",
+        );
+      }
+      if (typeof request.min_speakers === "number") {
+        form.append("min_speakers", String(request.min_speakers));
+      }
+      if (typeof request.max_speakers === "number") {
+        form.append("max_speakers", String(request.max_speakers));
+      }
+      if (typeof request.min_speech_duration_ms === "number") {
+        form.append(
+          "min_speech_duration_ms",
+          String(request.min_speech_duration_ms),
+        );
+      }
+      if (typeof request.min_silence_duration_ms === "number") {
+        form.append(
+          "min_silence_duration_ms",
+          String(request.min_silence_duration_ms),
+        );
+      }
+
+      return {
+        method: "POST",
+        body: form,
+      };
+    }
+
+    if (!request.audio_base64) {
+      throw new Error("Missing audio input");
+    }
+
+    return {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        audio_base64: request.audio_base64,
+        model: request.model_id,
+        asr_model: request.asr_model_id,
+        aligner_model: request.aligner_model_id,
+        llm_model: request.llm_model_id,
+        enable_llm_refinement: request.enable_llm_refinement,
+        min_speakers: request.min_speakers,
+        max_speakers: request.max_speakers,
+        min_speech_duration_ms: request.min_speech_duration_ms,
+        min_silence_duration_ms: request.min_silence_duration_ms,
       }),
     };
   }

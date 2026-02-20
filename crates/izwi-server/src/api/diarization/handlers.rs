@@ -1,0 +1,503 @@
+use axum::{
+    body::Body,
+    extract::{Multipart, Path, Request, State},
+    http::{header, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
+    Json, RequestExt,
+};
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+use std::time::Instant;
+
+use crate::diarization_store::{
+    DiarizationRecord, DiarizationRecordSummary, DiarizationSegmentRecord,
+    DiarizationUtteranceRecord, DiarizationWordRecord, NewDiarizationRecord,
+    StoredDiarizationAudio,
+};
+use crate::error::ApiError;
+use crate::state::AppState;
+use izwi_core::DiarizationConfig;
+
+const HISTORY_LIST_LIMIT: usize = 200;
+
+#[derive(Debug, Serialize)]
+pub struct DiarizationRecordListResponse {
+    pub records: Vec<DiarizationRecordSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeleteDiarizationRecordResponse {
+    pub id: String,
+    pub deleted: bool,
+}
+
+#[derive(Debug, Default)]
+struct ParsedDiarizationCreateRequest {
+    audio_bytes: Vec<u8>,
+    audio_mime_type: Option<String>,
+    audio_filename: Option<String>,
+    model_id: Option<String>,
+    asr_model_id: Option<String>,
+    aligner_model_id: Option<String>,
+    llm_model_id: Option<String>,
+    min_speakers: Option<usize>,
+    max_speakers: Option<usize>,
+    min_speech_duration_ms: Option<f64>,
+    min_silence_duration_ms: Option<f64>,
+    enable_llm_refinement: Option<bool>,
+    stream: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonCreateRequest {
+    audio_base64: String,
+    #[serde(default, alias = "model", alias = "diarization_model")]
+    model_id: Option<String>,
+    #[serde(default, alias = "asr_model")]
+    asr_model_id: Option<String>,
+    #[serde(default, alias = "aligner_model")]
+    aligner_model_id: Option<String>,
+    #[serde(default, alias = "llm_model")]
+    llm_model_id: Option<String>,
+    #[serde(default)]
+    min_speakers: Option<usize>,
+    #[serde(default)]
+    max_speakers: Option<usize>,
+    #[serde(default)]
+    min_speech_duration_ms: Option<f64>,
+    #[serde(default)]
+    min_silence_duration_ms: Option<f64>,
+    #[serde(default)]
+    enable_llm_refinement: Option<bool>,
+    #[serde(default)]
+    audio_mime_type: Option<String>,
+    #[serde(default)]
+    audio_filename: Option<String>,
+    #[serde(default)]
+    stream: Option<bool>,
+}
+
+pub async fn list_records(
+    State(state): State<AppState>,
+) -> Result<Json<DiarizationRecordListResponse>, ApiError> {
+    let records = state
+        .diarization_store
+        .list_records(HISTORY_LIST_LIMIT)
+        .await
+        .map_err(map_store_error)?;
+
+    Ok(Json(DiarizationRecordListResponse { records }))
+}
+
+pub async fn get_record(
+    State(state): State<AppState>,
+    Path(record_id): Path<String>,
+) -> Result<Json<DiarizationRecord>, ApiError> {
+    let record = state
+        .diarization_store
+        .get_record(record_id)
+        .await
+        .map_err(map_store_error)?
+        .ok_or_else(|| ApiError::not_found("Diarization record not found"))?;
+
+    Ok(Json(record))
+}
+
+pub async fn get_record_audio(
+    State(state): State<AppState>,
+    Path(record_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let audio = state
+        .diarization_store
+        .get_audio(record_id)
+        .await
+        .map_err(map_store_error)?
+        .ok_or_else(|| ApiError::not_found("Diarization audio not found"))?;
+
+    Ok(audio_response(audio))
+}
+
+pub async fn delete_record(
+    State(state): State<AppState>,
+    Path(record_id): Path<String>,
+) -> Result<Json<DeleteDiarizationRecordResponse>, ApiError> {
+    let deleted = state
+        .diarization_store
+        .delete_record(record_id.clone())
+        .await
+        .map_err(map_store_error)?;
+
+    if !deleted {
+        return Err(ApiError::not_found("Diarization record not found"));
+    }
+
+    Ok(Json(DeleteDiarizationRecordResponse {
+        id: record_id,
+        deleted: true,
+    }))
+}
+
+pub async fn create_record(
+    State(state): State<AppState>,
+    req: Request,
+) -> Result<Response, ApiError> {
+    let parsed = parse_create_request(req).await?;
+
+    if parsed.stream {
+        return Err(ApiError::bad_request(
+            "Streaming diarization is not supported on /v1/diarization/records",
+        ));
+    }
+
+    if let (Some(min), Some(max)) = (parsed.min_speakers, parsed.max_speakers) {
+        if min > max {
+            return Err(ApiError::bad_request(
+                "`min_speakers` cannot be greater than `max_speakers`.",
+            ));
+        }
+    }
+
+    let _permit = state.acquire_permit().await;
+    let started = Instant::now();
+    let audio_base64 = base64::engine::general_purpose::STANDARD.encode(&parsed.audio_bytes);
+
+    let output = state
+        .runtime
+        .diarize_with_transcript(
+            audio_base64.as_str(),
+            parsed.model_id.as_deref(),
+            parsed.asr_model_id.as_deref(),
+            parsed.aligner_model_id.as_deref(),
+            parsed.llm_model_id.as_deref(),
+            &DiarizationConfig {
+                min_speakers: parsed.min_speakers,
+                max_speakers: parsed.max_speakers,
+                min_speech_duration_ms: parsed.min_speech_duration_ms.map(|v| v as f32),
+                min_silence_duration_ms: parsed.min_silence_duration_ms.map(|v| v as f32),
+            },
+            parsed.enable_llm_refinement.unwrap_or(true),
+        )
+        .await?;
+
+    let processing_time_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let rtf = if output.duration_secs > 0.0 {
+        Some((processing_time_ms / 1000.0) / output.duration_secs as f64)
+    } else {
+        None
+    };
+
+    let record = state
+        .diarization_store
+        .create_record(NewDiarizationRecord {
+            model_id: parsed.model_id,
+            asr_model_id: parsed.asr_model_id,
+            aligner_model_id: parsed.aligner_model_id,
+            llm_model_id: parsed.llm_model_id,
+            min_speakers: parsed.min_speakers,
+            max_speakers: parsed.max_speakers,
+            min_speech_duration_ms: parsed.min_speech_duration_ms,
+            min_silence_duration_ms: parsed.min_silence_duration_ms,
+            enable_llm_refinement: parsed.enable_llm_refinement.unwrap_or(true),
+            processing_time_ms,
+            duration_secs: Some(output.duration_secs as f64),
+            rtf,
+            speaker_count: output.speaker_count,
+            alignment_coverage: Some(output.alignment_coverage as f64),
+            unattributed_words: output.unattributed_words,
+            llm_refined: output.llm_refined,
+            asr_text: output.asr_text,
+            raw_transcript: output.raw_transcript,
+            transcript: output.transcript,
+            segments: output
+                .segments
+                .into_iter()
+                .map(|segment| DiarizationSegmentRecord {
+                    speaker: segment.speaker,
+                    start: segment.start_secs,
+                    end: segment.end_secs,
+                    confidence: segment.confidence,
+                })
+                .collect(),
+            words: output
+                .words
+                .into_iter()
+                .map(|word| DiarizationWordRecord {
+                    word: word.word,
+                    speaker: word.speaker,
+                    start: word.start_secs,
+                    end: word.end_secs,
+                    speaker_confidence: word.speaker_confidence,
+                    overlaps_segment: word.overlaps_segment,
+                })
+                .collect(),
+            utterances: output
+                .utterances
+                .into_iter()
+                .map(|utterance| DiarizationUtteranceRecord {
+                    speaker: utterance.speaker,
+                    start: utterance.start_secs,
+                    end: utterance.end_secs,
+                    text: utterance.text,
+                    word_start: utterance.word_start,
+                    word_end: utterance.word_end,
+                })
+                .collect(),
+            audio_mime_type: parsed
+                .audio_mime_type
+                .unwrap_or_else(|| "audio/wav".to_string()),
+            audio_filename: parsed.audio_filename,
+            audio_bytes: parsed.audio_bytes,
+        })
+        .await
+        .map_err(map_store_error)?;
+
+    Ok(Json(record).into_response())
+}
+
+async fn parse_create_request(req: Request) -> Result<ParsedDiarizationCreateRequest, ApiError> {
+    let content_type = req
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if content_type.starts_with("application/json") {
+        let Json(payload) = req
+            .extract::<Json<JsonCreateRequest>, _>()
+            .await
+            .map_err(|err| ApiError::bad_request(format!("Invalid JSON payload: {err}")))?;
+
+        let audio_bytes = decode_audio_base64(payload.audio_base64.as_str())?;
+        if audio_bytes.is_empty() {
+            return Err(ApiError::bad_request("Audio payload cannot be empty."));
+        }
+
+        return Ok(ParsedDiarizationCreateRequest {
+            audio_bytes,
+            audio_mime_type: sanitize_optional(payload.audio_mime_type),
+            audio_filename: sanitize_optional(payload.audio_filename),
+            model_id: sanitize_optional(payload.model_id),
+            asr_model_id: sanitize_optional(payload.asr_model_id),
+            aligner_model_id: sanitize_optional(payload.aligner_model_id),
+            llm_model_id: sanitize_optional(payload.llm_model_id),
+            min_speakers: payload.min_speakers,
+            max_speakers: payload.max_speakers,
+            min_speech_duration_ms: payload.min_speech_duration_ms,
+            min_silence_duration_ms: payload.min_silence_duration_ms,
+            enable_llm_refinement: payload.enable_llm_refinement,
+            stream: payload.stream.unwrap_or(false),
+        });
+    }
+
+    if content_type.starts_with("multipart/form-data") {
+        let mut multipart = req
+            .extract::<Multipart, _>()
+            .await
+            .map_err(|err| ApiError::bad_request(format!("Invalid multipart payload: {err}")))?;
+
+        let mut out = ParsedDiarizationCreateRequest::default();
+
+        while let Some(field) = multipart.next_field().await.map_err(|err| {
+            ApiError::bad_request(format!("Failed reading multipart field: {err}"))
+        })? {
+            let name = field.name().unwrap_or_default().to_string();
+            match name.as_str() {
+                "file" | "audio" => {
+                    let mime_type = field.content_type().map(ToString::to_string);
+                    let file_name = field.file_name().map(ToString::to_string);
+                    let bytes = field.bytes().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart '{}' field: {}",
+                            name, err
+                        ))
+                    })?;
+                    if !bytes.is_empty() {
+                        out.audio_bytes = bytes.to_vec();
+                        out.audio_mime_type = sanitize_optional(mime_type);
+                        out.audio_filename = sanitize_optional(file_name);
+                    }
+                }
+                "audio_base64" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'audio_base64' field: {err}"
+                        ))
+                    })?;
+                    let decoded = decode_audio_base64(text.as_str())?;
+                    if !decoded.is_empty() {
+                        out.audio_bytes = decoded;
+                    }
+                }
+                "audio_mime_type" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'audio_mime_type' field: {err}"
+                        ))
+                    })?;
+                    out.audio_mime_type = sanitize_optional(Some(text));
+                }
+                "audio_filename" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'audio_filename' field: {err}"
+                        ))
+                    })?;
+                    out.audio_filename = sanitize_optional(Some(text));
+                }
+                "model" | "diarization_model" | "model_id" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart '{}' field: {err}",
+                            name
+                        ))
+                    })?;
+                    out.model_id = sanitize_optional(Some(text));
+                }
+                "asr_model" | "asr_model_id" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart '{}' field: {err}",
+                            name
+                        ))
+                    })?;
+                    out.asr_model_id = sanitize_optional(Some(text));
+                }
+                "aligner_model" | "aligner_model_id" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart '{}' field: {err}",
+                            name
+                        ))
+                    })?;
+                    out.aligner_model_id = sanitize_optional(Some(text));
+                }
+                "llm_model" | "llm_model_id" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart '{}' field: {err}",
+                            name
+                        ))
+                    })?;
+                    out.llm_model_id = sanitize_optional(Some(text));
+                }
+                "min_speakers" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'min_speakers' field: {err}"
+                        ))
+                    })?;
+                    out.min_speakers = text.trim().parse::<usize>().ok();
+                }
+                "max_speakers" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'max_speakers' field: {err}"
+                        ))
+                    })?;
+                    out.max_speakers = text.trim().parse::<usize>().ok();
+                }
+                "min_speech_duration_ms" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'min_speech_duration_ms' field: {err}"
+                        ))
+                    })?;
+                    out.min_speech_duration_ms = text.trim().parse::<f64>().ok();
+                }
+                "min_silence_duration_ms" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'min_silence_duration_ms' field: {err}"
+                        ))
+                    })?;
+                    out.min_silence_duration_ms = text.trim().parse::<f64>().ok();
+                }
+                "enable_llm_refinement" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'enable_llm_refinement' field: {err}"
+                        ))
+                    })?;
+                    out.enable_llm_refinement = Some(parse_truthy(text.as_str()));
+                }
+                "stream" => {
+                    let text = field.text().await.map_err(|err| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart 'stream' field: {err}"
+                        ))
+                    })?;
+                    out.stream = parse_truthy(text.as_str());
+                }
+                _ => {}
+            }
+        }
+
+        if out.audio_bytes.is_empty() {
+            return Err(ApiError::bad_request(
+                "Missing audio input (`file` or `audio_base64`).",
+            ));
+        }
+
+        return Ok(out);
+    }
+
+    Err(ApiError {
+        status: StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        message: "Expected `Content-Type: application/json` or `multipart/form-data`".to_string(),
+    })
+}
+
+fn decode_audio_base64(raw: &str) -> Result<Vec<u8>, ApiError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    base64::engine::general_purpose::STANDARD
+        .decode(trimmed)
+        .map_err(|_| ApiError::bad_request("Invalid base64 audio payload."))
+}
+
+fn parse_truthy(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn sanitize_optional<T>(raw: Option<T>) -> Option<String>
+where
+    T: Into<String>,
+{
+    let value: String = raw?.into();
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn audio_response(audio: StoredDiarizationAudio) -> Response {
+    let mut response = Response::builder().status(StatusCode::OK);
+
+    if let Ok(content_type) = HeaderValue::from_str(audio.audio_mime_type.as_str()) {
+        response = response.header(header::CONTENT_TYPE, content_type);
+    }
+
+    if let Some(filename) = audio.audio_filename {
+        let disposition = format!("inline; filename=\"{}\"", filename.replace('"', ""));
+        if let Ok(value) = HeaderValue::from_str(disposition.as_str()) {
+            response = response.header(header::CONTENT_DISPOSITION, value);
+        }
+    }
+
+    response
+        .body(Body::from(audio.audio_bytes))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+fn map_store_error(err: anyhow::Error) -> ApiError {
+    ApiError::internal(format!("Diarization storage error: {err}"))
+}

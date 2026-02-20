@@ -285,7 +285,9 @@ impl SpeechHistoryStore {
             let audio_duration_secs = record
                 .audio_duration_secs
                 .filter(|value| value.is_finite() && *value >= 0.0);
-            let rtf = record.rtf.filter(|value| value.is_finite() && *value >= 0.0);
+            let rtf = record
+                .rtf
+                .filter(|value| value.is_finite() && *value >= 0.0);
             let tokens_generated = record
                 .tokens_generated
                 .filter(|value| *value > 0)
@@ -410,8 +412,8 @@ fn fetch_record_without_audio(
 
 fn map_speech_history_record(row: &Row<'_>) -> rusqlite::Result<SpeechHistoryRecord> {
     let route_raw: String = row.get(2)?;
-    let route_kind = SpeechRouteKind::from_db_value(route_raw.as_str())
-        .unwrap_or(SpeechRouteKind::TextToSpeech);
+    let route_kind =
+        SpeechRouteKind::from_db_value(route_raw.as_str()).unwrap_or(SpeechRouteKind::TextToSpeech);
 
     Ok(SpeechHistoryRecord {
         id: row.get(0)?,

@@ -230,7 +230,7 @@ export function DiarizationPage({
   };
 
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="max-w-7xl mx-auto">
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-[var(--text-primary)]">
           Diarization
@@ -256,7 +256,7 @@ export function DiarizationPage({
         isOpen={isModelModalOpen}
         onClose={closeModelModal}
         title="Diarization Models"
-        description="Manage pipeline models for /v1/audio/diarizations."
+        description="Manage pipeline models for /v1/diarization/records."
         models={pipelineModels}
         sections={pipelineModelGroups}
         canUseModel={isDiarizationVariant}
