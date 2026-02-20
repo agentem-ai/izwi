@@ -13,7 +13,7 @@ import {
   Upload,
 } from "lucide-react";
 import clsx from "clsx";
-import { api } from "../api";
+import { api, type DiarizationRecord } from "../api";
 import {
   Select,
   SelectContent,
@@ -21,10 +21,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
+import { DiarizationHistoryPanel } from "./DiarizationHistoryPanel";
 
 const PIPELINE_ASR_MODEL_ID = "Qwen3-ASR-0.6B";
 const PIPELINE_ALIGNER_MODEL_ID = "Qwen3-ForcedAligner-0.6B";
 const PIPELINE_LLM_MODEL_ID = "Gemma-3-1b-it";
+
+function revokeObjectUrlIfNeeded(url: string | null): void {
+  if (url && url.startsWith("blob:")) {
+    URL.revokeObjectURL(url);
+  }
+}
 
 interface ModelOption {
   value: string;
@@ -216,6 +223,7 @@ export function DiarizationPlayground({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [latestRecord, setLatestRecord] = useState<DiarizationRecord | null>(null);
   const [minSpeakers, setMinSpeakers] = useState(1);
   const [maxSpeakers, setMaxSpeakers] = useState(4);
   const [minSpeechMs, setMinSpeechMs] = useState(240);
@@ -252,15 +260,10 @@ export function DiarizationPlayground({
 
       try {
         const wavBlob = await transcodeToWav(audioBlob, 16000);
-        const url = URL.createObjectURL(wavBlob);
-        setAudioUrl((previousUrl) => {
-          if (previousUrl) {
-            URL.revokeObjectURL(previousUrl);
-          }
-          return url;
-        });
+        revokeObjectUrlIfNeeded(audioUrl);
+        setAudioUrl(null);
 
-        const response = await api.diarize({
+        const record = await api.createDiarizationRecord({
           audio_file: wavBlob,
           audio_filename: "audio.wav",
           model_id: selectedModel || undefined,
@@ -274,9 +277,12 @@ export function DiarizationPlayground({
           min_silence_duration_ms: minSilenceMs,
         });
 
+        setLatestRecord(record);
+        setAudioUrl(api.diarizationRecordAudioUrl(record.id));
+
         const cleanedTranscript = normalizeDiarizedTranscript(
-          response.transcript || "",
-          response.raw_transcript || "",
+          record.transcript || "",
+          record.raw_transcript || "",
         );
 
         setSpeakerTranscript(cleanedTranscript);
@@ -287,6 +293,7 @@ export function DiarizationPlayground({
       }
     },
     [
+      audioUrl,
       maxSpeakers,
       minSilenceMs,
       minSpeakers,
@@ -362,11 +369,10 @@ export function DiarizationPlayground({
   };
 
   const handleReset = () => {
-    if (audioUrl) {
-      URL.revokeObjectURL(audioUrl);
-    }
+    revokeObjectUrlIfNeeded(audioUrl);
     setSpeakerTranscript("");
     setAudioUrl(null);
+    setLatestRecord(null);
     setError(null);
     setIsProcessing(false);
   };
@@ -402,11 +408,17 @@ export function DiarizationPlayground({
     }
   }, [minSpeakers, maxSpeakers]);
 
+  useEffect(() => {
+    return () => {
+      revokeObjectUrlIfNeeded(audioUrl);
+    };
+  }, [audioUrl]);
+
   const canRunInput = !isProcessing && !isRecording && selectedModelReady;
   const hasOutput = speakerTranscript.trim().length > 0;
 
   return (
-    <div className="grid xl:grid-cols-[360px,1fr] gap-4 lg:gap-6">
+    <div className="grid xl:grid-cols-[360px,minmax(0,1fr),320px] gap-4 lg:gap-6">
       <div className="card p-4 sm:p-5 space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -684,6 +696,8 @@ export function DiarizationPlayground({
           )}
         </AnimatePresence>
       </div>
+
+      <DiarizationHistoryPanel latestRecord={latestRecord} />
     </div>
   );
 }
