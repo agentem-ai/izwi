@@ -256,6 +256,8 @@ export function ChatPlayground({
 
   const initializedRef = useRef(false);
   const activeThreadIdRef = useRef<string | null>(null);
+  const isStreamingRef = useRef(false);
+  const streamingThreadIdRef = useRef<string | null>(null);
   const threadsRef = useRef<ChatThread[]>([]);
   const titleGenerationInFlightRef = useRef<Set<string>>(new Set());
   const streamAbortRef = useRef<AbortController | null>(null);
@@ -399,6 +401,14 @@ export function ChatPlayground({
   }, [activeThreadId]);
 
   useEffect(() => {
+    isStreamingRef.current = isStreaming;
+  }, [isStreaming]);
+
+  useEffect(() => {
+    streamingThreadIdRef.current = streamingThreadId;
+  }, [streamingThreadId]);
+
+  useEffect(() => {
     threadsRef.current = threads;
   }, [threads]);
 
@@ -478,7 +488,11 @@ export function ChatPlayground({
       return;
     }
 
-    if (isStreaming && activeThreadId === streamingThreadId) {
+    const requestedThreadId = activeThreadId;
+    if (
+      isStreamingRef.current &&
+      streamingThreadIdRef.current === requestedThreadId
+    ) {
       return;
     }
 
@@ -487,8 +501,14 @@ export function ChatPlayground({
     const loadThread = async () => {
       setMessagesLoading(true);
       try {
-        const detail = await api.getChatThread(activeThreadId);
-        if (cancelled) {
+        const detail = await api.getChatThread(requestedThreadId);
+        if (cancelled || activeThreadIdRef.current !== requestedThreadId) {
+          return;
+        }
+        if (
+          isStreamingRef.current &&
+          streamingThreadIdRef.current === requestedThreadId
+        ) {
           return;
         }
 
@@ -518,7 +538,7 @@ export function ChatPlayground({
     return () => {
       cancelled = true;
     };
-  }, [activeThreadId, isStreaming, streamingThreadId]);
+  }, [activeThreadId]);
 
   const stopStreaming = useCallback(() => {
     if (streamAbortRef.current) {
@@ -683,27 +703,70 @@ export function ChatPlayground({
       },
       {
         onStart: ({ userMessage }) => {
-          setMessages((previous) =>
-            previous.map((message) =>
-              message.id === userTempId ? userMessage : message,
-            ),
-          );
+          setMessages((previous) => {
+            let replaced = false;
+            const updated = previous.map((message) => {
+              if (message.id === userTempId) {
+                replaced = true;
+                return userMessage;
+              }
+              return message;
+            });
+
+            if (replaced || updated.some((message) => message.id === userMessage.id)) {
+              return updated;
+            }
+
+            return [...updated, userMessage];
+          });
         },
         onDelta: (delta) => {
-          setMessages((previous) =>
-            previous.map((message) =>
-              message.id === assistantTempId
-                ? { ...message, content: `${message.content}${delta}` }
-                : message,
-            ),
-          );
+          setMessages((previous) => {
+            let updatedAssistant = false;
+            const updated = previous.map((message) => {
+              if (message.id === assistantTempId) {
+                updatedAssistant = true;
+                return { ...message, content: `${message.content}${delta}` };
+              }
+              return message;
+            });
+
+            if (updatedAssistant) {
+              return updated;
+            }
+
+            if (
+              updated.some((message) => message.id === optimisticAssistantMessage.id)
+            ) {
+              return updated;
+            }
+
+            return [
+              ...updated,
+              { ...optimisticAssistantMessage, content: delta },
+            ];
+          });
         },
         onDone: ({ assistantMessage, stats: streamStats, modelId }) => {
-          setMessages((previous) =>
-            previous.map((message) =>
-              message.id === assistantTempId ? assistantMessage : message,
-            ),
-          );
+          setMessages((previous) => {
+            let replaced = false;
+            const updated = previous.map((message) => {
+              if (message.id === assistantTempId) {
+                replaced = true;
+                return assistantMessage;
+              }
+              return message;
+            });
+
+            if (
+              replaced ||
+              updated.some((message) => message.id === assistantMessage.id)
+            ) {
+              return updated;
+            }
+
+            return [...updated, assistantMessage];
+          });
           setStats(streamStats);
 
           if (isFirstTurn) {
