@@ -13,6 +13,9 @@ use crate::models::batched_attention::{
 };
 use crate::models::mlx_compat;
 use crate::models::qwen3_tts::config::CodePredictorConfig;
+use crate::models::shared::attention::flash::{
+    flash_attention_requested, try_fused_self_attention,
+};
 use crate::models::shared::attention::paged::{
     append_to_pages, default_kv_page_size, default_kv_quantization, materialize_pages,
     paged_decode_attention, KvCacheQuantization, KvPage,
@@ -553,6 +556,18 @@ impl Attention {
             let scale = 1.0f32 / (self.head_dim as f32).sqrt();
             if let Ok(sdpa_out) = ops::sdpa(&q, &k, &v, None, false, scale, 1.0) {
                 let out = sdpa_out.transpose(1, 2)?.reshape((
+                    bsz,
+                    seq_len,
+                    self.num_heads * self.head_dim,
+                ))?;
+                return self.o_proj.forward(&out).map_err(Error::from);
+            }
+        }
+        if flash_attention_requested() && start_pos == 0 && total_len == seq_len {
+            if let Some(fused_out) =
+                try_fused_self_attention(&q, &k, &v, None, self.head_dim, true)?
+            {
+                let out = fused_out.transpose(1, 2)?.reshape((
                     bsz,
                     seq_len,
                     self.num_heads * self.head_dim,

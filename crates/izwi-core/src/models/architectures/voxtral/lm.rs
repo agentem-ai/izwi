@@ -11,6 +11,9 @@ use crate::error::{Error, Result};
 use crate::models::qwen3::{
     build_mrope_cache, build_rope_cache, causal_mask, repeat_kv, Qwen3Cache, Qwen3Config,
 };
+use crate::models::shared::attention::flash::{
+    flash_attention_requested, try_fused_self_attention,
+};
 use crate::models::shared::attention::paged::paged_decode_attention;
 
 pub struct VoxtralLM {
@@ -292,6 +295,19 @@ impl VoxtralAttention {
         let v = v.transpose(1, 2)?;
 
         let total_len = k.dim(2)?;
+        if flash_attention_requested() && start_pos == 0 && total_len == seq_len {
+            if let Some(fused_out) =
+                try_fused_self_attention(&q, &k, &v, None, self.head_dim, true)?
+            {
+                let out = fused_out.transpose(1, 2)?.reshape((
+                    bsz,
+                    seq_len,
+                    self.num_heads * self.head_dim,
+                ))?;
+                let out = self.o_proj.forward(&out)?;
+                return Ok(out);
+            }
+        }
 
         let q = q.reshape((bsz * self.num_heads, seq_len, self.head_dim))?;
         let k = k.reshape((bsz * self.num_heads, total_len, self.head_dim))?;

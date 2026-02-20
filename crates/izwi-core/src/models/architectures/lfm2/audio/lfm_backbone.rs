@@ -2,6 +2,9 @@ use candle_core::{DType, Result as CandleResult, Tensor};
 use candle_nn::{Conv1d, Conv1dConfig, Linear, Module, RmsNorm, VarBuilder};
 
 use crate::error::{Error, Result};
+use crate::models::shared::attention::flash::{
+    flash_attention_requested, try_fused_self_attention,
+};
 
 use super::config::LfmConfig;
 
@@ -194,6 +197,22 @@ impl AttentionLayer {
 
         let k = repeat_kv(&k, self.n_head / self.n_kv_head)?;
         let v = repeat_kv(&v, self.n_head / self.n_kv_head)?;
+        let total_len = k.dim(2)?;
+
+        // Fused kernels are valid for regular prefill (no cache offset) and for
+        // single-token decode where causal masking is implicit in the cache.
+        if flash_attention_requested()
+            && mask.is_none()
+            && ((index_pos == 0 && total_len == seq_len) || seq_len == 1)
+        {
+            let causal = index_pos == 0 && seq_len > 1;
+            if let Some(fused_out) =
+                try_fused_self_attention(&q, &k, &v, None, self.head_dim, causal)?
+            {
+                let y = fused_out.transpose(1, 2)?.reshape((b, seq_len, hidden))?;
+                return self.out_proj.forward(&y).map_err(Error::from);
+            }
+        }
 
         let att = (q.matmul(&k.t()?)? / (self.head_dim as f64).sqrt())?;
         let att = match mask {
