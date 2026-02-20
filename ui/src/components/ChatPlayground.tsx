@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Bot,
+  Brain,
   Send,
   Square,
   User,
@@ -39,12 +40,13 @@ interface ChatPlaygroundProps {
 const THINKING_SYSTEM_PROMPT: ChatMessage = {
   role: "system",
   content:
-    "You are a helpful assistant. Keep internal reasoning concise. If you use <think>, always close it with </think> and then provide a final answer.",
+    "You are a helpful assistant. Always reason inside <think>...</think> before giving the final answer. Keep thinking concise, always close </think>, then provide a clear final answer outside the tags.",
 };
 
 const DEFAULT_SYSTEM_PROMPT: ChatMessage = {
   role: "system",
-  content: "You are a helpful assistant.",
+  content:
+    "You are a helpful assistant. Provide only the final answer and do not output <think> tags or internal reasoning.",
 };
 
 const DEFAULT_THREAD_TITLE = "New chat";
@@ -237,6 +239,7 @@ export function ChatPlayground({
     Record<string, boolean>
   >({});
   const [input, setInput] = useState("");
+  const [isThinkingEnabled, setIsThinkingEnabled] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isPreparingThread, setIsPreparingThread] = useState(false);
   const [streamingThreadId, setStreamingThreadId] = useState<string | null>(
@@ -282,6 +285,7 @@ export function ChatPlayground({
   const hasConversation =
     !!activeThreadId &&
     (visibleMessages.length > 0 || isStreaming || messagesLoading);
+  const thinkingEnabledForModel = supportsThinking && isThinkingEnabled;
 
   const setActiveThreadInUrl = useCallback(
     (threadId: string | null, replace = false) => {
@@ -657,7 +661,7 @@ export function ChatPlayground({
       generation_time_ms: null,
     };
 
-    const systemPrompt = supportsThinking
+    const systemPrompt = thinkingEnabledForModel
       ? THINKING_SYSTEM_PROMPT.content
       : DEFAULT_SYSTEM_PROMPT.content;
 
@@ -752,7 +756,7 @@ export function ChatPlayground({
 
   const renderModelSelector = () => (
     <div
-      className="relative z-40 inline-block w-[300px] max-w-[80vw]"
+      className="relative z-40 inline-block w-[240px] sm:w-[300px] max-w-[calc(100vw-9rem)]"
       ref={modelMenuRef}
     >
       <button
@@ -850,8 +854,8 @@ export function ChatPlayground({
           disabled={isStreaming || isPreparingThread}
         />
 
-        <div className="flex items-center justify-between gap-3 px-4 py-3">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={handleOpenModels}
               className="chat-models-button inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs border transition-colors"
@@ -859,9 +863,29 @@ export function ChatPlayground({
               <Settings2 className="w-3.5 h-3.5" />
               Models
             </button>
+            {supportsThinking && (
+              <button
+                onClick={() => setIsThinkingEnabled((previous) => !previous)}
+                disabled={isStreaming || isPreparingThread}
+                className={clsx(
+                  "chat-thinking-mode-btn inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs border transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                  thinkingEnabledForModel
+                    ? "chat-thinking-mode-btn-on"
+                    : "chat-thinking-mode-btn-off",
+                )}
+                title={
+                  thinkingEnabledForModel
+                    ? "Thinking mode is enabled"
+                    : "Thinking mode is disabled"
+                }
+              >
+                <Brain className="w-3.5 h-3.5" />
+                Thinking {thinkingEnabledForModel ? "On" : "Off"}
+              </button>
+            )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap sm:flex-nowrap">
             {renderModelSelector()}
 
             <button
