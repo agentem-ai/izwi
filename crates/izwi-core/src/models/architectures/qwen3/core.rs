@@ -5,6 +5,7 @@
 
 use candle_core::{DType, Device, Module, Tensor, D};
 use candle_nn::{ops, Embedding, Linear, RmsNorm, VarBuilder};
+use candle_transformers::utils::repeat_kv as candle_repeat_kv;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -610,17 +611,15 @@ pub fn repeat_kv(x: &Tensor, num_heads: usize, num_kv_heads: usize) -> Result<Te
     if num_heads == num_kv_heads {
         return Ok(x.clone());
     }
-    let repeats = num_heads / num_kv_heads;
-    let mut parts = Vec::with_capacity(num_heads);
-    // Repeat each KV head consecutively: [h0, h0, h1, h1, ...].
-    // Concatenating full tensors would produce [h0..hk, h0..hk], which is incorrect.
-    for kv_idx in 0..num_kv_heads {
-        let head = x.narrow(2, kv_idx, 1)?;
-        for _ in 0..repeats {
-            parts.push(head.clone());
-        }
+    if num_kv_heads == 0 || !num_heads.is_multiple_of(num_kv_heads) {
+        return Err(Error::InvalidInput(format!(
+            "Invalid GQA head config: num_heads={num_heads}, num_kv_heads={num_kv_heads}"
+        )));
     }
-    Tensor::cat(&parts, 2).map_err(Error::from)
+    let repeats = num_heads / num_kv_heads;
+    let x = x.transpose(1, 2)?;
+    let out = candle_repeat_kv(x, repeats)?;
+    out.transpose(1, 2).map_err(Error::from)
 }
 
 pub fn build_rope_cache(

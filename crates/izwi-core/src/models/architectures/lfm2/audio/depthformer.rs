@@ -1,5 +1,6 @@
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::{Embedding, Linear, Module, RmsNorm, VarBuilder};
+use candle_transformers::utils::repeat_kv as candle_repeat_kv;
 
 use crate::error::{Error, Result};
 use crate::models::shared::attention::flash::{
@@ -402,14 +403,7 @@ fn apply_rms_head_norm(norm: &RmsNorm, x: &Tensor) -> Result<Tensor> {
 }
 
 fn repeat_kv(xs: &Tensor, n_rep: usize) -> Result<Tensor> {
-    if n_rep == 1 {
-        return Ok(xs.clone());
-    }
-    let (b, n_kv, t, d) = xs.dims4()?;
-    xs.unsqueeze(2)?
-        .expand((b, n_kv, n_rep, t, d))?
-        .reshape((b, n_kv * n_rep, t, d))
-        .map_err(Error::from)
+    candle_repeat_kv(xs.clone(), n_rep).map_err(Error::from)
 }
 
 fn causal_mask(q_len: usize, kv_len: usize, device: &candle_core::Device) -> Result<Tensor> {
