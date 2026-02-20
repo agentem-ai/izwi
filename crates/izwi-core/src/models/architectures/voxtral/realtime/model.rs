@@ -10,6 +10,9 @@ use crate::audio::{MelConfig, MelSpectrogram};
 use crate::error::{Error, Result};
 use crate::models::device::DeviceProfile;
 use crate::models::qwen3::Qwen3Cache;
+use crate::models::shared::attention::flash::{
+    flash_attention_requested, try_fused_self_attention,
+};
 use crate::models::voxtral_lm::VoxtralLM;
 
 use super::audio::{AudioLanguageAdapter, TimeEmbedding};
@@ -622,6 +625,22 @@ impl WhisperAttention {
         let v = v
             .reshape((bsz, seq_len, self.num_heads, self.head_dim))?
             .transpose(1, 2)?;
+
+        if flash_attention_requested() {
+            if let Some(fused_out) =
+                try_fused_self_attention(&q, &k, &v, None, self.head_dim, is_causal)?
+            {
+                let attn_output = fused_out.transpose(1, 2)?.reshape((
+                    bsz,
+                    seq_len,
+                    self.num_heads * self.head_dim,
+                ))?;
+                return self
+                    .out_proj
+                    .forward(&attn_output)
+                    .map_err(|e| Error::InferenceError(e.to_string()));
+            }
+        }
 
         // Scaled dot-product attention
         let q = q.reshape((bsz * self.num_heads, seq_len, self.head_dim))?;

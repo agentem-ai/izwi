@@ -16,6 +16,7 @@ use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::chat_types::{ChatMessage, ChatRole};
 use crate::models::device::DeviceProfile;
+use crate::models::shared::attention::flash::should_enable_flash_attention_v2;
 use crate::tokenizer::Tokenizer;
 
 #[derive(Debug, Clone)]
@@ -435,12 +436,14 @@ impl Gemma3ChatModel {
             vb_base
         };
 
-        let text_model = Gemma3Model::new(false, &config, vb).map_err(Error::from)?;
+        let use_flash_attn = should_enable_flash_attention_v2(&device.device);
+        let text_model = Gemma3Model::new(use_flash_attn, &config, vb).map_err(Error::from)?;
 
         info!(
-            "Loaded Gemma chat model {} on {:?}",
+            "Loaded Gemma chat model {} on {:?} (flash_attn={})",
             variant.dir_name(),
-            device.kind
+            device.kind,
+            use_flash_attn
         );
 
         Ok(Self {

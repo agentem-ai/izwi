@@ -2,6 +2,9 @@ use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::{Embedding, Linear, Module, RmsNorm, VarBuilder};
 
 use crate::error::{Error, Result};
+use crate::models::shared::attention::flash::{
+    flash_attention_requested, try_fused_self_attention,
+};
 
 use super::config::Lfm2AudioConfig;
 
@@ -132,6 +135,20 @@ impl Mha {
 
         let k = repeat_kv(&k, self.num_heads / self.gqa_dim)?;
         let v = repeat_kv(&v, self.num_heads / self.gqa_dim)?;
+
+        // Fused kernels are safe in two cases:
+        // - standard prefill with empty cache (causal, left-aligned)
+        // - single-token decode (non-causal because cache already enforces chronology)
+        if flash_attention_requested() && (cache_len == 0 || t == 1) {
+            let causal = t > 1 || cache_len == 0;
+            if let Some(fused_out) =
+                try_fused_self_attention(&q, &k, &v, None, self.head_dim, causal)?
+            {
+                let out = fused_out.transpose(1, 2)?.reshape((b, t, dim))?;
+                let out = self.out_proj.forward(&out)?;
+                return Ok((out, new_cache));
+            }
+        }
 
         let q = q.transpose(1, 2)?; // [B,T,H,D]
         let k = k.transpose(1, 2)?;

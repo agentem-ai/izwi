@@ -9,6 +9,9 @@ use tracing::debug;
 
 use crate::error::{Error, Result};
 use crate::models::metal_memory::{metal_pool_for_device, PooledTensor};
+use crate::models::shared::attention::flash::{
+    flash_attention_requested, try_fused_self_attention,
+};
 
 /// Batched attention input for multiple sequences
 #[derive(Debug)]
@@ -40,15 +43,7 @@ pub struct BatchedAttentionConfig {
 
 impl BatchedAttentionConfig {
     pub fn new(num_heads: usize, head_dim: usize) -> Self {
-        let use_flash_attention = std::env::var("IZWI_USE_FLASH_ATTENTION")
-            .ok()
-            .map(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(false);
+        let use_flash_attention = flash_attention_requested();
         Self {
             num_heads,
             head_dim,
@@ -90,11 +85,22 @@ pub fn batched_scaled_dot_product_attention(
         .transpose(1, 2)?;
 
     if config.use_flash_attention {
-        let scale = 1.0f32 / config.scale as f32;
-        if let Ok(sdpa_out) =
-            candle_nn::ops::sdpa(&q, &k, &v, input.attention_mask.as_ref(), false, scale, 1.0)
+        let sdpa_mask = if let Some(mask) = input.attention_mask.as_ref() {
+            if mask.dims().len() == 3 {
+                Some(
+                    mask.unsqueeze(1)?
+                        .expand((bsz, config.num_heads, seq_len, seq_len))?,
+                )
+            } else {
+                Some(mask.clone())
+            }
+        } else {
+            None
+        };
+        if let Some(fused_out) =
+            try_fused_self_attention(&q, &k, &v, sdpa_mask.as_ref(), config.head_dim, false)?
         {
-            let output = sdpa_out
+            let output = fused_out
                 .transpose(1, 2)?
                 .reshape((bsz, seq_len, _hidden_size))?;
             return Ok(output);
