@@ -5,6 +5,7 @@ use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod api;
+mod chat_store;
 mod error;
 mod state;
 
@@ -30,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create runtime service
     let runtime = RuntimeService::new(config)?;
-    let state = AppState::new(runtime);
+    let state = AppState::new(runtime)?;
 
     info!("Runtime service initialized");
 

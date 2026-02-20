@@ -24,6 +24,7 @@ pub fn create_router(state: AppState) -> Router {
 
     let v1_routes = Router::new()
         .merge(crate::api::internal::router())
+        .merge(crate::api::chat::router())
         .merge(crate::api::openai::router())
         .merge(crate::api::admin::router());
 
