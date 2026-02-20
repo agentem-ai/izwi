@@ -276,6 +276,107 @@ export interface TTSStreamCallbacks {
   onDone?: () => void;
 }
 
+export type SpeechHistoryRoute =
+  | "text-to-speech"
+  | "voice-design"
+  | "voice-cloning";
+
+export interface SpeechHistoryRecordSummary {
+  id: string;
+  created_at: number;
+  route_kind: "text_to_speech" | "voice_design" | "voice_cloning";
+  model_id: string | null;
+  speaker: string | null;
+  language: string | null;
+  input_preview: string;
+  input_chars: number;
+  generation_time_ms: number;
+  audio_duration_secs: number | null;
+  rtf: number | null;
+  tokens_generated: number | null;
+  audio_mime_type: string;
+  audio_filename: string | null;
+}
+
+export interface SpeechHistoryRecord {
+  id: string;
+  created_at: number;
+  route_kind: "text_to_speech" | "voice_design" | "voice_cloning";
+  model_id: string | null;
+  speaker: string | null;
+  language: string | null;
+  input_text: string;
+  voice_description: string | null;
+  reference_text: string | null;
+  generation_time_ms: number;
+  audio_duration_secs: number | null;
+  rtf: number | null;
+  tokens_generated: number | null;
+  audio_mime_type: string;
+  audio_filename: string | null;
+}
+
+export interface SpeechHistoryRecordCreateRequest {
+  model_id: string;
+  text: string;
+  speaker?: string;
+  language?: string;
+  voice_description?: string;
+  reference_audio?: string;
+  reference_text?: string;
+  temperature?: number;
+  speed?: number;
+  max_tokens?: number;
+  max_output_tokens?: number;
+  top_k?: number;
+}
+
+type SpeechHistoryRecordStreamEvent =
+  | {
+      event: "start";
+      request_id: string;
+      sample_rate: number;
+      audio_format: "pcm_i16";
+    }
+  | {
+      event: "chunk";
+      request_id: string;
+      sequence: number;
+      audio_base64: string;
+      sample_count: number;
+    }
+  | {
+      event: "final";
+      request_id: string;
+      tokens_generated: number;
+      generation_time_ms: number;
+      audio_duration_secs: number;
+      rtf: number;
+      record: SpeechHistoryRecord;
+    }
+  | { event: "error"; request_id?: string; error: string }
+  | { event: "done"; request_id?: string };
+
+export interface SpeechHistoryRecordStreamCallbacks {
+  onStart?: (event: {
+    requestId: string;
+    sampleRate: number;
+    audioFormat: "pcm_i16";
+  }) => void;
+  onChunk?: (event: {
+    requestId: string;
+    sequence: number;
+    audioBase64: string;
+    sampleCount: number;
+  }) => void;
+  onFinal?: (event: {
+    record: SpeechHistoryRecord;
+    stats: TTSGenerationStats;
+  }) => void;
+  onError?: (error: string) => void;
+  onDone?: () => void;
+}
+
 // ============================================================================
 // Unified STT (ASR) Types
 // ============================================================================
@@ -807,6 +908,287 @@ class ApiClient {
 
     startStream();
     return abortController;
+  }
+
+  // ========================================================================
+  // Speech History Routes
+  // ========================================================================
+
+  private speechHistoryRoutePrefix(route: SpeechHistoryRoute): string {
+    return `/${route}`;
+  }
+
+  private buildSpeechHistoryRecordCreateBody(
+    request: SpeechHistoryRecordCreateRequest,
+    stream: boolean,
+  ): Record<string, unknown> {
+    return {
+      model_id: request.model_id,
+      text: request.text,
+      speaker: request.speaker,
+      language: request.language,
+      voice_description: request.voice_description,
+      reference_audio: request.reference_audio,
+      reference_text: request.reference_text,
+      temperature: request.temperature,
+      speed: request.speed,
+      max_tokens: request.max_tokens,
+      max_output_tokens: request.max_output_tokens,
+      top_k: request.top_k,
+      stream,
+    };
+  }
+
+  async listSpeechHistoryRecords(
+    route: SpeechHistoryRoute,
+  ): Promise<SpeechHistoryRecordSummary[]> {
+    const payload = await this.request<{ records: SpeechHistoryRecordSummary[] }>(
+      `${this.speechHistoryRoutePrefix(route)}/records`,
+    );
+    return payload.records ?? [];
+  }
+
+  async getSpeechHistoryRecord(
+    route: SpeechHistoryRoute,
+    recordId: string,
+  ): Promise<SpeechHistoryRecord> {
+    return this.request(
+      `${this.speechHistoryRoutePrefix(route)}/records/${encodeURIComponent(recordId)}`,
+    );
+  }
+
+  async createSpeechHistoryRecord(
+    route: SpeechHistoryRoute,
+    request: SpeechHistoryRecordCreateRequest,
+  ): Promise<SpeechHistoryRecord> {
+    const response = await fetch(
+      `${this.baseUrl}${this.speechHistoryRoutePrefix(route)}/records`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(this.buildSpeechHistoryRecordCreateBody(request, false)),
+      },
+    );
+
+    if (!response.ok) {
+      const error = await response
+        .json()
+        .catch(() => ({ error: { message: "Speech generation failed" } }));
+      throw new Error(error.error?.message || "Speech generation failed");
+    }
+
+    return response.json();
+  }
+
+  createSpeechHistoryRecordStream(
+    route: SpeechHistoryRoute,
+    request: SpeechHistoryRecordCreateRequest,
+    callbacks: SpeechHistoryRecordStreamCallbacks,
+  ): AbortController {
+    const abortController = new AbortController();
+
+    const startStream = async () => {
+      try {
+        const response = await fetch(
+          `${this.baseUrl}${this.speechHistoryRoutePrefix(route)}/records`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(
+              this.buildSpeechHistoryRecordCreateBody(request, true),
+            ),
+            signal: abortController.signal,
+          },
+        );
+
+        if (!response.ok) {
+          const error = await response
+            .json()
+            .catch(() => ({ error: { message: "Speech streaming failed" } }));
+          callbacks.onError?.(error.error?.message || "Speech streaming failed");
+          callbacks.onDone?.();
+          return;
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          callbacks.onError?.("No response body");
+          callbacks.onDone?.();
+          return;
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (!data) continue;
+
+            try {
+              const event = JSON.parse(data) as SpeechHistoryRecordStreamEvent;
+              switch (event.event) {
+                case "start":
+                  callbacks.onStart?.({
+                    requestId: event.request_id,
+                    sampleRate: event.sample_rate,
+                    audioFormat: event.audio_format,
+                  });
+                  break;
+                case "chunk":
+                  callbacks.onChunk?.({
+                    requestId: event.request_id,
+                    sequence: event.sequence,
+                    audioBase64: event.audio_base64,
+                    sampleCount: event.sample_count,
+                  });
+                  break;
+                case "final":
+                  callbacks.onFinal?.({
+                    record: event.record,
+                    stats: {
+                      generation_time_ms: event.generation_time_ms,
+                      audio_duration_secs: event.audio_duration_secs,
+                      rtf: event.rtf,
+                      tokens_generated: event.tokens_generated,
+                    },
+                  });
+                  break;
+                case "error":
+                  callbacks.onError?.(event.error);
+                  break;
+                case "done":
+                  callbacks.onDone?.();
+                  return;
+              }
+            } catch {
+              // Skip malformed SSE payloads.
+            }
+          }
+        }
+
+        callbacks.onDone?.();
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") {
+          callbacks.onError?.(
+            error instanceof Error ? error.message : "Speech stream error",
+          );
+        }
+        callbacks.onDone?.();
+      }
+    };
+
+    startStream();
+    return abortController;
+  }
+
+  speechHistoryRecordAudioUrl(route: SpeechHistoryRoute, recordId: string): string {
+    return `${this.baseUrl}${this.speechHistoryRoutePrefix(route)}/records/${encodeURIComponent(recordId)}/audio`;
+  }
+
+  async deleteSpeechHistoryRecord(
+    route: SpeechHistoryRoute,
+    recordId: string,
+  ): Promise<{ id: string; deleted: boolean }> {
+    return this.request(
+      `${this.speechHistoryRoutePrefix(route)}/records/${encodeURIComponent(recordId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async listTextToSpeechRecords(): Promise<SpeechHistoryRecordSummary[]> {
+    return this.listSpeechHistoryRecords("text-to-speech");
+  }
+
+  async getTextToSpeechRecord(recordId: string): Promise<SpeechHistoryRecord> {
+    return this.getSpeechHistoryRecord("text-to-speech", recordId);
+  }
+
+  async createTextToSpeechRecord(
+    request: SpeechHistoryRecordCreateRequest,
+  ): Promise<SpeechHistoryRecord> {
+    return this.createSpeechHistoryRecord("text-to-speech", request);
+  }
+
+  createTextToSpeechRecordStream(
+    request: SpeechHistoryRecordCreateRequest,
+    callbacks: SpeechHistoryRecordStreamCallbacks,
+  ): AbortController {
+    return this.createSpeechHistoryRecordStream(
+      "text-to-speech",
+      request,
+      callbacks,
+    );
+  }
+
+  textToSpeechRecordAudioUrl(recordId: string): string {
+    return this.speechHistoryRecordAudioUrl("text-to-speech", recordId);
+  }
+
+  async deleteTextToSpeechRecord(
+    recordId: string,
+  ): Promise<{ id: string; deleted: boolean }> {
+    return this.deleteSpeechHistoryRecord("text-to-speech", recordId);
+  }
+
+  async listVoiceDesignRecords(): Promise<SpeechHistoryRecordSummary[]> {
+    return this.listSpeechHistoryRecords("voice-design");
+  }
+
+  async getVoiceDesignRecord(recordId: string): Promise<SpeechHistoryRecord> {
+    return this.getSpeechHistoryRecord("voice-design", recordId);
+  }
+
+  async createVoiceDesignRecord(
+    request: SpeechHistoryRecordCreateRequest,
+  ): Promise<SpeechHistoryRecord> {
+    return this.createSpeechHistoryRecord("voice-design", request);
+  }
+
+  voiceDesignRecordAudioUrl(recordId: string): string {
+    return this.speechHistoryRecordAudioUrl("voice-design", recordId);
+  }
+
+  async deleteVoiceDesignRecord(
+    recordId: string,
+  ): Promise<{ id: string; deleted: boolean }> {
+    return this.deleteSpeechHistoryRecord("voice-design", recordId);
+  }
+
+  async listVoiceCloningRecords(): Promise<SpeechHistoryRecordSummary[]> {
+    return this.listSpeechHistoryRecords("voice-cloning");
+  }
+
+  async getVoiceCloningRecord(recordId: string): Promise<SpeechHistoryRecord> {
+    return this.getSpeechHistoryRecord("voice-cloning", recordId);
+  }
+
+  async createVoiceCloningRecord(
+    request: SpeechHistoryRecordCreateRequest,
+  ): Promise<SpeechHistoryRecord> {
+    return this.createSpeechHistoryRecord("voice-cloning", request);
+  }
+
+  voiceCloningRecordAudioUrl(recordId: string): string {
+    return this.speechHistoryRecordAudioUrl("voice-cloning", recordId);
+  }
+
+  async deleteVoiceCloningRecord(
+    recordId: string,
+  ): Promise<{ id: string; deleted: boolean }> {
+    return this.deleteSpeechHistoryRecord("voice-cloning", recordId);
   }
 
   // ========================================================================

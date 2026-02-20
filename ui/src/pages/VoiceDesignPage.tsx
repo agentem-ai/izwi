@@ -160,7 +160,7 @@ export function VoiceDesignPage({
   };
 
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="max-w-7xl mx-auto">
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-white">Voice Design</h1>
       </div>

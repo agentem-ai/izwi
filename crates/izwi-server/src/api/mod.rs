@@ -5,6 +5,7 @@ pub mod chat;
 pub mod internal;
 pub mod openai;
 pub mod request_context;
+pub mod speech_history;
 pub mod transcription;
 mod router;
 

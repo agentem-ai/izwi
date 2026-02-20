@@ -11,10 +11,15 @@ import {
   Radio,
   Settings2,
 } from "lucide-react";
-import { api, TTSGenerationStats } from "../api";
+import {
+  api,
+  type SpeechHistoryRecord,
+  type TTSGenerationStats,
+} from "../api";
 import { isLfmAudioVariant, LFM2_SPEAKERS, QWEN_SPEAKERS } from "../types";
 import { GenerationStats } from "./GenerationStats";
 import clsx from "clsx";
+import { SpeechHistoryPanel } from "./SpeechHistoryPanel";
 
 interface ModelOption {
   value: string;
@@ -99,6 +104,21 @@ function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
+function revokeObjectUrlIfNeeded(url: string | null): void {
+  if (url && url.startsWith("blob:")) {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function mapRecordToStats(record: SpeechHistoryRecord): TTSGenerationStats {
+  return {
+    generation_time_ms: record.generation_time_ms,
+    audio_duration_secs: record.audio_duration_secs ?? 0,
+    rtf: record.rtf ?? 0,
+    tokens_generated: record.tokens_generated ?? 0,
+  };
+}
+
 export function CustomVoicePlayground({
   selectedModel,
   selectedModelReady = false,
@@ -121,6 +141,7 @@ export function CustomVoicePlayground({
   const [generationStats, setGenerationStats] =
     useState<TTSGenerationStats | null>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
+  const [latestRecord, setLatestRecord] = useState<SpeechHistoryRecord | null>(null);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -169,9 +190,7 @@ export function CustomVoicePlayground({
   }, []);
 
   const replaceAudioUrl = useCallback((nextUrl: string | null) => {
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current);
-    }
+    revokeObjectUrlIfNeeded(audioUrlRef.current);
     audioUrlRef.current = nextUrl;
     setAudioUrl(nextUrl);
   }, []);
@@ -203,10 +222,8 @@ export function CustomVoicePlayground({
   useEffect(() => {
     return () => {
       stopStreamingSession();
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current);
-        audioUrlRef.current = null;
-      }
+      revokeObjectUrlIfNeeded(audioUrlRef.current);
+      audioUrlRef.current = null;
     };
   }, [stopStreamingSession]);
 
@@ -238,10 +255,10 @@ export function CustomVoicePlayground({
       };
 
       if (!streamingEnabled) {
-        const result = await api.generateTTSWithStats(request);
-        const url = URL.createObjectURL(result.audioBlob);
-        replaceAudioUrl(url);
-        setGenerationStats(result.stats);
+        const record = await api.createTextToSpeechRecord(request);
+        replaceAudioUrl(api.textToSpeechRecordAudioUrl(record.id));
+        setGenerationStats(mapRecordToStats(record));
+        setLatestRecord(record);
 
         setTimeout(() => {
           audioRef.current?.play().catch(() => {});
@@ -258,77 +275,79 @@ export function CustomVoicePlayground({
       streamSamplesRef.current = [];
       setIsStreaming(true);
 
-      streamAbortRef.current = api.generateTTSStream(
-        {
-          ...request,
-          format: "pcm",
-        },
-        {
-          onStart: ({ sampleRate, audioFormat }) => {
-            streamSampleRateRef.current = sampleRate;
-            if (audioFormat !== "pcm_i16") {
-              setError(
-                `Unsupported streamed audio format '${audioFormat}'. Expected pcm_i16.`,
-              );
-            }
-          },
-          onChunk: ({ audioBase64 }) => {
-            const context = playbackContextRef.current;
-            if (!context) return;
-
-            const samples = decodePcmI16Base64(audioBase64);
-            if (samples.length === 0) return;
-            streamSamplesRef.current.push(samples);
-
-            const buffer = context.createBuffer(
-              1,
-              samples.length,
-              streamSampleRateRef.current,
+      let finalRecord: SpeechHistoryRecord | null = null;
+      streamAbortRef.current = api.createTextToSpeechRecordStream(request, {
+        onStart: ({ sampleRate, audioFormat }) => {
+          streamSampleRateRef.current = sampleRate;
+          if (audioFormat !== "pcm_i16") {
+            setError(
+              `Unsupported streamed audio format '${audioFormat}'. Expected pcm_i16.`,
             );
-            const chunkForPlayback = new Float32Array(samples.length);
-            chunkForPlayback.set(samples);
-            buffer.copyToChannel(chunkForPlayback, 0);
-
-            const source = context.createBufferSource();
-            source.buffer = buffer;
-            source.connect(context.destination);
-
-            const scheduledAt = Math.max(
-              context.currentTime + 0.02,
-              nextPlaybackTimeRef.current,
-            );
-            source.start(scheduledAt);
-            nextPlaybackTimeRef.current = scheduledAt + buffer.duration;
-
-            playbackSourcesRef.current.add(source);
-            source.onended = () => {
-              playbackSourcesRef.current.delete(source);
-            };
-
-            if (context.state === "suspended") {
-              context.resume().catch(() => {});
-            }
-          },
-          onFinal: (stats) => {
-            setGenerationStats(stats);
-          },
-          onError: (errorMessage) => {
-            setError(errorMessage);
-          },
-          onDone: () => {
-            streamAbortRef.current = null;
-            setIsStreaming(false);
-            setGenerating(false);
-
-            const merged = mergeSampleChunks(streamSamplesRef.current);
-            if (merged.length > 0) {
-              const wavBlob = encodeWavPcm16(merged, streamSampleRateRef.current);
-              const url = URL.createObjectURL(wavBlob);
-              replaceAudioUrl(url);
-            }
-          },
+          }
         },
-      );
+        onChunk: ({ audioBase64 }) => {
+          const context = playbackContextRef.current;
+          if (!context) return;
+
+          const samples = decodePcmI16Base64(audioBase64);
+          if (samples.length === 0) return;
+          streamSamplesRef.current.push(samples);
+
+          const buffer = context.createBuffer(
+            1,
+            samples.length,
+            streamSampleRateRef.current,
+          );
+          const chunkForPlayback = new Float32Array(samples.length);
+          chunkForPlayback.set(samples);
+          buffer.copyToChannel(chunkForPlayback, 0);
+
+          const source = context.createBufferSource();
+          source.buffer = buffer;
+          source.connect(context.destination);
+
+          const scheduledAt = Math.max(
+            context.currentTime + 0.02,
+            nextPlaybackTimeRef.current,
+          );
+          source.start(scheduledAt);
+          nextPlaybackTimeRef.current = scheduledAt + buffer.duration;
+
+          playbackSourcesRef.current.add(source);
+          source.onended = () => {
+            playbackSourcesRef.current.delete(source);
+          };
+
+          if (context.state === "suspended") {
+            context.resume().catch(() => {});
+          }
+        },
+        onFinal: ({ record, stats }) => {
+          finalRecord = record;
+          setGenerationStats(stats);
+          setLatestRecord(record);
+        },
+        onError: (errorMessage) => {
+          setError(errorMessage);
+        },
+        onDone: () => {
+          streamAbortRef.current = null;
+          setIsStreaming(false);
+          setGenerating(false);
+
+          if (finalRecord) {
+            replaceAudioUrl(api.textToSpeechRecordAudioUrl(finalRecord.id));
+            return;
+          }
+
+          const merged = mergeSampleChunks(streamSamplesRef.current);
+          if (merged.length > 0) {
+            const wavBlob = encodeWavPcm16(merged, streamSampleRateRef.current);
+            const url = URL.createObjectURL(wavBlob);
+            replaceAudioUrl(url);
+          }
+        },
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Generation failed");
       setGenerating(false);
@@ -451,7 +470,8 @@ export function CustomVoicePlayground({
   );
 
   return (
-    <div className="card p-4">
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr),320px] items-stretch">
+      <div className="card p-4">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
@@ -741,6 +761,14 @@ export function CustomVoicePlayground({
           </motion.div>
         )}
       </AnimatePresence>
+      </div>
+
+      <SpeechHistoryPanel
+        route="text-to-speech"
+        title="Speech History"
+        emptyMessage="No saved text-to-speech generations yet."
+        latestRecord={latestRecord}
+      />
     </div>
   );
 }

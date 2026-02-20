@@ -7,6 +7,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod api;
 mod chat_store;
 mod error;
+mod speech_history_store;
 mod state;
 mod transcription_store;
 
