@@ -239,9 +239,8 @@ async fn create_record_stream(
             }
         };
 
-        let _ = event_tx.send(
-            serde_json::to_string(&StreamStartEvent { event: "start" }).unwrap_or_default(),
-        );
+        let _ = event_tx
+            .send(serde_json::to_string(&StreamStartEvent { event: "start" }).unwrap_or_default());
 
         let audio_base64 = base64::engine::general_purpose::STANDARD.encode(&audio_bytes);
         let delta_tx = event_tx.clone();
@@ -331,8 +330,8 @@ async fn create_record_stream(
             }
         }
 
-        let _ =
-            event_tx.send(serde_json::to_string(&StreamDoneEvent { event: "done" }).unwrap_or_default());
+        let _ = event_tx
+            .send(serde_json::to_string(&StreamDoneEvent { event: "done" }).unwrap_or_default());
     });
 
     let stream = async_stream::stream! {
@@ -344,18 +343,15 @@ async fn create_record_stream(
     let mut response = Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response();
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-cache"),
-    );
-    response.headers_mut().insert(
-        header::CONNECTION,
-        HeaderValue::from_static("keep-alive"),
-    );
-    response.headers_mut().insert(
-        "x-accel-buffering",
-        HeaderValue::from_static("no"),
-    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    response
+        .headers_mut()
+        .insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
+    response
+        .headers_mut()
+        .insert("x-accel-buffering", HeaderValue::from_static("no"));
     Ok(response)
 }
 
@@ -404,10 +400,9 @@ async fn parse_create_request(req: Request) -> Result<ParsedTranscriptionCreateR
                 "file" | "audio" => {
                     let filename = field.file_name().map(|value| value.to_string());
                     let mime_type = field.content_type().map(|value| value.to_string());
-                    let bytes = field
-                        .bytes()
-                        .await
-                        .map_err(|e| ApiError::bad_request(format!("Failed reading '{name}' bytes: {e}")))?;
+                    let bytes = field.bytes().await.map_err(|e| {
+                        ApiError::bad_request(format!("Failed reading '{name}' bytes: {e}"))
+                    })?;
                     if !bytes.is_empty() {
                         out.audio_bytes = bytes.to_vec();
                         out.audio_filename = filename;
@@ -495,7 +490,9 @@ fn parse_bool(raw: &str) -> bool {
 }
 
 fn audio_response(audio: StoredTranscriptionAudio) -> Response {
-    let mut response = Response::builder().status(StatusCode::OK).body(Body::from(audio.audio_bytes));
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::from(audio.audio_bytes));
 
     if let Ok(content_type) = HeaderValue::from_str(audio.audio_mime_type.as_str()) {
         response = response.map(|mut body| {

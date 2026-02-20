@@ -161,7 +161,10 @@ impl TranscriptionStore {
         .await
     }
 
-    pub async fn get_record(&self, record_id: String) -> anyhow::Result<Option<TranscriptionRecord>> {
+    pub async fn get_record(
+        &self,
+        record_id: String,
+    ) -> anyhow::Result<Option<TranscriptionRecord>> {
         self.run_blocking(move |db_path| {
             let conn = open_connection(&db_path)?;
             let record = fetch_record_without_audio(&conn, &record_id)?;
@@ -170,7 +173,10 @@ impl TranscriptionStore {
         .await
     }
 
-    pub async fn get_audio(&self, record_id: String) -> anyhow::Result<Option<StoredTranscriptionAudio>> {
+    pub async fn get_audio(
+        &self,
+        record_id: String,
+    ) -> anyhow::Result<Option<StoredTranscriptionAudio>> {
         self.run_blocking(move |db_path| {
             let conn = open_connection(&db_path)?;
             let audio = conn
