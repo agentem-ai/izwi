@@ -48,10 +48,12 @@ function getChatModelName(variant: string): string {
 }
 
 function isThinkingChatModel(variant: string): boolean {
+  const normalized = variant.trim().toLowerCase();
   return (
-    variant === "Qwen3-0.6B-4bit" ||
-    variant === "Qwen3-1.7B" ||
-    variant === "Qwen3-1.7B-4bit"
+    normalized.startsWith("qwen3-") &&
+    !normalized.includes("-asr-") &&
+    !normalized.includes("-tts-") &&
+    !normalized.includes("forcedaligner")
   );
 }
 

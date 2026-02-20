@@ -725,6 +725,29 @@ html.theme-light .border-\[\#4e89c2\] {
   border-color: #4a4c52;
 }
 
+.chat-thinking-mode-btn-on {
+  color: #e5e7eb;
+  border-color: #4a4c52;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.chat-thinking-mode-btn-on:hover {
+  background: rgba(255, 255, 255, 0.13);
+  border-color: #5a606c;
+}
+
+.chat-thinking-mode-btn-off {
+  color: #9ca3af;
+  border-color: #2f3136;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.chat-thinking-mode-btn-off:hover {
+  color: #d1d5db;
+  background: rgba(255, 255, 255, 0.05);
+  border-color: #4a4c52;
+}
+
 .chat-send-button {
   background: #ffffff;
   color: #0f172a;
@@ -988,6 +1011,29 @@ html.theme-light .chat-models-button {
 
 html.theme-light .chat-models-button:hover {
   background: rgba(15, 23, 42, 0.06);
+  border-color: #94a3b8;
+}
+
+html.theme-light .chat-thinking-mode-btn-on {
+  color: #0f172a;
+  border-color: #94a3b8;
+  background: rgba(15, 23, 42, 0.12);
+}
+
+html.theme-light .chat-thinking-mode-btn-on:hover {
+  background: rgba(15, 23, 42, 0.18);
+  border-color: #64748b;
+}
+
+html.theme-light .chat-thinking-mode-btn-off {
+  color: #64748b;
+  border-color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.04);
+}
+
+html.theme-light .chat-thinking-mode-btn-off:hover {
+  color: #334155;
+  background: rgba(15, 23, 42, 0.08);
   border-color: #94a3b8;
 }
 
