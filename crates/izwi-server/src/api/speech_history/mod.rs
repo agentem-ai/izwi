@@ -2,15 +2,19 @@
 
 mod handlers;
 
-use axum::{routing::get, Router};
+use axum::{extract::DefaultBodyLimit, routing::get, Router};
 
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
+    const AUDIO_UPLOAD_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+
     Router::new()
         .route(
             "/text-to-speech/records",
-            get(handlers::list_text_to_speech_records).post(handlers::create_text_to_speech_record),
+            get(handlers::list_text_to_speech_records)
+                .post(handlers::create_text_to_speech_record)
+                .layer(DefaultBodyLimit::max(AUDIO_UPLOAD_LIMIT_BYTES)),
         )
         .route(
             "/text-to-speech/records/:record_id",
@@ -22,7 +26,9 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/voice-design/records",
-            get(handlers::list_voice_design_records).post(handlers::create_voice_design_record),
+            get(handlers::list_voice_design_records)
+                .post(handlers::create_voice_design_record)
+                .layer(DefaultBodyLimit::max(AUDIO_UPLOAD_LIMIT_BYTES)),
         )
         .route(
             "/voice-design/records/:record_id",
@@ -34,7 +40,9 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/voice-cloning/records",
-            get(handlers::list_voice_cloning_records).post(handlers::create_voice_cloning_record),
+            get(handlers::list_voice_cloning_records)
+                .post(handlers::create_voice_cloning_record)
+                .layer(DefaultBodyLimit::max(AUDIO_UPLOAD_LIMIT_BYTES)),
         )
         .route(
             "/voice-cloning/records/:record_id",
