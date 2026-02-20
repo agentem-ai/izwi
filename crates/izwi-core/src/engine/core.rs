@@ -401,6 +401,13 @@ impl EngineCore {
             let mut engine_output =
                 self.output_processor
                     .process(exec_output.clone(), sequence_id, generation_time);
+            if exec_output.finished {
+                if let Some((_, total_generated)) = self.scheduler.get_running_info(&request_id) {
+                    let resolved_total = total_generated.max(engine_output.num_tokens);
+                    engine_output.num_tokens = resolved_total;
+                    engine_output.token_stats.generated_tokens = resolved_total;
+                }
+            }
             if let Some(phase) = self.request_phase_timings.get(&request_id).cloned() {
                 engine_output.token_stats.prefill_time_ms = phase.prefill_ms as f32;
                 engine_output.token_stats.decode_time_ms = phase.decode_ms as f32;
