@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  AlertTriangle,
   Check,
   ChevronLeft,
   ChevronRight,
-  Clock3,
   Copy,
   Download,
   FileAudio,
@@ -21,6 +21,7 @@ import {
   Settings2,
   SkipBack,
   SkipForward,
+  Trash2,
   Upload,
   X,
   ChevronDown,
@@ -293,6 +294,11 @@ export function TranscriptionPlayground({
   const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1);
   const [historyAudioError, setHistoryAudioError] = useState<string | null>(null);
   const [historyTranscriptCopied, setHistoryTranscriptCopied] = useState(false);
+  const [deleteTargetRecordId, setDeleteTargetRecordId] = useState<string | null>(
+    null,
+  );
+  const [deleteRecordPending, setDeleteRecordPending] = useState(false);
+  const [deleteRecordError, setDeleteRecordError] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -417,6 +423,74 @@ export function TranscriptionPlayground({
     setSelectedHistoryError(null);
     setIsHistoryModalOpen(true);
   }, []);
+
+  const openDeleteRecordConfirm = useCallback((recordId: string) => {
+    setDeleteTargetRecordId(recordId);
+    setDeleteRecordError(null);
+  }, []);
+
+  const closeDeleteRecordConfirm = useCallback(() => {
+    if (deleteRecordPending) {
+      return;
+    }
+    setDeleteTargetRecordId(null);
+    setDeleteRecordError(null);
+  }, [deleteRecordPending]);
+
+  const confirmDeleteRecord = useCallback(async () => {
+    if (!deleteTargetRecordId || deleteRecordPending) {
+      return;
+    }
+
+    setDeleteRecordPending(true);
+    setDeleteRecordError(null);
+
+    try {
+      await api.deleteTranscriptionRecord(deleteTargetRecordId);
+
+      const previous = historyRecords;
+      const deletedIndex = previous.findIndex(
+        (record) => record.id === deleteTargetRecordId,
+      );
+      const remaining = previous.filter(
+        (record) => record.id !== deleteTargetRecordId,
+      );
+
+      setHistoryRecords(remaining);
+
+      if (selectedHistoryRecordId === deleteTargetRecordId) {
+        const fallbackIndex =
+          deletedIndex >= 0 ? Math.min(deletedIndex, remaining.length - 1) : 0;
+        const fallbackId = remaining[fallbackIndex]?.id ?? null;
+        setSelectedHistoryRecordId(fallbackId);
+        if (!fallbackId) {
+          setSelectedHistoryRecord(null);
+          setIsHistoryModalOpen(false);
+        }
+      }
+
+      if (selectedHistoryRecord?.id === deleteTargetRecordId) {
+        setSelectedHistoryRecord(null);
+      }
+
+      setDeleteTargetRecordId(null);
+      setDeleteRecordError(null);
+    } catch (err) {
+      setDeleteRecordError(
+        err instanceof Error
+          ? err.message
+          : "Failed to delete transcription record.",
+      );
+    } finally {
+      setDeleteRecordPending(false);
+    }
+  }, [
+    deleteRecordPending,
+    deleteTargetRecordId,
+    historyRecords,
+    selectedHistoryRecord,
+    selectedHistoryRecordId,
+  ]);
 
   useEffect(() => {
     if (!isHistoryModalOpen) {
@@ -685,6 +759,28 @@ export function TranscriptionPlayground({
         : null,
     [historyRecords, selectedHistoryRecordId],
   );
+  const activeHistoryRecord =
+    selectedHistoryRecord && selectedHistoryRecord.id === selectedHistoryRecordId
+      ? selectedHistoryRecord
+      : null;
+  const deleteTargetRecord = useMemo(() => {
+    if (!deleteTargetRecordId) {
+      return null;
+    }
+    const fromSummary = historyRecords.find(
+      (record) => record.id === deleteTargetRecordId,
+    );
+    if (fromSummary) {
+      return fromSummary;
+    }
+    if (
+      activeHistoryRecord &&
+      activeHistoryRecord.id === deleteTargetRecordId
+    ) {
+      return summarizeRecord(activeHistoryRecord);
+    }
+    return null;
+  }, [activeHistoryRecord, deleteTargetRecordId, historyRecords]);
   const selectedHistoryAudioUrl = useMemo(
     () =>
       selectedHistoryRecordId
@@ -692,10 +788,6 @@ export function TranscriptionPlayground({
         : null,
     [selectedHistoryRecordId],
   );
-  const activeHistoryRecord =
-    selectedHistoryRecord && selectedHistoryRecord.id === selectedHistoryRecordId
-      ? selectedHistoryRecord
-      : null;
   const selectedHistoryIndex = useMemo(
     () =>
       selectedHistoryRecordId
@@ -1138,7 +1230,7 @@ export function TranscriptionPlayground({
         </AnimatePresence>
       </div>
 
-      <aside className="card p-4 sm:p-5 min-h-[440px] lg:min-h-[560px] flex flex-col">
+      <aside className="card p-4 sm:p-5 min-h-[440px] lg:min-h-[560px] flex flex-col overflow-hidden">
         <div className="flex items-start justify-between gap-3 mb-3">
           <div>
             <div className="inline-flex items-center gap-2 text-xs text-[var(--text-muted)]">
@@ -1166,18 +1258,18 @@ export function TranscriptionPlayground({
           </button>
         </div>
 
-        <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-2 max-h-[260px] overflow-y-auto">
+        <div className="mt-1 flex-1 min-h-0 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-2 overflow-y-auto">
           {historyLoading ? (
-            <div className="h-full min-h-[120px] flex items-center justify-center gap-2 text-xs text-[var(--text-muted)]">
+            <div className="h-full min-h-full flex items-center justify-center gap-2 text-xs text-[var(--text-muted)]">
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
               Loading history...
             </div>
           ) : historyRecords.length === 0 ? (
-            <div className="h-full min-h-[120px] flex items-center justify-center text-center px-3 text-xs text-[var(--text-subtle)]">
+            <div className="h-full min-h-full flex items-center justify-center text-center px-3 text-xs text-[var(--text-subtle)]">
               No saved transcriptions yet.
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="flex flex-col gap-2.5">
               {historyRecords.map((record) => {
                 const isActive = record.id === selectedHistoryRecordId;
                 return (
@@ -1185,7 +1277,7 @@ export function TranscriptionPlayground({
                     key={record.id}
                     onClick={() => openHistoryRecord(record.id)}
                     className={clsx(
-                      "w-full text-left rounded-lg border px-3 py-2 transition-colors",
+                      "w-full h-[96px] text-left rounded-lg border px-3 py-2.5 transition-colors overflow-hidden",
                       isActive
                         ? "border-[var(--border-strong)] bg-[var(--bg-surface-3)]"
                         : "border-[var(--border-muted)] bg-[var(--bg-surface-2)] hover:border-[var(--border-strong)]",
@@ -1195,11 +1287,32 @@ export function TranscriptionPlayground({
                       <span className="text-[11px] text-[var(--text-secondary)] truncate">
                         {record.audio_filename || record.model_id || "Audio input"}
                       </span>
-                      <span className="text-[10px] text-[var(--text-subtle)] shrink-0">
-                        {formatCreatedAt(record.created_at)}
-                      </span>
+                      <div className="inline-flex items-center gap-1.5 shrink-0">
+                        <span className="text-[10px] text-[var(--text-subtle)]">
+                          {formatCreatedAt(record.created_at)}
+                        </span>
+                        <button
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            openDeleteRecordConfirm(record.id);
+                          }}
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] text-[var(--text-subtle)] transition-colors hover:border-[var(--danger-border)] hover:bg-[var(--danger-bg)] hover:text-[var(--danger-text)]"
+                          title="Delete record"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-                    <p className="text-xs text-[var(--text-primary)] mt-1 max-h-10 overflow-hidden">
+                    <p
+                      className="text-xs text-[var(--text-primary)] mt-1.5 leading-[1.35]"
+                      style={{
+                        display: "-webkit-box",
+                        WebkitLineClamp: 3,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
                       {record.transcription_preview}
                     </p>
                   </button>
@@ -1215,24 +1328,12 @@ export function TranscriptionPlayground({
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: "auto" }}
               exit={{ opacity: 0, height: 0 }}
-              className="p-2 rounded border text-xs mt-3 bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]"
+              className="p-2 rounded border text-xs mt-2 bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]"
             >
               {historyError}
             </motion.div>
           )}
         </AnimatePresence>
-
-        <div className="mt-3 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-3">
-          <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
-            <Clock3 className="w-3.5 h-3.5" />
-            {selectedHistorySummary
-              ? `Selected: ${formatCreatedAt(selectedHistorySummary.created_at)}`
-              : "Select a record to open viewer"}
-          </div>
-          <p className="mt-2 text-xs text-[var(--text-subtle)]">
-            Selecting a history item opens a focused transcript viewer with playback controls.
-          </p>
-        </div>
       </aside>
 
       <AnimatePresence>
@@ -1269,6 +1370,16 @@ export function TranscriptionPlayground({
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5">
+                  {activeHistoryRecord && (
+                    <button
+                      onClick={() => openDeleteRecordConfirm(activeHistoryRecord.id)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-2.5 py-1.5 text-xs text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
+                      title="Delete this record"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Delete
+                    </button>
+                  )}
                   <button
                     onClick={() => openAdjacentHistoryRecord("newer")}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40"
@@ -1498,6 +1609,82 @@ export function TranscriptionPlayground({
                     )}
                   </div>
                 </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {deleteTargetRecord && (
+          <motion.div
+            className="fixed inset-0 z-[60] bg-black/75 p-4 backdrop-blur-sm"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={closeDeleteRecordConfirm}
+          >
+            <motion.div
+              initial={{ y: 10, opacity: 0, scale: 0.98 }}
+              animate={{ y: 0, opacity: 1, scale: 1 }}
+              exit={{ y: 10, opacity: 0, scale: 0.98 }}
+              transition={{ duration: 0.16 }}
+              className="mx-auto mt-[18vh] max-w-md rounded-xl border border-[var(--danger-border)] bg-[var(--bg-surface-1)] p-5"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-full border border-[var(--danger-border)] bg-[var(--danger-bg)] p-2 text-[var(--danger-text)]">
+                  <AlertTriangle className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                    Delete transcription?
+                  </h3>
+                  <p className="mt-1 text-sm text-[var(--text-muted)]">
+                    This permanently removes the saved audio and transcript from
+                    history.
+                  </p>
+                  <p className="mt-2 truncate text-xs text-[var(--text-subtle)]">
+                    {deleteTargetRecord.audio_filename ||
+                      deleteTargetRecord.model_id ||
+                      deleteTargetRecord.id}
+                  </p>
+                </div>
+              </div>
+
+              <AnimatePresence>
+                {deleteRecordError && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="mt-4 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]"
+                  >
+                    {deleteRecordError}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <div className="mt-5 flex items-center justify-end gap-2">
+                <button
+                  onClick={closeDeleteRecordConfirm}
+                  className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-3)] disabled:opacity-50"
+                  disabled={deleteRecordPending}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => void confirmDeleteRecord()}
+                  className="flex items-center gap-1.5 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)] disabled:opacity-50"
+                  disabled={deleteRecordPending}
+                >
+                  {deleteRecordPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5" />
+                  )}
+                  Delete record
+                </button>
               </div>
             </motion.div>
           </motion.div>

@@ -260,6 +260,18 @@ impl TranscriptionStore {
         .await
     }
 
+    pub async fn delete_record(&self, record_id: String) -> anyhow::Result<bool> {
+        self.run_blocking(move |db_path| {
+            let conn = open_connection(&db_path)?;
+            let changed = conn.execute(
+                "DELETE FROM transcription_records WHERE id = ?1",
+                params![record_id],
+            )?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
     async fn run_blocking<F, T>(&self, task_fn: F) -> anyhow::Result<T>
     where
         F: FnOnce(PathBuf) -> anyhow::Result<T> + Send + 'static,

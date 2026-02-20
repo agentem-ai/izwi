@@ -14,7 +14,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/transcription/records/:record_id",
-            get(handlers::get_record),
+            get(handlers::get_record).delete(handlers::delete_record),
         )
         .route(
             "/transcription/records/:record_id/audio",
