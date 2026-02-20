@@ -19,6 +19,7 @@ import {
 import clsx from "clsx";
 
 const appIconUrl = `/app-icon.png?v=${Date.now()}`;
+const APP_VERSION = `v${__APP_VERSION__}`;
 
 interface LayoutProps {
   error: string | null;
@@ -430,41 +431,66 @@ export function Layout({
           <div
             className={clsx(
               "flex items-center",
-              isSidebarCollapsed ? "flex-col gap-2" : "justify-between",
+              isSidebarCollapsed
+                ? "flex-col items-center gap-2"
+                : "justify-between",
             )}
           >
             <div
               className={clsx(
-                "text-xs text-gray-500",
-                isSidebarCollapsed && "text-center",
+                "flex flex-col",
+                isSidebarCollapsed ? "items-center gap-1.5" : "min-w-0 gap-1",
               )}
-              title={loadedText}
             >
-              {isSidebarCollapsed ? (
-                <span
-                  className={clsx(
-                    "inline-flex w-2 h-2 rounded-full",
-                    readyModelsCount > 0 ? "bg-white" : "bg-gray-600",
-                  )}
-                />
-              ) : readyModelsCount > 0 ? (
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-white" />
-                  {loadedText}
-                </span>
-              ) : (
-                <span className="text-gray-600">{loadedText}</span>
-              )}
+              <div
+                className={clsx(
+                  "text-xs text-gray-500",
+                  isSidebarCollapsed && "text-center",
+                )}
+                title={loadedText}
+              >
+                {isSidebarCollapsed ? (
+                  <span
+                    className={clsx(
+                      "inline-flex w-2 h-2 rounded-full",
+                      readyModelsCount > 0 ? "bg-white" : "bg-gray-600",
+                    )}
+                  />
+                ) : readyModelsCount > 0 ? (
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-white" />
+                    {loadedText}
+                  </span>
+                ) : (
+                  <span className="text-gray-600">{loadedText}</span>
+                )}
+              </div>
             </div>
-            <a
-              href="https://github.com/agentem-ai/izwi"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-1.5 rounded hover:bg-[#1a1a1a] transition-colors"
-              title="Izwi on GitHub"
+            <div
+              className={clsx(
+                "flex items-center",
+                isSidebarCollapsed ? "flex-col gap-1.5" : "gap-2",
+              )}
             >
-              <Github className="w-4 h-4 text-gray-500 hover:text-white" />
-            </a>
+              <div
+                className={clsx(
+                  "text-[10px] leading-none text-gray-600",
+                  isSidebarCollapsed && "text-center",
+                )}
+                title={`App version ${APP_VERSION}`}
+              >
+                {APP_VERSION}
+              </div>
+              <a
+                href="https://github.com/agentem-ai/izwi"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-1.5 rounded hover:bg-[#1a1a1a] transition-colors"
+                title="Izwi on GitHub"
+              >
+                <Github className="w-4 h-4 text-gray-500 hover:text-white" />
+              </a>
+            </div>
           </div>
         </div>
       </aside>
