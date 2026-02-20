@@ -1,5 +1,6 @@
 //! Izwi TTS Server - HTTP API for Qwen3-TTS inference
 
+use clap::Parser;
 use tokio::signal;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -15,8 +16,32 @@ mod transcription_store;
 use izwi_core::{EngineConfig, RuntimeService};
 use state::AppState;
 
+#[derive(Debug, Parser)]
+#[command(
+    name = "izwi-server",
+    about = "HTTP API server for Izwi local inference",
+    version = env!("CARGO_PKG_VERSION")
+)]
+struct ServerArgs {
+    /// Host to bind to
+    #[arg(short = 'H', long)]
+    host: Option<String>,
+
+    /// Port to listen on
+    #[arg(short, long)]
+    port: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BindConfig {
+    host: String,
+    port: u16,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args = ServerArgs::parse();
+
     // Initialize logging
     tracing_subscriber::registry()
         .with(
@@ -42,18 +67,8 @@ async fn main() -> anyhow::Result<()> {
     let app = api::create_router(state.clone());
 
     // Start server
-    let host = std::env::var("IZWI_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let port = match std::env::var("IZWI_PORT") {
-        Ok(raw) => match raw.parse::<u16>() {
-            Ok(parsed) => parsed,
-            Err(_) => {
-                warn!("Invalid IZWI_PORT='{}', falling back to 8080", raw);
-                8080
-            }
-        },
-        Err(_) => 8080,
-    };
-    let addr = format!("{host}:{port}");
+    let bind = resolve_bind_config(args);
+    let addr = format!("{}:{}", bind.host, bind.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("Server listening on http://{}", addr);
 
@@ -67,6 +82,41 @@ async fn main() -> anyhow::Result<()> {
     server.await?;
 
     Ok(())
+}
+
+fn resolve_bind_config(args: ServerArgs) -> BindConfig {
+    BindConfig {
+        host: args.host.unwrap_or_else(host_from_env_or_default),
+        port: args.port.unwrap_or_else(port_from_env_or_default),
+    }
+}
+
+fn host_from_env_or_default() -> String {
+    match std::env::var("IZWI_HOST") {
+        Ok(raw) => {
+            let host = raw.trim();
+            if host.is_empty() {
+                warn!("Empty IZWI_HOST, falling back to 0.0.0.0");
+                "0.0.0.0".to_string()
+            } else {
+                host.to_string()
+            }
+        }
+        Err(_) => "0.0.0.0".to_string(),
+    }
+}
+
+fn port_from_env_or_default() -> u16 {
+    match std::env::var("IZWI_PORT") {
+        Ok(raw) => match raw.trim().parse::<u16>() {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                warn!("Invalid IZWI_PORT='{}', falling back to 8080", raw);
+                8080
+            }
+        },
+        Err(_) => 8080,
+    }
 }
 
 /// Wait for shutdown signal and cleanup
@@ -97,4 +147,84 @@ async fn shutdown_signal(state: AppState) {
         },
     }
     drop(state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("environment lock poisoned")
+    }
+
+    fn clear_bind_env() {
+        std::env::remove_var("IZWI_HOST");
+        std::env::remove_var("IZWI_PORT");
+    }
+
+    fn parse(args: &[&str]) -> ServerArgs {
+        ServerArgs::try_parse_from(args).expect("arguments should parse")
+    }
+
+    #[test]
+    fn cli_values_override_environment() {
+        let _guard = env_lock();
+        clear_bind_env();
+        std::env::set_var("IZWI_HOST", "0.0.0.0");
+        std::env::set_var("IZWI_PORT", "8080");
+
+        let bind = resolve_bind_config(parse(&[
+            "izwi-server",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9000",
+        ]));
+
+        assert_eq!(bind.host, "127.0.0.1");
+        assert_eq!(bind.port, 9000);
+        clear_bind_env();
+    }
+
+    #[test]
+    fn uses_environment_when_cli_values_missing() {
+        let _guard = env_lock();
+        clear_bind_env();
+        std::env::set_var("IZWI_HOST", "127.0.0.1");
+        std::env::set_var("IZWI_PORT", "8088");
+
+        let bind = resolve_bind_config(parse(&["izwi-server"]));
+
+        assert_eq!(bind.host, "127.0.0.1");
+        assert_eq!(bind.port, 8088);
+        clear_bind_env();
+    }
+
+    #[test]
+    fn falls_back_to_defaults_without_cli_or_environment() {
+        let _guard = env_lock();
+        clear_bind_env();
+
+        let bind = resolve_bind_config(parse(&["izwi-server"]));
+
+        assert_eq!(bind.host, "0.0.0.0");
+        assert_eq!(bind.port, 8080);
+    }
+
+    #[test]
+    fn falls_back_to_default_when_env_port_is_invalid() {
+        let _guard = env_lock();
+        clear_bind_env();
+        std::env::set_var("IZWI_PORT", "not-a-port");
+
+        let bind = resolve_bind_config(parse(&["izwi-server"]));
+
+        assert_eq!(bind.port, 8080);
+        clear_bind_env();
+    }
 }
