@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Check,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Copy,
   Download,
@@ -11,11 +13,16 @@ import {
   Loader2,
   Mic,
   MicOff,
+  Pause,
+  Play,
   Radio,
   RefreshCw,
   RotateCcw,
   Settings2,
+  SkipBack,
+  SkipForward,
   Upload,
+  X,
   ChevronDown,
 } from "lucide-react";
 import clsx from "clsx";
@@ -240,6 +247,15 @@ function formatAudioDuration(durationSecs: number | null): string {
   return `${minutes}m ${seconds}s`;
 }
 
+function formatClockTime(totalSeconds: number): string {
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    return "0:00";
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
 export function TranscriptionPlayground({
   selectedModel,
   selectedModelReady = false,
@@ -270,12 +286,20 @@ export function TranscriptionPlayground({
   );
   const [selectedHistoryLoading, setSelectedHistoryLoading] = useState(false);
   const [selectedHistoryError, setSelectedHistoryError] = useState<string | null>(null);
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const [historyCurrentTime, setHistoryCurrentTime] = useState(0);
+  const [historyDuration, setHistoryDuration] = useState(0);
+  const [historyIsPlaying, setHistoryIsPlaying] = useState(false);
+  const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1);
+  const [historyAudioError, setHistoryAudioError] = useState<string | null>(null);
+  const [historyTranscriptCopied, setHistoryTranscriptCopied] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
+  const historyAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const selectedOption = useMemo(() => {
     if (!selectedModel) {
@@ -383,6 +407,53 @@ export function TranscriptionPlayground({
       cancelled = true;
     };
   }, [mergeHistorySummary, selectedHistoryRecord, selectedHistoryRecordId]);
+
+  const closeHistoryModal = useCallback(() => {
+    setIsHistoryModalOpen(false);
+  }, []);
+
+  const openHistoryRecord = useCallback((recordId: string) => {
+    setSelectedHistoryRecordId(recordId);
+    setSelectedHistoryError(null);
+    setIsHistoryModalOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isHistoryModalOpen) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeHistoryModal();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [closeHistoryModal, isHistoryModalOpen]);
+
+  useEffect(() => {
+    if (!isHistoryModalOpen) {
+      return;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isHistoryModalOpen]);
+
+  useEffect(() => {
+    if (isHistoryModalOpen) {
+      return;
+    }
+    const audio = historyAudioRef.current;
+    if (audio) {
+      audio.pause();
+    }
+    setHistoryIsPlaying(false);
+  }, [isHistoryModalOpen]);
 
   const processAudio = useCallback(
     async (audioBlob: Blob, options: ProcessAudioOptions = {}) => {
@@ -625,6 +696,129 @@ export function TranscriptionPlayground({
     selectedHistoryRecord && selectedHistoryRecord.id === selectedHistoryRecordId
       ? selectedHistoryRecord
       : null;
+  const selectedHistoryIndex = useMemo(
+    () =>
+      selectedHistoryRecordId
+        ? historyRecords.findIndex((record) => record.id === selectedHistoryRecordId)
+        : -1,
+    [historyRecords, selectedHistoryRecordId],
+  );
+  const historyViewerDuration =
+    historyDuration > 0
+      ? historyDuration
+      : activeHistoryRecord?.duration_secs && activeHistoryRecord.duration_secs > 0
+        ? activeHistoryRecord.duration_secs
+        : 0;
+  const canOpenNewerHistory = selectedHistoryIndex > 0;
+  const canOpenOlderHistory =
+    selectedHistoryIndex >= 0 && selectedHistoryIndex < historyRecords.length - 1;
+
+  const openAdjacentHistoryRecord = useCallback(
+    (direction: "newer" | "older") => {
+      if (selectedHistoryIndex < 0) {
+        return;
+      }
+      const targetIndex =
+        direction === "newer" ? selectedHistoryIndex - 1 : selectedHistoryIndex + 1;
+      if (targetIndex < 0 || targetIndex >= historyRecords.length) {
+        return;
+      }
+      const target = historyRecords[targetIndex];
+      if (!target) {
+        return;
+      }
+      setSelectedHistoryRecordId(target.id);
+      setSelectedHistoryError(null);
+      setIsHistoryModalOpen(true);
+    },
+    [historyRecords, selectedHistoryIndex],
+  );
+
+  const toggleHistoryPlayback = useCallback(async () => {
+    const audio = historyAudioRef.current;
+    if (!audio) {
+      return;
+    }
+    try {
+      if (audio.paused) {
+        await audio.play();
+      } else {
+        audio.pause();
+      }
+    } catch {
+      setHistoryAudioError("Unable to start playback for this audio.");
+    }
+  }, []);
+
+  const seekHistoryAudio = useCallback((nextTime: number) => {
+    const audio = historyAudioRef.current;
+    if (!audio) {
+      return;
+    }
+    const duration = Number.isFinite(audio.duration) ? audio.duration : historyViewerDuration;
+    const clamped = Math.max(0, Math.min(nextTime, duration || 0));
+    audio.currentTime = clamped;
+    setHistoryCurrentTime(clamped);
+  }, [historyViewerDuration]);
+
+  const skipHistoryAudio = useCallback((deltaSeconds: number) => {
+    const audio = historyAudioRef.current;
+    if (!audio) {
+      return;
+    }
+    const duration = Number.isFinite(audio.duration) ? audio.duration : historyViewerDuration;
+    const next = Math.max(0, Math.min(audio.currentTime + deltaSeconds, duration || 0));
+    audio.currentTime = next;
+    setHistoryCurrentTime(next);
+  }, [historyViewerDuration]);
+
+  const handleHistoryRateChange = useCallback((rate: number) => {
+    const audio = historyAudioRef.current;
+    if (!audio) {
+      return;
+    }
+    audio.playbackRate = rate;
+    setHistoryPlaybackRate(rate);
+  }, []);
+
+  const handleCopyHistoryTranscript = useCallback(async () => {
+    if (!activeHistoryRecord?.transcription) {
+      return;
+    }
+    await navigator.clipboard.writeText(activeHistoryRecord.transcription);
+    setHistoryTranscriptCopied(true);
+    window.setTimeout(() => setHistoryTranscriptCopied(false), 1800);
+  }, [activeHistoryRecord]);
+
+  const handleDownloadHistoryTranscript = useCallback(() => {
+    if (!activeHistoryRecord) {
+      return;
+    }
+    const blob = new Blob([activeHistoryRecord.transcription], {
+      type: "text/plain",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `transcription-${activeHistoryRecord.id}.txt`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }, [activeHistoryRecord]);
+
+  useEffect(() => {
+    const audio = historyAudioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.playbackRate = 1;
+    }
+    setHistoryCurrentTime(0);
+    setHistoryDuration(0);
+    setHistoryIsPlaying(false);
+    setHistoryPlaybackRate(1);
+    setHistoryAudioError(null);
+    setHistoryTranscriptCopied(false);
+  }, [selectedHistoryRecordId]);
 
   const getStatusTone = (option: ModelOption): string => {
     if (option.isReady) {
@@ -989,7 +1183,7 @@ export function TranscriptionPlayground({
                 return (
                   <button
                     key={record.id}
-                    onClick={() => setSelectedHistoryRecordId(record.id)}
+                    onClick={() => openHistoryRecord(record.id)}
                     className={clsx(
                       "w-full text-left rounded-lg border px-3 py-2 transition-colors",
                       isActive
@@ -1028,51 +1222,287 @@ export function TranscriptionPlayground({
           )}
         </AnimatePresence>
 
-        <div className="mt-3 flex-1 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-3 flex flex-col min-h-[220px]">
-          <div className="flex items-center gap-2 text-xs text-[var(--text-muted)] mb-2">
+        <div className="mt-3 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-3">
+          <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
             <Clock3 className="w-3.5 h-3.5" />
             {selectedHistorySummary
-              ? formatCreatedAt(selectedHistorySummary.created_at)
-              : "Select a record"}
+              ? `Selected: ${formatCreatedAt(selectedHistorySummary.created_at)}`
+              : "Select a record to open viewer"}
           </div>
-
-          {selectedHistoryLoading ? (
-            <div className="flex-1 flex items-center justify-center gap-2 text-xs text-[var(--text-muted)]">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Loading record...
-            </div>
-          ) : selectedHistoryError ? (
-            <div className="rounded border px-2.5 py-2 text-xs bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]">
-              {selectedHistoryError}
-            </div>
-          ) : activeHistoryRecord ? (
-            <>
-              <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--text-subtle)] mb-3">
-                <span>{activeHistoryRecord.model_id || "Unknown model"}</span>
-                <span>{activeHistoryRecord.language || "Unknown language"}</span>
-                <span>{formatAudioDuration(activeHistoryRecord.duration_secs)}</span>
-              </div>
-              {selectedHistoryAudioUrl && (
-                <audio
-                  src={selectedHistoryAudioUrl}
-                  controls
-                  preload="metadata"
-                  className="w-full h-9 mb-3"
-                />
-              )}
-              <div className="flex-1 overflow-y-auto rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2">
-                <p className="text-sm text-[var(--text-secondary)] whitespace-pre-wrap">
-                  {activeHistoryRecord.transcription || "No transcript text available."}
-                </p>
-              </div>
-            </>
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-center px-3 text-xs text-[var(--text-subtle)]">
-              Select a transcription from history to play audio and review text.
-            </div>
-          )}
+          <p className="mt-2 text-xs text-[var(--text-subtle)]">
+            Selecting a history item opens a focused transcript viewer with playback controls.
+          </p>
         </div>
       </aside>
+
+      <AnimatePresence>
+        {isHistoryModalOpen && (
+          <motion.div
+            className="fixed inset-0 z-50 bg-black/70 p-3 backdrop-blur-sm sm:p-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={closeHistoryModal}
+          >
+            <motion.div
+              initial={{ y: 18, opacity: 0, scale: 0.985 }}
+              animate={{ y: 0, opacity: 1, scale: 1 }}
+              exit={{ y: 18, opacity: 0, scale: 0.985 }}
+              transition={{ duration: 0.18 }}
+              onClick={(event) => event.stopPropagation()}
+              className="mx-auto flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] shadow-2xl"
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-[var(--border-muted)] px-4 py-3 sm:px-6">
+                <div className="min-w-0">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--text-subtle)]">
+                    Transcription Record
+                  </p>
+                  <h3 className="truncate text-sm font-medium text-[var(--text-primary)] mt-1">
+                    {selectedHistorySummary?.audio_filename ||
+                      selectedHistorySummary?.model_id ||
+                      "Audio transcription"}
+                  </h3>
+                  <p className="text-xs text-[var(--text-muted)] mt-1">
+                    {selectedHistorySummary
+                      ? formatCreatedAt(selectedHistorySummary.created_at)
+                      : "No record selected"}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => openAdjacentHistoryRecord("newer")}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40"
+                    disabled={!canOpenNewerHistory}
+                    title="Open newer record"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => openAdjacentHistoryRecord("older")}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40"
+                    disabled={!canOpenOlderHistory}
+                    title="Open older record"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={closeHistoryModal}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+                    title="Close"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid flex-1 overflow-hidden lg:grid-cols-[360px,minmax(0,1fr)]">
+                <div className="border-b border-[var(--border-muted)] p-4 sm:p-5 lg:border-b-0 lg:border-r">
+                  {selectedHistoryLoading ? (
+                    <div className="h-full min-h-[220px] flex items-center justify-center gap-2 text-sm text-[var(--text-muted)]">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Loading record...
+                    </div>
+                  ) : selectedHistoryError ? (
+                    <div className="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
+                      {selectedHistoryError}
+                    </div>
+                  ) : activeHistoryRecord ? (
+                    <>
+                      <div className="flex flex-wrap gap-1.5 mb-4">
+                        <span className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2 py-1 text-[11px] text-[var(--text-secondary)]">
+                          {activeHistoryRecord.model_id || "Unknown model"}
+                        </span>
+                        <span className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2 py-1 text-[11px] text-[var(--text-secondary)]">
+                          {activeHistoryRecord.language || "Unknown language"}
+                        </span>
+                        <span className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2 py-1 text-[11px] text-[var(--text-secondary)]">
+                          {formatAudioDuration(activeHistoryRecord.duration_secs)}
+                        </span>
+                      </div>
+
+                      <audio
+                        ref={historyAudioRef}
+                        src={selectedHistoryAudioUrl ?? undefined}
+                        preload="metadata"
+                        onLoadedMetadata={(event) => {
+                          const durationSeconds = Number.isFinite(event.currentTarget.duration)
+                            ? event.currentTarget.duration
+                            : 0;
+                          setHistoryDuration(durationSeconds);
+                          setHistoryAudioError(null);
+                        }}
+                        onTimeUpdate={(event) => {
+                          setHistoryCurrentTime(event.currentTarget.currentTime);
+                        }}
+                        onPlay={() => setHistoryIsPlaying(true)}
+                        onPause={() => setHistoryIsPlaying(false)}
+                        onRateChange={(event) =>
+                          setHistoryPlaybackRate(event.currentTarget.playbackRate)
+                        }
+                        onError={() =>
+                          setHistoryAudioError(
+                            "Unable to load audio for this transcription.",
+                          )
+                        }
+                        className="hidden"
+                      />
+
+                      <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => void toggleHistoryPlayback()}
+                            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-45"
+                            disabled={!selectedHistoryAudioUrl}
+                            title={historyIsPlaying ? "Pause" : "Play"}
+                          >
+                            {historyIsPlaying ? (
+                              <Pause className="w-4 h-4" />
+                            ) : (
+                              <Play className="w-4 h-4" />
+                            )}
+                          </button>
+                          <button
+                            onClick={() => skipHistoryAudio(-10)}
+                            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-45"
+                            disabled={!selectedHistoryAudioUrl}
+                            title="Back 10 seconds"
+                          >
+                            <SkipBack className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => skipHistoryAudio(10)}
+                            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-45"
+                            disabled={!selectedHistoryAudioUrl}
+                            title="Forward 10 seconds"
+                          >
+                            <SkipForward className="w-4 h-4" />
+                          </button>
+                          <div className="ml-auto text-[11px] text-[var(--text-muted)]">
+                            {formatClockTime(historyCurrentTime)} /{" "}
+                            {formatClockTime(historyViewerDuration)}
+                          </div>
+                        </div>
+
+                        <div className="mt-3">
+                          <input
+                            type="range"
+                            min={0}
+                            max={historyViewerDuration || 0}
+                            step={0.05}
+                            value={Math.min(historyCurrentTime, historyViewerDuration || 0)}
+                            onChange={(event) =>
+                              seekHistoryAudio(Number(event.target.value))
+                            }
+                            className="w-full accent-[var(--accent-solid)]"
+                            disabled={!selectedHistoryAudioUrl || historyViewerDuration <= 0}
+                          />
+                        </div>
+
+                        <div className="mt-3 flex items-center gap-2">
+                          <label className="text-[11px] text-[var(--text-subtle)]">
+                            Speed
+                          </label>
+                          <select
+                            value={historyPlaybackRate}
+                            onChange={(event) =>
+                              handleHistoryRateChange(Number(event.target.value))
+                            }
+                            className="h-8 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2 text-xs text-[var(--text-secondary)] focus:outline-none focus:ring-1 focus:ring-[var(--border-strong)]"
+                          >
+                            <option value={0.75}>0.75x</option>
+                            <option value={1}>1.0x</option>
+                            <option value={1.25}>1.25x</option>
+                            <option value={1.5}>1.5x</option>
+                            <option value={2}>2.0x</option>
+                          </select>
+                          {selectedHistoryAudioUrl && (
+                            <a
+                              href={selectedHistoryAudioUrl}
+                              download={
+                                activeHistoryRecord.audio_filename ||
+                                `${activeHistoryRecord.id}.wav`
+                              }
+                              className="ml-auto inline-flex items-center gap-1 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              Audio
+                            </a>
+                          )}
+                        </div>
+                      </div>
+
+                      <AnimatePresence>
+                        {historyAudioError && (
+                          <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: "auto" }}
+                            exit={{ opacity: 0, height: 0 }}
+                            className="mt-3 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]"
+                          >
+                            {historyAudioError}
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </>
+                  ) : (
+                    <div className="h-full min-h-[220px] flex items-center justify-center text-sm text-[var(--text-subtle)] text-center">
+                      Select a history record to inspect playback and transcript.
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 sm:p-5 overflow-y-auto">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                    <h4 className="text-sm font-medium text-[var(--text-primary)]">
+                      Transcript
+                    </h4>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => void handleCopyHistoryTranscript()}
+                        className="inline-flex items-center gap-1 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-45"
+                        disabled={!activeHistoryRecord?.transcription}
+                      >
+                        {historyTranscriptCopied ? (
+                          <>
+                            <Check className="w-3.5 h-3.5" />
+                            Copied
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            Copy
+                          </>
+                        )}
+                      </button>
+                      <button
+                        onClick={handleDownloadHistoryTranscript}
+                        className="inline-flex items-center gap-1 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-45"
+                        disabled={!activeHistoryRecord?.transcription}
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        TXT
+                      </button>
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-3 min-h-[320px]">
+                    {selectedHistoryLoading ? (
+                      <div className="h-[320px] flex items-center justify-center gap-2 text-sm text-[var(--text-muted)]">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Loading transcript...
+                      </div>
+                    ) : (
+                      <p className="text-sm text-[var(--text-secondary)] whitespace-pre-wrap leading-relaxed">
+                        {activeHistoryRecord?.transcription ||
+                          "No transcript text available for this record."}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
