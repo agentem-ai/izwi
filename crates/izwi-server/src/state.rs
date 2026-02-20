@@ -1,5 +1,6 @@
 //! Application state management with high-concurrency optimizations
 
+use crate::chat_store::ChatStore;
 use izwi_core::RuntimeService;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -36,10 +37,12 @@ pub struct AppState {
     pub request_timeout_secs: u64,
     /// In-memory store for OpenAI-compatible `/v1/responses` objects.
     pub response_store: Arc<RwLock<HashMap<String, StoredResponseRecord>>>,
+    /// SQLite-backed chat thread/message store.
+    pub chat_store: Arc<ChatStore>,
 }
 
 impl AppState {
-    pub fn new(runtime: RuntimeService) -> Self {
+    pub fn new(runtime: RuntimeService) -> anyhow::Result<Self> {
         // Limit concurrent requests to prevent overwhelming the system
         // Default: 100 concurrent requests (tunable based on hardware)
         let max_concurrent = std::env::var("MAX_CONCURRENT_REQUESTS")
@@ -52,12 +55,15 @@ impl AppState {
             .and_then(|s| s.parse().ok())
             .unwrap_or(300); // 5 minutes default
 
-        Self {
+        let chat_store = Arc::new(ChatStore::initialize()?);
+
+        Ok(Self {
             runtime: Arc::new(runtime),
             request_semaphore: Arc::new(Semaphore::new(max_concurrent)),
             request_timeout_secs: timeout,
             response_store: Arc::new(RwLock::new(HashMap::new())),
-        }
+            chat_store,
+        })
     }
 
     /// Acquire a permit for concurrent request processing

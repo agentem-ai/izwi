@@ -77,6 +77,94 @@ export interface ChatStreamCallbacks {
   onError?: (error: string) => void;
 }
 
+export interface ChatThread {
+  id: string;
+  title: string;
+  model_id: string | null;
+  created_at: number;
+  updated_at: number;
+  last_message_preview: string | null;
+  message_count: number;
+}
+
+export interface ChatThreadMessageRecord {
+  id: string;
+  thread_id: string;
+  role: "system" | "user" | "assistant";
+  content: string;
+  created_at: number;
+  tokens_generated: number | null;
+  generation_time_ms: number | null;
+}
+
+export interface ChatThreadDetail {
+  thread: ChatThread;
+  messages: ChatThreadMessageRecord[];
+}
+
+export interface ChatThreadCreateRequest {
+  title?: string;
+  model_id?: string;
+}
+
+export interface ChatThreadSendMessageRequest {
+  model_id?: string;
+  content: string;
+  max_tokens?: number;
+  system_prompt?: string;
+}
+
+export interface ChatThreadSendMessageResponse {
+  thread_id: string;
+  model_id: string;
+  user_message: ChatThreadMessageRecord;
+  assistant_message: ChatThreadMessageRecord;
+  stats: {
+    tokens_generated: number;
+    generation_time_ms: number;
+  };
+}
+
+type ChatThreadStreamEvent =
+  | {
+      event: "start";
+      thread_id: string;
+      model_id: string;
+      user_message: ChatThreadMessageRecord;
+    }
+  | { event: "delta"; delta: string }
+  | {
+      event: "done";
+      thread_id: string;
+      model_id: string;
+      assistant_message: ChatThreadMessageRecord;
+      stats: {
+        tokens_generated: number;
+        generation_time_ms: number;
+      };
+    }
+  | { event: "error"; error: string };
+
+export interface ChatThreadStreamCallbacks {
+  onStart?: (event: {
+    threadId: string;
+    modelId: string;
+    userMessage: ChatThreadMessageRecord;
+  }) => void;
+  onDelta?: (delta: string) => void;
+  onDone?: (event: {
+    threadId: string;
+    modelId: string;
+    assistantMessage: ChatThreadMessageRecord;
+    stats: {
+      tokens_generated: number;
+      generation_time_ms: number;
+    };
+  }) => void;
+  onError?: (error: string) => void;
+  onClose?: () => void;
+}
+
 // ============================================================================
 // Responses API Types
 // ============================================================================
@@ -1244,6 +1332,172 @@ class ApiClient {
       bytes[index] = binary.charCodeAt(index);
     }
     return new Blob([bytes], { type: "audio/wav" });
+  }
+
+  // ========================================================================
+  // Thread-based Chat API
+  // ========================================================================
+
+  async listChatThreads(): Promise<ChatThread[]> {
+    const payload = await this.request<{ threads: ChatThread[] }>("/chat/threads");
+    return payload.threads;
+  }
+
+  async createChatThread(request?: ChatThreadCreateRequest): Promise<ChatThread> {
+    return this.request("/chat/threads", {
+      method: "POST",
+      body: JSON.stringify({
+        title: request?.title,
+        model_id: request?.model_id,
+      }),
+    });
+  }
+
+  async getChatThread(threadId: string): Promise<ChatThreadDetail> {
+    return this.request(`/chat/threads/${encodeURIComponent(threadId)}`);
+  }
+
+  async listChatThreadMessages(threadId: string): Promise<ChatThreadMessageRecord[]> {
+    return this.request(`/chat/threads/${encodeURIComponent(threadId)}/messages`);
+  }
+
+  async deleteChatThread(
+    threadId: string,
+  ): Promise<{ id: string; deleted: boolean }> {
+    return this.request(`/chat/threads/${encodeURIComponent(threadId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async sendChatThreadMessage(
+    threadId: string,
+    request: ChatThreadSendMessageRequest,
+  ): Promise<ChatThreadSendMessageResponse> {
+    return this.request(
+      `/chat/threads/${encodeURIComponent(threadId)}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          model: request.model_id ?? "Qwen3-0.6B-4bit",
+          content: request.content,
+          max_tokens: request.max_tokens,
+          stream: false,
+          system_prompt: request.system_prompt,
+        }),
+      },
+    );
+  }
+
+  sendChatThreadMessageStream(
+    threadId: string,
+    request: ChatThreadSendMessageRequest,
+    callbacks: ChatThreadStreamCallbacks,
+  ): AbortController {
+    const abortController = new AbortController();
+
+    const startStream = async () => {
+      try {
+        const response = await fetch(
+          `${this.baseUrl}/chat/threads/${encodeURIComponent(threadId)}/messages`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: request.model_id ?? "Qwen3-0.6B-4bit",
+              content: request.content,
+              max_tokens: request.max_tokens,
+              stream: true,
+              system_prompt: request.system_prompt,
+            }),
+            signal: abortController.signal,
+          },
+        );
+
+        if (!response.ok) {
+          const error = await response
+            .json()
+            .catch(() => ({ error: { message: "Thread chat streaming failed" } }));
+          callbacks.onError?.(
+            error.error?.message || "Thread chat streaming failed",
+          );
+          callbacks.onClose?.();
+          return;
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          callbacks.onError?.("No response body");
+          callbacks.onClose?.();
+          return;
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (!data) continue;
+
+            if (data === "[DONE]") {
+              callbacks.onClose?.();
+              return;
+            }
+
+            try {
+              const event = JSON.parse(data) as ChatThreadStreamEvent;
+              switch (event.event) {
+                case "start":
+                  callbacks.onStart?.({
+                    threadId: event.thread_id,
+                    modelId: event.model_id,
+                    userMessage: event.user_message,
+                  });
+                  break;
+                case "delta":
+                  callbacks.onDelta?.(event.delta);
+                  break;
+                case "done":
+                  callbacks.onDone?.({
+                    threadId: event.thread_id,
+                    modelId: event.model_id,
+                    assistantMessage: event.assistant_message,
+                    stats: event.stats,
+                  });
+                  break;
+                case "error":
+                  callbacks.onError?.(event.error);
+                  break;
+              }
+            } catch {
+              // Skip malformed SSE payloads.
+            }
+          }
+        }
+
+        callbacks.onClose?.();
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") {
+          callbacks.onError?.(
+            error instanceof Error ? error.message : "Thread chat stream error",
+          );
+        }
+        callbacks.onClose?.();
+      }
+    };
+
+    startStream();
+    return abortController;
   }
 
   // ========================================================================

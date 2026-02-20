@@ -159,7 +159,7 @@ export function ChatPage({
   }));
 
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="max-w-[1400px] mx-auto">
       <ChatPlayground
         selectedModel={resolvedSelectedModel}
         selectedModelReady={selectedModelReady}
