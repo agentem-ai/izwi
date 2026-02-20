@@ -107,6 +107,10 @@ export interface ChatThreadCreateRequest {
   model_id?: string;
 }
 
+export interface ChatThreadUpdateRequest {
+  title: string;
+}
+
 export interface ChatThreadSendMessageRequest {
   model_id?: string;
   content: string;
@@ -175,6 +179,7 @@ export interface ResponsesCreateRequest {
   instructions?: string;
   max_output_tokens?: number;
   metadata?: Record<string, unknown>;
+  store?: boolean;
 }
 
 export interface ResponsesObject {
@@ -1353,6 +1358,18 @@ class ApiClient {
     });
   }
 
+  async updateChatThread(
+    threadId: string,
+    request: ChatThreadUpdateRequest,
+  ): Promise<ChatThread> {
+    return this.request(`/chat/threads/${encodeURIComponent(threadId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        title: request.title,
+      }),
+    });
+  }
+
   async getChatThread(threadId: string): Promise<ChatThreadDetail> {
     return this.request(`/chat/threads/${encodeURIComponent(threadId)}`);
   }
@@ -1655,6 +1672,7 @@ class ApiClient {
         instructions: request.instructions,
         max_output_tokens: request.max_output_tokens,
         metadata: request.metadata,
+        store: request.store,
       }),
     });
 
@@ -1680,6 +1698,7 @@ class ApiClient {
             instructions: request.instructions,
             max_output_tokens: request.max_output_tokens,
             metadata: request.metadata,
+            store: request.store,
             stream: true,
           }),
           signal: abortController.signal,

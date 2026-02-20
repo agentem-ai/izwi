@@ -134,6 +134,17 @@ export function Layout({
     onThemePreferenceChange(resolvedTheme === "dark" ? "light" : "dark");
   };
 
+  const handleNavClick = (path: string) => {
+    setMobileMenuOpen(false);
+    if (
+      path === "/chat" &&
+      typeof window !== "undefined" &&
+      window.innerWidth >= 1024
+    ) {
+      setIsSidebarCollapsed(true);
+    }
+  };
+
   return (
     <div className="min-h-screen flex bg-[#0d0d0d]">
       {/* Mobile header */}
@@ -242,7 +253,7 @@ export function Layout({
                 key={item.id}
                 to={item.path}
                 title={isSidebarCollapsed ? item.label : undefined}
-                onClick={() => setMobileMenuOpen(false)}
+                onClick={() => handleNavClick(item.path)}
                 className={({ isActive }) =>
                   clsx(
                     "sidebar-link flex items-center rounded-lg transition-all group",
@@ -299,7 +310,7 @@ export function Layout({
                 key={item.id}
                 to={item.path}
                 title={isSidebarCollapsed ? item.label : undefined}
-                onClick={() => setMobileMenuOpen(false)}
+                onClick={() => handleNavClick(item.path)}
                 className={({ isActive }) =>
                   clsx(
                     "sidebar-link flex items-center rounded-lg transition-all group",
@@ -357,7 +368,7 @@ export function Layout({
                 key={item.id}
                 to={item.path}
                 title={isSidebarCollapsed ? item.label : undefined}
-                onClick={() => setMobileMenuOpen(false)}
+                onClick={() => handleNavClick(item.path)}
                 className={({ isActive }) =>
                   clsx(
                     "sidebar-link flex items-center rounded-lg transition-all group",

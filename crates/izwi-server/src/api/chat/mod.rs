@@ -14,7 +14,9 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/chat/threads/:thread_id",
-            get(handlers::get_thread).delete(handlers::delete_thread),
+            get(handlers::get_thread)
+                .patch(handlers::update_thread)
+                .delete(handlers::delete_thread),
         )
         .route(
             "/chat/threads/:thread_id/messages",
