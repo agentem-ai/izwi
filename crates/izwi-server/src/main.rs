@@ -11,6 +11,7 @@ mod diarization_store;
 mod error;
 mod speech_history_store;
 mod state;
+mod storage_layout;
 mod transcription_store;
 
 use izwi_core::{EngineConfig, RuntimeService};

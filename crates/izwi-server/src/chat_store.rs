@@ -3,9 +3,11 @@
 use anyhow::{anyhow, Context};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task;
+
+use crate::storage_layout;
 
 const DEFAULT_THREAD_TITLE: &str = "New chat";
 
@@ -38,18 +40,13 @@ pub struct ChatStore {
 
 impl ChatStore {
     pub fn initialize() -> anyhow::Result<Self> {
-        let db_path = resolve_db_path();
+        let db_path = storage_layout::resolve_db_path();
+        let media_root = storage_layout::resolve_media_root();
 
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "Failed to create chat database directory: {}",
-                    parent.display()
-                )
-            })?;
-        }
+        storage_layout::ensure_storage_dirs(&db_path, &media_root)
+            .context("Failed to prepare chat storage layout")?;
 
-        let conn = open_connection(&db_path)
+        let conn = storage_layout::open_sqlite_connection(&db_path)
             .with_context(|| format!("Failed to open chat database: {}", db_path.display()))?;
         conn.execute_batch(
             r#"
@@ -85,7 +82,7 @@ impl ChatStore {
 
     pub async fn list_threads(&self) -> anyhow::Result<Vec<ChatThreadSummary>> {
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let mut stmt = conn.prepare(
                 r#"
                 SELECT
@@ -123,7 +120,7 @@ impl ChatStore {
 
     pub async fn get_thread(&self, thread_id: String) -> anyhow::Result<Option<ChatThreadSummary>> {
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let thread = fetch_thread_summary(&conn, &thread_id)?;
             Ok(thread)
         })
@@ -136,7 +133,7 @@ impl ChatStore {
         model_id: Option<String>,
     ) -> anyhow::Result<ChatThreadSummary> {
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let now = now_unix_millis_i64();
             let thread_id = format!("thread_{}", uuid::Uuid::new_v4().simple());
             let resolved_title = sanitize_thread_title(title.as_deref());
@@ -164,7 +161,7 @@ impl ChatStore {
 
     pub async fn delete_thread(&self, thread_id: String) -> anyhow::Result<bool> {
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let deleted_rows =
                 conn.execute("DELETE FROM chat_threads WHERE id = ?1", params![thread_id])?;
             Ok(deleted_rows > 0)
@@ -174,7 +171,7 @@ impl ChatStore {
 
     pub async fn list_messages(&self, thread_id: String) -> anyhow::Result<Vec<ChatThreadMessage>> {
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let mut stmt = conn.prepare(
                 r#"
                 SELECT
@@ -207,7 +204,7 @@ impl ChatStore {
         title: String,
     ) -> anyhow::Result<Option<ChatThreadSummary>> {
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let now = now_unix_millis_i64();
             let resolved_title = sanitize_thread_title(Some(title.as_str()));
 
@@ -235,7 +232,7 @@ impl ChatStore {
         generation_time_ms: Option<f64>,
     ) -> anyhow::Result<ChatThreadMessage> {
         self.run_blocking(move |db_path| {
-            let mut conn = open_connection(&db_path)?;
+            let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
 
             let thread_exists = tx
@@ -344,35 +341,6 @@ fn fetch_thread_summary(
         )
         .optional()?;
     Ok(thread)
-}
-
-fn resolve_db_path() -> PathBuf {
-    if let Ok(raw_path) = std::env::var("IZWI_CHAT_DB_PATH") {
-        let trimmed = raw_path.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
-
-    if let Some(mut dir) = dirs::data_local_dir() {
-        dir.push("izwi");
-        dir.push("chat.sqlite3");
-        return dir;
-    }
-
-    PathBuf::from("data/chat.sqlite3")
-}
-
-fn open_connection(path: &Path) -> anyhow::Result<Connection> {
-    let conn = Connection::open(path)
-        .with_context(|| format!("Unable to open SQLite database at {}", path.display()))?;
-    conn.busy_timeout(Duration::from_secs(3))
-        .context("Failed to configure SQLite busy timeout")?;
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .context("Failed to enable SQLite WAL journal mode")?;
-    conn.pragma_update(None, "foreign_keys", "ON")
-        .context("Failed to enable SQLite foreign key constraints")?;
-    Ok(conn)
 }
 
 fn map_thread_summary(row: &Row<'_>) -> rusqlite::Result<ChatThreadSummary> {

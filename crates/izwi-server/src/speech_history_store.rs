@@ -3,9 +3,11 @@
 use anyhow::{anyhow, Context};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task;
+
+use crate::storage_layout::{self, MediaGroup};
 
 const DEFAULT_LIST_LIMIT: usize = 200;
 
@@ -101,22 +103,18 @@ pub struct NewSpeechHistoryRecord {
 #[derive(Clone)]
 pub struct SpeechHistoryStore {
     db_path: PathBuf,
+    media_root: PathBuf,
 }
 
 impl SpeechHistoryStore {
     pub fn initialize() -> anyhow::Result<Self> {
-        let db_path = resolve_db_path();
+        let db_path = storage_layout::resolve_db_path();
+        let media_root = storage_layout::resolve_media_root();
 
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "Failed to create speech history database directory: {}",
-                    parent.display()
-                )
-            })?;
-        }
+        storage_layout::ensure_storage_dirs(&db_path, &media_root)
+            .context("Failed to prepare speech history storage layout")?;
 
-        let conn = open_connection(&db_path).with_context(|| {
+        let conn = storage_layout::open_sqlite_connection(&db_path).with_context(|| {
             format!(
                 "Failed to open speech history database: {}",
                 db_path.display()
@@ -141,7 +139,7 @@ impl SpeechHistoryStore {
                 tokens_generated INTEGER NULL,
                 audio_mime_type TEXT NOT NULL,
                 audio_filename TEXT NULL,
-                audio_bytes BLOB NOT NULL
+                audio_storage_path TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_speech_history_route_created_at
@@ -150,7 +148,10 @@ impl SpeechHistoryStore {
         )
         .context("Failed to initialize speech history database schema")?;
 
-        Ok(Self { db_path })
+        Ok(Self {
+            db_path,
+            media_root,
+        })
     }
 
     pub async fn list_records(
@@ -159,7 +160,7 @@ impl SpeechHistoryStore {
         limit: usize,
     ) -> anyhow::Result<Vec<SpeechHistoryRecordSummary>> {
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let list_limit = i64::try_from(limit.clamp(1, 500).max(1)).unwrap_or(200);
 
             let mut stmt = conn.prepare(
@@ -225,7 +226,7 @@ impl SpeechHistoryStore {
         record_id: String,
     ) -> anyhow::Result<Option<SpeechHistoryRecord>> {
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let record = fetch_record_without_audio(&conn, route_kind, &record_id)?;
             Ok(record)
         })
@@ -237,26 +238,38 @@ impl SpeechHistoryStore {
         route_kind: SpeechRouteKind,
         record_id: String,
     ) -> anyhow::Result<Option<StoredSpeechAudio>> {
+        let media_root = self.media_root.clone();
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let audio = conn
                 .query_row(
                     r#"
-                    SELECT audio_bytes, audio_mime_type, audio_filename
+                    SELECT audio_storage_path, audio_mime_type, audio_filename
                     FROM speech_history_records
                     WHERE route_kind = ?1 AND id = ?2
                     "#,
                     params![route_kind.as_db_value(), record_id],
                     |row| {
-                        Ok(StoredSpeechAudio {
-                            audio_bytes: row.get(0)?,
-                            audio_mime_type: row.get(1)?,
-                            audio_filename: row.get(2)?,
-                        })
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
                     },
                 )
                 .optional()?;
-            Ok(audio)
+            let Some((audio_storage_path, audio_mime_type, audio_filename)) = audio else {
+                return Ok(None);
+            };
+
+            let audio_bytes =
+                storage_layout::read_media_file(&media_root, audio_storage_path.as_str())?;
+
+            Ok(Some(StoredSpeechAudio {
+                audio_bytes,
+                audio_mime_type,
+                audio_filename,
+            }))
         })
         .await
     }
@@ -265,8 +278,9 @@ impl SpeechHistoryStore {
         &self,
         record: NewSpeechHistoryRecord,
     ) -> anyhow::Result<SpeechHistoryRecord> {
+        let media_root = self.media_root.clone();
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let now = now_unix_millis_i64();
             let record_id = format!("shr_{}", uuid::Uuid::new_v4().simple());
 
@@ -299,7 +313,18 @@ impl SpeechHistoryStore {
                 return Err(anyhow!("Audio payload cannot be empty"));
             }
 
-            conn.execute(
+            let namespace = format!("speech/{}", record.route_kind.as_db_value());
+            let audio_storage_path = storage_layout::persist_audio_file(
+                &media_root,
+                MediaGroup::Generated,
+                namespace.as_str(),
+                &record_id,
+                audio_filename.as_deref(),
+                audio_mime_type.as_str(),
+                &record.audio_bytes,
+            )?;
+
+            if let Err(err) = conn.execute(
                 r#"
                 INSERT INTO speech_history_records (
                     id,
@@ -317,7 +342,7 @@ impl SpeechHistoryStore {
                     tokens_generated,
                     audio_mime_type,
                     audio_filename,
-                    audio_bytes
+                    audio_storage_path
                 )
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                 "#,
@@ -337,9 +362,15 @@ impl SpeechHistoryStore {
                     tokens_generated,
                     audio_mime_type,
                     audio_filename,
-                    record.audio_bytes
+                    audio_storage_path
                 ],
-            )?;
+            ) {
+                let _ = storage_layout::delete_media_file(
+                    &media_root,
+                    Some(audio_storage_path.as_str()),
+                );
+                return Err(err).context("Failed to insert speech history record");
+            }
 
             let created = fetch_record_without_audio(&conn, record.route_kind, &record_id)?
                 .ok_or_else(|| anyhow!("Failed to fetch created speech history record"))?;
@@ -353,12 +384,26 @@ impl SpeechHistoryStore {
         route_kind: SpeechRouteKind,
         record_id: String,
     ) -> anyhow::Result<bool> {
+        let media_root = self.media_root.clone();
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
+            let audio_storage_path = conn
+                .query_row(
+                    "SELECT audio_storage_path FROM speech_history_records WHERE route_kind = ?1 AND id = ?2",
+                    params![route_kind.as_db_value(), &record_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
             let changed = conn.execute(
                 "DELETE FROM speech_history_records WHERE route_kind = ?1 AND id = ?2",
                 params![route_kind.as_db_value(), record_id],
             )?;
+
+            if changed > 0 {
+                storage_layout::delete_media_file(&media_root, audio_storage_path.as_deref())?;
+            }
+
             Ok(changed > 0)
         })
         .await
@@ -434,35 +479,6 @@ fn map_speech_history_record(row: &Row<'_>) -> rusqlite::Result<SpeechHistoryRec
         audio_mime_type: row.get(13)?,
         audio_filename: row.get(14)?,
     })
-}
-
-fn resolve_db_path() -> PathBuf {
-    if let Ok(raw_path) = std::env::var("IZWI_CHAT_DB_PATH") {
-        let trimmed = raw_path.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
-
-    if let Some(mut dir) = dirs::data_local_dir() {
-        dir.push("izwi");
-        dir.push("chat.sqlite3");
-        return dir;
-    }
-
-    PathBuf::from("data/chat.sqlite3")
-}
-
-fn open_connection(path: &Path) -> anyhow::Result<Connection> {
-    let conn = Connection::open(path)
-        .with_context(|| format!("Unable to open SQLite database at {}", path.display()))?;
-    conn.busy_timeout(Duration::from_secs(3))
-        .context("Failed to configure SQLite busy timeout")?;
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .context("Failed to enable SQLite WAL journal mode")?;
-    conn.pragma_update(None, "foreign_keys", "ON")
-        .context("Failed to enable SQLite foreign key constraints")?;
-    Ok(conn)
 }
 
 fn input_preview(content: &str) -> String {

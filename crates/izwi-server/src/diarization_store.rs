@@ -3,9 +3,11 @@
 use anyhow::{anyhow, Context};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task;
+
+use crate::storage_layout::{self, MediaGroup};
 
 const DEFAULT_LIST_LIMIT: usize = 200;
 
@@ -121,22 +123,18 @@ pub struct NewDiarizationRecord {
 #[derive(Clone)]
 pub struct DiarizationStore {
     db_path: PathBuf,
+    media_root: PathBuf,
 }
 
 impl DiarizationStore {
     pub fn initialize() -> anyhow::Result<Self> {
-        let db_path = resolve_db_path();
+        let db_path = storage_layout::resolve_db_path();
+        let media_root = storage_layout::resolve_media_root();
 
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "Failed to create diarization database directory: {}",
-                    parent.display()
-                )
-            })?;
-        }
+        storage_layout::ensure_storage_dirs(&db_path, &media_root)
+            .context("Failed to prepare diarization storage layout")?;
 
-        let conn = open_connection(&db_path).with_context(|| {
+        let conn = storage_layout::open_sqlite_connection(&db_path).with_context(|| {
             format!("Failed to open diarization database: {}", db_path.display())
         })?;
 
@@ -169,7 +167,7 @@ impl DiarizationStore {
                 utterances_json TEXT NOT NULL,
                 audio_mime_type TEXT NOT NULL,
                 audio_filename TEXT NULL,
-                audio_bytes BLOB NOT NULL
+                audio_storage_path TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_diarization_records_created_at
@@ -178,7 +176,10 @@ impl DiarizationStore {
         )
         .context("Failed to initialize diarization database schema")?;
 
-        Ok(Self { db_path })
+        Ok(Self {
+            db_path,
+            media_root,
+        })
     }
 
     pub async fn list_records(
@@ -186,7 +187,7 @@ impl DiarizationStore {
         limit: usize,
     ) -> anyhow::Result<Vec<DiarizationRecordSummary>> {
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let list_limit = i64::try_from(limit.clamp(1, 500).max(1)).unwrap_or(200);
 
             let mut stmt = conn.prepare(
@@ -239,7 +240,7 @@ impl DiarizationStore {
 
     pub async fn get_record(&self, record_id: String) -> anyhow::Result<Option<DiarizationRecord>> {
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let record = fetch_record_without_audio(&conn, &record_id)?;
             Ok(record)
         })
@@ -250,26 +251,38 @@ impl DiarizationStore {
         &self,
         record_id: String,
     ) -> anyhow::Result<Option<StoredDiarizationAudio>> {
+        let media_root = self.media_root.clone();
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let audio = conn
                 .query_row(
                     r#"
-                    SELECT audio_bytes, audio_mime_type, audio_filename
+                    SELECT audio_storage_path, audio_mime_type, audio_filename
                     FROM diarization_records
                     WHERE id = ?1
                     "#,
                     params![record_id],
                     |row| {
-                        Ok(StoredDiarizationAudio {
-                            audio_bytes: row.get(0)?,
-                            audio_mime_type: row.get(1)?,
-                            audio_filename: row.get(2)?,
-                        })
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
                     },
                 )
                 .optional()?;
-            Ok(audio)
+            let Some((audio_storage_path, audio_mime_type, audio_filename)) = audio else {
+                return Ok(None);
+            };
+
+            let audio_bytes =
+                storage_layout::read_media_file(&media_root, audio_storage_path.as_str())?;
+
+            Ok(Some(StoredDiarizationAudio {
+                audio_bytes,
+                audio_mime_type,
+                audio_filename,
+            }))
         })
         .await
     }
@@ -278,8 +291,9 @@ impl DiarizationStore {
         &self,
         record: NewDiarizationRecord,
     ) -> anyhow::Result<DiarizationRecord> {
+        let media_root = self.media_root.clone();
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let now = now_unix_millis_i64();
             let record_id = format!("dir_{}", uuid::Uuid::new_v4().simple());
 
@@ -325,6 +339,16 @@ impl DiarizationStore {
                 return Err(anyhow!("Audio payload cannot be empty"));
             }
 
+            let audio_storage_path = storage_layout::persist_audio_file(
+                &media_root,
+                MediaGroup::Uploads,
+                "diarization",
+                &record_id,
+                audio_filename.as_deref(),
+                audio_mime_type.as_str(),
+                &record.audio_bytes,
+            )?;
+
             let segments_json =
                 serde_json::to_string(&record.segments).context("Failed serializing segments")?;
             let words_json =
@@ -332,7 +356,7 @@ impl DiarizationStore {
             let utterances_json = serde_json::to_string(&record.utterances)
                 .context("Failed serializing utterances")?;
 
-            conn.execute(
+            if let Err(err) = conn.execute(
                 r#"
                 INSERT INTO diarization_records (
                     id,
@@ -361,7 +385,7 @@ impl DiarizationStore {
                     utterances_json,
                     audio_mime_type,
                     audio_filename,
-                    audio_bytes
+                    audio_storage_path
                 )
                 VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
@@ -399,9 +423,15 @@ impl DiarizationStore {
                     utterances_json,
                     audio_mime_type,
                     audio_filename,
-                    record.audio_bytes
+                    audio_storage_path
                 ],
-            )?;
+            ) {
+                let _ = storage_layout::delete_media_file(
+                    &media_root,
+                    Some(audio_storage_path.as_str()),
+                );
+                return Err(err).context("Failed to insert diarization record");
+            }
 
             let created = fetch_record_without_audio(&conn, &record_id)?
                 .ok_or_else(|| anyhow!("Failed to fetch created diarization record"))?;
@@ -411,12 +441,26 @@ impl DiarizationStore {
     }
 
     pub async fn delete_record(&self, record_id: String) -> anyhow::Result<bool> {
+        let media_root = self.media_root.clone();
         self.run_blocking(move |db_path| {
-            let conn = open_connection(&db_path)?;
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
+            let audio_storage_path = conn
+                .query_row(
+                    "SELECT audio_storage_path FROM diarization_records WHERE id = ?1",
+                    params![&record_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
             let changed = conn.execute(
                 "DELETE FROM diarization_records WHERE id = ?1",
                 params![record_id],
             )?;
+
+            if changed > 0 {
+                storage_layout::delete_media_file(&media_root, audio_storage_path.as_deref())?;
+            }
+
             Ok(changed > 0)
         })
         .await
@@ -532,35 +576,6 @@ where
 {
     raw.and_then(|value| serde_json::from_str::<Vec<T>>(value.as_str()).ok())
         .unwrap_or_default()
-}
-
-fn resolve_db_path() -> PathBuf {
-    if let Ok(raw_path) = std::env::var("IZWI_CHAT_DB_PATH") {
-        let trimmed = raw_path.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
-
-    if let Some(mut dir) = dirs::data_local_dir() {
-        dir.push("izwi");
-        dir.push("chat.sqlite3");
-        return dir;
-    }
-
-    PathBuf::from("data/chat.sqlite3")
-}
-
-fn open_connection(path: &Path) -> anyhow::Result<Connection> {
-    let conn = Connection::open(path)
-        .with_context(|| format!("Unable to open SQLite database at {}", path.display()))?;
-    conn.busy_timeout(Duration::from_secs(3))
-        .context("Failed to configure SQLite busy timeout")?;
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .context("Failed to enable SQLite WAL journal mode")?;
-    conn.pragma_update(None, "foreign_keys", "ON")
-        .context("Failed to enable SQLite foreign key constraints")?;
-    Ok(conn)
 }
 
 fn transcript_preview(content: &str) -> String {
