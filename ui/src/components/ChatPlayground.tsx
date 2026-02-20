@@ -1148,9 +1148,14 @@ export function ChatPlayground({
                         index === visibleMessages.length - 1 &&
                         isStreaming &&
                         streamingThreadId === activeThreadId;
+                      const assistantDisplayContent = isUser
+                        ? message.content
+                        : thinkingEnabledForModel
+                          ? message.content
+                          : stripThinkingArtifacts(message.content || "");
                       const parsed = isUser
                         ? null
-                        : supportsThinking
+                        : thinkingEnabledForModel
                           ? parseAssistantContent(message.content || "")
                           : null;
                       const messageKey = message.id;
@@ -1221,7 +1226,9 @@ export function ChatPlayground({
                                       : "No final answer was generated."}
                                   </div>
                                 ) : (
-                                  <MarkdownContent content={message.content} />
+                                  <MarkdownContent
+                                    content={assistantDisplayContent}
+                                  />
                                 )}
 
                                 {parsed &&
