@@ -640,6 +640,7 @@ html.theme-light .border-\[\#4e89c2\] {
 
 .chat-thread-row {
   transition: background 0.18s ease, border-color 0.18s ease;
+  min-height: 80px;
 }
 
 .chat-thread-row-active {
@@ -661,16 +662,30 @@ html.theme-light .border-\[\#4e89c2\] {
   color: #e5e7eb;
 }
 
+.chat-thread-main {
+  min-height: 76px;
+}
+
 .chat-thread-time {
   color: #6b7280;
 }
 
 .chat-thread-preview {
   color: #9ca3af;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .chat-thread-delete-btn {
   color: #6b7280;
+  opacity: 0;
+}
+
+.chat-thread-row:hover .chat-thread-delete-btn,
+.chat-thread-row-active .chat-thread-delete-btn {
+  opacity: 1;
 }
 
 .chat-thread-delete-btn:hover {
@@ -921,6 +936,10 @@ html.theme-light .chat-thread-title {
   color: #0f172a;
 }
 
+html.theme-light .chat-thread-main {
+  min-height: 76px;
+}
+
 html.theme-light .chat-thread-time {
   color: #64748b;
 }
@@ -931,6 +950,12 @@ html.theme-light .chat-thread-preview {
 
 html.theme-light .chat-thread-delete-btn {
   color: #64748b;
+  opacity: 0;
+}
+
+html.theme-light .chat-thread-row:hover .chat-thread-delete-btn,
+html.theme-light .chat-thread-row-active .chat-thread-delete-btn {
+  opacity: 1;
 }
 
 html.theme-light .chat-thread-delete-btn:hover {

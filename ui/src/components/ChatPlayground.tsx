@@ -13,6 +13,7 @@ import {
   Trash2,
   MessageSquare,
 } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import clsx from "clsx";
 import { api, ChatMessage, ChatThread, ChatThreadMessageRecord } from "../api";
 import { MarkdownContent } from "./ui/MarkdownContent";
@@ -45,6 +46,9 @@ const DEFAULT_SYSTEM_PROMPT: ChatMessage = {
   role: "system",
   content: "You are a helpful assistant.",
 };
+
+const DEFAULT_THREAD_TITLE = "New chat";
+const MAX_THREAD_TITLE_CHARS = 80;
 
 interface ParsedAssistantContent {
   thinking: string;
@@ -144,6 +148,76 @@ function extractLatestStats(messages: ChatThreadMessageRecord[]): {
   return null;
 }
 
+function truncateText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxChars - 3)).trim()}...`;
+}
+
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function stripThinkingArtifacts(text: string): string {
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, " ")
+    .replace(/<think>[\s\S]*$/gi, " ")
+    .replace(/<think>/gi, " ")
+    .replace(/<\/think>/gi, " ");
+}
+
+function displayThreadTitle(rawTitle: string | null | undefined): string {
+  const cleaned = normalizeWhitespace(stripThinkingArtifacts(rawTitle ?? ""));
+  if (!cleaned) {
+    return DEFAULT_THREAD_TITLE;
+  }
+  return truncateText(cleaned, MAX_THREAD_TITLE_CHARS);
+}
+
+function threadPreviewFromContent(content: string | null | undefined): string {
+  const normalized = normalizeWhitespace(stripThinkingArtifacts(content ?? ""));
+  if (!normalized) {
+    return "No messages yet";
+  }
+  return truncateText(normalized, 120);
+}
+
+function normalizeGeneratedThreadTitle(raw: string): string | null {
+  const compact = normalizeWhitespace(
+    stripThinkingArtifacts(raw)
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/<\/?[^>]+>/g, " "),
+  );
+  if (!compact) {
+    return null;
+  }
+
+  let title = compact.replace(/^title\s*[:\-]\s*/i, "").trim();
+  title = normalizeWhitespace(title.replace(/^['"`]+|['"`]+$/g, "").trim());
+
+  if (!title || /^user\s*:/i.test(title) || /^assistant\s*:/i.test(title)) {
+    return null;
+  }
+
+  return displayThreadTitle(title);
+}
+
+function fallbackThreadTitleFromUserMessage(content: string): string {
+  const normalized = normalizeWhitespace(stripThinkingArtifacts(content));
+  if (!normalized) {
+    return DEFAULT_THREAD_TITLE;
+  }
+  return truncateText(normalized, MAX_THREAD_TITLE_CHARS);
+}
+
+interface GenerateTitleArgs {
+  threadId: string;
+  userContent: string;
+  assistantContent: string;
+  modelId: string | null;
+}
+
 export function ChatPlayground({
   selectedModel,
   selectedModelReady,
@@ -154,15 +228,20 @@ export function ChatPlayground({
   onOpenModelManager,
   onModelRequired,
 }: ChatPlaygroundProps) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeThreadId = searchParams.get("threadId");
+
   const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatThreadMessageRecord[]>([]);
   const [expandedThoughts, setExpandedThoughts] = useState<
     Record<string, boolean>
   >({});
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
-  const [streamingThreadId, setStreamingThreadId] = useState<string | null>(null);
+  const [isPreparingThread, setIsPreparingThread] = useState(false);
+  const [streamingThreadId, setStreamingThreadId] = useState<string | null>(
+    null,
+  );
   const [threadsLoading, setThreadsLoading] = useState(true);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -174,6 +253,8 @@ export function ChatPlayground({
 
   const initializedRef = useRef(false);
   const activeThreadIdRef = useRef<string | null>(null);
+  const threadsRef = useRef<ChatThread[]>([]);
+  const titleGenerationInFlightRef = useRef<Set<string>>(new Set());
   const streamAbortRef = useRef<AbortController | null>(null);
   const listEndRef = useRef<HTMLDivElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
@@ -183,7 +264,9 @@ export function ChatPlayground({
     if (!selectedModel) {
       return null;
     }
-    return modelOptions.find((option) => option.value === selectedModel) || null;
+    return (
+      modelOptions.find((option) => option.value === selectedModel) || null
+    );
   }, [selectedModel, modelOptions]);
 
   const activeThread = useMemo(
@@ -197,62 +280,123 @@ export function ChatPlayground({
   );
 
   const hasConversation =
-    visibleMessages.length > 0 || isStreaming || messagesLoading;
+    !!activeThreadId &&
+    (visibleMessages.length > 0 || isStreaming || messagesLoading);
 
-  const refreshThreadList = useCallback(async (preferredThreadId?: string) => {
-    try {
-      const listedThreads = await api.listChatThreads();
-      if (listedThreads.length === 0) {
-        setThreads([]);
-        setActiveThreadId(null);
+  const setActiveThreadInUrl = useCallback(
+    (threadId: string | null, replace = false) => {
+      const nextSearchParams = new URLSearchParams(searchParams);
+      if (threadId) {
+        nextSearchParams.set("threadId", threadId);
+      } else {
+        nextSearchParams.delete("threadId");
+      }
+      setSearchParams(nextSearchParams, { replace });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const refreshThreadList = useCallback(
+    async (preferredThreadId?: string | null) => {
+      try {
+        const listedThreads = await api.listChatThreads();
+        setThreads(listedThreads);
+
+        const resolvedThreadId = preferredThreadId ?? activeThreadIdRef.current;
+        if (
+          resolvedThreadId &&
+          !listedThreads.some((thread) => thread.id === resolvedThreadId)
+        ) {
+          setActiveThreadInUrl(null, true);
+        }
+      } catch {
+        // Keep current thread state on refresh failures.
+      }
+    },
+    [setActiveThreadInUrl],
+  );
+
+  const maybeGenerateThreadTitle = useCallback(
+    async (args: GenerateTitleArgs) => {
+      const { threadId, userContent, assistantContent, modelId } = args;
+
+      const existingThread = threadsRef.current.find(
+        (thread) => thread.id === threadId,
+      );
+      if (
+        existingThread &&
+        existingThread.title !== DEFAULT_THREAD_TITLE &&
+        displayThreadTitle(existingThread.title) !== DEFAULT_THREAD_TITLE
+      ) {
         return;
       }
 
-      setThreads(listedThreads);
-      setActiveThreadId((previousThreadId) => {
-        const candidateThreadId = preferredThreadId ?? previousThreadId;
-        if (
-          candidateThreadId &&
-          listedThreads.some((thread) => thread.id === candidateThreadId)
-        ) {
-          return candidateThreadId;
+      if (titleGenerationInFlightRef.current.has(threadId)) {
+        return;
+      }
+
+      titleGenerationInFlightRef.current.add(threadId);
+
+      let nextTitle: string | null = null;
+
+      if (modelId) {
+        try {
+          const titleResponse = await api.createResponse({
+            model_id: modelId,
+            instructions:
+              "Generate a concise chat title (max 8 words) that summarizes the conversation topic. Return only the title text with no quotes, punctuation suffix, or commentary.",
+            input: `User: ${userContent}\nAssistant: ${assistantContent}`,
+            max_output_tokens: 24,
+            store: false,
+          });
+
+          nextTitle = normalizeGeneratedThreadTitle(titleResponse.output_text);
+        } catch {
+          // Fall back to deterministic title below.
         }
-        return listedThreads[0].id;
-      });
-    } catch {
-      // Keep current thread state on refresh failures.
-    }
-  }, []);
+      }
+
+      if (!nextTitle) {
+        nextTitle = fallbackThreadTitleFromUserMessage(userContent);
+      }
+
+      if (!nextTitle || nextTitle === DEFAULT_THREAD_TITLE) {
+        titleGenerationInFlightRef.current.delete(threadId);
+        return;
+      }
+
+      try {
+        const updatedThread = await api.updateChatThread(threadId, {
+          title: nextTitle,
+        });
+
+        setThreads((previous) =>
+          previous.map((thread) =>
+            thread.id === updatedThread.id ? updatedThread : thread,
+          ),
+        );
+      } catch {
+        setThreads((previous) =>
+          previous.map((thread) =>
+            thread.id === threadId
+              ? { ...thread, title: nextTitle ?? thread.title }
+              : thread,
+          ),
+        );
+      } finally {
+        titleGenerationInFlightRef.current.delete(threadId);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (initializedRef.current) {
-      return;
-    }
-    initializedRef.current = true;
+    activeThreadIdRef.current = activeThreadId;
+  }, [activeThreadId]);
 
-    const initializeThreads = async () => {
-      setThreadsLoading(true);
-      try {
-        const listedThreads = await api.listChatThreads();
-        if (listedThreads.length === 0) {
-          const newThread = await api.createChatThread({
-            model_id: selectedModel ?? undefined,
-          });
-          setThreads([newThread]);
-          setActiveThreadId(newThread.id);
-        } else {
-          setThreads(listedThreads);
-          setActiveThreadId(listedThreads[0].id);
-        }
-      } catch (loadError) {
-        setError(getErrorMessage(loadError, "Failed to load chat threads."));
-      } finally {
-        setThreadsLoading(false);
-      }
-    };
-
-    void initializeThreads();
-  }, [selectedModel]);
+  useEffect(() => {
+    threadsRef.current = threads;
+  }, [threads]);
 
   useEffect(() => {
     return () => {
@@ -265,10 +409,6 @@ export function ChatPlayground({
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [visibleMessages, isStreaming, activeThreadId]);
-
-  useEffect(() => {
-    activeThreadIdRef.current = activeThreadId;
-  }, [activeThreadId]);
 
   useEffect(() => {
     const onPointerDown = (event: MouseEvent) => {
@@ -286,10 +426,55 @@ export function ChatPlayground({
   }, []);
 
   useEffect(() => {
+    if (initializedRef.current) {
+      return;
+    }
+    initializedRef.current = true;
+
+    const initializeThreads = async () => {
+      setThreadsLoading(true);
+      try {
+        const listedThreads = await api.listChatThreads();
+        setThreads(listedThreads);
+
+        if (
+          activeThreadIdRef.current &&
+          !listedThreads.some(
+            (thread) => thread.id === activeThreadIdRef.current,
+          )
+        ) {
+          setActiveThreadInUrl(null, true);
+        }
+      } catch (loadError) {
+        setError(getErrorMessage(loadError, "Failed to load chat threads."));
+      } finally {
+        setThreadsLoading(false);
+      }
+    };
+
+    void initializeThreads();
+  }, [setActiveThreadInUrl]);
+
+  useEffect(() => {
+    if (threadsLoading || !activeThreadId) {
+      return;
+    }
+
+    if (!threads.some((thread) => thread.id === activeThreadId)) {
+      setActiveThreadInUrl(null, true);
+    }
+  }, [activeThreadId, setActiveThreadInUrl, threads, threadsLoading]);
+
+  useEffect(() => {
     if (!activeThreadId) {
       setMessages([]);
       setExpandedThoughts({});
       setStats(null);
+      setMessagesLoading(false);
+      return;
+    }
+
+    if (isStreaming && activeThreadId === streamingThreadId) {
       return;
     }
 
@@ -302,6 +487,7 @@ export function ChatPlayground({
         if (cancelled) {
           return;
         }
+
         setMessages(detail.messages);
         setExpandedThoughts({});
         setStats(extractLatestStats(detail.messages));
@@ -312,7 +498,9 @@ export function ChatPlayground({
         );
       } catch (loadError) {
         if (!cancelled) {
-          setError(getErrorMessage(loadError, "Failed to load this conversation."));
+          setError(
+            getErrorMessage(loadError, "Failed to load this conversation."),
+          );
         }
       } finally {
         if (!cancelled) {
@@ -326,7 +514,7 @@ export function ChatPlayground({
     return () => {
       cancelled = true;
     };
-  }, [activeThreadId]);
+  }, [activeThreadId, isStreaming, streamingThreadId]);
 
   const stopStreaming = useCallback(() => {
     if (streamAbortRef.current) {
@@ -337,11 +525,12 @@ export function ChatPlayground({
     setIsStreaming(false);
     setStreamingThreadId(null);
 
-    if (activeThreadId) {
+    const activeId = activeThreadIdRef.current;
+    if (activeId) {
       void api
-        .getChatThread(activeThreadId)
+        .getChatThread(activeId)
         .then((detail) => {
-          if (detail.thread.id !== activeThreadId) {
+          if (detail.thread.id !== activeThreadIdRef.current) {
             return;
           }
           setMessages(detail.messages);
@@ -350,9 +539,9 @@ export function ChatPlayground({
         .catch(() => {
           // Ignore follow-up sync failures after cancel.
         });
-      void refreshThreadList(activeThreadId);
+      void refreshThreadList(activeId);
     }
-  }, [activeThreadId, refreshThreadList]);
+  }, [refreshThreadList]);
 
   const handleCreateThread = useCallback(async () => {
     if (isStreaming) {
@@ -364,7 +553,7 @@ export function ChatPlayground({
         model_id: selectedModel ?? undefined,
       });
       setThreads((previous) => [thread, ...previous]);
-      setActiveThreadId(thread.id);
+      setActiveThreadInUrl(thread.id);
       setMessages([]);
       setExpandedThoughts({});
       setStats(null);
@@ -373,7 +562,7 @@ export function ChatPlayground({
     } catch (createError) {
       setError(getErrorMessage(createError, "Failed to create a new chat."));
     }
-  }, [isStreaming, selectedModel]);
+  }, [isStreaming, selectedModel, setActiveThreadInUrl]);
 
   const handleDeleteThread = useCallback(
     async (threadId: string) => {
@@ -383,34 +572,26 @@ export function ChatPlayground({
 
       try {
         await api.deleteChatThread(threadId);
+        setThreads((previous) =>
+          previous.filter((thread) => thread.id !== threadId),
+        );
 
-        const remainingThreads = threads.filter((thread) => thread.id !== threadId);
-        if (remainingThreads.length === 0) {
-          const replacementThread = await api.createChatThread({
-            model_id: selectedModel ?? undefined,
-          });
-          setThreads([replacementThread]);
-          setActiveThreadId(replacementThread.id);
+        if (activeThreadIdRef.current === threadId) {
+          setActiveThreadInUrl(null, true);
           setMessages([]);
           setExpandedThoughts({});
           setStats(null);
-          return;
-        }
-
-        setThreads(remainingThreads);
-        if (activeThreadId === threadId) {
-          setActiveThreadId(remainingThreads[0].id);
         }
       } catch (deleteError) {
         setError(getErrorMessage(deleteError, "Failed to delete this chat."));
       }
     },
-    [activeThreadId, isStreaming, selectedModel, threads],
+    [isStreaming, setActiveThreadInUrl],
   );
 
-  const sendMessage = () => {
+  const sendMessage = async () => {
     const text = input.trim();
-    if (!text || isStreaming) {
+    if (!text || isStreaming || isPreparingThread) {
       return;
     }
 
@@ -419,16 +600,40 @@ export function ChatPlayground({
       return;
     }
 
-    if (!activeThreadId) {
-      setError("No active chat thread. Create a new chat and try again.");
+    let targetThreadId = activeThreadId;
+    if (!targetThreadId) {
+      setIsPreparingThread(true);
+      try {
+        const createdThread = await api.createChatThread({
+          model_id: selectedModel ?? undefined,
+        });
+        setThreads((previous) => [createdThread, ...previous]);
+        setActiveThreadInUrl(createdThread.id);
+        setMessages([]);
+        setExpandedThoughts({});
+        setStats(null);
+        targetThreadId = createdThread.id;
+      } catch (threadError) {
+        setError(getErrorMessage(threadError, "Failed to create a new chat."));
+        setIsPreparingThread(false);
+        return;
+      }
+      setIsPreparingThread(false);
+    }
+
+    if (!targetThreadId) {
       return;
     }
 
     setError(null);
     setStats(null);
 
+    const isFirstTurn =
+      targetThreadId === activeThreadId
+        ? messages.filter((message) => message.role === "user").length === 0
+        : true;
+
     const timestamp = Date.now();
-    const targetThreadId = activeThreadId;
     const userTempId = `tmp-user-${timestamp}`;
     const assistantTempId = `tmp-assistant-${timestamp}`;
 
@@ -489,20 +694,32 @@ export function ChatPlayground({
             ),
           );
         },
-        onDone: ({ assistantMessage, stats: streamStats }) => {
+        onDone: ({ assistantMessage, stats: streamStats, modelId }) => {
           setMessages((previous) =>
             previous.map((message) =>
               message.id === assistantTempId ? assistantMessage : message,
             ),
           );
           setStats(streamStats);
+
+          if (isFirstTurn) {
+            void maybeGenerateThreadTitle({
+              threadId: targetThreadId,
+              userContent: text,
+              assistantContent: assistantMessage.content,
+              modelId,
+            });
+          }
         },
         onError: (message) => {
           setError(message);
           setMessages((previous) =>
             previous.filter(
               (entry) =>
-                !(entry.id === assistantTempId && entry.content.trim().length === 0),
+                !(
+                  entry.id === assistantTempId &&
+                  entry.content.trim().length === 0
+                ),
             ),
           );
         },
@@ -601,7 +818,9 @@ export function ChatPlayground({
     <div
       className={clsx(
         "chat-composer-shell relative rounded-[32px] border shadow-[0_20px_60px_rgba(0,0,0,0.45)]",
-        centered ? "chat-composer-shell-centered" : "chat-composer-shell-docked",
+        centered
+          ? "chat-composer-shell-centered"
+          : "chat-composer-shell-docked",
       )}
     >
       <div className="chat-composer-body rounded-[32px] overflow-visible">
@@ -612,21 +831,23 @@ export function ChatPlayground({
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
-              sendMessage();
+              void sendMessage();
             }
           }}
           placeholder={
-            !selectedModel
-              ? "Choose a model and ask anything..."
-              : !selectedModelReady
-                ? "Model selected but not loaded. Open Models to load it."
-                : "Ask anything..."
+            !activeThreadId
+              ? "Ask anything..."
+              : !selectedModel
+                ? "Choose a model and ask anything..."
+                : !selectedModelReady
+                  ? "Model selected but not loaded. Open Models to load it."
+                  : "Ask anything..."
           }
           className={clsx(
             "chat-composer-input w-full bg-transparent px-5 pt-5 pb-3 text-sm resize-none focus:outline-none",
             centered ? "min-h-[132px]" : "min-h-[96px]",
           )}
-          disabled={isStreaming}
+          disabled={isStreaming || isPreparingThread}
         />
 
         <div className="flex items-center justify-between gap-3 px-4 py-3">
@@ -644,16 +865,22 @@ export function ChatPlayground({
             {renderModelSelector()}
 
             <button
-              onClick={isStreaming ? stopStreaming : sendMessage}
-              disabled={!isStreaming && !input.trim()}
+              onClick={isStreaming ? stopStreaming : () => void sendMessage()}
+              disabled={isPreparingThread || (!isStreaming && !input.trim())}
               className="chat-send-button h-9 px-3 rounded-xl text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
             >
               {isStreaming ? (
                 <Square className="w-3.5 h-3.5" />
+              ) : isPreparingThread ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
                 <Send className="w-3.5 h-3.5" />
               )}
-              {isStreaming ? "Cancel" : "Send"}
+              {isStreaming
+                ? "Cancel"
+                : isPreparingThread
+                  ? "Starting..."
+                  : "Send"}
             </button>
           </div>
         </div>
@@ -663,17 +890,19 @@ export function ChatPlayground({
 
   return (
     <div className="relative flex flex-col lg:flex-row gap-4 h-[calc(100dvh-9rem)] lg:h-[calc(100dvh-6.5rem)]">
-      <aside className="chat-thread-panel w-full lg:w-72 lg:min-w-72 rounded-2xl border flex flex-col overflow-hidden">
+      <aside className="chat-thread-panel w-full lg:w-80 lg:min-w-80 max-h-[38dvh] lg:max-h-none shrink-0 rounded-2xl border flex flex-col overflow-hidden">
         <div className="chat-thread-panel-header px-3 py-3 border-b flex items-center justify-between gap-3">
           <div>
-            <h2 className="chat-thread-panel-title text-sm font-semibold">Chats</h2>
+            <h2 className="chat-thread-panel-title text-sm font-semibold">
+              Chats
+            </h2>
             <p className="chat-thread-panel-subtitle text-xs">
               {threads.length} {threads.length === 1 ? "thread" : "threads"}
             </p>
           </div>
           <button
             onClick={handleCreateThread}
-            disabled={isStreaming}
+            disabled={isStreaming || isPreparingThread}
             className="chat-thread-create-btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -681,9 +910,11 @@ export function ChatPlayground({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-2 space-y-1.5 max-h-56 lg:max-h-none">
+        <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5">
           {threadsLoading ? (
-            <div className="chat-thread-empty p-3 rounded-lg text-xs">Loading chats...</div>
+            <div className="chat-thread-empty p-3 rounded-lg text-xs">
+              Loading chats...
+            </div>
           ) : threads.length === 0 ? (
             <div className="chat-thread-empty p-3 rounded-lg text-xs">
               No chats yet. Create one to begin.
@@ -691,14 +922,18 @@ export function ChatPlayground({
           ) : (
             threads.map((thread) => {
               const isActive = thread.id === activeThreadId;
-              const preview = thread.last_message_preview?.trim() || "No messages yet";
+              const preview = threadPreviewFromContent(
+                thread.last_message_preview,
+              );
 
               return (
                 <div
                   key={thread.id}
                   className={clsx(
-                    "chat-thread-row rounded-xl border",
-                    isActive ? "chat-thread-row-active" : "chat-thread-row-idle",
+                    "chat-thread-row relative rounded-xl border",
+                    isActive
+                      ? "chat-thread-row-active"
+                      : "chat-thread-row-idle",
                   )}
                 >
                   <button
@@ -706,37 +941,35 @@ export function ChatPlayground({
                       if (isStreaming) {
                         return;
                       }
-                      setActiveThreadId(thread.id);
+                      setActiveThreadInUrl(thread.id);
                       setError(null);
                     }}
-                    disabled={isStreaming}
-                    className="chat-thread-main w-full text-left px-2.5 py-2"
+                    disabled={isStreaming || isPreparingThread}
+                    className="chat-thread-main block w-full text-left px-2.5 py-2.5 pr-10"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <p className="chat-thread-title truncate text-xs font-medium">
-                        {thread.title}
+                        {displayThreadTitle(thread.title)}
                       </p>
                       <span className="chat-thread-time shrink-0 text-[10px]">
                         {formatThreadTimestamp(thread.updated_at)}
                       </span>
                     </div>
-                    <p className="chat-thread-preview mt-1 text-[11px] line-clamp-2">
+                    <p className="chat-thread-preview mt-1 text-[11px]">
                       {preview}
                     </p>
                   </button>
 
-                  <div className="chat-thread-actions px-2 pb-2 flex justify-end">
-                    <button
-                      onClick={() => {
-                        void handleDeleteThread(thread.id);
-                      }}
-                      disabled={isStreaming}
-                      className="chat-thread-delete-btn h-7 w-7 rounded-md inline-flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      title="Delete chat"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => {
+                      void handleDeleteThread(thread.id);
+                    }}
+                    disabled={isStreaming || isPreparingThread}
+                    className="chat-thread-delete-btn absolute right-1.5 top-1.5 h-7 w-7 rounded-md inline-flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Delete chat"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               );
             })
@@ -757,7 +990,12 @@ export function ChatPlayground({
               </motion.div>
 
               <div className="mt-3 text-center text-xs min-h-[18px]">
-                {selectedModel ? (
+                {!activeThreadId ? (
+                  <span className="chat-meta-muted">
+                    No active chat selected. Start typing and send to create a
+                    new chat.
+                  </span>
+                ) : selectedModel ? (
                   selectedModelReady ? (
                     <span className="chat-meta-ready">
                       {modelLabel || selectedModel} is loaded and ready.
@@ -769,14 +1007,6 @@ export function ChatPlayground({
                   )
                 ) : (
                   <span className="chat-meta-muted">No model selected.</span>
-                )}
-              </div>
-
-              <div className="mt-2 text-center text-xs min-h-[18px]">
-                {activeThread ? (
-                  <span className="chat-meta-muted">Active chat: {activeThread.title}</span>
-                ) : (
-                  <span className="chat-meta-muted">No active chat thread.</span>
                 )}
               </div>
 
@@ -799,7 +1029,9 @@ export function ChatPlayground({
             <div className="chat-conversation-header px-4 sm:px-6 pb-3 border-b flex items-center justify-between gap-3">
               <div>
                 <h2 className="chat-conversation-title text-sm font-medium">
-                  {activeThread?.title || "Conversation"}
+                  {activeThread
+                    ? displayThreadTitle(activeThread.title)
+                    : "Conversation"}
                 </h2>
                 <p className="chat-conversation-subtitle text-xs mt-1">
                   {selectedModelReady
@@ -841,7 +1073,8 @@ export function ChatPlayground({
                         !!parsed &&
                         isLastAssistant &&
                         parsed.thinking.length > 0 &&
-                        (parsed.hasIncompleteThink || parsed.answer.length === 0);
+                        (parsed.hasIncompleteThink ||
+                          parsed.answer.length === 0);
                       const showAnswerOnly =
                         !isUser &&
                         !!parsed &&
@@ -854,7 +1087,10 @@ export function ChatPlayground({
                           key={messageKey}
                           initial={{ opacity: 0, y: 8 }}
                           animate={{ opacity: 1, y: 0 }}
-                          className={clsx("flex gap-3", isUser && "justify-end")}
+                          className={clsx(
+                            "flex gap-3",
+                            isUser && "justify-end",
+                          )}
                         >
                           {!isUser && (
                             <div className="chat-assistant-avatar w-7 h-7 rounded-lg border flex items-center justify-center flex-shrink-0">
@@ -901,28 +1137,30 @@ export function ChatPlayground({
                                   <MarkdownContent content={message.content} />
                                 )}
 
-                                {parsed && parsed.hasThink && !showStreamingThinking && (
-                                  <div className="mt-2">
-                                    <button
-                                      onClick={() =>
-                                        setExpandedThoughts((previous) => ({
-                                          ...previous,
-                                          [messageKey]: !previous[messageKey],
-                                        }))
-                                      }
-                                      className="chat-thinking-toggle inline-flex items-center gap-1 text-xs transition-colors"
-                                    >
-                                      {isThoughtExpanded ? (
-                                        <ChevronDown className="w-3 h-3" />
-                                      ) : (
-                                        <ChevronRight className="w-3 h-3" />
-                                      )}
-                                      {isThoughtExpanded
-                                        ? "Hide thinking"
-                                        : "Show thinking"}
-                                    </button>
-                                  </div>
-                                )}
+                                {parsed &&
+                                  parsed.hasThink &&
+                                  !showStreamingThinking && (
+                                    <div className="mt-2">
+                                      <button
+                                        onClick={() =>
+                                          setExpandedThoughts((previous) => ({
+                                            ...previous,
+                                            [messageKey]: !previous[messageKey],
+                                          }))
+                                        }
+                                        className="chat-thinking-toggle inline-flex items-center gap-1 text-xs transition-colors"
+                                      >
+                                        {isThoughtExpanded ? (
+                                          <ChevronDown className="w-3 h-3" />
+                                        ) : (
+                                          <ChevronRight className="w-3 h-3" />
+                                        )}
+                                        {isThoughtExpanded
+                                          ? "Hide thinking"
+                                          : "Show thinking"}
+                                      </button>
+                                    </div>
+                                  )}
 
                                 {parsed &&
                                   parsed.hasThink &&

@@ -43,6 +43,11 @@ pub struct DeleteChatThreadResponse {
     pub deleted: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateChatThreadRequest {
+    pub title: String,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateThreadMessageRequest {
@@ -177,6 +182,25 @@ pub async fn delete_thread(
         id: thread_id,
         deleted: true,
     }))
+}
+
+pub async fn update_thread(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    Json(req): Json<UpdateChatThreadRequest>,
+) -> Result<Json<ChatThreadSummary>, ApiError> {
+    if req.title.trim().is_empty() {
+        return Err(ApiError::bad_request("Thread title cannot be empty"));
+    }
+
+    let updated = state
+        .chat_store
+        .update_thread_title(thread_id, req.title)
+        .await
+        .map_err(map_store_error)?;
+
+    let thread = updated.ok_or_else(|| ApiError::not_found("Thread not found"))?;
+    Ok(Json(thread))
 }
 
 pub async fn create_thread_message(

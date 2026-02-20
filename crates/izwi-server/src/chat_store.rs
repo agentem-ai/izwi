@@ -124,34 +124,7 @@ impl ChatStore {
     pub async fn get_thread(&self, thread_id: String) -> anyhow::Result<Option<ChatThreadSummary>> {
         self.run_blocking(move |db_path| {
             let conn = open_connection(&db_path)?;
-            let thread = conn
-                .query_row(
-                    r#"
-                    SELECT
-                        t.id,
-                        t.title,
-                        t.model_id,
-                        t.created_at,
-                        t.updated_at,
-                        (
-                            SELECT m.content
-                            FROM chat_messages m
-                            WHERE m.thread_id = t.id
-                            ORDER BY m.created_at DESC, m.id DESC
-                            LIMIT 1
-                        ) AS last_message_preview,
-                        (
-                            SELECT COUNT(1)
-                            FROM chat_messages m
-                            WHERE m.thread_id = t.id
-                        ) AS message_count
-                    FROM chat_threads t
-                    WHERE t.id = ?1
-                    "#,
-                    params![thread_id],
-                    map_thread_summary,
-                )
-                .optional()?;
+            let thread = fetch_thread_summary(&conn, &thread_id)?;
             Ok(thread)
         })
         .await
@@ -228,6 +201,30 @@ impl ChatStore {
         .await
     }
 
+    pub async fn update_thread_title(
+        &self,
+        thread_id: String,
+        title: String,
+    ) -> anyhow::Result<Option<ChatThreadSummary>> {
+        self.run_blocking(move |db_path| {
+            let conn = open_connection(&db_path)?;
+            let now = now_unix_millis_i64();
+            let resolved_title = sanitize_thread_title(Some(title.as_str()));
+
+            let updated_rows = conn.execute(
+                "UPDATE chat_threads SET title = ?1, updated_at = ?2 WHERE id = ?3",
+                params![resolved_title, now, &thread_id],
+            )?;
+
+            if updated_rows == 0 {
+                return Ok(None);
+            }
+
+            fetch_thread_summary(&conn, &thread_id)
+        })
+        .await
+    }
+
     pub async fn append_message(
         &self,
         thread_id: String,
@@ -282,36 +279,10 @@ impl ChatStore {
                 ],
             )?;
 
-            if role == "user" {
-                let current_title: String = tx.query_row(
-                    "SELECT title FROM chat_threads WHERE id = ?1",
-                    params![thread_id],
-                    |row| row.get(0),
-                )?;
-                let user_message_count: i64 = tx.query_row(
-                    "SELECT COUNT(1) FROM chat_messages WHERE thread_id = ?1 AND role = 'user'",
-                    params![thread_id],
-                    |row| row.get(0),
-                )?;
-
-                if user_message_count == 1 && current_title == DEFAULT_THREAD_TITLE {
-                    let generated_title = derive_thread_title(&content);
-                    tx.execute(
-                        "UPDATE chat_threads SET title = ?1, updated_at = ?2, model_id = ?3 WHERE id = ?4",
-                        params![generated_title, now, model_id, thread_id],
-                    )?;
-                } else {
-                    tx.execute(
-                        "UPDATE chat_threads SET updated_at = ?1, model_id = ?2 WHERE id = ?3",
-                        params![now, model_id, thread_id],
-                    )?;
-                }
-            } else {
-                tx.execute(
-                    "UPDATE chat_threads SET updated_at = ?1, model_id = ?2 WHERE id = ?3",
-                    params![now, model_id, thread_id],
-                )?;
-            }
+            tx.execute(
+                "UPDATE chat_threads SET updated_at = ?1, model_id = ?2 WHERE id = ?3",
+                params![now, model_id, thread_id],
+            )?;
 
             tx.commit()?;
 
@@ -338,6 +309,41 @@ impl ChatStore {
             .await
             .map_err(|err| anyhow!("Chat storage worker failed: {err}"))?
     }
+}
+
+fn fetch_thread_summary(
+    conn: &Connection,
+    thread_id: &str,
+) -> anyhow::Result<Option<ChatThreadSummary>> {
+    let thread = conn
+        .query_row(
+            r#"
+            SELECT
+                t.id,
+                t.title,
+                t.model_id,
+                t.created_at,
+                t.updated_at,
+                (
+                    SELECT m.content
+                    FROM chat_messages m
+                    WHERE m.thread_id = t.id
+                    ORDER BY m.created_at DESC, m.id DESC
+                    LIMIT 1
+                ) AS last_message_preview,
+                (
+                    SELECT COUNT(1)
+                    FROM chat_messages m
+                    WHERE m.thread_id = t.id
+                ) AS message_count
+            FROM chat_threads t
+            WHERE t.id = ?1
+            "#,
+            params![thread_id],
+            map_thread_summary,
+        )
+        .optional()?;
+    Ok(thread)
 }
 
 fn resolve_db_path() -> PathBuf {
@@ -408,19 +414,6 @@ fn sanitize_thread_title(raw: Option<&str>) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    if normalized.is_empty() {
-        DEFAULT_THREAD_TITLE.to_string()
-    } else {
-        truncate_string(&normalized, 80)
-    }
-}
-
-fn derive_thread_title(content: &str) -> String {
-    let first_line = content
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or(content);
-    let normalized = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         DEFAULT_THREAD_TITLE.to_string()
     } else {
