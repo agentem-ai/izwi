@@ -14,6 +14,16 @@ PATH_LINKS=(
   "/usr/local/bin/izwi-server"
 )
 
+DB_FILES=(
+  "$HOME/Library/Application Support/izwi/izwi.sqlite3"
+  "$HOME/Library/Application Support/izwi/izwi.sqlite3-wal"
+  "$HOME/Library/Application Support/izwi/izwi.sqlite3-shm"
+)
+
+MEDIA_PATHS=(
+  "$HOME/Library/Application Support/izwi/media"
+)
+
 DATA_PATHS=(
   "$HOME/Library/Application Support/izwi"
   "$HOME/Library/Application Support/$IDENTIFIER"
@@ -35,6 +45,16 @@ for link in "${PATH_LINKS[@]}"; do
   if [ -L "$link" ]; then
     sudo rm -f "$link"
   fi
+done
+
+echo "Removing SQLite database files..."
+for db_file in "${DB_FILES[@]}"; do
+  rm -f "$db_file"
+done
+
+echo "Removing saved media files..."
+for media_path in "${MEDIA_PATHS[@]}"; do
+  rm -rf "$media_path"
 done
 
 echo "Removing user data..."
