@@ -10,9 +10,15 @@ import {
   Globe,
   Settings2,
 } from "lucide-react";
-import { api } from "../api";
+import {
+  api,
+  type SpeechHistoryRecord,
+  type TTSGenerationStats,
+} from "../api";
 import { LANGUAGES, VOICE_DESIGN_PRESETS } from "../types";
 import clsx from "clsx";
+import { GenerationStats } from "./GenerationStats";
+import { SpeechHistoryPanel } from "./SpeechHistoryPanel";
 
 interface ModelOption {
   value: string;
@@ -29,6 +35,21 @@ interface VoiceDesignPlaygroundProps {
   onSelectModel?: (variant: string) => void;
   onOpenModelManager?: () => void;
   onModelRequired: () => void;
+}
+
+function revokeObjectUrlIfNeeded(url: string | null): void {
+  if (url && url.startsWith("blob:")) {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function mapRecordToStats(record: SpeechHistoryRecord): TTSGenerationStats {
+  return {
+    generation_time_ms: record.generation_time_ms,
+    audio_duration_secs: record.audio_duration_secs ?? 0,
+    rtf: record.rtf ?? 0,
+    tokens_generated: record.tokens_generated ?? 0,
+  };
 }
 
 export function VoiceDesignPlayground({
@@ -48,6 +69,8 @@ export function VoiceDesignPlayground({
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [generationStats, setGenerationStats] = useState<TTSGenerationStats | null>(null);
+  const [latestRecord, setLatestRecord] = useState<SpeechHistoryRecord | null>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -94,25 +117,25 @@ export function VoiceDesignPlayground({
     try {
       setGenerating(true);
       setError(null);
+      setGenerationStats(null);
 
-      if (audioUrl) {
-        URL.revokeObjectURL(audioUrl);
-        setAudioUrl(null);
-      }
+      revokeObjectUrlIfNeeded(audioUrl);
+      setAudioUrl(null);
 
-      const blob = await api.generateTTS({
+      const record = await api.createVoiceDesignRecord({
         text: text.trim(),
         model_id: selectedModel,
-        language,
+        language: language === "Auto" ? undefined : language,
         max_tokens: 0,
         voice_description: voiceDescription.trim(),
       });
 
-      const url = URL.createObjectURL(blob);
-      setAudioUrl(url);
+      setAudioUrl(api.voiceDesignRecordAudioUrl(record.id));
+      setGenerationStats(mapRecordToStats(record));
+      setLatestRecord(record);
 
       setTimeout(() => {
-        audioRef.current?.play();
+        audioRef.current?.play().catch(() => {});
       }, 100);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Generation failed");
@@ -141,10 +164,9 @@ export function VoiceDesignPlayground({
     setText("");
     setVoiceDescription("");
     setError(null);
-    if (audioUrl) {
-      URL.revokeObjectURL(audioUrl);
-      setAudioUrl(null);
-    }
+    setGenerationStats(null);
+    revokeObjectUrlIfNeeded(audioUrl);
+    setAudioUrl(null);
     textareaRef.current?.focus();
   };
 
@@ -236,7 +258,8 @@ export function VoiceDesignPlayground({
   );
 
   return (
-    <div className="card p-4">
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr),320px] items-stretch">
+      <div className="card p-4">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
@@ -482,12 +505,25 @@ export function VoiceDesignPlayground({
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
-            className="mt-4 p-3 rounded bg-[#1a1a1a] border border-[#2a2a2a]"
+            className="mt-4 space-y-3"
           >
-            <audio ref={audioRef} src={audioUrl} className="w-full" controls />
+            <div className="p-3 rounded bg-[#1a1a1a] border border-[#2a2a2a]">
+              <audio ref={audioRef} src={audioUrl} className="w-full" controls />
+            </div>
+            {generationStats && (
+              <GenerationStats stats={generationStats} type="tts" />
+            )}
           </motion.div>
         )}
       </AnimatePresence>
+      </div>
+
+      <SpeechHistoryPanel
+        route="voice-design"
+        title="Voice Design History"
+        emptyMessage="No saved voice design generations yet."
+        latestRecord={latestRecord}
+      />
     </div>
   );
 }

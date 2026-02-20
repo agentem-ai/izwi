@@ -1,6 +1,7 @@
 //! Application state management with high-concurrency optimizations
 
 use crate::chat_store::ChatStore;
+use crate::speech_history_store::SpeechHistoryStore;
 use crate::transcription_store::TranscriptionStore;
 use izwi_core::RuntimeService;
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,8 @@ pub struct AppState {
     pub chat_store: Arc<ChatStore>,
     /// SQLite-backed transcription history store.
     pub transcription_store: Arc<TranscriptionStore>,
+    /// SQLite-backed speech generation history store.
+    pub speech_history_store: Arc<SpeechHistoryStore>,
 }
 
 impl AppState {
@@ -60,6 +63,7 @@ impl AppState {
 
         let chat_store = Arc::new(ChatStore::initialize()?);
         let transcription_store = Arc::new(TranscriptionStore::initialize()?);
+        let speech_history_store = Arc::new(SpeechHistoryStore::initialize()?);
 
         Ok(Self {
             runtime: Arc::new(runtime),
@@ -68,6 +72,7 @@ impl AppState {
             response_store: Arc::new(RwLock::new(HashMap::new())),
             chat_store,
             transcription_store,
+            speech_history_store,
         })
     }
 
