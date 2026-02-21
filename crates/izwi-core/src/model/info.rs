@@ -388,81 +388,48 @@ impl ModelVariant {
 
     /// Whether this is a tokenizer/codec model
     pub fn is_tokenizer(&self) -> bool {
-        matches!(self, Self::Qwen3TtsTokenizer12Hz)
+        matches!(self.family(), crate::catalog::ModelFamily::Tokenizer)
     }
 
     /// Whether this is an LFM2-Audio model
     pub fn is_lfm2(&self) -> bool {
-        matches!(
-            self,
-            Self::Lfm2Audio15B | Self::Lfm25Audio15B | Self::Lfm25Audio15B4Bit
-        )
+        matches!(self.family(), crate::catalog::ModelFamily::Lfm2Audio)
     }
 
     /// Whether this is a Qwen3-ASR model
     pub fn is_asr(&self) -> bool {
         matches!(
-            self,
-            Self::Qwen3Asr06B
-                | Self::Qwen3Asr06B4Bit
-                | Self::Qwen3Asr06B8Bit
-                | Self::Qwen3Asr06BBf16
-                | Self::Qwen3Asr17B
-                | Self::Qwen3Asr17B4Bit
-                | Self::Qwen3Asr17B8Bit
-                | Self::Qwen3Asr17BBf16
-                | Self::ParakeetTdt06BV2
-                | Self::ParakeetTdt06BV3
-                | Self::ParakeetTdt06BV24Bit
-                | Self::ParakeetTdt06BV34Bit
+            self.family(),
+            crate::catalog::ModelFamily::Qwen3Asr | crate::catalog::ModelFamily::ParakeetAsr
         )
     }
 
     /// Whether this is a diarization model.
     pub fn is_diarization(&self) -> bool {
-        matches!(self, Self::DiarStreamingSortformer4SpkV21)
+        matches!(
+            self.family(),
+            crate::catalog::ModelFamily::SortformerDiarization
+        )
     }
 
     /// Whether this is a forced aligner model
     pub fn is_forced_aligner(&self) -> bool {
         matches!(
-            self,
-            Self::Qwen3ForcedAligner06B | Self::Qwen3ForcedAligner06B4Bit
+            self.family(),
+            crate::catalog::ModelFamily::Qwen3ForcedAligner
         )
     }
 
     /// Whether this is a text chat model
     pub fn is_chat(&self) -> bool {
         matches!(
-            self,
-            Self::Qwen306B4Bit
-                | Self::Qwen317B
-                | Self::Qwen317B4Bit
-                | Self::Gemma31BIt
-                | Self::Gemma34BIt
+            self.family(),
+            crate::catalog::ModelFamily::Qwen3Chat | crate::catalog::ModelFamily::Gemma3Chat
         )
     }
 
     pub fn is_tts(&self) -> bool {
-        matches!(
-            self,
-            Self::Qwen3Tts12Hz06BBase
-                | Self::Qwen3Tts12Hz06BBase4Bit
-                | Self::Qwen3Tts12Hz06BBase8Bit
-                | Self::Qwen3Tts12Hz06BBaseBf16
-                | Self::Qwen3Tts12Hz06BCustomVoice
-                | Self::Qwen3Tts12Hz06BCustomVoice4Bit
-                | Self::Qwen3Tts12Hz06BCustomVoice8Bit
-                | Self::Qwen3Tts12Hz06BCustomVoiceBf16
-                | Self::Qwen3Tts12Hz17BBase
-                | Self::Qwen3Tts12Hz17BBase4Bit
-                | Self::Qwen3Tts12Hz17BCustomVoice
-                | Self::Qwen3Tts12Hz17BCustomVoice4Bit
-                | Self::Qwen3Tts12Hz17BVoiceDesign
-                | Self::Qwen3Tts12Hz17BVoiceDesign4Bit
-                | Self::Qwen3Tts12Hz17BVoiceDesign8Bit
-                | Self::Qwen3Tts12Hz17BVoiceDesignBf16
-        )
+        matches!(self.family(), crate::catalog::ModelFamily::Qwen3Tts)
     }
 
     /// Max output codec frames for this TTS variant, if known.
@@ -496,18 +463,12 @@ impl ModelVariant {
 
     /// Whether this is a Voxtral model
     pub fn is_voxtral(&self) -> bool {
-        matches!(self, Self::VoxtralMini4BRealtime2602)
+        matches!(self.family(), crate::catalog::ModelFamily::Voxtral)
     }
 
     /// Whether this is a Parakeet ASR model.
     pub fn is_parakeet(&self) -> bool {
-        matches!(
-            self,
-            Self::ParakeetTdt06BV2
-                | Self::ParakeetTdt06BV3
-                | Self::ParakeetTdt06BV24Bit
-                | Self::ParakeetTdt06BV34Bit
-        )
+        matches!(self.family(), crate::catalog::ModelFamily::ParakeetAsr)
     }
 
     /// Whether this is a legacy .nemo Parakeet variant.
