@@ -6,10 +6,15 @@ use crate::error::{Error, Result};
 use crate::models::shared::attention::flash::{
     flash_attention_requested, try_fused_self_attention,
 };
+use crate::models::shared::weights::mlx;
 
 use super::config::Lfm2AudioConfig;
 
 const AUDIO_VOCAB_SIZE: usize = 2049;
+
+fn has_any_tensor(vb: &VarBuilder, names: &[&str]) -> bool {
+    names.iter().any(|name| vb.contains_tensor(name))
+}
 
 #[derive(Debug, Clone)]
 pub struct DepthformerCache {
@@ -32,9 +37,9 @@ struct SharedEmbedding {
 
 impl SharedEmbedding {
     fn load(vocab_size: usize, dim: usize, vb: VarBuilder) -> Result<Self> {
-        let embedding = candle_nn::embedding(vocab_size, dim, vb.pp("embedding"))?;
+        let embedding = mlx::load_embedding(vocab_size, dim, vb.pp("embedding"))?;
         let embedding_norm = candle_nn::rms_norm(dim, 1e-5, vb.pp("embedding_norm"))?;
-        let to_logits = candle_nn::linear_no_bias(dim, vocab_size, vb.pp("to_logits"))?;
+        let to_logits = mlx::load_linear_no_bias(dim, vocab_size, vb.pp("to_logits"))?;
 
         Ok(Self {
             embedding,
@@ -54,7 +59,10 @@ impl SharedEmbedding {
 }
 
 struct Mha {
-    qkv_proj: Linear,
+    qkv_proj: Option<Linear>,
+    q_proj: Option<Linear>,
+    k_proj: Option<Linear>,
+    v_proj: Option<Linear>,
     out_proj: Linear,
     q_norm: RmsNorm,
     k_norm: RmsNorm,
@@ -67,21 +75,63 @@ struct Mha {
 
 impl Mha {
     fn load(dim: usize, vb: VarBuilder) -> Result<Self> {
-        let qkv_proj = candle_nn::linear_no_bias(dim, dim + 2 * 8 * (dim / 32), vb.pp("qkv_proj"))?;
-        let out_proj = candle_nn::linear_no_bias(dim, dim, vb.pp("out_proj"))?;
+        let gqa_dim = 8;
         let head_dim = dim / 32;
-        let q_norm = candle_nn::rms_norm(head_dim, 1e-5, vb.pp("bounded_attention.q_layernorm"))?;
-        let k_norm = candle_nn::rms_norm(head_dim, 1e-5, vb.pp("bounded_attention.k_layernorm"))?;
+        let kv_dim = gqa_dim * head_dim;
+
+        let has_qkv = has_any_tensor(&vb, &["qkv_proj.weight", "qkv_proj.scales"]);
+        let (qkv_proj, q_proj, k_proj, v_proj) = if has_qkv {
+            (
+                Some(mlx::load_linear_no_bias(
+                    dim,
+                    dim + 2 * kv_dim,
+                    vb.pp("qkv_proj"),
+                )?),
+                None,
+                None,
+                None,
+            )
+        } else {
+            (
+                None,
+                Some(mlx::load_linear_no_bias(dim, dim, vb.pp("q_proj"))?),
+                Some(mlx::load_linear_no_bias(dim, kv_dim, vb.pp("k_proj"))?),
+                Some(mlx::load_linear_no_bias(dim, kv_dim, vb.pp("v_proj"))?),
+            )
+        };
+
+        let out_proj_path = if has_any_tensor(&vb, &["out_proj.weight", "out_proj.scales"]) {
+            "out_proj"
+        } else {
+            "o_proj"
+        };
+        let out_proj = mlx::load_linear_no_bias(dim, dim, vb.pp(out_proj_path))?;
+        let head_dim = dim / 32;
+        let q_norm_path = if has_any_tensor(&vb, &["bounded_attention.q_layernorm.weight"]) {
+            "bounded_attention.q_layernorm"
+        } else {
+            "q_norm"
+        };
+        let k_norm_path = if has_any_tensor(&vb, &["bounded_attention.k_layernorm.weight"]) {
+            "bounded_attention.k_layernorm"
+        } else {
+            "k_norm"
+        };
+        let q_norm = candle_nn::rms_norm(head_dim, 1e-5, vb.pp(q_norm_path))?;
+        let k_norm = candle_nn::rms_norm(head_dim, 1e-5, vb.pp(k_norm_path))?;
 
         let (cos, sin) = precompute_freqs_cis(head_dim, 1_000_000.0, 4096, vb.device())?;
 
         Ok(Self {
             qkv_proj,
+            q_proj,
+            k_proj,
+            v_proj,
             out_proj,
             q_norm,
             k_norm,
             num_heads: 32,
-            gqa_dim: 8,
+            gqa_dim,
             head_dim,
             cos,
             sin,
@@ -94,14 +144,28 @@ impl Mha {
         cache: Option<(Tensor, Tensor)>,
     ) -> Result<(Tensor, Option<(Tensor, Tensor)>)> {
         let (b, t, dim) = x.dims3()?;
-        let packed = self.qkv_proj.forward(x)?;
-        let q = packed.narrow(2, 0, dim)?;
-        let k = packed.narrow(2, dim, self.head_dim * self.gqa_dim)?;
-        let v = packed.narrow(
-            2,
-            dim + self.head_dim * self.gqa_dim,
-            self.head_dim * self.gqa_dim,
-        )?;
+        let (q, k, v) = if let Some(qkv_proj) = &self.qkv_proj {
+            let packed = qkv_proj.forward(x)?;
+            let q = packed.narrow(2, 0, dim)?;
+            let k = packed.narrow(2, dim, self.head_dim * self.gqa_dim)?;
+            let v = packed.narrow(
+                2,
+                dim + self.head_dim * self.gqa_dim,
+                self.head_dim * self.gqa_dim,
+            )?;
+            (q, k, v)
+        } else {
+            let q_proj = self.q_proj.as_ref().ok_or_else(|| {
+                Error::ModelLoadError("Depthformer attention q_proj is missing".to_string())
+            })?;
+            let k_proj = self.k_proj.as_ref().ok_or_else(|| {
+                Error::ModelLoadError("Depthformer attention k_proj is missing".to_string())
+            })?;
+            let v_proj = self.v_proj.as_ref().ok_or_else(|| {
+                Error::ModelLoadError("Depthformer attention v_proj is missing".to_string())
+            })?;
+            (q_proj.forward(x)?, k_proj.forward(x)?, v_proj.forward(x)?)
+        };
 
         let q = q
             .reshape((b, t, self.num_heads, self.head_dim))?
@@ -188,20 +252,20 @@ struct Glu {
 }
 
 impl Glu {
-    fn load(vb: VarBuilder) -> Result<Self> {
-        let w1 = vb
-            .pp("feed_forward.w1")
-            .get_unchecked_dtype("weight", vb.dtype())?;
-        let w2 = vb
-            .pp("feed_forward.w2")
-            .get_unchecked_dtype("weight", vb.dtype())?;
-        let w3 = vb
-            .pp("feed_forward.w3")
-            .get_unchecked_dtype("weight", vb.dtype())?;
-
-        let w1 = Linear::new(w1, None);
-        let w2 = Linear::new(w2, None);
-        let w3 = Linear::new(w3, None);
+    fn load(dim: usize, vb: VarBuilder) -> Result<Self> {
+        let ff_prefix =
+            if has_any_tensor(&vb, &["feed_forward.w1.weight", "feed_forward.w1.scales"]) {
+                "feed_forward"
+            } else {
+                "ffn"
+            };
+        let ff_dim = vb
+            .pp(format!("{ff_prefix}.w1"))
+            .get_unchecked_dtype("weight", vb.dtype())?
+            .dim(0)?;
+        let w1 = mlx::load_linear_no_bias(dim, ff_dim, vb.pp(format!("{ff_prefix}.w1")))?;
+        let w2 = mlx::load_linear_no_bias(ff_dim, dim, vb.pp(format!("{ff_prefix}.w2")))?;
+        let w3 = mlx::load_linear_no_bias(dim, ff_dim, vb.pp(format!("{ff_prefix}.w3")))?;
         Ok(Self { w1, w2, w3 })
     }
 
@@ -223,10 +287,23 @@ struct StandardBlock {
 
 impl StandardBlock {
     fn load(dim: usize, vb: VarBuilder) -> Result<Self> {
-        let operator_norm = candle_nn::rms_norm(dim, 1e-5, vb.pp("operator_norm"))?;
-        let operator = Mha::load(dim, vb.pp("operator"))?;
+        let operator_norm_path = if has_any_tensor(&vb, &["operator_norm.weight"]) {
+            "operator_norm"
+        } else {
+            "attn_norm"
+        };
+        let operator_path = if has_any_tensor(
+            &vb,
+            &["operator.qkv_proj.weight", "operator.qkv_proj.scales"],
+        ) {
+            "operator"
+        } else {
+            "attn"
+        };
+        let operator_norm = candle_nn::rms_norm(dim, 1e-5, vb.pp(operator_norm_path))?;
+        let operator = Mha::load(dim, vb.pp(operator_path))?;
         let ffn_norm = candle_nn::rms_norm(dim, 1e-5, vb.pp("ffn_norm"))?;
-        let ff = Glu::load(vb)?;
+        let ff = Glu::load(dim, vb)?;
 
         Ok(Self {
             operator_norm,
@@ -271,7 +348,7 @@ impl Depthformer {
             hidden,
             vb.pp("audio_embedding"),
         )?;
-        let depth_linear = candle_nn::linear(hidden, dim * codebooks, vb.pp("depth_linear"))?;
+        let depth_linear = mlx::load_linear(hidden, dim * codebooks, vb.pp("depth_linear"))?;
 
         let mut depth_embeddings = Vec::with_capacity(codebooks);
         for i in 0..codebooks {
@@ -283,10 +360,16 @@ impl Depthformer {
         }
 
         let mut layers = Vec::with_capacity(cfg.depthformer.layers);
+        let depthformer_prefix =
+            if has_any_tensor(&vb, &["depthformer.layers.0.operator_norm.weight"]) {
+                "depthformer.layers"
+            } else {
+                "audio_head.depthformer.blocks"
+            };
         for i in 0..cfg.depthformer.layers {
             layers.push(StandardBlock::load(
                 dim,
-                vb.pp(format!("depthformer.layers.{i}")),
+                vb.pp(format!("{depthformer_prefix}.{i}")),
             )?);
         }
 

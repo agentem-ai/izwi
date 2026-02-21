@@ -1,14 +1,18 @@
 use candle_core::{IndexOp, Tensor};
 use candle_nn::ops;
 use candle_nn::{
-    batch_norm, conv1d, layer_norm, Conv1d, Conv1dConfig, Conv2d, Conv2dConfig, LayerNorm, Linear,
-    Module, ModuleT, VarBuilder,
+    batch_norm, layer_norm, Conv1d, Conv1dConfig, Conv2d, Conv2dConfig, LayerNorm, Linear, Module,
+    ModuleT, VarBuilder,
 };
 
 use crate::error::{Error, Result};
 use crate::models::shared::weights::mlx;
 
 use super::config::ConformerConfig;
+
+fn has_any_tensor(vb: &VarBuilder, names: &[&str]) -> bool {
+    names.iter().any(|name| vb.contains_tensor(name))
+}
 
 pub struct ConformerEncoder {
     cfg: ConformerConfig,
@@ -147,19 +151,75 @@ impl ConformerLayer {
     fn load(cfg: &ConformerConfig, vb: VarBuilder) -> Result<Self> {
         let d_model = cfg.d_model;
 
-        let norm_ff1 = layer_norm(d_model, 1e-5, vb.pp("norm_feed_forward1"))?;
-        let ff1 = FeedForward::load(cfg, vb.pp("feed_forward1"))?;
+        let norm_ff1_path = if has_any_tensor(&vb, &["norm_feed_forward1.weight"]) {
+            "norm_feed_forward1"
+        } else {
+            "ff1_norm"
+        };
+        let ff1_path = if has_any_tensor(
+            &vb,
+            &[
+                "feed_forward1.linear1.weight",
+                "feed_forward1.linear1.scales",
+            ],
+        ) {
+            "feed_forward1"
+        } else {
+            "ff1"
+        };
+        let norm_self_att_path = if has_any_tensor(&vb, &["norm_self_att.weight"]) {
+            "norm_self_att"
+        } else {
+            "attn_norm"
+        };
+        let self_attn_path = if has_any_tensor(
+            &vb,
+            &["self_attn.linear_q.weight", "self_attn.linear_q.scales"],
+        ) {
+            "self_attn"
+        } else {
+            "attn"
+        };
+        let norm_conv_path = if has_any_tensor(&vb, &["norm_conv.weight"]) {
+            "norm_conv"
+        } else {
+            "conv_norm"
+        };
+        let norm_ff2_path = if has_any_tensor(&vb, &["norm_feed_forward2.weight"]) {
+            "norm_feed_forward2"
+        } else {
+            "ff2_norm"
+        };
+        let ff2_path = if has_any_tensor(
+            &vb,
+            &[
+                "feed_forward2.linear1.weight",
+                "feed_forward2.linear1.scales",
+            ],
+        ) {
+            "feed_forward2"
+        } else {
+            "ff2"
+        };
+        let norm_out_path = if has_any_tensor(&vb, &["norm_out.weight"]) {
+            "norm_out"
+        } else {
+            "final_norm"
+        };
 
-        let norm_self_att = layer_norm(d_model, 1e-5, vb.pp("norm_self_att"))?;
-        let self_attn = RelPosSelfAttention::load(cfg, vb.pp("self_attn"))?;
+        let norm_ff1 = layer_norm(d_model, 1e-5, vb.pp(norm_ff1_path))?;
+        let ff1 = FeedForward::load(cfg, vb.pp(ff1_path))?;
 
-        let norm_conv = layer_norm(d_model, 1e-5, vb.pp("norm_conv"))?;
+        let norm_self_att = layer_norm(d_model, 1e-5, vb.pp(norm_self_att_path))?;
+        let self_attn = RelPosSelfAttention::load(cfg, vb.pp(self_attn_path))?;
+
+        let norm_conv = layer_norm(d_model, 1e-5, vb.pp(norm_conv_path))?;
         let conv = ConformerConv::load(cfg, vb.pp("conv"))?;
 
-        let norm_ff2 = layer_norm(d_model, 1e-5, vb.pp("norm_feed_forward2"))?;
-        let ff2 = FeedForward::load(cfg, vb.pp("feed_forward2"))?;
+        let norm_ff2 = layer_norm(d_model, 1e-5, vb.pp(norm_ff2_path))?;
+        let ff2 = FeedForward::load(cfg, vb.pp(ff2_path))?;
 
-        let norm_out = layer_norm(d_model, 1e-5, vb.pp("norm_out"))?;
+        let norm_out = layer_norm(d_model, 1e-5, vb.pp(norm_out_path))?;
 
         Ok(Self {
             cfg: cfg.clone(),
@@ -232,7 +292,7 @@ impl ConformerConv {
     fn load(cfg: &ConformerConfig, vb: VarBuilder) -> Result<Self> {
         let d_model = cfg.d_model;
 
-        let pointwise_conv1 = conv1d(
+        let pointwise_conv1 = mlx::load_conv1d_no_bias(
             d_model,
             d_model * 2,
             1,
@@ -240,7 +300,7 @@ impl ConformerConv {
             vb.pp("pointwise_conv1"),
         )?;
 
-        let depthwise_conv = conv1d(
+        let depthwise_conv = mlx::load_conv1d_no_bias(
             d_model,
             d_model,
             cfg.conv_kernel_size,
@@ -252,9 +312,14 @@ impl ConformerConv {
             vb.pp("depthwise_conv"),
         )?;
 
-        let batch_norm = batch_norm(d_model, 1e-5, vb.pp("batch_norm"))?;
+        let batch_norm_path = if has_any_tensor(&vb, &["batch_norm.weight"]) {
+            "batch_norm"
+        } else {
+            "norm"
+        };
+        let batch_norm = batch_norm(d_model, 1e-5, vb.pp(batch_norm_path))?;
 
-        let pointwise_conv2 = conv1d(
+        let pointwise_conv2 = mlx::load_conv1d_no_bias(
             d_model,
             d_model,
             1,
@@ -307,11 +372,37 @@ impl RelPosSelfAttention {
         let n_heads = cfg.n_heads;
         let head_dim = d_model / n_heads;
 
-        let linear_q = mlx::load_linear(d_model, d_model, vb.pp("linear_q"))?;
-        let linear_k = mlx::load_linear(d_model, d_model, vb.pp("linear_k"))?;
-        let linear_v = mlx::load_linear(d_model, d_model, vb.pp("linear_v"))?;
-        let linear_out = mlx::load_linear(d_model, d_model, vb.pp("linear_out"))?;
-        let linear_pos = mlx::load_linear_no_bias(d_model, d_model, vb.pp("linear_pos"))?;
+        let linear_q_path = if has_any_tensor(&vb, &["linear_q.weight", "linear_q.scales"]) {
+            "linear_q"
+        } else {
+            "q_proj"
+        };
+        let linear_k_path = if has_any_tensor(&vb, &["linear_k.weight", "linear_k.scales"]) {
+            "linear_k"
+        } else {
+            "k_proj"
+        };
+        let linear_v_path = if has_any_tensor(&vb, &["linear_v.weight", "linear_v.scales"]) {
+            "linear_v"
+        } else {
+            "v_proj"
+        };
+        let linear_out_path = if has_any_tensor(&vb, &["linear_out.weight", "linear_out.scales"]) {
+            "linear_out"
+        } else {
+            "out_proj"
+        };
+        let linear_pos_path = if has_any_tensor(&vb, &["linear_pos.weight", "linear_pos.scales"]) {
+            "linear_pos"
+        } else {
+            "pos_proj"
+        };
+
+        let linear_q = mlx::load_linear(d_model, d_model, vb.pp(linear_q_path))?;
+        let linear_k = mlx::load_linear(d_model, d_model, vb.pp(linear_k_path))?;
+        let linear_v = mlx::load_linear(d_model, d_model, vb.pp(linear_v_path))?;
+        let linear_out = mlx::load_linear(d_model, d_model, vb.pp(linear_out_path))?;
+        let linear_pos = mlx::load_linear_no_bias(d_model, d_model, vb.pp(linear_pos_path))?;
 
         let pos_bias_u = vb.get((n_heads, head_dim), "pos_bias_u")?;
         let pos_bias_v = vb.get((n_heads, head_dim), "pos_bias_v")?;

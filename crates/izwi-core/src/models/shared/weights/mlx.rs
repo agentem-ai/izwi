@@ -340,14 +340,25 @@ pub fn load_conv1d_no_bias(
     let expected_oki = (out_channels, kernel_size, in_per_group);
 
     let mut ws = vb.get_unchecked_dtype("weight", vb.dtype())?;
-    let dims = ws.dims3()?;
-
-    if dims == expected_oki {
-        ws = ws.permute((0, 2, 1))?;
-    } else if dims != expected_oik {
-        return Err(Error::ModelLoadError(format!(
-            "Conv1d weight shape mismatch: got={dims:?}, expected OIK={expected_oik:?} or OKI={expected_oki:?}"
-        )));
+    if let Ok(dims) = ws.dims3() {
+        if dims == expected_oki {
+            ws = ws.permute((0, 2, 1))?;
+        } else if dims != expected_oik {
+            return Err(Error::ModelLoadError(format!(
+                "Conv1d weight shape mismatch: got={dims:?}, expected OIK={expected_oik:?} or OKI={expected_oki:?}"
+            )));
+        }
+    } else if let Ok(dims2) = ws.dims2() {
+        if kernel_size != 1 || dims2 != (out_channels, in_per_group) {
+            return Err(Error::ModelLoadError(format!(
+                "Conv1d 2D weight shape mismatch: got={dims2:?}, expected ({out_channels},{in_per_group}) for kernel_size=1"
+            )));
+        }
+        ws = ws.unsqueeze(2)?;
+    } else {
+        return Err(Error::ModelLoadError(
+            "Conv1d weight must be a 2D/3D tensor".to_string(),
+        ));
     }
 
     Ok(Conv1d::new(ws, None, cfg))
