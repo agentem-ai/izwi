@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::error::Result;
-use crate::models::metal_memory::{metal_pool_for_device, MetalMemoryPool};
+use crate::models::shared::memory::metal::{metal_pool_for_device, MetalMemoryPool};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceKind {
@@ -145,7 +145,9 @@ impl DeviceProfile {
     }
 
     /// Get memory pool statistics if available
-    pub fn memory_pool_stats(&self) -> Option<crate::models::metal_memory::MetalPoolStats> {
+    pub fn memory_pool_stats(
+        &self,
+    ) -> Option<crate::models::shared::memory::metal::MetalPoolStats> {
         self.memory_pool.as_ref().map(|pool| pool.stats())
     }
 

@@ -1,6 +1,6 @@
 use crate::model::ModelVariant;
-use crate::models::lfm2_audio::{SpeechToSpeechDecodeState, TtsDecodeState};
-use crate::models::qwen3_tts::TtsDecodeState as QwenTtsDecodeState;
+use crate::models::architectures::lfm2::audio::{SpeechToSpeechDecodeState, TtsDecodeState};
+use crate::models::architectures::qwen3::tts::TtsDecodeState as QwenTtsDecodeState;
 use crate::models::registry::{NativeAsrDecodeState, NativeChatDecodeState};
 
 pub(super) struct ActiveChatDecode {

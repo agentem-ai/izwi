@@ -14,9 +14,9 @@ use tracing::{info, warn};
 
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
-use crate::models::chat_types::{ChatMessage, ChatRole};
-use crate::models::device::DeviceProfile;
 use crate::models::shared::attention::flash::should_enable_flash_attention_v2;
+use crate::models::shared::chat::{ChatMessage, ChatRole};
+use crate::models::shared::device::DeviceProfile;
 use crate::tokenizer::Tokenizer;
 
 #[derive(Debug, Clone)]

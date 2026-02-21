@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 
-use crate::models::qwen3::Qwen3Config;
+use crate::models::architectures::qwen3::core::Qwen3Config;
 
 /// Voxtral params.json configuration (Mistral format)
 #[derive(Debug, Clone, Deserialize)]

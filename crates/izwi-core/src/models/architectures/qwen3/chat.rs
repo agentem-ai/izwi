@@ -11,9 +11,9 @@ use serde_json::Value;
 use tracing::info;
 
 use crate::error::{Error, Result};
-use crate::models::chat_types::{ChatMessage, ChatRole};
-use crate::models::device::DeviceProfile;
-use crate::models::qwen3::{Qwen3Cache, Qwen3Config, Qwen3Model};
+use crate::models::architectures::qwen3::core::{Qwen3Cache, Qwen3Config, Qwen3Model};
+use crate::models::shared::chat::{ChatMessage, ChatRole};
+use crate::models::shared::device::DeviceProfile;
 use crate::tokenizer::Tokenizer;
 
 #[derive(Debug, Clone)]

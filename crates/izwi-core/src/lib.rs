@@ -31,8 +31,10 @@ pub mod codecs;
 pub mod config;
 pub mod engine;
 pub mod error;
+#[doc(hidden)]
 pub mod families;
 pub mod model;
+#[doc(hidden)]
 pub mod models;
 pub mod runtime;
 pub mod tokenizer;
@@ -54,19 +56,19 @@ pub use runtime::{
     GenerationRequest, GenerationResult,
 };
 pub use runtime::{
-    AudioChunk, GenerationConfig, RuntimeService, RuntimeTelemetrySnapshot,
+    AudioChunk, GenerationConfig, InferenceOptions, RuntimeService, RuntimeTelemetrySnapshot,
     SpeechToSpeechGeneration,
 };
 
 // Catalog/model metadata re-exports
 pub use catalog::{
     parse_chat_model_variant, parse_model_variant, parse_tts_model_variant,
-    resolve_asr_model_variant, resolve_diarization_model_variant, DownloadProgress, ModelInfo,
-    ModelManager, ModelStatus, ModelVariant,
+    resolve_asr_model_variant, resolve_diarization_model_variant,
 };
+pub use model::{DownloadProgress, ModelInfo, ModelManager, ModelStatus, ModelVariant};
 
-// Native family/device registry re-exports
-pub use families::{DeviceProfile, DeviceSelector, ModelRegistry};
+// Canonical native registry/device exports.
+pub use models::{DeviceProfile, DeviceSelector, ModelRegistry};
 
 #[cfg(test)]
 pub(crate) fn env_test_lock() -> &'static std::sync::Mutex<()> {

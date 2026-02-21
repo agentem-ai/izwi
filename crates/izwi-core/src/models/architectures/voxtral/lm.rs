@@ -8,7 +8,7 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::{ops, Embedding, Linear, Module, RmsNorm, VarBuilder};
 
 use crate::error::{Error, Result};
-use crate::models::qwen3::{
+use crate::models::architectures::qwen3::core::{
     build_mrope_cache, build_rope_cache, causal_mask, repeat_kv, Qwen3Cache, Qwen3Config,
 };
 use crate::models::shared::attention::flash::{

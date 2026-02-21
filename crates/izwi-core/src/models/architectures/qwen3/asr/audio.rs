@@ -5,11 +5,11 @@ use candle_nn::ops;
 use candle_nn::{layer_norm, Conv2d, Conv2dConfig, LayerNorm, Linear, VarBuilder};
 
 use crate::error::{Error, Result};
-use crate::models::mlx_compat;
-use crate::models::qwen3_asr::config::AudioConfig;
+use crate::models::architectures::qwen3::asr::config::AudioConfig;
 use crate::models::shared::attention::flash::{
     flash_attention_requested, try_fused_self_attention,
 };
+use crate::models::shared::weights::mlx_compat;
 
 /// Compute output length after feature extraction/downsampling.
 /// Matches upstream Qwen3-ASR `_get_feat_extract_output_lengths`.

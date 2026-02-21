@@ -8,7 +8,7 @@
 
 use super::kv_cache::{KVCacheConfig, KVCacheManager, KVCacheStats};
 use crate::error::Result;
-use crate::models::device::DeviceProfile;
+use crate::models::shared::device::DeviceProfile;
 use tracing::{debug, info, warn};
 
 /// Metal-optimized KV cache configuration
@@ -309,7 +309,7 @@ pub mod utils {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::device::{DeviceCapabilities, DeviceKind};
+    use crate::models::shared::device::{DeviceCapabilities, DeviceKind};
     use candle_core::Device;
 
     #[test]

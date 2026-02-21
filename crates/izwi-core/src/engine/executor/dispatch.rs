@@ -10,6 +10,67 @@ use super::super::scheduler::ScheduledRequest;
 use super::super::types::TaskType;
 use super::{ExecutorOutput, NativeExecutor};
 
+type RouteHandler =
+    fn(&NativeExecutor, &EngineCoreRequest, &ScheduledRequest) -> Result<ExecutorOutput>;
+type VariantMatcher = fn(ModelVariant) -> bool;
+
+struct DispatchRoute {
+    name: &'static str,
+    task: TaskType,
+    variant_matcher: Option<VariantMatcher>,
+    handler: RouteHandler,
+}
+
+impl DispatchRoute {
+    fn matches(&self, task: TaskType, variant: Option<ModelVariant>) -> bool {
+        if self.task != task {
+            return false;
+        }
+
+        match self.variant_matcher {
+            Some(matcher) => variant.map(matcher).unwrap_or(false),
+            None => true,
+        }
+    }
+}
+
+fn is_lfm2_variant(variant: ModelVariant) -> bool {
+    variant.is_lfm2()
+}
+
+const DISPATCH_ROUTES: &[DispatchRoute] = &[
+    DispatchRoute {
+        name: "lfm2_tts",
+        task: TaskType::TTS,
+        variant_matcher: Some(is_lfm2_variant),
+        handler: NativeExecutor::lfm2_tts_request,
+    },
+    DispatchRoute {
+        name: "tts",
+        task: TaskType::TTS,
+        variant_matcher: None,
+        handler: NativeExecutor::qwen_tts_request,
+    },
+    DispatchRoute {
+        name: "asr",
+        task: TaskType::ASR,
+        variant_matcher: None,
+        handler: NativeExecutor::transcribe_request,
+    },
+    DispatchRoute {
+        name: "chat",
+        task: TaskType::Chat,
+        variant_matcher: None,
+        handler: NativeExecutor::chat_request,
+    },
+    DispatchRoute {
+        name: "speech_to_speech",
+        task: TaskType::SpeechToSpeech,
+        variant_matcher: None,
+        handler: NativeExecutor::speech_to_speech_request,
+    },
+];
+
 impl NativeExecutor {
     fn find_request<'a>(
         requests: &'a [&EngineCoreRequest],
@@ -30,6 +91,15 @@ impl NativeExecutor {
         })
     }
 
+    fn resolve_route(
+        task: TaskType,
+        variant: Option<ModelVariant>,
+    ) -> Option<&'static DispatchRoute> {
+        DISPATCH_ROUTES
+            .iter()
+            .find(|route| route.matches(task, variant))
+    }
+
     fn execute_single_request(
         &self,
         requests: &[&EngineCoreRequest],
@@ -42,20 +112,19 @@ impl NativeExecutor {
             );
         };
 
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match request.task_type {
-                TaskType::TTS => {
-                    let variant = request.model_variant;
-                    if variant.map(|v| v.is_lfm2()).unwrap_or(false) {
-                        self.lfm2_tts_request(request, scheduled_req)
-                    } else {
-                        self.qwen_tts_request(request, scheduled_req)
-                    }
-                }
-                TaskType::ASR => self.transcribe_request(request, scheduled_req),
-                TaskType::Chat => self.chat_request(request, scheduled_req),
-                TaskType::SpeechToSpeech => self.speech_to_speech_request(request, scheduled_req),
-            }));
+        let Some(route) = Self::resolve_route(request.task_type, request.model_variant) else {
+            return ExecutorOutput::error(
+                request.id.clone(),
+                format!(
+                    "No executor route for task {:?} (variant {:?})",
+                    request.task_type, request.model_variant
+                ),
+            );
+        };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (route.handler)(self, request, scheduled_req)
+        }));
 
         let result = match result {
             Ok(result) => result,
@@ -64,6 +133,7 @@ impl NativeExecutor {
                 error!(
                     request_id = %request.id,
                     task = ?request.task_type,
+                    route = route.name,
                     "Executor request handling panicked: {message}"
                 );
                 Err(Error::InferenceError(format!(

@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::models::lfm2_audio::LFM2_DEFAULT_S2S_PROMPT;
+use crate::models::architectures::lfm2::audio::LFM2_DEFAULT_S2S_PROMPT;
 
 use super::super::request::EngineCoreRequest;
 use super::super::scheduler::ScheduledRequest;

@@ -6,7 +6,7 @@ use candle_nn::{
 };
 
 use crate::error::{Error, Result};
-use crate::models::mlx_compat;
+use crate::models::shared::weights::mlx_compat;
 
 use super::config::ConformerConfig;
 

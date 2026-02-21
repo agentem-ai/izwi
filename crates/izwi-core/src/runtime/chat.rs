@@ -3,7 +3,7 @@
 use crate::engine::EngineCoreRequest;
 use crate::error::Result;
 use crate::model::ModelVariant;
-use crate::models::chat_types::ChatMessage;
+use crate::models::shared::chat::ChatMessage;
 use crate::runtime::service::RuntimeService;
 use crate::runtime::types::ChatGeneration;
 

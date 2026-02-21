@@ -9,10 +9,9 @@ use candle_transformers::utils::repeat_kv as candle_repeat_kv;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::models::batched_attention::{
+use crate::models::shared::attention::batched::{
     batched_scaled_dot_product_attention, BatchedAttentionConfig, BatchedAttentionInput,
 };
-use crate::models::mlx_compat;
 use crate::models::shared::attention::flash::{
     flash_attention_requested, try_fused_self_attention,
 };
@@ -20,6 +19,7 @@ use crate::models::shared::attention::paged::{
     append_to_pages, default_kv_page_size, default_kv_quantization, materialize_pages,
     paged_decode_attention, KvCacheQuantization, KvPage,
 };
+use crate::models::shared::weights::mlx_compat;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RopeScalingConfig {
