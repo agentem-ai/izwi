@@ -19,7 +19,7 @@ use crate::models::shared::attention::paged::{
     append_to_pages, default_kv_page_size, default_kv_quantization, materialize_pages,
     paged_decode_attention, KvCacheQuantization, KvPage,
 };
-use crate::models::shared::weights::mlx_compat;
+use crate::models::shared::weights::mlx;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RopeScalingConfig {
@@ -152,22 +152,22 @@ struct Qwen3Attention {
 impl Qwen3Attention {
     fn load(cfg: &Qwen3Config, vb: VarBuilder) -> Result<Self> {
         let head_dim = cfg.head_dim();
-        let q_proj = mlx_compat::load_linear_no_bias(
+        let q_proj = mlx::load_linear_no_bias(
             cfg.hidden_size,
             cfg.num_attention_heads * head_dim,
             vb.pp("q_proj"),
         )?;
-        let k_proj = mlx_compat::load_linear_no_bias(
+        let k_proj = mlx::load_linear_no_bias(
             cfg.hidden_size,
             cfg.num_key_value_heads * head_dim,
             vb.pp("k_proj"),
         )?;
-        let v_proj = mlx_compat::load_linear_no_bias(
+        let v_proj = mlx::load_linear_no_bias(
             cfg.hidden_size,
             cfg.num_key_value_heads * head_dim,
             vb.pp("v_proj"),
         )?;
-        let o_proj = mlx_compat::load_linear_no_bias(
+        let o_proj = mlx::load_linear_no_bias(
             cfg.num_attention_heads * head_dim,
             cfg.hidden_size,
             vb.pp("o_proj"),
@@ -429,21 +429,12 @@ struct Qwen3Mlp {
 
 impl Qwen3Mlp {
     fn load(cfg: &Qwen3Config, vb: VarBuilder) -> Result<Self> {
-        let gate_proj = mlx_compat::load_linear_no_bias(
-            cfg.hidden_size,
-            cfg.intermediate_size,
-            vb.pp("gate_proj"),
-        )?;
-        let up_proj = mlx_compat::load_linear_no_bias(
-            cfg.hidden_size,
-            cfg.intermediate_size,
-            vb.pp("up_proj"),
-        )?;
-        let down_proj = mlx_compat::load_linear_no_bias(
-            cfg.intermediate_size,
-            cfg.hidden_size,
-            vb.pp("down_proj"),
-        )?;
+        let gate_proj =
+            mlx::load_linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("gate_proj"))?;
+        let up_proj =
+            mlx::load_linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("up_proj"))?;
+        let down_proj =
+            mlx::load_linear_no_bias(cfg.intermediate_size, cfg.hidden_size, vb.pp("down_proj"))?;
         Ok(Self {
             gate_proj,
             up_proj,
@@ -521,13 +512,10 @@ pub struct Qwen3Model {
 impl Qwen3Model {
     pub fn load(cfg: Qwen3Config, vb: VarBuilder) -> Result<Self> {
         let lm_head_size = cfg.lm_head_size.unwrap_or(cfg.vocab_size);
-        let embed_tokens = mlx_compat::load_embedding(
-            cfg.vocab_size,
-            cfg.hidden_size,
-            vb.pp("model.embed_tokens"),
-        )?;
+        let embed_tokens =
+            mlx::load_embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("model.embed_tokens"))?;
         let lm_head = if vb.contains_tensor("lm_head.weight") {
-            mlx_compat::load_linear_no_bias(cfg.hidden_size, lm_head_size, vb.pp("lm_head"))?
+            mlx::load_linear_no_bias(cfg.hidden_size, lm_head_size, vb.pp("lm_head"))?
         } else {
             // Some MLX checkpoints omit lm_head and tie it to token embeddings.
             if lm_head_size != cfg.vocab_size {

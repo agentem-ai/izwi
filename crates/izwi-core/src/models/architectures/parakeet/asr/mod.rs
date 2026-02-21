@@ -13,7 +13,7 @@ use candle_nn::{
 
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
-use crate::models::shared::weights::mlx_compat;
+use crate::models::shared::weights::mlx;
 use crate::tokenizer::Tokenizer;
 
 use decode::decode_tokens;
@@ -391,24 +391,22 @@ impl ConvSubsamplingDw {
             ..Default::default()
         };
 
-        let conv0 = mlx_compat::load_conv2d(1, CONV_SUB_CHANNELS, 3, stride_cfg, vb.pp("conv.0"))?;
+        let conv0 = mlx::load_conv2d(1, CONV_SUB_CHANNELS, 3, stride_cfg, vb.pp("conv.0"))?;
 
         let mut dw_stride_cfg = stride_cfg;
         dw_stride_cfg.groups = CONV_SUB_CHANNELS;
         // Depthwise conv tensors are shaped [out_channels, in_channels/groups, k, k].
         // For groups=channels this second dimension is 1.
-        let conv2 =
-            mlx_compat::load_conv2d(1, CONV_SUB_CHANNELS, 3, dw_stride_cfg, vb.pp("conv.2"))?;
-        let conv3 = mlx_compat::load_conv2d(
+        let conv2 = mlx::load_conv2d(1, CONV_SUB_CHANNELS, 3, dw_stride_cfg, vb.pp("conv.2"))?;
+        let conv3 = mlx::load_conv2d(
             CONV_SUB_CHANNELS,
             CONV_SUB_CHANNELS,
             1,
             point_cfg,
             vb.pp("conv.3"),
         )?;
-        let conv5 =
-            mlx_compat::load_conv2d(1, CONV_SUB_CHANNELS, 3, dw_stride_cfg, vb.pp("conv.5"))?;
-        let conv6 = mlx_compat::load_conv2d(
+        let conv5 = mlx::load_conv2d(1, CONV_SUB_CHANNELS, 3, dw_stride_cfg, vb.pp("conv.5"))?;
+        let conv6 = mlx::load_conv2d(
             CONV_SUB_CHANNELS,
             CONV_SUB_CHANNELS,
             1,
@@ -416,7 +414,7 @@ impl ConvSubsamplingDw {
             vb.pp("conv.6"),
         )?;
 
-        let out = mlx_compat::load_linear(CONV_SUB_CHANNELS * 16, ENCODER_DIM, vb.pp("out"))?;
+        let out = mlx::load_linear(CONV_SUB_CHANNELS * 16, ENCODER_DIM, vb.pp("out"))?;
 
         Ok(Self {
             conv0,
@@ -534,8 +532,8 @@ struct FeedForward {
 
 impl FeedForward {
     fn load(vb: VarBuilder) -> Result<Self> {
-        let linear1 = mlx_compat::load_linear_no_bias(ENCODER_DIM, FF_DIM, vb.pp("linear1"))?;
-        let linear2 = mlx_compat::load_linear_no_bias(FF_DIM, ENCODER_DIM, vb.pp("linear2"))?;
+        let linear1 = mlx::load_linear_no_bias(ENCODER_DIM, FF_DIM, vb.pp("linear1"))?;
+        let linear2 = mlx::load_linear_no_bias(FF_DIM, ENCODER_DIM, vb.pp("linear2"))?;
         Ok(Self { linear1, linear2 })
     }
 
@@ -557,7 +555,7 @@ struct ConformerConv {
 
 impl ConformerConv {
     fn load(vb: VarBuilder) -> Result<Self> {
-        let pointwise_conv1 = mlx_compat::load_conv1d_no_bias(
+        let pointwise_conv1 = mlx::load_conv1d_no_bias(
             ENCODER_DIM,
             ENCODER_DIM * 2,
             1,
@@ -565,7 +563,7 @@ impl ConformerConv {
             vb.pp("pointwise_conv1"),
         )?;
 
-        let depthwise_conv = mlx_compat::load_conv1d_no_bias(
+        let depthwise_conv = mlx::load_conv1d_no_bias(
             ENCODER_DIM,
             ENCODER_DIM,
             CONV_KERNEL_1D,
@@ -579,7 +577,7 @@ impl ConformerConv {
 
         let batch_norm = batch_norm(ENCODER_DIM, 1e-5, vb.pp("batch_norm"))?;
 
-        let pointwise_conv2 = mlx_compat::load_conv1d_no_bias(
+        let pointwise_conv2 = mlx::load_conv1d_no_bias(
             ENCODER_DIM,
             ENCODER_DIM,
             1,
@@ -625,16 +623,11 @@ struct RelPosSelfAttention {
 
 impl RelPosSelfAttention {
     fn load(vb: VarBuilder) -> Result<Self> {
-        let linear_q =
-            mlx_compat::load_linear_no_bias(ENCODER_DIM, ENCODER_DIM, vb.pp("linear_q"))?;
-        let linear_k =
-            mlx_compat::load_linear_no_bias(ENCODER_DIM, ENCODER_DIM, vb.pp("linear_k"))?;
-        let linear_v =
-            mlx_compat::load_linear_no_bias(ENCODER_DIM, ENCODER_DIM, vb.pp("linear_v"))?;
-        let linear_out =
-            mlx_compat::load_linear_no_bias(ENCODER_DIM, ENCODER_DIM, vb.pp("linear_out"))?;
-        let linear_pos =
-            mlx_compat::load_linear_no_bias(ENCODER_DIM, ENCODER_DIM, vb.pp("linear_pos"))?;
+        let linear_q = mlx::load_linear_no_bias(ENCODER_DIM, ENCODER_DIM, vb.pp("linear_q"))?;
+        let linear_k = mlx::load_linear_no_bias(ENCODER_DIM, ENCODER_DIM, vb.pp("linear_k"))?;
+        let linear_v = mlx::load_linear_no_bias(ENCODER_DIM, ENCODER_DIM, vb.pp("linear_v"))?;
+        let linear_out = mlx::load_linear_no_bias(ENCODER_DIM, ENCODER_DIM, vb.pp("linear_out"))?;
+        let linear_pos = mlx::load_linear_no_bias(ENCODER_DIM, ENCODER_DIM, vb.pp("linear_pos"))?;
 
         // In Parakeet checkpoints these are direct tensors under self_attn.*.
         let pos_bias_u = vb.get((ENCODER_HEADS, ENCODER_HEAD_DIM), "pos_bias_u")?;
@@ -865,15 +858,15 @@ struct Joint {
 
 impl Joint {
     fn load(vb: VarBuilder, enc_hidden: usize, num_classes_with_blank: usize) -> Result<Self> {
-        let pred = mlx_compat::load_linear(PRED_HIDDEN, PRED_HIDDEN, vb.pp("pred"))?;
-        let enc = mlx_compat::load_linear(enc_hidden, PRED_HIDDEN, vb.pp("enc"))?;
+        let pred = mlx::load_linear(PRED_HIDDEN, PRED_HIDDEN, vb.pp("pred"))?;
+        let enc = mlx::load_linear(enc_hidden, PRED_HIDDEN, vb.pp("enc"))?;
 
         let out_bias = vb
             .pp("joint_net.2")
             .get_unchecked_dtype("bias", DType::F32)?;
         let out_dim = out_bias.dim(0)?;
 
-        let out = mlx_compat::load_linear(PRED_HIDDEN, out_dim, vb.pp("joint_net.2"))?;
+        let out = mlx::load_linear(PRED_HIDDEN, out_dim, vb.pp("joint_net.2"))?;
 
         // TDT adds extra duration logits after token logits.
         let num_durations = out_dim.saturating_sub(num_classes_with_blank);

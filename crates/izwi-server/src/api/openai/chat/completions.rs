@@ -15,8 +15,8 @@ use tokio::sync::mpsc;
 use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::models::chat_types::{ChatMessage, ChatRole};
 use izwi_core::{parse_chat_model_variant, ModelVariant};
+use izwi_core::{ChatMessage, ChatRole};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]

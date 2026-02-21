@@ -14,7 +14,4 @@ mod model;
 mod streaming;
 mod tokenizer;
 
-pub use audio::{AudioLanguageAdapter, TimeEmbedding};
-pub use config::{AudioEncoderConfig, VoxtralConfig};
-pub use model::{VoxtralRealtimeModel, WhisperEncoder};
-pub use streaming::VoxtralRealtimeBuffer;
+pub use model::VoxtralRealtimeModel;

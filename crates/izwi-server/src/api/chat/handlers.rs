@@ -15,8 +15,8 @@ use crate::api::request_context::RequestContext;
 use crate::chat_store::{ChatThreadMessage, ChatThreadSummary};
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::models::chat_types::{ChatMessage, ChatRole};
 use izwi_core::{parse_chat_model_variant, ModelVariant};
+use izwi_core::{ChatMessage, ChatRole};
 
 #[derive(Debug, Serialize)]
 pub struct ChatThreadListResponse {
