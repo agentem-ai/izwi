@@ -296,7 +296,7 @@ impl NativeExecutor {
                 prompt_accounted: false,
                 last_tokens_generated: 0,
                 stream_sequence: 0,
-                audio_samples_accum: Vec::new(),
+                audio_frames_accum: Vec::new(),
             }
         };
 
@@ -324,12 +324,11 @@ impl NativeExecutor {
         }
 
         if let Some(frame) = step.audio_frame.as_ref() {
-            let chunk_samples = Self::run_blocking(|| model.decode_audio_frame(frame))?;
-            if !chunk_samples.is_empty() {
-                active_state
-                    .audio_samples_accum
-                    .extend_from_slice(&chunk_samples);
-                if let Some(tx) = stream_tx.as_ref() {
+            active_state.audio_frames_accum.push(frame.clone());
+
+            if let Some(tx) = stream_tx.as_ref() {
+                let chunk_samples = Self::run_blocking(|| model.decode_audio_frame(frame))?;
+                if !chunk_samples.is_empty() {
                     Self::stream_audio(
                         tx,
                         &request.id,
@@ -349,7 +348,12 @@ impl NativeExecutor {
         }
 
         let finished_samples = if step.finished {
-            active_state.audio_samples_accum.clone()
+            if stream_tx.is_some() {
+                Vec::new()
+            } else {
+                let frames = active_state.audio_frames_accum.clone();
+                Self::run_blocking(|| model.decode_audio_frames(&frames))?
+            }
         } else {
             Vec::new()
         };

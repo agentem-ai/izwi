@@ -760,6 +760,34 @@ impl Lfm2AudioModel {
         self.wave_decoder.decode_tokens(&codebooks)
     }
 
+    pub fn decode_audio_frames(&self, frames: &[Vec<u32>]) -> Result<Vec<f32>> {
+        if frames.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut codebooks: Vec<Vec<u32>> = vec![Vec::new(); self.cfg.codebooks];
+        for frame in frames {
+            if frame.is_empty() || is_end_of_audio_frame(frame) {
+                break;
+            }
+
+            if frame.len() < self.cfg.codebooks {
+                return Err(Error::InferenceError(format!(
+                    "LFM2 audio frame length {} is smaller than expected codebooks {}",
+                    frame.len(),
+                    self.cfg.codebooks
+                )));
+            }
+
+            for (i, &tok) in frame.iter().take(self.cfg.codebooks).enumerate() {
+                codebooks[i].push(tok);
+            }
+        }
+
+        trim_audio_frames(&mut codebooks);
+        self.wave_decoder.decode_tokens(&codebooks)
+    }
+
     fn prepare_audio_mel(&self, audio: &[f32], sample_rate: u32) -> Result<(Vec<f32>, usize)> {
         if audio.is_empty() {
             return Err(Error::InvalidInput("Empty audio input".to_string()));
