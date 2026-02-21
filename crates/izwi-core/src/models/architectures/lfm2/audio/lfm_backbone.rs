@@ -262,11 +262,7 @@ impl ShortConvLayer {
         let x = bcx.narrow(1, 2 * hidden, hidden)?;
         let bx = (b_gate * &x)?.contiguous()?;
 
-        let mut conv_weight = self.conv.clone();
-        if conv_weight.dims().len() == 3 {
-            conv_weight = conv_weight.squeeze(1)?;
-        }
-        let conv_weight = conv_weight.contiguous()?;
+        let conv_weight = normalize_short_conv_weight(&self.conv, hidden, self.l_cache)?;
 
         let mut conv_out = if seq_len == 1 {
             let mut state = match cache {
@@ -534,6 +530,42 @@ fn repeat_kv(xs: &Tensor, n_rep: usize) -> Result<Tensor> {
     candle_repeat_kv(xs.clone(), n_rep).map_err(Error::from)
 }
 
+fn normalize_short_conv_weight(weight: &Tensor, hidden: usize, l_cache: usize) -> Result<Tensor> {
+    let mut conv_weight = weight.clone();
+    match conv_weight.dims().len() {
+        2 => {}
+        3 => {
+            let dims = conv_weight.dims().to_vec();
+            if dims[1] == 1 {
+                conv_weight = conv_weight.squeeze(1)?;
+            } else if dims[2] == 1 {
+                conv_weight = conv_weight.squeeze(2)?;
+            } else if dims[0] == 1 {
+                conv_weight = conv_weight.squeeze(0)?;
+            } else {
+                return Err(Error::InferenceError(format!(
+                    "Unsupported short-conv kernel shape {:?}; expected [hidden, 1, l_cache], [hidden, l_cache, 1], or [hidden, l_cache]",
+                    dims
+                )));
+            }
+        }
+        rank => {
+            return Err(Error::InferenceError(format!(
+                "Unsupported short-conv kernel rank {rank}; expected 2 or 3 dimensions"
+            )));
+        }
+    }
+
+    let (conv_hidden, conv_cache) = conv_weight.dims2().map_err(Error::from)?;
+    if conv_hidden != hidden || conv_cache != l_cache {
+        return Err(Error::InferenceError(format!(
+            "Unexpected short-conv kernel shape [{conv_hidden}, {conv_cache}]; expected [{hidden}, {l_cache}]"
+        )));
+    }
+
+    conv_weight.contiguous().map_err(Error::from)
+}
+
 fn masked_fill(on_false: &Tensor, mask: &Tensor, on_true: &Tensor) -> CandleResult<Tensor> {
     let shape = mask.shape();
     mask.where_cond(&on_true.broadcast_as(shape.dims())?, on_false)
@@ -544,4 +576,35 @@ fn causal_mask(t: usize, device: &candle_core::Device) -> Result<Tensor> {
         .flat_map(|i| (0..t).map(move |j| u8::from(j > i)))
         .collect();
     Tensor::from_slice(&mask, (t, t), device).map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_short_conv_weight;
+    use candle_core::{DType, Device, Tensor};
+
+    #[test]
+    fn normalize_short_conv_weight_accepts_hidden_channel_cache_layout() {
+        let weight = Tensor::zeros((4, 1, 3), DType::F32, &Device::Cpu).unwrap();
+        let normalized = normalize_short_conv_weight(&weight, 4, 3).unwrap();
+        assert_eq!(normalized.dims(), &[4, 3]);
+    }
+
+    #[test]
+    fn normalize_short_conv_weight_accepts_hidden_cache_channel_layout() {
+        let weight = Tensor::zeros((4, 3, 1), DType::F32, &Device::Cpu).unwrap();
+        let normalized = normalize_short_conv_weight(&weight, 4, 3).unwrap();
+        assert_eq!(normalized.dims(), &[4, 3]);
+    }
+
+    #[test]
+    fn normalize_short_conv_weight_rejects_non_singleton_third_rank_layout() {
+        let weight = Tensor::zeros((4, 3, 2), DType::F32, &Device::Cpu).unwrap();
+        let err = normalize_short_conv_weight(&weight, 4, 3).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Unsupported short-conv kernel shape"),
+            "unexpected error: {err}"
+        );
+    }
 }
