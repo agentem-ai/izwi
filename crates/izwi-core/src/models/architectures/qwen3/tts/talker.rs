@@ -20,7 +20,7 @@ use crate::models::shared::attention::paged::{
     append_to_pages, default_kv_page_size, default_kv_quantization, materialize_pages,
     paged_decode_attention, KvCacheQuantization, KvPage,
 };
-use crate::models::shared::weights::mlx_compat;
+use crate::models::shared::weights::mlx;
 
 /// KV Cache for the talker model
 pub struct TalkerCache {
@@ -124,22 +124,22 @@ impl Attention {
     fn load(cfg: &TalkerConfig, vb: VarBuilder) -> Result<Self> {
         let head_dim = cfg.head_dim();
 
-        let q_proj = mlx_compat::load_linear_no_bias(
+        let q_proj = mlx::load_linear_no_bias(
             cfg.hidden_size,
             cfg.num_attention_heads * head_dim,
             vb.pp("q_proj"),
         )?;
-        let k_proj = mlx_compat::load_linear_no_bias(
+        let k_proj = mlx::load_linear_no_bias(
             cfg.hidden_size,
             cfg.num_key_value_heads * head_dim,
             vb.pp("k_proj"),
         )?;
-        let v_proj = mlx_compat::load_linear_no_bias(
+        let v_proj = mlx::load_linear_no_bias(
             cfg.hidden_size,
             cfg.num_key_value_heads * head_dim,
             vb.pp("v_proj"),
         )?;
-        let o_proj = mlx_compat::load_linear_no_bias(
+        let o_proj = mlx::load_linear_no_bias(
             cfg.num_attention_heads * head_dim,
             cfg.hidden_size,
             vb.pp("o_proj"),
@@ -407,21 +407,12 @@ struct Mlp {
 
 impl Mlp {
     fn load(cfg: &TalkerConfig, vb: VarBuilder) -> Result<Self> {
-        let gate_proj = mlx_compat::load_linear_no_bias(
-            cfg.hidden_size,
-            cfg.intermediate_size,
-            vb.pp("gate_proj"),
-        )?;
-        let up_proj = mlx_compat::load_linear_no_bias(
-            cfg.hidden_size,
-            cfg.intermediate_size,
-            vb.pp("up_proj"),
-        )?;
-        let down_proj = mlx_compat::load_linear_no_bias(
-            cfg.intermediate_size,
-            cfg.hidden_size,
-            vb.pp("down_proj"),
-        )?;
+        let gate_proj =
+            mlx::load_linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("gate_proj"))?;
+        let up_proj =
+            mlx::load_linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("up_proj"))?;
+        let down_proj =
+            mlx::load_linear_no_bias(cfg.intermediate_size, cfg.hidden_size, vb.pp("down_proj"))?;
 
         Ok(Self {
             gate_proj,
@@ -497,10 +488,8 @@ struct TextProjection {
 
 impl TextProjection {
     fn load(text_hidden_size: usize, hidden_size: usize, vb: VarBuilder) -> Result<Self> {
-        let linear_fc1 =
-            mlx_compat::load_linear(text_hidden_size, text_hidden_size, vb.pp("linear_fc1"))?;
-        let linear_fc2 =
-            mlx_compat::load_linear(text_hidden_size, hidden_size, vb.pp("linear_fc2"))?;
+        let linear_fc1 = mlx::load_linear(text_hidden_size, text_hidden_size, vb.pp("linear_fc1"))?;
+        let linear_fc2 = mlx::load_linear(text_hidden_size, hidden_size, vb.pp("linear_fc2"))?;
         Ok(Self {
             linear_fc1,
             linear_fc2,
@@ -530,7 +519,7 @@ pub struct TalkerModel {
 impl TalkerModel {
     /// Load the talker model from VarBuilder
     pub fn load(cfg: TalkerConfig, vb: VarBuilder) -> Result<Self> {
-        let text_embedding = mlx_compat::load_embedding(
+        let text_embedding = mlx::load_embedding(
             cfg.text_vocab_size,
             cfg.text_hidden_size,
             vb.pp("model.text_embedding"),
@@ -540,13 +529,13 @@ impl TalkerModel {
             cfg.hidden_size,
             vb.pp("text_projection"),
         )?;
-        let codec_embedding = mlx_compat::load_embedding(
+        let codec_embedding = mlx::load_embedding(
             cfg.vocab_size,
             cfg.hidden_size,
             vb.pp("model.codec_embedding"),
         )?;
         let lm_head =
-            mlx_compat::load_linear_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("codec_head"))?;
+            mlx::load_linear_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("codec_head"))?;
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for idx in 0..cfg.num_hidden_layers {

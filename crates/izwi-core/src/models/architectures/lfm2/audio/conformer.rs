@@ -6,7 +6,7 @@ use candle_nn::{
 };
 
 use crate::error::{Error, Result};
-use crate::models::shared::weights::mlx_compat;
+use crate::models::shared::weights::mlx;
 
 use super::config::ConformerConfig;
 
@@ -73,18 +73,18 @@ impl ConvSubsamplingDw {
 
         let channels = cfg.subsampling_conv_channels;
 
-        let conv0 = mlx_compat::load_conv2d(1, channels, 3, stride_cfg, vb.pp("conv.0"))?;
+        let conv0 = mlx::load_conv2d(1, channels, 3, stride_cfg, vb.pp("conv.0"))?;
 
         let mut dw_stride_cfg = stride_cfg;
         dw_stride_cfg.groups = channels;
-        let conv2 = mlx_compat::load_conv2d(1, channels, 3, dw_stride_cfg, vb.pp("conv.2"))?;
-        let conv3 = mlx_compat::load_conv2d(channels, channels, 1, point_cfg, vb.pp("conv.3"))?;
-        let conv5 = mlx_compat::load_conv2d(1, channels, 3, dw_stride_cfg, vb.pp("conv.5"))?;
-        let conv6 = mlx_compat::load_conv2d(channels, channels, 1, point_cfg, vb.pp("conv.6"))?;
+        let conv2 = mlx::load_conv2d(1, channels, 3, dw_stride_cfg, vb.pp("conv.2"))?;
+        let conv3 = mlx::load_conv2d(channels, channels, 1, point_cfg, vb.pp("conv.3"))?;
+        let conv5 = mlx::load_conv2d(1, channels, 3, dw_stride_cfg, vb.pp("conv.5"))?;
+        let conv6 = mlx::load_conv2d(channels, channels, 1, point_cfg, vb.pp("conv.6"))?;
 
         let flatten_freq = cfg.feat_in / cfg.subsampling_factor.max(1);
         let out_in = channels * flatten_freq.max(1);
-        let out = mlx_compat::load_linear(out_in, cfg.d_model, vb.pp("out"))?;
+        let out = mlx::load_linear(out_in, cfg.d_model, vb.pp("out"))?;
 
         Ok(Self {
             cfg: cfg.clone(),
@@ -206,8 +206,8 @@ struct FeedForward {
 impl FeedForward {
     fn load(cfg: &ConformerConfig, vb: VarBuilder) -> Result<Self> {
         let ff_dim = cfg.d_model * cfg.ff_expansion_factor;
-        let linear1 = mlx_compat::load_linear(cfg.d_model, ff_dim, vb.pp("linear1"))?;
-        let linear2 = mlx_compat::load_linear(ff_dim, cfg.d_model, vb.pp("linear2"))?;
+        let linear1 = mlx::load_linear(cfg.d_model, ff_dim, vb.pp("linear1"))?;
+        let linear2 = mlx::load_linear(ff_dim, cfg.d_model, vb.pp("linear2"))?;
         Ok(Self { linear1, linear2 })
     }
 
@@ -307,11 +307,11 @@ impl RelPosSelfAttention {
         let n_heads = cfg.n_heads;
         let head_dim = d_model / n_heads;
 
-        let linear_q = mlx_compat::load_linear(d_model, d_model, vb.pp("linear_q"))?;
-        let linear_k = mlx_compat::load_linear(d_model, d_model, vb.pp("linear_k"))?;
-        let linear_v = mlx_compat::load_linear(d_model, d_model, vb.pp("linear_v"))?;
-        let linear_out = mlx_compat::load_linear(d_model, d_model, vb.pp("linear_out"))?;
-        let linear_pos = mlx_compat::load_linear_no_bias(d_model, d_model, vb.pp("linear_pos"))?;
+        let linear_q = mlx::load_linear(d_model, d_model, vb.pp("linear_q"))?;
+        let linear_k = mlx::load_linear(d_model, d_model, vb.pp("linear_k"))?;
+        let linear_v = mlx::load_linear(d_model, d_model, vb.pp("linear_v"))?;
+        let linear_out = mlx::load_linear(d_model, d_model, vb.pp("linear_out"))?;
+        let linear_pos = mlx::load_linear_no_bias(d_model, d_model, vb.pp("linear_pos"))?;
 
         let pos_bias_u = vb.get((n_heads, head_dim), "pos_bias_u")?;
         let pos_bias_v = vb.get((n_heads, head_dim), "pos_bias_v")?;

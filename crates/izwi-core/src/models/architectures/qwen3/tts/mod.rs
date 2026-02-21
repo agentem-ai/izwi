@@ -9,7 +9,7 @@ mod speech_tokenizer;
 mod talker;
 mod tokenizer;
 
-pub use config::{CodePredictorConfig, Qwen3TtsConfig, TalkerConfig};
+pub use config::Qwen3TtsConfig;
 pub use predictor::{CodePredictor, CodePredictorCache};
 pub use speech_tokenizer::SpeechTokenizerDecoder;
 pub use talker::{TalkerCache, TalkerModel};
@@ -2197,6 +2197,7 @@ pub fn load_model(model_path: &Path, device: DeviceProfile) -> Result<Qwen3TtsMo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::config::{CodePredictorConfig, TalkerConfig};
 
     #[test]
     fn test_special_tokens_creation() {

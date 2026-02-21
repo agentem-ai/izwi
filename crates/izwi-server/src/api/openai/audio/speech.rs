@@ -126,18 +126,18 @@ pub async fn speech(
             ..GenerationConfig::default()
         };
         if let Some(temp) = req.temperature {
-            gen_config.temperature = temp;
+            gen_config.options.temperature = temp;
         }
         if let Some(speed) = req.speed {
-            gen_config.speed = speed;
+            gen_config.options.speed = speed;
         }
         if let Some(max_tokens) = req.max_output_tokens.or(req.max_tokens) {
-            gen_config.max_tokens = max_tokens;
+            gen_config.options.max_tokens = max_tokens;
         }
         if let Some(top_k) = req.top_k {
-            gen_config.top_k = top_k;
+            gen_config.options.top_k = top_k;
         }
-        gen_config.speaker = req.voice.clone();
+        gen_config.options.speaker = req.voice.clone();
 
         let gen_request = GenerationRequest {
             id: uuid::Uuid::new_v4().to_string(),
@@ -240,18 +240,18 @@ async fn stream_speech(
         ..GenerationConfig::default()
     };
     if let Some(temp) = req.temperature {
-        gen_config.temperature = temp;
+        gen_config.options.temperature = temp;
     }
     if let Some(speed) = req.speed {
-        gen_config.speed = speed;
+        gen_config.options.speed = speed;
     }
     if let Some(max_tokens) = req.max_output_tokens.or(req.max_tokens) {
-        gen_config.max_tokens = max_tokens;
+        gen_config.options.max_tokens = max_tokens;
     }
     if let Some(top_k) = req.top_k {
-        gen_config.top_k = top_k;
+        gen_config.options.top_k = top_k;
     }
-    gen_config.speaker = req.voice.clone();
+    gen_config.options.speaker = req.voice.clone();
 
     let gen_request = GenerationRequest {
         id: uuid::Uuid::new_v4().to_string(),

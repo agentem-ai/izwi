@@ -31,11 +31,8 @@ pub mod codecs;
 pub mod config;
 pub mod engine;
 pub mod error;
-#[doc(hidden)]
-pub mod families;
 pub mod model;
-#[doc(hidden)]
-pub mod models;
+mod models;
 pub mod runtime;
 pub mod tokenizer;
 
@@ -66,6 +63,7 @@ pub use catalog::{
     resolve_asr_model_variant, resolve_diarization_model_variant,
 };
 pub use model::{DownloadProgress, ModelInfo, ModelManager, ModelStatus, ModelVariant};
+pub use models::shared::chat::{ChatMessage, ChatRole};
 
 // Canonical native registry/device exports.
 pub use models::{DeviceProfile, DeviceSelector, ModelRegistry};

@@ -638,18 +638,18 @@ fn build_generation_request(
         ..GenerationConfig::default()
     };
     if let Some(temp) = req.temperature {
-        generation_config.temperature = temp;
+        generation_config.options.temperature = temp;
     }
     if let Some(speed) = req.speed {
-        generation_config.speed = speed;
+        generation_config.options.speed = speed;
     }
     if let Some(max_tokens) = req.max_output_tokens.or(req.max_tokens) {
-        generation_config.max_tokens = max_tokens;
+        generation_config.options.max_tokens = max_tokens;
     }
     if let Some(top_k) = req.top_k {
-        generation_config.top_k = top_k;
+        generation_config.options.top_k = top_k;
     }
-    generation_config.speaker = req.speaker.clone();
+    generation_config.options.speaker = req.speaker.clone();
 
     GenerationRequest {
         id: uuid::Uuid::new_v4().to_string(),
