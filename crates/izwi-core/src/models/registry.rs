@@ -26,6 +26,8 @@ use crate::runtime::{DiarizationConfig, DiarizationResult};
 type AsrLoaderFn = fn(&Path, ModelVariant, DeviceProfile) -> Result<NativeAsrModel>;
 type ChatLoaderFn = fn(&Path, ModelVariant, DeviceProfile) -> Result<NativeChatModel>;
 type DiarizationLoaderFn = fn(&Path, ModelVariant) -> Result<NativeDiarizationModel>;
+type VoxtralLoaderFn = fn(&Path, ModelVariant, DeviceProfile) -> Result<VoxtralRealtimeModel>;
+type Lfm2LoaderFn = fn(&Path, ModelVariant, DeviceProfile) -> Result<Lfm2AudioModel>;
 
 struct AsrLoaderRegistration {
     name: &'static str,
@@ -43,6 +45,18 @@ struct DiarizationLoaderRegistration {
     name: &'static str,
     matcher: fn(ModelVariant) -> bool,
     loader: DiarizationLoaderFn,
+}
+
+struct VoxtralLoaderRegistration {
+    name: &'static str,
+    matcher: fn(ModelVariant) -> bool,
+    loader: VoxtralLoaderFn,
+}
+
+struct Lfm2LoaderRegistration {
+    name: &'static str,
+    matcher: fn(ModelVariant) -> bool,
+    loader: Lfm2LoaderFn,
 }
 
 fn is_qwen_asr_variant(variant: ModelVariant) -> bool {
@@ -66,6 +80,14 @@ fn is_gemma_chat_variant(variant: ModelVariant) -> bool {
 
 fn is_sortformer_diarization_variant(variant: ModelVariant) -> bool {
     matches!(variant, ModelVariant::DiarStreamingSortformer4SpkV21)
+}
+
+fn is_voxtral_variant(variant: ModelVariant) -> bool {
+    variant.is_voxtral()
+}
+
+fn is_lfm2_variant(variant: ModelVariant) -> bool {
+    variant.is_lfm2()
 }
 
 fn load_qwen_asr_model(
@@ -117,6 +139,22 @@ fn load_sortformer_diarization_model(
     ))
 }
 
+fn load_voxtral_model(
+    model_dir: &Path,
+    _variant: ModelVariant,
+    device: DeviceProfile,
+) -> Result<VoxtralRealtimeModel> {
+    VoxtralRealtimeModel::load(model_dir, device)
+}
+
+fn load_lfm2_model(
+    model_dir: &Path,
+    _variant: ModelVariant,
+    device: DeviceProfile,
+) -> Result<Lfm2AudioModel> {
+    Lfm2AudioModel::load(model_dir, device)
+}
+
 const ASR_LOADER_REGISTRY: &[AsrLoaderRegistration] = &[
     AsrLoaderRegistration {
         name: "parakeet_asr",
@@ -150,6 +188,18 @@ const DIARIZATION_LOADER_REGISTRY: &[DiarizationLoaderRegistration] =
         loader: load_sortformer_diarization_model,
     }];
 
+const VOXTRAL_LOADER_REGISTRY: &[VoxtralLoaderRegistration] = &[VoxtralLoaderRegistration {
+    name: "voxtral_realtime",
+    matcher: is_voxtral_variant,
+    loader: load_voxtral_model,
+}];
+
+const LFM2_LOADER_REGISTRY: &[Lfm2LoaderRegistration] = &[Lfm2LoaderRegistration {
+    name: "lfm2_audio",
+    matcher: is_lfm2_variant,
+    loader: load_lfm2_model,
+}];
+
 fn resolve_asr_loader_registration(
     variant: ModelVariant,
 ) -> Option<&'static AsrLoaderRegistration> {
@@ -170,6 +220,22 @@ fn resolve_diarization_loader_registration(
     variant: ModelVariant,
 ) -> Option<&'static DiarizationLoaderRegistration> {
     DIARIZATION_LOADER_REGISTRY
+        .iter()
+        .find(|registration| (registration.matcher)(variant))
+}
+
+fn resolve_voxtral_loader_registration(
+    variant: ModelVariant,
+) -> Option<&'static VoxtralLoaderRegistration> {
+    VOXTRAL_LOADER_REGISTRY
+        .iter()
+        .find(|registration| (registration.matcher)(variant))
+}
+
+fn resolve_lfm2_loader_registration(
+    variant: ModelVariant,
+) -> Option<&'static Lfm2LoaderRegistration> {
+    LFM2_LOADER_REGISTRY
         .iter()
         .find(|registration| (registration.matcher)(variant))
 }
@@ -544,11 +610,9 @@ impl ModelRegistry {
         variant: ModelVariant,
         model_dir: &Path,
     ) -> Result<Arc<VoxtralRealtimeModel>> {
-        if !variant.is_voxtral() {
-            return Err(Error::InvalidInput(format!(
-                "Model variant {variant} is not a Voxtral model"
-            )));
-        }
+        let registration = resolve_voxtral_loader_registration(variant).ok_or_else(|| {
+            Error::InvalidInput(format!("Unsupported Voxtral model variant: {variant}"))
+        })?;
 
         let cell = {
             let mut guard = self.voxtral_models.write().await;
@@ -558,19 +622,21 @@ impl ModelRegistry {
                 .clone()
         };
 
-        info!("Loading native Voxtral model {variant} from {model_dir:?}");
+        info!(
+            "Loading native Voxtral model {variant} ({}) from {model_dir:?}",
+            registration.name
+        );
 
         let model = cell
             .get_or_try_init({
                 let model_dir = model_dir.to_path_buf();
                 let device = self.device.clone();
+                let loader = registration.loader;
                 move || async move {
-                    tokio::task::spawn_blocking(move || {
-                        VoxtralRealtimeModel::load(&model_dir, device)
-                    })
-                    .await
-                    .map_err(|e| Error::ModelLoadError(e.to_string()))?
-                    .map(Arc::new)
+                    tokio::task::spawn_blocking(move || loader(&model_dir, variant, device))
+                        .await
+                        .map_err(|e| Error::ModelLoadError(e.to_string()))?
+                        .map(Arc::new)
                 }
             })
             .await?;
@@ -583,11 +649,9 @@ impl ModelRegistry {
         variant: ModelVariant,
         model_dir: &Path,
     ) -> Result<Arc<Lfm2AudioModel>> {
-        if !variant.is_lfm2() {
-            return Err(Error::InvalidInput(format!(
-                "Model variant {variant} is not an LFM2 model"
-            )));
-        }
+        let registration = resolve_lfm2_loader_registration(variant).ok_or_else(|| {
+            Error::InvalidInput(format!("Unsupported LFM2 model variant: {variant}"))
+        })?;
 
         let cell = {
             let mut guard = self.lfm2_models.write().await;
@@ -597,14 +661,18 @@ impl ModelRegistry {
                 .clone()
         };
 
-        info!("Loading LFM2 model {variant} from {model_dir:?}");
+        info!(
+            "Loading LFM2 model {variant} ({}) from {model_dir:?}",
+            registration.name
+        );
 
         let model = cell
             .get_or_try_init({
                 let model_dir = model_dir.to_path_buf();
                 let device = self.device.clone();
+                let loader = registration.loader;
                 move || async move {
-                    tokio::task::spawn_blocking(move || Lfm2AudioModel::load(&model_dir, device))
+                    tokio::task::spawn_blocking(move || loader(&model_dir, variant, device))
                         .await
                         .map_err(|e| Error::ModelLoadError(e.to_string()))?
                         .map(Arc::new)
