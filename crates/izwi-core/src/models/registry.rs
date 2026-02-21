@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::{OnceCell, RwLock};
 use tracing::info;
 
+use crate::catalog::ModelFamily;
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::architectures::gemma3::chat::Gemma3ChatModel;
@@ -31,63 +32,32 @@ type Lfm2LoaderFn = fn(&Path, ModelVariant, DeviceProfile) -> Result<Lfm2AudioMo
 
 struct AsrLoaderRegistration {
     name: &'static str,
-    matcher: fn(ModelVariant) -> bool,
+    family: ModelFamily,
     loader: AsrLoaderFn,
 }
 
 struct ChatLoaderRegistration {
     name: &'static str,
-    matcher: fn(ModelVariant) -> bool,
+    family: ModelFamily,
     loader: ChatLoaderFn,
 }
 
 struct DiarizationLoaderRegistration {
     name: &'static str,
-    matcher: fn(ModelVariant) -> bool,
+    family: ModelFamily,
     loader: DiarizationLoaderFn,
 }
 
 struct VoxtralLoaderRegistration {
     name: &'static str,
-    matcher: fn(ModelVariant) -> bool,
+    family: ModelFamily,
     loader: VoxtralLoaderFn,
 }
 
 struct Lfm2LoaderRegistration {
     name: &'static str,
-    matcher: fn(ModelVariant) -> bool,
+    family: ModelFamily,
     loader: Lfm2LoaderFn,
-}
-
-fn is_qwen_asr_variant(variant: ModelVariant) -> bool {
-    (variant.is_asr() || variant.is_forced_aligner()) && !variant.is_parakeet()
-}
-
-fn is_parakeet_asr_variant(variant: ModelVariant) -> bool {
-    variant.is_parakeet()
-}
-
-fn is_qwen_chat_variant(variant: ModelVariant) -> bool {
-    matches!(
-        variant,
-        ModelVariant::Qwen306B4Bit | ModelVariant::Qwen317B | ModelVariant::Qwen317B4Bit
-    )
-}
-
-fn is_gemma_chat_variant(variant: ModelVariant) -> bool {
-    matches!(variant, ModelVariant::Gemma31BIt | ModelVariant::Gemma34BIt)
-}
-
-fn is_sortformer_diarization_variant(variant: ModelVariant) -> bool {
-    matches!(variant, ModelVariant::DiarStreamingSortformer4SpkV21)
-}
-
-fn is_voxtral_variant(variant: ModelVariant) -> bool {
-    variant.is_voxtral()
-}
-
-fn is_lfm2_variant(variant: ModelVariant) -> bool {
-    variant.is_lfm2()
 }
 
 fn load_qwen_asr_model(
@@ -158,12 +128,12 @@ fn load_lfm2_model(
 const ASR_LOADER_REGISTRY: &[AsrLoaderRegistration] = &[
     AsrLoaderRegistration {
         name: "parakeet_asr",
-        matcher: is_parakeet_asr_variant,
+        family: ModelFamily::ParakeetAsr,
         loader: load_parakeet_asr_model,
     },
     AsrLoaderRegistration {
         name: "qwen_asr",
-        matcher: is_qwen_asr_variant,
+        family: ModelFamily::Qwen3Asr,
         loader: load_qwen_asr_model,
     },
 ];
@@ -171,12 +141,12 @@ const ASR_LOADER_REGISTRY: &[AsrLoaderRegistration] = &[
 const CHAT_LOADER_REGISTRY: &[ChatLoaderRegistration] = &[
     ChatLoaderRegistration {
         name: "qwen_chat",
-        matcher: is_qwen_chat_variant,
+        family: ModelFamily::Qwen3Chat,
         loader: load_qwen_chat_model,
     },
     ChatLoaderRegistration {
         name: "gemma_chat",
-        matcher: is_gemma_chat_variant,
+        family: ModelFamily::Gemma3Chat,
         loader: load_gemma_chat_model,
     },
 ];
@@ -184,60 +154,70 @@ const CHAT_LOADER_REGISTRY: &[ChatLoaderRegistration] = &[
 const DIARIZATION_LOADER_REGISTRY: &[DiarizationLoaderRegistration] =
     &[DiarizationLoaderRegistration {
         name: "sortformer_diarization",
-        matcher: is_sortformer_diarization_variant,
+        family: ModelFamily::SortformerDiarization,
         loader: load_sortformer_diarization_model,
     }];
 
 const VOXTRAL_LOADER_REGISTRY: &[VoxtralLoaderRegistration] = &[VoxtralLoaderRegistration {
     name: "voxtral_realtime",
-    matcher: is_voxtral_variant,
+    family: ModelFamily::Voxtral,
     loader: load_voxtral_model,
 }];
 
 const LFM2_LOADER_REGISTRY: &[Lfm2LoaderRegistration] = &[Lfm2LoaderRegistration {
     name: "lfm2_audio",
-    matcher: is_lfm2_variant,
+    family: ModelFamily::Lfm2Audio,
     loader: load_lfm2_model,
 }];
 
 fn resolve_asr_loader_registration(
     variant: ModelVariant,
 ) -> Option<&'static AsrLoaderRegistration> {
+    let family = match variant.family() {
+        ModelFamily::Qwen3Asr | ModelFamily::Qwen3ForcedAligner => ModelFamily::Qwen3Asr,
+        ModelFamily::ParakeetAsr => ModelFamily::ParakeetAsr,
+        _ => return None,
+    };
+
     ASR_LOADER_REGISTRY
         .iter()
-        .find(|registration| (registration.matcher)(variant))
+        .find(|registration| registration.family == family)
 }
 
 fn resolve_chat_loader_registration(
     variant: ModelVariant,
 ) -> Option<&'static ChatLoaderRegistration> {
+    let family = variant.family();
     CHAT_LOADER_REGISTRY
         .iter()
-        .find(|registration| (registration.matcher)(variant))
+        .find(|registration| registration.family == family)
 }
 
 fn resolve_diarization_loader_registration(
     variant: ModelVariant,
 ) -> Option<&'static DiarizationLoaderRegistration> {
+    let family = variant.family();
     DIARIZATION_LOADER_REGISTRY
         .iter()
-        .find(|registration| (registration.matcher)(variant))
+        .find(|registration| registration.family == family)
 }
 
 fn resolve_voxtral_loader_registration(
     variant: ModelVariant,
 ) -> Option<&'static VoxtralLoaderRegistration> {
+    let family = variant.family();
     VOXTRAL_LOADER_REGISTRY
         .iter()
-        .find(|registration| (registration.matcher)(variant))
+        .find(|registration| registration.family == family)
 }
 
 fn resolve_lfm2_loader_registration(
     variant: ModelVariant,
 ) -> Option<&'static Lfm2LoaderRegistration> {
+    let family = variant.family();
     LFM2_LOADER_REGISTRY
         .iter()
-        .find(|registration| (registration.matcher)(variant))
+        .find(|registration| registration.family == family)
 }
 
 pub enum NativeAsrModel {

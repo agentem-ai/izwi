@@ -13,7 +13,7 @@ impl RuntimeService {
     pub async fn generate(&self, request: GenerationRequest) -> Result<GenerationResult> {
         let loaded_variant = *self.loaded_tts_variant.read().await;
         if loaded_variant
-            .map(|variant| variant.is_lfm2())
+            .map(|variant| matches!(variant.family(), crate::catalog::ModelFamily::Lfm2Audio))
             .unwrap_or(false)
         {
             return self.lfm2_tts_generate(request).await;
@@ -61,7 +61,7 @@ impl RuntimeService {
     ) -> Result<()> {
         let loaded_variant = *self.loaded_tts_variant.read().await;
         if loaded_variant
-            .map(|variant| variant.is_lfm2())
+            .map(|variant| matches!(variant.family(), crate::catalog::ModelFamily::Lfm2Audio))
             .unwrap_or(false)
         {
             return self.lfm2_tts_generate_streaming(request, chunk_tx).await;

@@ -1,3 +1,4 @@
+use crate::catalog::ModelFamily;
 use crate::error::{Error, Result};
 
 use super::super::request::EngineCoreRequest;
@@ -13,11 +14,12 @@ impl NativeExecutor {
         scheduled: &ScheduledRequest,
     ) -> Result<ExecutorOutput> {
         let variant = Self::resolve_variant(request)?;
+        let family = variant.family();
         let language = request.language.as_deref();
         let stream_tx = Self::stream_sender(request);
 
         if let Some(tx) = stream_tx.as_ref() {
-            if !variant.is_voxtral() && !variant.is_lfm2() {
+            if !matches!(family, ModelFamily::Voxtral | ModelFamily::Lfm2Audio) {
                 let model = self.with_registry(|registry| {
                     registry.try_get_asr(variant).ok_or_else(|| {
                         Error::ModelNotFound(format!("ASR model {variant} is not loaded"))
@@ -185,7 +187,7 @@ impl NativeExecutor {
 
         let text = Self::run_blocking(|| {
             let mut sequence = 0usize;
-            if variant.is_voxtral() {
+            if matches!(family, ModelFamily::Voxtral) {
                 let model = self.with_registry(|registry| {
                     registry.try_get_voxtral(variant).ok_or_else(|| {
                         Error::ModelNotFound(format!(
@@ -237,7 +239,7 @@ impl NativeExecutor {
                 return model.transcribe(&samples, sample_rate, language);
             }
 
-            if variant.is_lfm2() {
+            if matches!(family, ModelFamily::Lfm2Audio) {
                 let model = self.with_registry(|registry| {
                     registry.try_get_lfm2(variant).ok_or_else(|| {
                         Error::ModelNotFound(format!("LFM2 model {variant} is not loaded"))

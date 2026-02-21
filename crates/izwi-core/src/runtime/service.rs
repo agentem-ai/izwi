@@ -440,7 +440,9 @@ impl RuntimeService {
     /// Get available speakers for loaded TTS model.
     pub async fn available_speakers(&self) -> Result<Vec<String>> {
         let loaded_variant = *self.loaded_tts_variant.read().await;
-        if let Some(variant) = loaded_variant.filter(|variant| variant.is_lfm2()) {
+        if let Some(variant) = loaded_variant
+            .filter(|variant| matches!(variant.family(), crate::catalog::ModelFamily::Lfm2Audio))
+        {
             if let Some(model) = self.model_registry.get_lfm2(variant).await {
                 return Ok(model.available_voices());
             }

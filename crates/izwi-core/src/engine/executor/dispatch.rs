@@ -35,7 +35,7 @@ impl DispatchRoute {
 }
 
 fn is_lfm2_variant(variant: ModelVariant) -> bool {
-    variant.is_lfm2()
+    matches!(variant.family(), crate::catalog::ModelFamily::Lfm2Audio)
 }
 
 const DISPATCH_ROUTES: &[DispatchRoute] = &[
