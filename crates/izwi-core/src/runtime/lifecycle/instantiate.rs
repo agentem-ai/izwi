@@ -1,12 +1,48 @@
 use tracing::info;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::architectures::qwen3::tts::Qwen3TtsModel;
 use crate::runtime::lifecycle::families::{resolve_runtime_model_family, RuntimeModelFamily};
 use crate::runtime::lifecycle::phases::AcquiredModelLoad;
 use crate::runtime::service::RuntimeService;
 use crate::tokenizer::Tokenizer;
+
+type TtsLoaderFn =
+    fn(&std::path::Path, crate::models::DeviceProfile, usize, &str) -> Result<Qwen3TtsModel>;
+
+struct TtsLoaderRegistration {
+    name: &'static str,
+    matcher: fn(ModelVariant) -> bool,
+    loader: TtsLoaderFn,
+}
+
+fn is_qwen_tts_variant(variant: ModelVariant) -> bool {
+    variant.is_tts()
+}
+
+fn load_qwen_tts_model(
+    model_dir: &std::path::Path,
+    device: crate::models::DeviceProfile,
+    kv_page_size: usize,
+    kv_cache_dtype: &str,
+) -> Result<Qwen3TtsModel> {
+    Qwen3TtsModel::load(model_dir, device, kv_page_size, kv_cache_dtype)
+}
+
+const TTS_LOADER_REGISTRY: &[TtsLoaderRegistration] = &[TtsLoaderRegistration {
+    name: "qwen3_tts",
+    matcher: is_qwen_tts_variant,
+    loader: load_qwen_tts_model,
+}];
+
+fn resolve_tts_loader_registration(
+    variant: ModelVariant,
+) -> Option<&'static TtsLoaderRegistration> {
+    TTS_LOADER_REGISTRY
+        .iter()
+        .find(|registration| (registration.matcher)(variant))
+}
 
 pub(super) enum InstantiatedPayload {
     None,
@@ -58,11 +94,17 @@ impl RuntimeService {
                 InstantiatedPayload::None
             }
             RuntimeModelFamily::Tts => {
+                let registration = resolve_tts_loader_registration(variant).ok_or_else(|| {
+                    Error::InvalidInput(format!("Unsupported TTS model variant: {variant}"))
+                })?;
                 if self.is_tts_model_already_loaded(&model_path).await {
                     InstantiatedPayload::None
                 } else {
-                    info!("Loading native TTS model from {:?}", model_path);
-                    let model = Qwen3TtsModel::load(
+                    info!(
+                        "Loading native TTS model {variant} ({}) from {:?}",
+                        registration.name, model_path
+                    );
+                    let model = (registration.loader)(
                         &model_path,
                         self.device.clone(),
                         self.config.kv_page_size,
