@@ -9,7 +9,7 @@ pub(crate) mod audio_io;
 mod chat;
 mod diarization;
 mod lfm2;
-mod model_router;
+mod lifecycle;
 mod service;
 mod tts;
 mod types;
