@@ -1,5 +1,5 @@
+use crate::catalog::ModelFamily;
 use crate::error::Result;
-use crate::runtime::lifecycle::families::RuntimeModelFamily;
 use crate::runtime::lifecycle::instantiate::{InstantiatedModelLoad, InstantiatedPayload};
 use crate::runtime::service::RuntimeService;
 
@@ -16,13 +16,16 @@ impl RuntimeService {
         } = instantiated;
 
         match family {
-            RuntimeModelFamily::Asr
-            | RuntimeModelFamily::Diarization
-            | RuntimeModelFamily::Chat
-            | RuntimeModelFamily::Voxtral => {
+            ModelFamily::Qwen3Asr
+            | ModelFamily::ParakeetAsr
+            | ModelFamily::Qwen3ForcedAligner
+            | ModelFamily::SortformerDiarization
+            | ModelFamily::Qwen3Chat
+            | ModelFamily::Gemma3Chat
+            | ModelFamily::Voxtral => {
                 self.model_manager.mark_loaded(variant).await;
             }
-            RuntimeModelFamily::Lfm2 => {
+            ModelFamily::Lfm2Audio => {
                 // LFM2 owns active TTS routing and does not use the legacy Qwen slot.
                 let mut tts_guard = self.tts_model.write().await;
                 *tts_guard = None;
@@ -31,7 +34,7 @@ impl RuntimeService {
                 self.set_active_tts_variant(variant, model_path).await;
                 self.model_manager.mark_loaded(variant).await;
             }
-            RuntimeModelFamily::Tts => {
+            ModelFamily::Qwen3Tts => {
                 if let InstantiatedPayload::TtsModel(model) = payload {
                     let mut model_guard = self.tts_model.write().await;
                     *model_guard = Some(model);
@@ -40,16 +43,14 @@ impl RuntimeService {
                 self.set_active_tts_variant(variant, model_path).await;
                 self.model_manager.mark_loaded(variant).await;
             }
-            RuntimeModelFamily::Auxiliary => {
+            ModelFamily::Tokenizer => {
                 if let InstantiatedPayload::Tokenizer(Some(tokenizer)) = payload {
                     let mut guard = self.tokenizer.write().await;
                     *guard = Some(tokenizer);
                 }
 
-                if variant.is_tokenizer() {
-                    let mut codec_guard = self.codec.write().await;
-                    codec_guard.load_weights(&model_path)?;
-                }
+                let mut codec_guard = self.codec.write().await;
+                codec_guard.load_weights(&model_path)?;
 
                 self.model_manager.mark_loaded(variant).await;
             }

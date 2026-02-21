@@ -18,6 +18,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
+use crate::catalog::ModelFamily;
 use crate::error::{Error, Result};
 use crate::model::info::ModelVariant;
 
@@ -353,17 +354,54 @@ impl ModelDownloader {
             return false;
         }
 
-        // Check for essential files based on model type
-        if variant.is_lfm2() {
-            // LFM2-Audio requires model.safetensors, config.json, and tokenizer files
-            let has_model = path.join("model.safetensors").exists();
-            let has_config = path.join("config.json").exists();
-            let has_tokenizer = path.join("tokenizer.json").exists();
-            return has_model && has_config && has_tokenizer;
-        }
+        let has_any_safetensors = || {
+            std::fs::read_dir(&path)
+                .map(|entries| {
+                    entries.filter_map(|e| e.ok()).any(|e| {
+                        e.path()
+                            .extension()
+                            .map(|ext| ext == "safetensors")
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        };
 
-        if variant.is_asr() {
-            if variant.is_parakeet() {
+        let has_sharded_model = || {
+            std::fs::read_dir(&path)
+                .map(|entries| {
+                    entries.filter_map(|e| e.ok()).any(|e| {
+                        e.file_name()
+                            .to_str()
+                            .map(|name| {
+                                name.starts_with("model-") && name.ends_with(".safetensors")
+                            })
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        };
+
+        match variant.family() {
+            ModelFamily::Lfm2Audio => {
+                // LFM2-Audio requires model.safetensors, config.json, and tokenizer files.
+                path.join("model.safetensors").exists()
+                    && path.join("config.json").exists()
+                    && path.join("tokenizer.json").exists()
+            }
+            ModelFamily::Qwen3Asr => {
+                let has_config = path.join("config.json").exists();
+                let has_vocab = path.join("vocab.json").exists();
+                let has_chat_template = path.join("chat_template.json").exists();
+                let has_model =
+                    if variant.is_quantized() || matches!(variant, ModelVariant::Qwen3Asr06B) {
+                        path.join("model.safetensors").exists()
+                    } else {
+                        path.join("model-00001-of-00002.safetensors").exists()
+                    };
+                has_config && has_vocab && has_chat_template && has_model
+            }
+            ModelFamily::ParakeetAsr => {
                 if variant.is_parakeet_nemo() {
                     let nemo_file = match variant {
                         ModelVariant::ParakeetTdt06BV2 => "parakeet-tdt-0.6b-v2.nemo",
@@ -379,89 +417,33 @@ impl ModelDownloader {
                     || path.join("tokenizer.model").exists()
                     || path.join("vocab.txt").exists()
                     || path.join("tokenizer.vocab").exists();
-                return has_config && has_model && has_tokenizer;
+                has_config && has_model && has_tokenizer
             }
-
-            // Qwen3-ASR requires config.json, vocab.json, chat_template.json, and model weights
-            let has_config = path.join("config.json").exists();
-            let has_vocab = path.join("vocab.json").exists();
-            let has_chat_template = path.join("chat_template.json").exists();
-            // mlx-community quantized models use model.safetensors + model.safetensors.index.json
-            // Original models: 0.6B has single file, 1.7B has sharded weights
-            let has_model = if variant.is_quantized() {
-                path.join("model.safetensors").exists()
-            } else if matches!(variant, ModelVariant::Qwen3Asr06B) {
-                path.join("model.safetensors").exists()
-            } else {
-                path.join("model-00001-of-00002.safetensors").exists()
-            };
-            return has_config && has_vocab && has_chat_template && has_model;
-        }
-
-        if variant.is_diarization() {
-            let nemo_file = match variant {
-                ModelVariant::DiarStreamingSortformer4SpkV21 => {
-                    "diar_streaming_sortformer_4spk-v2.1.nemo"
-                }
-                _ => unreachable!("checked by is_diarization"),
-            };
-            return path.join(nemo_file).exists();
-        }
-
-        if variant.is_chat() {
-            let has_config = path.join("config.json").exists();
-            let has_tokenizer = path.join("tokenizer.json").exists()
-                || path.join("tokenizer.model").exists()
-                || (path.join("vocab.json").exists() && path.join("merges.txt").exists());
-            let has_model = path.join("model.safetensors").exists()
-                || std::fs::read_dir(&path)
-                    .map(|entries| {
-                        entries.filter_map(|e| e.ok()).any(|e| {
-                            e.file_name()
-                                .to_str()
-                                .map(|name| {
-                                    name.starts_with("model-") && name.ends_with(".safetensors")
-                                })
-                                .unwrap_or(false)
-                        })
-                    })
-                    .unwrap_or(false);
-            return has_config && has_tokenizer && has_model;
-        }
-
-        if variant.is_forced_aligner() {
-            // ForcedAligner has similar structure to ASR
-            let has_config = path.join("config.json").exists();
-            let has_vocab = path.join("vocab.json").exists();
-            let has_model = path.join("model.safetensors").exists();
-            return has_config && has_vocab && has_model;
-        }
-
-        if variant.is_voxtral() {
-            // Voxtral Mini 4B Realtime uses params.json, tekken.json, and consolidated.safetensors
-            let has_params = path.join("params.json").exists();
-            let has_tekken = path.join("tekken.json").exists();
-            let has_model = path.join("consolidated.safetensors").exists();
-            return has_params && has_tekken && has_model;
-        }
-
-        if variant.is_tokenizer() {
-            path.join("tokenizer.json").exists() || path.join("vocab.json").exists()
-        } else {
-            // Check for model weights
-            let has_safetensors = std::fs::read_dir(&path)
-                .map(|entries| {
-                    entries.filter_map(|e| e.ok()).any(|e| {
-                        e.path()
-                            .extension()
-                            .map(|ext| ext == "safetensors")
-                            .unwrap_or(false)
-                    })
-                })
-                .unwrap_or(false);
-
-            let has_config = path.join("config.json").exists();
-            has_safetensors && has_config
+            ModelFamily::SortformerDiarization => path
+                .join("diar_streaming_sortformer_4spk-v2.1.nemo")
+                .exists(),
+            ModelFamily::Qwen3Chat | ModelFamily::Gemma3Chat => {
+                let has_config = path.join("config.json").exists();
+                let has_tokenizer = path.join("tokenizer.json").exists()
+                    || path.join("tokenizer.model").exists()
+                    || (path.join("vocab.json").exists() && path.join("merges.txt").exists());
+                let has_model = path.join("model.safetensors").exists() || has_sharded_model();
+                has_config && has_tokenizer && has_model
+            }
+            ModelFamily::Qwen3ForcedAligner => {
+                path.join("config.json").exists()
+                    && path.join("vocab.json").exists()
+                    && path.join("model.safetensors").exists()
+            }
+            ModelFamily::Voxtral => {
+                path.join("params.json").exists()
+                    && path.join("tekken.json").exists()
+                    && path.join("consolidated.safetensors").exists()
+            }
+            ModelFamily::Tokenizer => {
+                path.join("tokenizer.json").exists() || path.join("vocab.json").exists()
+            }
+            ModelFamily::Qwen3Tts => path.join("config.json").exists() && has_any_safetensors(),
         }
     }
 
@@ -835,9 +817,8 @@ impl ModelDownloader {
     /// Get list of files to download for a model variant
     /// Based on actual repo structure on HuggingFace
     fn get_model_files(&self, variant: ModelVariant) -> Vec<String> {
-        // LFM2-Audio has a different file structure
-        if variant.is_lfm2() {
-            return vec![
+        match variant.family() {
+            ModelFamily::Lfm2Audio => vec![
                 "config.json".to_string(),
                 "model.safetensors".to_string(),
                 "tokenizer.json".to_string(),
@@ -851,161 +832,132 @@ impl ModelDownloader {
                 "audio_detokenizer/special_tokens_map.json".to_string(),
                 "audio_detokenizer/tokenizer.json".to_string(),
                 "audio_detokenizer/tokenizer_config.json".to_string(),
-            ];
-        }
-
-        // Qwen3-ASR models
-        if variant.is_asr() {
-            if variant.is_parakeet() {
+            ],
+            ModelFamily::Qwen3Asr => {
+                let mut files = vec![
+                    "config.json".to_string(),
+                    "chat_template.json".to_string(),
+                    "generation_config.json".to_string(),
+                    "merges.txt".to_string(),
+                    "preprocessor_config.json".to_string(),
+                    "tokenizer_config.json".to_string(),
+                    "vocab.json".to_string(),
+                ];
+                // mlx-community quantized models use model.safetensors + model.safetensors.index.json.
+                if variant.is_quantized() {
+                    files.push("model.safetensors".to_string());
+                    files.push("model.safetensors.index.json".to_string());
+                } else if matches!(variant, ModelVariant::Qwen3Asr06B) {
+                    files.push("model.safetensors".to_string());
+                } else {
+                    files.extend([
+                        "model-00001-of-00002.safetensors".to_string(),
+                        "model-00002-of-00002.safetensors".to_string(),
+                        "model.safetensors.index.json".to_string(),
+                    ]);
+                }
+                files
+            }
+            ModelFamily::ParakeetAsr => {
                 if variant.is_parakeet_nemo() {
                     let nemo_file = match variant {
                         ModelVariant::ParakeetTdt06BV2 => "parakeet-tdt-0.6b-v2.nemo",
                         ModelVariant::ParakeetTdt06BV3 => "parakeet-tdt-0.6b-v3.nemo",
                         _ => unreachable!("checked by is_parakeet_nemo"),
                     };
-                    return vec![nemo_file.to_string(), "README.md".to_string()];
+                    vec![nemo_file.to_string(), "README.md".to_string()]
+                } else {
+                    vec![
+                        "config.json".to_string(),
+                        "generation_config.json".to_string(),
+                        "model.safetensors".to_string(),
+                        "tokenizer.json".to_string(),
+                        "tokenizer.model".to_string(),
+                        "tokenizer_config.json".to_string(),
+                        "special_tokens_map.json".to_string(),
+                        "vocab.txt".to_string(),
+                        "tokenizer.vocab".to_string(),
+                    ]
                 }
-
-                return vec![
-                    "config.json".to_string(),
-                    "generation_config.json".to_string(),
-                    "model.safetensors".to_string(),
-                    "tokenizer.json".to_string(),
-                    "tokenizer.model".to_string(),
-                    "tokenizer_config.json".to_string(),
-                    "special_tokens_map.json".to_string(),
-                    "vocab.txt".to_string(),
-                    "tokenizer.vocab".to_string(),
-                ];
             }
-
-            let mut files = vec![
-                "config.json".to_string(),
-                "chat_template.json".to_string(),
-                "generation_config.json".to_string(),
-                "merges.txt".to_string(),
-                "preprocessor_config.json".to_string(),
-                "tokenizer_config.json".to_string(),
-                "vocab.json".to_string(),
-            ];
-            // mlx-community quantized models use model.safetensors + model.safetensors.index.json
-            // Original models: 0.6B has single file, 1.7B has sharded weights
-            if variant.is_quantized() {
-                files.push("model.safetensors".to_string());
-                files.push("model.safetensors.index.json".to_string());
-            } else if matches!(variant, ModelVariant::Qwen3Asr06B) {
-                files.push("model.safetensors".to_string());
-            } else {
-                files.extend([
-                    "model-00001-of-00002.safetensors".to_string(),
-                    "model-00002-of-00002.safetensors".to_string(),
-                    "model.safetensors.index.json".to_string(),
-                ]);
-            }
-            return files;
-        }
-
-        if variant.is_diarization() {
-            let nemo_file = match variant {
-                ModelVariant::DiarStreamingSortformer4SpkV21 => {
-                    "diar_streaming_sortformer_4spk-v2.1.nemo"
-                }
-                _ => unreachable!("checked by is_diarization"),
-            };
-            return vec![
-                nemo_file.to_string(),
+            ModelFamily::SortformerDiarization => vec![
+                "diar_streaming_sortformer_4spk-v2.1.nemo".to_string(),
                 "README.md".to_string(),
                 "bias.md".to_string(),
                 "privacy.md".to_string(),
                 "safety.md".to_string(),
-            ];
-        }
-
-        if variant.is_chat() {
-            let mut files = vec![
-                "config.json".to_string(),
-                "generation_config.json".to_string(),
-                "chat_template.jinja".to_string(),
-                "added_tokens.json".to_string(),
-                "tokenizer.json".to_string(),
-                "tokenizer.model".to_string(),
-                "tokenizer_config.json".to_string(),
-                "special_tokens_map.json".to_string(),
-                "vocab.json".to_string(),
-                "merges.txt".to_string(),
-                "preprocessor_config.json".to_string(),
-                "model.safetensors".to_string(),
-                "model.safetensors.index.json".to_string(),
-            ];
-            for total in [2usize, 3, 4] {
-                for idx in 1..=total {
-                    files.push(format!("model-{idx:05}-of-{total:05}.safetensors"));
+            ],
+            ModelFamily::Qwen3Chat | ModelFamily::Gemma3Chat => {
+                let mut files = vec![
+                    "config.json".to_string(),
+                    "generation_config.json".to_string(),
+                    "chat_template.jinja".to_string(),
+                    "added_tokens.json".to_string(),
+                    "tokenizer.json".to_string(),
+                    "tokenizer.model".to_string(),
+                    "tokenizer_config.json".to_string(),
+                    "special_tokens_map.json".to_string(),
+                    "vocab.json".to_string(),
+                    "merges.txt".to_string(),
+                    "preprocessor_config.json".to_string(),
+                    "model.safetensors".to_string(),
+                    "model.safetensors.index.json".to_string(),
+                ];
+                for total in [2usize, 3, 4] {
+                    for idx in 1..=total {
+                        files.push(format!("model-{idx:05}-of-{total:05}.safetensors"));
+                    }
                 }
+                files
             }
-            return files;
-        }
-
-        // Qwen3-ForcedAligner model
-        if variant.is_forced_aligner() {
-            let mut files = vec![
-                "config.json".to_string(),
-                "generation_config.json".to_string(),
-                "merges.txt".to_string(),
-                "model.safetensors".to_string(),
-                "preprocessor_config.json".to_string(),
-                "tokenizer_config.json".to_string(),
-                "vocab.json".to_string(),
-            ];
-            if variant.is_quantized() {
-                files.push("model.safetensors.index.json".to_string());
+            ModelFamily::Qwen3ForcedAligner => {
+                let mut files = vec![
+                    "config.json".to_string(),
+                    "generation_config.json".to_string(),
+                    "merges.txt".to_string(),
+                    "model.safetensors".to_string(),
+                    "preprocessor_config.json".to_string(),
+                    "tokenizer_config.json".to_string(),
+                    "vocab.json".to_string(),
+                ];
+                if variant.is_quantized() {
+                    files.push("model.safetensors.index.json".to_string());
+                }
+                files
             }
-            return files;
-        }
-
-        // Voxtral Mini 4B Realtime model - single consolidated safetensors file
-        if variant.is_voxtral() {
-            return vec![
+            ModelFamily::Voxtral => vec![
                 "params.json".to_string(),
                 "tekken.json".to_string(),
                 "consolidated.safetensors".to_string(),
-            ];
-        }
-
-        let mut files = vec![
-            "config.json".to_string(),
-            "generation_config.json".to_string(),
-        ];
-
-        if variant.is_tokenizer() {
-            // Tokenizer model files (Qwen3-TTS-Tokenizer-12Hz)
-            files.extend([
+            ],
+            ModelFamily::Tokenizer => vec![
+                "config.json".to_string(),
+                "generation_config.json".to_string(),
                 "preprocessor_config.json".to_string(),
                 "model.safetensors".to_string(),
-            ]);
-        } else {
-            // TTS model files - Qwen3-TTS uses vocab.json + merges.txt, not tokenizer.json
-            files.extend([
-                "tokenizer_config.json".to_string(),
-                "vocab.json".to_string(),
-                "merges.txt".to_string(),
-                "preprocessor_config.json".to_string(),
-            ]);
-            // All Qwen3-TTS models use single model.safetensors file
-            files.push("model.safetensors".to_string());
-            // mlx-community quantized TTS models also have model.safetensors.index.json
-            if variant.is_quantized() {
-                files.push("model.safetensors.index.json".to_string());
+            ],
+            ModelFamily::Qwen3Tts => {
+                let mut files = vec![
+                    "config.json".to_string(),
+                    "generation_config.json".to_string(),
+                    "tokenizer_config.json".to_string(),
+                    "vocab.json".to_string(),
+                    "merges.txt".to_string(),
+                    "preprocessor_config.json".to_string(),
+                    "model.safetensors".to_string(),
+                ];
+                if variant.is_quantized() {
+                    files.push("model.safetensors.index.json".to_string());
+                }
+                files.extend([
+                    "speech_tokenizer/config.json".to_string(),
+                    "speech_tokenizer/configuration.json".to_string(),
+                    "speech_tokenizer/model.safetensors".to_string(),
+                    "speech_tokenizer/preprocessor_config.json".to_string(),
+                ]);
+                files
             }
-            // Speech tokenizer files (audio codec for decoding)
-            files.extend([
-                "speech_tokenizer/config.json".to_string(),
-                "speech_tokenizer/configuration.json".to_string(),
-                "speech_tokenizer/model.safetensors".to_string(),
-                "speech_tokenizer/preprocessor_config.json".to_string(),
-            ]);
         }
-
-        files
     }
 
     /// Get actual file size from HTTP HEAD request

@@ -22,7 +22,7 @@ impl RuntimeService {
 
     async fn resolve_active_lfm2_variant(&self) -> ModelVariant {
         if let Some(variant) = *self.loaded_tts_variant.read().await {
-            if variant.is_lfm2() {
+            if matches!(variant.family(), crate::catalog::ModelFamily::Lfm2Audio) {
                 return variant;
             }
         }
