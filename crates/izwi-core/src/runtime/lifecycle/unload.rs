@@ -22,6 +22,9 @@ impl RuntimeService {
             drop(model_guard);
 
             self.clear_active_tts_variant().await;
+        } else if variant.is_tokenizer() {
+            let mut tokenizer_guard = self.tokenizer.write().await;
+            *tokenizer_guard = None;
         }
 
         self.model_manager.unload_model(variant).await
