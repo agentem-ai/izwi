@@ -2196,8 +2196,8 @@ pub fn load_model(model_path: &Path, device: DeviceProfile) -> Result<Qwen3TtsMo
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::config::{CodePredictorConfig, TalkerConfig};
+    use super::*;
 
     #[test]
     fn test_special_tokens_creation() {

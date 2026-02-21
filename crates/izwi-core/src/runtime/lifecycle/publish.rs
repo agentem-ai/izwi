@@ -53,6 +53,8 @@ impl RuntimeService {
                     let mut codec_guard = self.codec.write().await;
                     codec_guard.load_weights(&model_path)?;
                 }
+
+                self.model_manager.mark_loaded(variant).await;
             }
         }
 
