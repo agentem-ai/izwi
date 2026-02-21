@@ -124,17 +124,34 @@ struct AudioAdapter {
 
 impl AudioAdapter {
     fn load(vb: VarBuilder) -> Result<Self> {
+        let layers_prefix = if vb.contains_tensor("model.0.weight") {
+            "model"
+        } else if vb.contains_tensor("layers.0.weight") {
+            "layers"
+        } else {
+            return Err(Error::ModelLoadError(
+                "Unsupported LFM2 audio_adapter layout: expected model.0 or layers.0 tensors"
+                    .to_string(),
+            ));
+        };
+
         let ln_dim = vb
-            .pp("model.0")
+            .pp(format!("{layers_prefix}.0"))
             .get(1, "weight")
             .map(|t| t.dim(0).unwrap_or(0))
             .unwrap_or(512);
 
-        let norm = candle_nn::layer_norm(ln_dim, 1e-5, vb.pp("model.0"))?;
-        let linear1 =
-            crate::models::shared::weights::mlx::load_linear(ln_dim, 2048, vb.pp("model.1"))?;
-        let linear2 =
-            crate::models::shared::weights::mlx::load_linear(2048, 2048, vb.pp("model.3"))?;
+        let norm = candle_nn::layer_norm(ln_dim, 1e-5, vb.pp(format!("{layers_prefix}.0")))?;
+        let linear1 = crate::models::shared::weights::mlx::load_linear(
+            ln_dim,
+            2048,
+            vb.pp(format!("{layers_prefix}.1")),
+        )?;
+        let linear2 = crate::models::shared::weights::mlx::load_linear(
+            2048,
+            2048,
+            vb.pp(format!("{layers_prefix}.3")),
+        )?;
 
         Ok(Self {
             norm,
@@ -176,9 +193,20 @@ impl Lfm2AudioModel {
             )?
         };
 
+        let conformer_vb = if vb.contains_tensor("conformer.pre_encode.conv.0.weight") {
+            vb.pp("conformer")
+        } else if vb.contains_tensor("audio_encoder.pre_encode.conv.0.weight") {
+            vb.pp("audio_encoder")
+        } else {
+            return Err(Error::ModelLoadError(
+                "Unsupported LFM2 checkpoint layout: missing conformer/audio_encoder tensors"
+                    .to_string(),
+            ));
+        };
+
         let tokenizer = Lfm2Tokenizer::load(model_dir)?;
         let preprocessor = Lfm2AudioPreprocessor::new(cfg.preprocessor.clone())?;
-        let conformer = ConformerEncoder::load(cfg.encoder.clone(), vb.pp("conformer"))?;
+        let conformer = ConformerEncoder::load(cfg.encoder.clone(), conformer_vb)?;
         let audio_adapter = AudioAdapter::load(vb.pp("audio_adapter"))?;
         let lfm = LfmBackbone::load(cfg.lfm.clone(), vb.pp("lfm"))?;
         let depthformer = Depthformer::load(&cfg, vb.clone())?;

@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 use crate::models::shared::attention::flash::{
     flash_attention_requested, try_fused_self_attention,
 };
+use crate::models::shared::weights::mlx;
 
 use super::config::LfmConfig;
 
@@ -63,20 +64,14 @@ struct Mlp {
 }
 
 impl Mlp {
-    fn load(vb: VarBuilder) -> Result<Self> {
-        let w1 = vb
+    fn load(cfg: &LfmConfig, vb: VarBuilder) -> Result<Self> {
+        let ff_dim = vb
             .pp("feed_forward.w1")
-            .get_unchecked_dtype("weight", vb.dtype())?;
-        let w2 = vb
-            .pp("feed_forward.w2")
-            .get_unchecked_dtype("weight", vb.dtype())?;
-        let w3 = vb
-            .pp("feed_forward.w3")
-            .get_unchecked_dtype("weight", vb.dtype())?;
-
-        let w1 = Linear::new(w1, None);
-        let w2 = Linear::new(w2, None);
-        let w3 = Linear::new(w3, None);
+            .get_unchecked_dtype("weight", vb.dtype())?
+            .dim(0)?;
+        let w1 = mlx::load_linear_no_bias(cfg.hidden_size, ff_dim, vb.pp("feed_forward.w1"))?;
+        let w2 = mlx::load_linear_no_bias(ff_dim, cfg.hidden_size, vb.pp("feed_forward.w2"))?;
+        let w3 = mlx::load_linear_no_bias(cfg.hidden_size, ff_dim, vb.pp("feed_forward.w3"))?;
         Ok(Self { w1, w2, w3 })
     }
 
@@ -110,12 +105,12 @@ impl AttentionLayer {
         let n_kv_head = cfg.num_key_value_heads;
         let head_dim = hidden / n_head;
 
-        let q_proj = candle_nn::linear_no_bias(hidden, hidden, vb.pp("self_attn.q_proj"))?;
+        let q_proj = mlx::load_linear_no_bias(hidden, hidden, vb.pp("self_attn.q_proj"))?;
         let k_proj =
-            candle_nn::linear_no_bias(hidden, n_kv_head * head_dim, vb.pp("self_attn.k_proj"))?;
+            mlx::load_linear_no_bias(hidden, n_kv_head * head_dim, vb.pp("self_attn.k_proj"))?;
         let v_proj =
-            candle_nn::linear_no_bias(hidden, n_kv_head * head_dim, vb.pp("self_attn.v_proj"))?;
-        let out_proj = candle_nn::linear_no_bias(hidden, hidden, vb.pp("self_attn.out_proj"))?;
+            mlx::load_linear_no_bias(hidden, n_kv_head * head_dim, vb.pp("self_attn.v_proj"))?;
+        let out_proj = mlx::load_linear_no_bias(hidden, hidden, vb.pp("self_attn.out_proj"))?;
 
         let q_norm = candle_nn::rms_norm(head_dim, cfg.norm_eps, vb.pp("self_attn.q_layernorm"))?;
         let k_norm = candle_nn::rms_norm(head_dim, cfg.norm_eps, vb.pp("self_attn.k_layernorm"))?;
@@ -247,8 +242,8 @@ struct ShortConvLayer {
 
 impl ShortConvLayer {
     fn load(hidden: usize, l_cache: usize, vb: VarBuilder) -> Result<Self> {
-        let in_proj = candle_nn::linear_no_bias(hidden, hidden * 3, vb.pp("conv.in_proj"))?;
-        let out_proj = candle_nn::linear_no_bias(hidden, hidden, vb.pp("conv.out_proj"))?;
+        let in_proj = mlx::load_linear_no_bias(hidden, hidden * 3, vb.pp("conv.in_proj"))?;
+        let out_proj = mlx::load_linear_no_bias(hidden, hidden, vb.pp("conv.out_proj"))?;
         let conv = vb.get_unchecked_dtype("conv.conv.weight", vb.dtype())?;
 
         Ok(Self {
@@ -365,7 +360,7 @@ impl LfmBackbone {
     pub fn load(cfg: LfmConfig, vb: VarBuilder) -> Result<Self> {
         let hidden = cfg.hidden_size;
 
-        let embed_tokens = candle_nn::embedding(cfg.vocab_size, hidden, vb.pp("embed_tokens"))?;
+        let embed_tokens = mlx::load_embedding(cfg.vocab_size, hidden, vb.pp("embed_tokens"))?;
         let norm = candle_nn::rms_norm(hidden, cfg.norm_eps, vb.pp("embedding_norm"))?;
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
@@ -375,7 +370,7 @@ impl LfmBackbone {
             let operator_norm =
                 candle_nn::rms_norm(hidden, cfg.norm_eps, layer_vb.pp("operator_norm"))?;
             let ffn_norm = candle_nn::rms_norm(hidden, cfg.norm_eps, layer_vb.pp("ffn_norm"))?;
-            let mlp = Mlp::load(layer_vb.clone())?;
+            let mlp = Mlp::load(&cfg, layer_vb.clone())?;
 
             let kind =
                 if cfg.layer_types.get(layer_idx).map(|s| s.as_str()) == Some("full_attention") {
