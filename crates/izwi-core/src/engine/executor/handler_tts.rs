@@ -1,6 +1,8 @@
 use crate::error::{Error, Result};
-use crate::models::lfm2_audio::lfm2_tts_voice_prompt;
-use crate::models::qwen3_tts::{SpeakerReference, TtsGenerationParams, TtsStreamingConfig};
+use crate::models::architectures::lfm2::audio::lfm2_tts_voice_prompt;
+use crate::models::architectures::qwen3::tts::{
+    SpeakerReference, TtsGenerationParams, TtsStreamingConfig,
+};
 
 use super::super::request::EngineCoreRequest;
 use super::super::scheduler::ScheduledRequest;

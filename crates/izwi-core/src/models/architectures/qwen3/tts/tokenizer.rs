@@ -4,7 +4,7 @@
 //! for the multi-codebook RVQ speech representation.
 
 use crate::error::Result;
-use crate::models::qwen3_tts::config::TalkerConfig;
+use crate::models::architectures::qwen3::tts::config::TalkerConfig;
 use crate::tokenizer::Tokenizer as BaseTokenizer;
 use std::collections::HashMap;
 use std::path::Path;

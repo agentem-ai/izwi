@@ -28,7 +28,7 @@ use super::request::EngineCoreRequest;
 use super::scheduler::ScheduledRequest;
 use super::types::{AudioOutput, ModelType};
 use crate::error::{Error, Result};
-use crate::models::qwen3_tts::Qwen3TtsModel;
+use crate::models::architectures::qwen3::tts::Qwen3TtsModel;
 use crate::models::DeviceSelector;
 use crate::models::ModelRegistry;
 use state::{

@@ -13,7 +13,7 @@ use candle_nn::{
 
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
-use crate::models::mlx_compat;
+use crate::models::shared::weights::mlx_compat;
 use crate::tokenizer::Tokenizer;
 
 use decode::decode_tokens;

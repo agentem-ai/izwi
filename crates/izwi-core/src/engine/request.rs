@@ -10,7 +10,7 @@ use super::output::StreamingOutput;
 use super::types::{GenerationParams, ModelType, Priority, RequestId, TaskType, TokenId};
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
-use crate::models::chat_types::ChatMessage;
+use crate::models::shared::chat::ChatMessage;
 
 /// Status of a request in the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -539,7 +539,7 @@ impl RequestBuilder {
 mod tests {
     use super::*;
     use crate::model::ModelVariant;
-    use crate::models::chat_types::ChatRole;
+    use crate::models::shared::chat::ChatRole;
 
     #[test]
     fn test_tts_request() {

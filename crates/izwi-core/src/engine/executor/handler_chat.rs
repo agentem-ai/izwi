@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::models::chat_types::ChatMessage;
+use crate::models::shared::chat::ChatMessage;
 
 use super::super::request::EngineCoreRequest;
 use super::super::scheduler::ScheduledRequest;

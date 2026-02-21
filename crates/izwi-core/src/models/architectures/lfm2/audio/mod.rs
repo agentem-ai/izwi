@@ -25,7 +25,7 @@ use tokenizer::{ChatState, Lfm2Tokenizer, LfmModality};
 use tracing::info;
 
 use crate::error::{Error, Result};
-use crate::models::device::DeviceProfile;
+use crate::models::shared::device::DeviceProfile;
 
 pub const LFM2_DEFAULT_S2S_PROMPT: &str = "Respond with interleaved text and audio.";
 
@@ -131,8 +131,10 @@ impl AudioAdapter {
             .unwrap_or(512);
 
         let norm = candle_nn::layer_norm(ln_dim, 1e-5, vb.pp("model.0"))?;
-        let linear1 = crate::models::mlx_compat::load_linear(ln_dim, 2048, vb.pp("model.1"))?;
-        let linear2 = crate::models::mlx_compat::load_linear(2048, 2048, vb.pp("model.3"))?;
+        let linear1 =
+            crate::models::shared::weights::mlx::load_linear(ln_dim, 2048, vb.pp("model.1"))?;
+        let linear2 =
+            crate::models::shared::weights::mlx::load_linear(2048, 2048, vb.pp("model.3"))?;
 
         Ok(Self {
             norm,
@@ -158,7 +160,9 @@ impl Lfm2AudioModel {
                 .map_err(|e| Error::ModelLoadError(format!("Invalid LFM2 config.json: {e}")))?;
 
         let dtype = match device.kind {
-            crate::models::device::DeviceKind::Cuda if device.capabilities.supports_bf16 => {
+            crate::models::shared::device::DeviceKind::Cuda
+                if device.capabilities.supports_bf16 =>
+            {
                 DType::BF16
             }
             _ => DType::F32,

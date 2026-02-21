@@ -18,5 +18,6 @@ pub use service::{RuntimeService, RuntimeTelemetrySnapshot};
 pub use types::{
     AsrTranscription, AudioChunk, ChatGeneration, ChunkStats, DiarizationConfig, DiarizationResult,
     DiarizationSegment, DiarizationTranscriptResult, DiarizationUtterance, DiarizationWord,
-    GenerationConfig, GenerationRequest, GenerationResult, SpeechToSpeechGeneration,
+    GenerationConfig, GenerationRequest, GenerationResult, InferenceOptions,
+    SpeechToSpeechGeneration,
 };

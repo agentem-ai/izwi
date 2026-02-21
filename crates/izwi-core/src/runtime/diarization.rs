@@ -4,13 +4,14 @@ use crate::catalog::{
     resolve_asr_model_variant, resolve_diarization_llm_variant, resolve_diarization_model_variant,
 };
 use crate::error::{Error, Result};
+use crate::models::shared::chat::{ChatMessage, ChatRole};
 use crate::runtime::audio_io::{base64_decode, decode_audio_bytes};
 use crate::runtime::service::RuntimeService;
 use crate::runtime::types::{
     DiarizationConfig, DiarizationResult, DiarizationSegment, DiarizationTranscriptResult,
     DiarizationUtterance, DiarizationWord,
 };
-use crate::{models::chat_types::ChatMessage, models::chat_types::ChatRole, ModelVariant};
+use crate::ModelVariant;
 use std::collections::HashMap;
 use tracing::warn;
 

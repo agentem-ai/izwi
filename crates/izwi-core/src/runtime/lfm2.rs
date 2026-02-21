@@ -39,15 +39,16 @@ impl RuntimeService {
             ));
         }
 
+        let opts = &request.config.options;
         let using_generic_defaults =
-            request.config.top_k == 0 && (request.config.temperature - 0.7).abs() < f32::EPSILON;
+            opts.top_k == 0 && (opts.temperature - 0.7).abs() < f32::EPSILON;
         let temperature = if using_generic_defaults {
             Self::LFM2_TTS_DEFAULT_AUDIO_TEMPERATURE
         } else {
-            request.config.temperature
+            opts.temperature
         };
-        let top_k = if request.config.top_k > 0 {
-            request.config.top_k
+        let top_k = if opts.top_k > 0 {
+            opts.top_k
         } else {
             Self::LFM2_TTS_DEFAULT_AUDIO_TOP_K
         };
@@ -60,19 +61,19 @@ impl RuntimeService {
         core_request.voice_description = request.voice_description.clone();
         core_request.params = CoreGenParams {
             temperature,
-            top_p: request.config.top_p,
+            top_p: opts.top_p,
             top_k,
-            repetition_penalty: request.config.repetition_penalty,
-            max_tokens: if request.config.max_tokens == 0 {
+            repetition_penalty: opts.repetition_penalty,
+            max_tokens: if opts.max_tokens == 0 {
                 512
             } else {
-                request.config.max_tokens
+                opts.max_tokens
             },
-            speaker: request.config.speaker.clone(),
-            voice: request.config.speaker.clone(),
+            speaker: opts.speaker.clone(),
+            voice: opts.voice.clone().or_else(|| opts.speaker.clone()),
             audio_temperature: Some(temperature),
             audio_top_k: Some(top_k),
-            speed: request.config.speed,
+            speed: opts.speed,
             stop_sequences: Vec::new(),
             stop_token_ids: Vec::new(),
         };
@@ -329,7 +330,7 @@ impl RuntimeService {
 
 #[cfg(test)]
 mod tests {
-    use crate::models::lfm2_audio::LFM2_DEFAULT_S2S_PROMPT;
+    use crate::models::architectures::lfm2::audio::LFM2_DEFAULT_S2S_PROMPT;
 
     #[test]
     fn uses_default_s2s_prompt_when_missing() {

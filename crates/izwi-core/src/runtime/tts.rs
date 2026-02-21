@@ -104,18 +104,9 @@ impl RuntimeService {
 }
 
 fn core_params_from_generation(config: &GenerationConfig) -> CoreGenParams {
-    CoreGenParams {
-        temperature: config.temperature,
-        top_p: config.top_p,
-        top_k: config.top_k,
-        repetition_penalty: config.repetition_penalty,
-        max_tokens: config.max_tokens,
-        speaker: config.speaker.clone(),
-        voice: config.speaker.clone(),
-        audio_temperature: None,
-        audio_top_k: None,
-        speed: config.speed,
-        stop_sequences: Vec::new(),
-        stop_token_ids: Vec::new(),
+    let mut params = config.options.clone();
+    if params.voice.is_none() {
+        params.voice = params.speaker.clone();
     }
+    params
 }

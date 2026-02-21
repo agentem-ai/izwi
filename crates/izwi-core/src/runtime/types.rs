@@ -1,5 +1,6 @@
 //! Runtime request/response types.
 
+use crate::engine::GenerationParams;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -93,73 +94,34 @@ pub struct SpeechToSpeechGeneration {
     pub generation_time_ms: f64,
 }
 
-/// Configuration for audio generation
+/// Canonical runtime inference options (shared with the engine layer).
+pub type InferenceOptions = GenerationParams;
+
+/// Compatibility wrapper for legacy runtime request payloads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationConfig {
-    /// Temperature for sampling (0.0 = deterministic, 1.0 = more random)
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
+    /// Canonical inference options used end-to-end by engine/runtime.
+    #[serde(flatten)]
+    pub options: InferenceOptions,
 
-    /// Top-p (nucleus) sampling threshold
-    #[serde(default = "default_top_p")]
-    pub top_p: f32,
-
-    /// Top-k sampling (0 = disabled)
-    #[serde(default)]
-    pub top_k: usize,
-
-    /// Repetition penalty to avoid loops
-    #[serde(default = "default_repetition_penalty")]
-    pub repetition_penalty: f32,
-
-    /// Maximum number of audio tokens to generate.
-    /// `0` means "auto" (use the model's maximum context budget).
-    #[serde(default = "default_max_tokens")]
-    pub max_tokens: usize,
-
-    /// Enable streaming output
+    /// Enable streaming output for compatibility with older payloads.
     #[serde(default = "default_streaming")]
     pub streaming: bool,
-
-    /// Speaker/voice identifier (for voice cloning)
-    #[serde(default)]
-    pub speaker: Option<String>,
-
-    /// Speed factor (1.0 = normal)
-    #[serde(default = "default_speed")]
-    pub speed: f32,
 }
 
-fn default_temperature() -> f32 {
-    0.7
-}
-fn default_top_p() -> f32 {
-    0.9
-}
-fn default_repetition_penalty() -> f32 {
-    1.1
-}
-fn default_max_tokens() -> usize {
-    0
-}
 fn default_streaming() -> bool {
     true
-}
-fn default_speed() -> f32 {
-    1.0
 }
 
 impl Default for GenerationConfig {
     fn default() -> Self {
+        let mut options = InferenceOptions::default();
+        // Preserve runtime API behavior where max_tokens=0 means "auto".
+        options.max_tokens = 0;
+
         Self {
-            temperature: default_temperature(),
-            top_p: default_top_p(),
-            top_k: 0,
-            repetition_penalty: default_repetition_penalty(),
-            max_tokens: default_max_tokens(),
+            options,
             streaming: default_streaming(),
-            speaker: None,
-            speed: default_speed(),
         }
     }
 }
@@ -223,7 +185,9 @@ impl GenerationRequest {
     }
 
     pub fn with_speaker(mut self, speaker: impl Into<String>) -> Self {
-        self.config.speaker = Some(speaker.into());
+        let speaker = speaker.into();
+        self.config.options.speaker = Some(speaker.clone());
+        self.config.options.voice = Some(speaker);
         self
     }
 }

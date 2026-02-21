@@ -24,7 +24,7 @@ use crate::engine::{
 use crate::error::{Error, Result};
 use crate::model::download::DownloadProgress;
 use crate::model::{ModelInfo, ModelManager, ModelVariant};
-use crate::models::qwen3_tts::Qwen3TtsModel;
+use crate::models::architectures::qwen3::tts::Qwen3TtsModel;
 use crate::models::{DeviceProfile, DeviceSelector, ModelRegistry};
 use crate::tokenizer::Tokenizer;
 

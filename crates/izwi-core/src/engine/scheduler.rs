@@ -1094,7 +1094,7 @@ impl Scheduler {
 mod tests {
     use super::super::types::TaskType;
     use super::*;
-    use crate::models::chat_types::{ChatMessage, ChatRole};
+    use crate::models::shared::chat::{ChatMessage, ChatRole};
     use std::time::Duration;
 
     fn tiny_preemption_scheduler() -> (Scheduler, KVCacheManager) {

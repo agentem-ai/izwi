@@ -8,20 +8,19 @@ use tracing::info;
 
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
-
-use super::chat_types::ChatMessage;
-use super::device::DeviceProfile;
-use super::gemma3_chat::Gemma3ChatModel;
-use super::lfm2_audio::Lfm2AudioModel;
-use super::parakeet_asr::ParakeetAsrModel;
-use super::qwen3_asr::{
+use crate::models::architectures::gemma3::chat::Gemma3ChatModel;
+use crate::models::architectures::lfm2::audio::Lfm2AudioModel;
+use crate::models::architectures::parakeet::asr::ParakeetAsrModel;
+use crate::models::architectures::qwen3::asr::{
     AsrDecodeState as Qwen3AsrDecodeState, AsrDecodeStep as Qwen3AsrDecodeStep, Qwen3AsrModel,
 };
-use super::qwen3_chat::{
+use crate::models::architectures::qwen3::chat::{
     ChatDecodeState as Qwen3ChatDecodeState, ChatGenerationOutput, Qwen3ChatModel,
 };
-use super::sortformer_diarization::SortformerDiarizerModel;
-use super::voxtral::VoxtralRealtimeModel;
+use crate::models::architectures::sortformer::diarization::SortformerDiarizerModel;
+use crate::models::architectures::voxtral::realtime::VoxtralRealtimeModel;
+use crate::models::shared::chat::ChatMessage;
+use crate::models::shared::device::DeviceProfile;
 use crate::runtime::{DiarizationConfig, DiarizationResult};
 
 pub enum NativeAsrModel {

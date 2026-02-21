@@ -24,8 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
 use crate::error::{Error, Result};
-use crate::models::device::DeviceProfile;
 use crate::models::shared::attention::paged::{default_kv_page_size, KvCacheQuantization};
+use crate::models::shared::device::DeviceProfile;
 
 const NEWLINE_TOKEN_ID: u32 = 198;
 
@@ -146,15 +146,16 @@ pub struct BatchedSpeakerRequest {
 impl TtsGenerationParams {
     /// Convert external generation config to TTS sampling params.
     pub fn from_generation_config(cfg: &crate::runtime::GenerationConfig) -> Self {
+        let opts = &cfg.options;
         Self {
-            temperature: cfg.temperature.max(0.0),
-            top_p: cfg.top_p.clamp(0.0, 1.0),
-            top_k: if cfg.top_k == 0 { 50 } else { cfg.top_k },
-            repetition_penalty: cfg.repetition_penalty.max(1.0),
-            max_frames: if cfg.max_tokens == 0 {
+            temperature: opts.temperature.max(0.0),
+            top_p: opts.top_p.clamp(0.0, 1.0),
+            top_k: if opts.top_k == 0 { 50 } else { opts.top_k },
+            repetition_penalty: opts.repetition_penalty.max(1.0),
+            max_frames: if opts.max_tokens == 0 {
                 crate::model::ModelVariant::QWEN3_TTS_MAX_OUTPUT_FRAMES
             } else {
-                cfg.max_tokens
+                opts.max_tokens
                     .clamp(16, crate::model::ModelVariant::QWEN3_TTS_MAX_OUTPUT_FRAMES)
             },
         }

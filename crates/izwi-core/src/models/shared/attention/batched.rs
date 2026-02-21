@@ -8,10 +8,10 @@ use candle_core::{DType, IndexOp, Shape, Tensor, D};
 use tracing::debug;
 
 use crate::error::{Error, Result};
-use crate::models::metal_memory::{metal_pool_for_device, PooledTensor};
 use crate::models::shared::attention::flash::{
     flash_attention_requested, try_fused_self_attention,
 };
+use crate::models::shared::memory::metal::{metal_pool_for_device, PooledTensor};
 
 /// Batched attention input for multiple sequences
 #[derive(Debug)]
@@ -169,7 +169,7 @@ pub struct AttentionBatchBuilder {
     hidden_size: usize,
     dtype: DType,
     device: candle_core::Device,
-    memory_pool: Option<std::sync::Arc<crate::models::metal_memory::MetalMemoryPool>>,
+    memory_pool: Option<std::sync::Arc<crate::models::shared::memory::metal::MetalMemoryPool>>,
 }
 
 impl AttentionBatchBuilder {
@@ -290,7 +290,7 @@ impl AttentionBatchBuilder {
         hidden_size: usize,
         dtype: DType,
         device: &candle_core::Device,
-        memory_pool: Option<std::sync::Arc<crate::models::metal_memory::MetalMemoryPool>>,
+        memory_pool: Option<std::sync::Arc<crate::models::shared::memory::metal::MetalMemoryPool>>,
     ) -> Result<Vec<Tensor>> {
         tensors
             .into_iter()
