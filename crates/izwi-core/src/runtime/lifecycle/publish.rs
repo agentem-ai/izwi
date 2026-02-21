@@ -1,5 +1,6 @@
 use crate::error::Result;
-use crate::runtime::lifecycle::instantiate::InstantiatedModelLoad;
+use crate::runtime::lifecycle::families::RuntimeModelFamily;
+use crate::runtime::lifecycle::instantiate::{InstantiatedModelLoad, InstantiatedPayload};
 use crate::runtime::service::RuntimeService;
 
 impl RuntimeService {
@@ -7,18 +8,21 @@ impl RuntimeService {
         &self,
         instantiated: InstantiatedModelLoad,
     ) -> Result<()> {
-        match instantiated {
-            InstantiatedModelLoad::Asr { variant }
-            | InstantiatedModelLoad::Diarization { variant }
-            | InstantiatedModelLoad::Chat { variant }
-            | InstantiatedModelLoad::Voxtral { variant }
-            | InstantiatedModelLoad::TtsAlreadyLoaded { variant } => {
+        let InstantiatedModelLoad {
+            family,
+            variant,
+            model_path,
+            payload,
+        } = instantiated;
+
+        match family {
+            RuntimeModelFamily::Asr
+            | RuntimeModelFamily::Diarization
+            | RuntimeModelFamily::Chat
+            | RuntimeModelFamily::Voxtral => {
                 self.model_manager.mark_loaded(variant).await;
             }
-            InstantiatedModelLoad::Lfm2 {
-                variant,
-                model_path,
-            } => {
+            RuntimeModelFamily::Lfm2 => {
                 // LFM2 owns active TTS routing and does not use the legacy Qwen slot.
                 let mut tts_guard = self.tts_model.write().await;
                 *tts_guard = None;
@@ -27,24 +31,17 @@ impl RuntimeService {
                 self.set_active_tts_variant(variant, model_path).await;
                 self.model_manager.mark_loaded(variant).await;
             }
-            InstantiatedModelLoad::TtsLoaded {
-                variant,
-                model_path,
-                model,
-            } => {
-                let mut model_guard = self.tts_model.write().await;
-                *model_guard = Some(model);
-                drop(model_guard);
-
+            RuntimeModelFamily::Tts => {
+                if let InstantiatedPayload::TtsModel(model) = payload {
+                    let mut model_guard = self.tts_model.write().await;
+                    *model_guard = Some(model);
+                    drop(model_guard);
+                }
                 self.set_active_tts_variant(variant, model_path).await;
                 self.model_manager.mark_loaded(variant).await;
             }
-            InstantiatedModelLoad::Auxiliary {
-                variant,
-                model_path,
-                tokenizer,
-            } => {
-                if let Some(tokenizer) = tokenizer {
+            RuntimeModelFamily::Auxiliary => {
+                if let InstantiatedPayload::Tokenizer(Some(tokenizer)) = payload {
                     let mut guard = self.tokenizer.write().await;
                     *guard = Some(tokenizer);
                 }

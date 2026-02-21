@@ -23,6 +23,157 @@ use crate::models::shared::chat::ChatMessage;
 use crate::models::shared::device::DeviceProfile;
 use crate::runtime::{DiarizationConfig, DiarizationResult};
 
+type AsrLoaderFn = fn(&Path, ModelVariant, DeviceProfile) -> Result<NativeAsrModel>;
+type ChatLoaderFn = fn(&Path, ModelVariant, DeviceProfile) -> Result<NativeChatModel>;
+type DiarizationLoaderFn = fn(&Path, ModelVariant) -> Result<NativeDiarizationModel>;
+
+struct AsrLoaderRegistration {
+    name: &'static str,
+    matcher: fn(ModelVariant) -> bool,
+    loader: AsrLoaderFn,
+}
+
+struct ChatLoaderRegistration {
+    name: &'static str,
+    matcher: fn(ModelVariant) -> bool,
+    loader: ChatLoaderFn,
+}
+
+struct DiarizationLoaderRegistration {
+    name: &'static str,
+    matcher: fn(ModelVariant) -> bool,
+    loader: DiarizationLoaderFn,
+}
+
+fn is_qwen_asr_variant(variant: ModelVariant) -> bool {
+    (variant.is_asr() || variant.is_forced_aligner()) && !variant.is_parakeet()
+}
+
+fn is_parakeet_asr_variant(variant: ModelVariant) -> bool {
+    variant.is_parakeet()
+}
+
+fn is_qwen_chat_variant(variant: ModelVariant) -> bool {
+    matches!(
+        variant,
+        ModelVariant::Qwen306B4Bit | ModelVariant::Qwen317B | ModelVariant::Qwen317B4Bit
+    )
+}
+
+fn is_gemma_chat_variant(variant: ModelVariant) -> bool {
+    matches!(variant, ModelVariant::Gemma31BIt | ModelVariant::Gemma34BIt)
+}
+
+fn is_sortformer_diarization_variant(variant: ModelVariant) -> bool {
+    matches!(variant, ModelVariant::DiarStreamingSortformer4SpkV21)
+}
+
+fn load_qwen_asr_model(
+    model_dir: &Path,
+    _variant: ModelVariant,
+    device: DeviceProfile,
+) -> Result<NativeAsrModel> {
+    Ok(NativeAsrModel::Qwen3(Qwen3AsrModel::load(
+        model_dir, device,
+    )?))
+}
+
+fn load_parakeet_asr_model(
+    model_dir: &Path,
+    variant: ModelVariant,
+    _device: DeviceProfile,
+) -> Result<NativeAsrModel> {
+    Ok(NativeAsrModel::Parakeet(ParakeetAsrModel::load(
+        model_dir, variant,
+    )?))
+}
+
+fn load_qwen_chat_model(
+    model_dir: &Path,
+    _variant: ModelVariant,
+    device: DeviceProfile,
+) -> Result<NativeChatModel> {
+    Ok(NativeChatModel::Qwen3(Qwen3ChatModel::load(
+        model_dir, device,
+    )?))
+}
+
+fn load_gemma_chat_model(
+    model_dir: &Path,
+    variant: ModelVariant,
+    device: DeviceProfile,
+) -> Result<NativeChatModel> {
+    Ok(NativeChatModel::Gemma3(Gemma3ChatModel::load(
+        model_dir, variant, device,
+    )?))
+}
+
+fn load_sortformer_diarization_model(
+    model_dir: &Path,
+    variant: ModelVariant,
+) -> Result<NativeDiarizationModel> {
+    Ok(NativeDiarizationModel::Sortformer(
+        SortformerDiarizerModel::load(model_dir, variant)?,
+    ))
+}
+
+const ASR_LOADER_REGISTRY: &[AsrLoaderRegistration] = &[
+    AsrLoaderRegistration {
+        name: "parakeet_asr",
+        matcher: is_parakeet_asr_variant,
+        loader: load_parakeet_asr_model,
+    },
+    AsrLoaderRegistration {
+        name: "qwen_asr",
+        matcher: is_qwen_asr_variant,
+        loader: load_qwen_asr_model,
+    },
+];
+
+const CHAT_LOADER_REGISTRY: &[ChatLoaderRegistration] = &[
+    ChatLoaderRegistration {
+        name: "qwen_chat",
+        matcher: is_qwen_chat_variant,
+        loader: load_qwen_chat_model,
+    },
+    ChatLoaderRegistration {
+        name: "gemma_chat",
+        matcher: is_gemma_chat_variant,
+        loader: load_gemma_chat_model,
+    },
+];
+
+const DIARIZATION_LOADER_REGISTRY: &[DiarizationLoaderRegistration] =
+    &[DiarizationLoaderRegistration {
+        name: "sortformer_diarization",
+        matcher: is_sortformer_diarization_variant,
+        loader: load_sortformer_diarization_model,
+    }];
+
+fn resolve_asr_loader_registration(
+    variant: ModelVariant,
+) -> Option<&'static AsrLoaderRegistration> {
+    ASR_LOADER_REGISTRY
+        .iter()
+        .find(|registration| (registration.matcher)(variant))
+}
+
+fn resolve_chat_loader_registration(
+    variant: ModelVariant,
+) -> Option<&'static ChatLoaderRegistration> {
+    CHAT_LOADER_REGISTRY
+        .iter()
+        .find(|registration| (registration.matcher)(variant))
+}
+
+fn resolve_diarization_loader_registration(
+    variant: ModelVariant,
+) -> Option<&'static DiarizationLoaderRegistration> {
+    DIARIZATION_LOADER_REGISTRY
+        .iter()
+        .find(|registration| (registration.matcher)(variant))
+}
+
 pub enum NativeAsrModel {
     Qwen3(Qwen3AsrModel),
     Parakeet(ParakeetAsrModel),
@@ -266,11 +417,11 @@ impl ModelRegistry {
         variant: ModelVariant,
         model_dir: &Path,
     ) -> Result<Arc<NativeAsrModel>> {
-        if !variant.is_asr() && !variant.is_forced_aligner() {
-            return Err(Error::InvalidInput(format!(
-                "Model variant {variant} is not an ASR or ForcedAligner model"
-            )));
-        }
+        let registration = resolve_asr_loader_registration(variant).ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "Unsupported ASR/ForcedAligner model variant: {variant}"
+            ))
+        })?;
 
         let cell = {
             let mut guard = self.asr_models.write().await;
@@ -280,19 +431,19 @@ impl ModelRegistry {
                 .clone()
         };
 
-        info!("Loading native ASR/ForcedAligner model {variant} from {model_dir:?}");
+        info!(
+            "Loading native ASR/ForcedAligner model {variant} ({}) from {model_dir:?}",
+            registration.name
+        );
 
         let model = cell
             .get_or_try_init({
                 let model_dir = model_dir.to_path_buf();
                 let device = self.device.clone();
+                let loader = registration.loader;
                 move || async move {
                     tokio::task::spawn_blocking(move || {
-                        let model = if variant.is_parakeet() {
-                            NativeAsrModel::Parakeet(ParakeetAsrModel::load(&model_dir, variant)?)
-                        } else {
-                            NativeAsrModel::Qwen3(Qwen3AsrModel::load(&model_dir, device)?)
-                        };
+                        let model = loader(&model_dir, variant, device)?;
                         Ok::<NativeAsrModel, Error>(model)
                     })
                     .await
@@ -310,11 +461,9 @@ impl ModelRegistry {
         variant: ModelVariant,
         model_dir: &Path,
     ) -> Result<Arc<NativeChatModel>> {
-        if !variant.is_chat() {
-            return Err(Error::InvalidInput(format!(
-                "Model variant {variant} is not a chat model"
-            )));
-        }
+        let registration = resolve_chat_loader_registration(variant).ok_or_else(|| {
+            Error::InvalidInput(format!("Unsupported chat model variant: {variant}"))
+        })?;
 
         let cell = {
             let mut guard = self.chat_models.write().await;
@@ -324,32 +473,19 @@ impl ModelRegistry {
                 .clone()
         };
 
-        info!("Loading native chat model {variant} from {model_dir:?}");
+        info!(
+            "Loading native chat model {variant} ({}) from {model_dir:?}",
+            registration.name
+        );
 
         let model = cell
             .get_or_try_init({
                 let model_dir = model_dir.to_path_buf();
                 let device = self.device.clone();
+                let loader = registration.loader;
                 move || async move {
                     tokio::task::spawn_blocking(move || {
-                        let model = match variant {
-                            ModelVariant::Qwen306B4Bit
-                            | ModelVariant::Qwen317B
-                            | ModelVariant::Qwen317B4Bit => {
-                                NativeChatModel::Qwen3(Qwen3ChatModel::load(&model_dir, device)?)
-                            }
-                            ModelVariant::Gemma31BIt | ModelVariant::Gemma34BIt => {
-                                NativeChatModel::Gemma3(Gemma3ChatModel::load(
-                                    &model_dir, variant, device,
-                                )?)
-                            }
-                            _ => {
-                                return Err(Error::InvalidInput(format!(
-                                    "Unsupported chat model variant: {variant}"
-                                )));
-                            }
-                        };
-
+                        let model = loader(&model_dir, variant, device)?;
                         Ok::<NativeChatModel, Error>(model)
                     })
                     .await
@@ -367,11 +503,9 @@ impl ModelRegistry {
         variant: ModelVariant,
         model_dir: &Path,
     ) -> Result<Arc<NativeDiarizationModel>> {
-        if !variant.is_diarization() {
-            return Err(Error::InvalidInput(format!(
-                "Model variant {variant} is not a diarization model"
-            )));
-        }
+        let registration = resolve_diarization_loader_registration(variant).ok_or_else(|| {
+            Error::InvalidInput(format!("Unsupported diarization model variant: {variant}"))
+        })?;
 
         let cell = {
             let mut guard = self.diarization_models.write().await;
@@ -381,25 +515,18 @@ impl ModelRegistry {
                 .clone()
         };
 
-        info!("Loading native diarization model {variant} from {model_dir:?}");
+        info!(
+            "Loading native diarization model {variant} ({}) from {model_dir:?}",
+            registration.name
+        );
 
         let model = cell
             .get_or_try_init({
                 let model_dir = model_dir.to_path_buf();
+                let loader = registration.loader;
                 move || async move {
                     tokio::task::spawn_blocking(move || {
-                        let model = match variant {
-                            ModelVariant::DiarStreamingSortformer4SpkV21 => {
-                                NativeDiarizationModel::Sortformer(SortformerDiarizerModel::load(
-                                    &model_dir, variant,
-                                )?)
-                            }
-                            _ => {
-                                return Err(Error::InvalidInput(format!(
-                                    "Unsupported diarization model variant: {variant}"
-                                )));
-                            }
-                        };
+                        let model = loader(&model_dir, variant)?;
                         Ok::<NativeDiarizationModel, Error>(model)
                     })
                     .await
