@@ -245,6 +245,13 @@ const MODEL_DETAILS: Record<
     size: "0.8 GB",
     quantization: "4-bit",
   },
+  "Qwen3-0.6B": {
+    shortName: "Qwen3 Chat 0.6B",
+    fullName: "Qwen3 0.6B",
+    description: "Compact text-to-text chat model for local inference",
+    features: ["Text chat", "Full precision", "Fast response"],
+    size: "1.4 GB",
+  },
   "Qwen3-0.6B-4bit": {
     shortName: "Qwen3 Chat 0.6B",
     fullName: "Qwen3 0.6B (MLX 4-bit)",

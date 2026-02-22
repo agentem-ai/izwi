@@ -21,7 +21,7 @@ Izwi's chat feature provides:
 ### Download a Chat Model
 
 ```bash
-izwi pull qwen3-chat-0.6b-4bit
+izwi pull qwen3-0.6b
 ```
 
 ### Start Chatting
@@ -56,7 +56,7 @@ Type your messages and press Enter. Type `exit` or `quit` to end.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--model`, `-m` | Chat model to use | `qwen3-chat-0.6b-4bit` |
+| `--model`, `-m` | Chat model to use | `qwen3-0.6b-4bit` |
 | `--system`, `-s` | System prompt | — |
 | `--voice`, `-v` | Voice for spoken responses | — |
 
@@ -71,7 +71,7 @@ izwi chat --system "You are a helpful coding assistant."
 **With specific model:**
 
 ```bash
-izwi chat --model qwen3-chat-0.6b-4bit
+izwi chat --model qwen3-0.6b
 ```
 
 **With voice responses:**
@@ -110,7 +110,7 @@ POST /v1/chat/completions
 
 ```json
 {
-  "model": "qwen3-chat-0.6b-4bit",
+  "model": "Qwen3-0.6B",
   "messages": [
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "Hello!"}
@@ -127,7 +127,7 @@ POST /v1/chat/completions
   "id": "chat-123",
   "object": "chat.completion",
   "created": 1234567890,
-  "model": "qwen3-chat-0.6b-4bit",
+  "model": "Qwen3-0.6B",
   "choices": [
     {
       "index": 0,
@@ -147,7 +147,7 @@ For streaming responses, add `"stream": true`:
 
 ```json
 {
-  "model": "qwen3-chat-0.6b-4bit",
+  "model": "Qwen3-0.6B",
   "messages": [...],
   "stream": true
 }
@@ -159,7 +159,7 @@ For streaming responses, add `"stream": true`:
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen3-chat-0.6b-4bit",
+    "model": "Qwen3-0.6B",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
@@ -191,7 +191,8 @@ You are a helpful assistant. Keep responses brief and to the point.
 
 | Model | Size | Speed | Notes |
 |-------|------|-------|-------|
-| `qwen3-chat-0.6b-4bit` | ~400 MB | Fast | Compact, efficient |
+| `qwen3-0.6b` | ~1.4 GB | Fast | Compact, full-precision chat |
+| `qwen3-0.6b-4bit` | ~0.8 GB | Fastest | Compact, quantized chat |
 
 More models coming soon.
 

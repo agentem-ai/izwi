@@ -29,6 +29,9 @@ interface ChatPageProps {
 }
 
 function getChatModelName(variant: string): string {
+  if (variant === "Qwen3-0.6B") {
+    return withQwen3Prefix("Chat 0.6B", variant);
+  }
   if (variant === "Qwen3-0.6B-4bit") {
     return withQwen3Prefix("Chat 0.6B 4-bit", variant);
   }

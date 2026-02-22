@@ -45,7 +45,8 @@ izwi chat --system "You are a helpful coding assistant"
 ### With specific model
 
 ```bash
-izwi chat --model qwen3-chat-0.6b-4bit
+izwi chat --model qwen3-0.6b
+izwi chat --model qwen3-0.6b-4bit
 ```
 
 ### With voice responses

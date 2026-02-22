@@ -509,12 +509,14 @@ export function VoicePage({
         textModels.find(
           (m) => m.variant === "Qwen3-0.6B-4bit" && m.status === "ready",
         ) ||
+        textModels.find((m) => m.variant === "Qwen3-0.6B" && m.status === "ready") ||
         textModels.find(
           (m) => m.variant === "Qwen3-1.7B-4bit" && m.status === "ready",
         ) ||
         textModels.find((m) => m.status === "ready") ||
         textModels.find((m) => m.variant === "Qwen3-1.7B-4bit") ||
         textModels.find((m) => m.variant === "Qwen3-0.6B-4bit") ||
+        textModels.find((m) => m.variant === "Qwen3-0.6B") ||
         textModels[0];
       setSelectedTextModel(preferredText?.variant ?? null);
     }

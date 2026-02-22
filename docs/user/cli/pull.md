@@ -69,7 +69,8 @@ Common models:
 | `qwen3-tts-0.6b-customvoice` | TTS (cloning) | ~1.2 GB |
 | `qwen3-tts-0.6b-voicedesign` | TTS (design) | ~1.2 GB |
 | `qwen3-asr-0.6b` | ASR | ~1.2 GB |
-| `qwen3-chat-0.6b-4bit` | Chat | ~400 MB |
+| `qwen3-0.6b` | Chat | ~1.4 GB |
+| `qwen3-0.6b-4bit` | Chat | ~0.8 GB |
 
 ---
 

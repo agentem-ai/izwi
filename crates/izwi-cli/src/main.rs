@@ -271,7 +271,7 @@ pub enum Commands {
     /// Interactive chat with audio understanding capabilities.
     #[command(name = "chat")]
     Chat {
-        /// Model to use (e.g., qwen3-0.6b-4bit, qwen3-1.7b, gemma-3-1b-it)
+        /// Model to use (e.g., qwen3-0.6b, qwen3-0.6b-4bit, qwen3-1.7b, gemma-3-1b-it)
         #[arg(short, long, default_value = "qwen3-0.6b-4bit")]
         model: String,
 
