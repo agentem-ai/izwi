@@ -429,6 +429,43 @@ impl KVCacheManager {
         self.allocate(request_id, additional_blocks)
     }
 
+    /// Estimate how many leading prompt blocks can be reused from shared-prefix cache.
+    pub fn estimate_prefix_reuse_blocks(&self, prompt_tokens: &[u32], num_blocks: usize) -> usize {
+        if num_blocks == 0 || prompt_tokens.is_empty() {
+            return 0;
+        }
+
+        let block_size = self.config.block_size.max(1);
+        let max_reusable_blocks = (prompt_tokens.len() / block_size).min(num_blocks);
+
+        if max_reusable_blocks == 0 {
+            return 0;
+        }
+
+        for blocks in (1..=max_reusable_blocks).rev() {
+            let prefix_tokens = blocks * block_size;
+            let prefix_hash = Self::hash_prefix_tokens(&prompt_tokens[..prefix_tokens]);
+            if let Some(level) = self.shared_prefix_levels.get(&prefix_tokens) {
+                if let Some(candidate_blocks) = level.get(&prefix_hash) {
+                    if candidate_blocks.len() < blocks {
+                        continue;
+                    }
+                    let all_live = candidate_blocks.iter().take(blocks).all(|block_id| {
+                        self.allocator
+                            .get_block(*block_id)
+                            .map(|block| block.ref_count > 0)
+                            .unwrap_or(false)
+                    });
+                    if all_live {
+                        return blocks;
+                    }
+                }
+            }
+        }
+
+        0
+    }
+
     /// Allocate blocks with block-granular prefix matching.
     ///
     /// Unlike `allocate_with_prefix`, this can reuse partial prefixes at block granularity
