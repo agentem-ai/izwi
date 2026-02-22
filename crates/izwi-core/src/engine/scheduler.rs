@@ -297,6 +297,13 @@ struct RunningRequest {
     paused: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PrefillAllocationPlan {
+    total_blocks_needed: usize,
+    reusable_blocks: usize,
+    additional_blocks: usize,
+}
+
 impl Scheduler {
     /// Create a new scheduler.
     pub fn new(config: SchedulerConfig) -> Self {
@@ -316,6 +323,7 @@ impl Scheduler {
     pub fn add_request(&mut self, request: &EngineCoreRequest) {
         let sequence_id = self.next_sequence_id;
         self.next_sequence_id += 1;
+        let arrival_time = Instant::now();
 
         let max_tokens = match (request.task_type, request.params.max_tokens) {
             (TaskType::TTS, 0) => usize::MAX,
@@ -327,7 +335,7 @@ impl Scheduler {
             request_id: request.id.clone(),
             sequence_id,
             priority: request.priority,
-            arrival_time: Instant::now(),
+            arrival_time,
             total_prompt_tokens: request.num_prompt_tokens(),
             // TTS uses max_tokens=0 to indicate "auto". Keep scheduler decode budget
             // effectively unbounded so model-level stop criteria can terminate naturally.
@@ -347,7 +355,7 @@ impl Scheduler {
                 self.waiting_priority.push(PriorityRequest {
                     request_id: request.id.clone(),
                     priority: request.priority,
-                    arrival_time: Instant::now(),
+                    arrival_time,
                 });
             }
         }
@@ -579,13 +587,14 @@ impl Scheduler {
                 continue;
             }
 
-            let mut num_tokens = remaining_prompt;
-            if self.config.enable_chunked_prefill && num_tokens > effective_prefill_chunk_threshold
+            let mut target_tokens = remaining_prompt;
+            if self.config.enable_chunked_prefill
+                && target_tokens > effective_prefill_chunk_threshold
             {
-                num_tokens = effective_prefill_chunk_threshold;
+                target_tokens = effective_prefill_chunk_threshold;
             }
-            num_tokens = num_tokens.min(remaining_prefill_budget);
-            if num_tokens == 0 {
+            target_tokens = target_tokens.min(remaining_prefill_budget);
+            if target_tokens == 0 {
                 continue;
             }
 
@@ -594,40 +603,85 @@ impl Scheduler {
                 .get(&request_id)
                 .map(|r| r.block_ids.len())
                 .unwrap_or(0);
-            let total_tokens_after = num_computed.saturating_add(num_tokens);
-            let blocks_needed = kv_cache.blocks_for_tokens(total_tokens_after);
-            let additional_blocks = blocks_needed.saturating_sub(existing_blocks);
+            let mut num_tokens = target_tokens;
+            let mut selected_blocks = None;
+            let mut fresh_allocated_blocks = 0usize;
 
-            if additional_blocks > 0 {
-                if !kv_cache.can_allocate(additional_blocks) {
+            while num_tokens > 0 {
+                let total_tokens_after = num_computed.saturating_add(num_tokens);
+                let plan = self.prefill_allocation_plan(
+                    kv_cache,
+                    &metadata.prompt_prefix_tokens,
+                    total_tokens_after,
+                    existing_blocks,
+                );
+
+                if plan.additional_blocks > 0 && !kv_cache.can_allocate(plan.additional_blocks) {
                     if self.config.enable_preemption {
                         let preempted =
-                            self.try_preempt_for_blocks(additional_blocks, priority, kv_cache);
+                            self.try_preempt_for_blocks(plan.additional_blocks, priority, kv_cache);
                         if !preempted.is_empty() {
                             result.preempted_requests.extend(preempted);
-                            if !kv_cache.can_allocate(additional_blocks) {
-                                continue;
-                            }
-                        } else {
-                            continue;
                         }
-                    } else {
-                        continue;
                     }
                 }
 
-                let extended_blocks = kv_cache.extend(&request_id, additional_blocks);
-                if extended_blocks.len() < additional_blocks {
-                    kv_cache.free(&request_id);
-                    continue;
+                if plan.additional_blocks > 0 && !kv_cache.can_allocate(plan.additional_blocks) {
+                    if self.should_backoff_prefill_chunk(num_tokens) {
+                        num_tokens = Self::halve_prefill_chunk(num_tokens);
+                        continue;
+                    }
+                    break;
                 }
-                result.blocks_allocated += additional_blocks;
+
+                let (block_ids, fresh_blocks) = if existing_blocks == 0 {
+                    let block_ids = kv_cache.allocate_with_prefix_tokens(
+                        &request_id,
+                        plan.total_blocks_needed,
+                        &metadata.prompt_prefix_tokens,
+                    );
+                    if block_ids.len() < plan.total_blocks_needed {
+                        kv_cache.free(&request_id);
+                        if self.should_backoff_prefill_chunk(num_tokens) {
+                            num_tokens = Self::halve_prefill_chunk(num_tokens);
+                            continue;
+                        }
+                        break;
+                    }
+                    (
+                        block_ids,
+                        plan.total_blocks_needed
+                            .saturating_sub(plan.reusable_blocks),
+                    )
+                } else {
+                    if plan.additional_blocks > 0 {
+                        let extended_blocks = kv_cache.extend(&request_id, plan.additional_blocks);
+                        if extended_blocks.len() < plan.additional_blocks {
+                            kv_cache.free(&request_id);
+                            if self.should_backoff_prefill_chunk(num_tokens) {
+                                num_tokens = Self::halve_prefill_chunk(num_tokens);
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    (
+                        kv_cache
+                            .get_block_table(&request_id)
+                            .map(|ids| ids.to_vec())
+                            .unwrap_or_default(),
+                        plan.additional_blocks,
+                    )
+                };
+
+                selected_blocks = Some(block_ids);
+                fresh_allocated_blocks = fresh_blocks;
+                break;
             }
 
-            let block_ids = kv_cache
-                .get_block_table(&request_id)
-                .map(|ids| ids.to_vec())
-                .unwrap_or_default();
+            let Some(block_ids) = selected_blocks else {
+                continue;
+            };
 
             if let Some(running) = self.running.get_mut(&request_id) {
                 running.paused = false;
@@ -643,14 +697,20 @@ impl Scheduler {
                 num_computed_tokens: num_computed,
             });
 
+            result.blocks_allocated += fresh_allocated_blocks;
             remaining_prefill_budget = remaining_prefill_budget.saturating_sub(num_tokens);
             remaining_batch -= 1;
             result.total_tokens += num_tokens;
         }
 
+        let mut deferred_waiting = Vec::new();
+        let max_waiting_attempts = self.waiting_count();
+        let mut waiting_attempts = 0usize;
+
         while remaining_batch > 0
             && remaining_prefill_budget > 0
             && prefill_admissions < prefill_admission_cap
+            && waiting_attempts < max_waiting_attempts
         {
             let next_request_id = self.select_next_waiting_request();
 
@@ -658,73 +718,94 @@ impl Scheduler {
                 Some(id) => id,
                 None => break,
             };
+            waiting_attempts = waiting_attempts.saturating_add(1);
+            self.remove_from_waiting(&request_id);
 
             let metadata = match self.requests.get(&request_id) {
                 Some(m) => m.clone(),
-                None => {
-                    self.remove_from_waiting(&request_id);
-                    continue;
-                }
+                None => continue,
             };
 
             // Check if already running (shouldn't happen, but safety check)
             if self.running.contains_key(&request_id) {
-                self.remove_from_waiting(&request_id);
                 continue;
             }
 
             // Calculate tokens for this prefill
-            let mut num_tokens = metadata.total_prompt_tokens;
+            let mut target_tokens = metadata.total_prompt_tokens;
 
             // Apply chunked prefill if enabled and prompt is long
-            if self.config.enable_chunked_prefill && num_tokens > effective_prefill_chunk_threshold
+            if self.config.enable_chunked_prefill
+                && target_tokens > effective_prefill_chunk_threshold
             {
-                num_tokens = effective_prefill_chunk_threshold;
+                target_tokens = effective_prefill_chunk_threshold;
             }
 
             // Limit by remaining budget
-            num_tokens = num_tokens.min(remaining_prefill_budget);
-            if num_tokens == 0 {
+            target_tokens = target_tokens.min(remaining_prefill_budget);
+            if target_tokens == 0 {
                 break;
             }
 
-            // Allocate KV cache blocks
-            let blocks_needed = kv_cache.blocks_for_tokens(num_tokens);
-            if !kv_cache.can_allocate(blocks_needed) {
-                // Can't fit this request, try preemption or skip
-                if self.config.enable_preemption {
-                    let preempted =
-                        self.try_preempt_for_blocks(blocks_needed, metadata.priority, kv_cache);
-                    if !preempted.is_empty() {
-                        result.preempted_requests.extend(preempted);
-                        // Re-check if we can allocate now
-                        if !kv_cache.can_allocate(blocks_needed) {
-                            debug!(
-                                "Still cannot allocate after preemption for prefill {}",
-                                request_id
-                            );
-                            break;
+            let mut num_tokens = target_tokens;
+            let mut selected = None;
+            let mut fresh_allocated_blocks = 0usize;
+
+            while num_tokens > 0 {
+                let plan = self.prefill_allocation_plan(
+                    kv_cache,
+                    &metadata.prompt_prefix_tokens,
+                    num_tokens,
+                    0,
+                );
+
+                if plan.additional_blocks > 0 && !kv_cache.can_allocate(plan.additional_blocks) {
+                    if self.config.enable_preemption {
+                        let preempted = self.try_preempt_for_blocks(
+                            plan.additional_blocks,
+                            metadata.priority,
+                            kv_cache,
+                        );
+                        if !preempted.is_empty() {
+                            result.preempted_requests.extend(preempted);
                         }
-                    } else {
-                        debug!("No suitable requests to preempt for prefill {}", request_id);
-                        break;
                     }
-                } else {
+                }
+
+                if plan.additional_blocks > 0 && !kv_cache.can_allocate(plan.additional_blocks) {
+                    if self.should_backoff_prefill_chunk(num_tokens) {
+                        num_tokens = Self::halve_prefill_chunk(num_tokens);
+                        continue;
+                    }
                     break;
                 }
-            }
 
-            let block_ids = kv_cache.allocate_with_prefix_tokens(
-                &request_id,
-                blocks_needed,
-                &metadata.prompt_prefix_tokens,
-            );
-            if block_ids.len() < blocks_needed {
-                debug!("Failed to allocate required blocks for {}", request_id);
-                kv_cache.free(&request_id);
+                let block_ids = kv_cache.allocate_with_prefix_tokens(
+                    &request_id,
+                    plan.total_blocks_needed,
+                    &metadata.prompt_prefix_tokens,
+                );
+                if block_ids.len() < plan.total_blocks_needed {
+                    debug!("Failed to allocate required blocks for {}", request_id);
+                    kv_cache.free(&request_id);
+                    if self.should_backoff_prefill_chunk(num_tokens) {
+                        num_tokens = Self::halve_prefill_chunk(num_tokens);
+                        continue;
+                    }
+                    break;
+                }
+
+                fresh_allocated_blocks = plan
+                    .total_blocks_needed
+                    .saturating_sub(plan.reusable_blocks);
+                selected = Some(block_ids);
                 break;
             }
-            result.blocks_allocated += block_ids.len();
+
+            let Some(block_ids) = selected else {
+                deferred_waiting.push(request_id);
+                continue;
+            };
 
             // Create running state
             let running = RunningRequest {
@@ -749,12 +830,16 @@ impl Scheduler {
             });
 
             self.running.insert(request_id.clone(), running);
-            self.remove_from_waiting(&request_id);
 
+            result.blocks_allocated += fresh_allocated_blocks;
             remaining_prefill_budget = remaining_prefill_budget.saturating_sub(num_tokens);
             remaining_batch -= 1;
             prefill_admissions = prefill_admissions.saturating_add(1);
             result.total_tokens += num_tokens;
+        }
+
+        for request_id in deferred_waiting {
+            self.enqueue_waiting_request(request_id);
         }
 
         result
@@ -917,6 +1002,50 @@ impl Scheduler {
         self.waiting_fcfs.retain(|id| id != request_id);
         self.waiting_priority
             .retain(|r| &r.request_id != request_id);
+    }
+
+    fn enqueue_waiting_request(&mut self, request_id: RequestId) {
+        let Some(metadata) = self.requests.get(&request_id) else {
+            return;
+        };
+        match self.config.policy {
+            SchedulingPolicy::FCFS => self.waiting_fcfs.push_back(request_id),
+            SchedulingPolicy::Priority => self.waiting_priority.push(PriorityRequest {
+                request_id,
+                priority: metadata.priority,
+                arrival_time: metadata.arrival_time,
+            }),
+        }
+    }
+
+    fn should_backoff_prefill_chunk(&self, num_tokens: usize) -> bool {
+        self.config.enable_chunked_prefill && num_tokens > 1
+    }
+
+    fn halve_prefill_chunk(num_tokens: usize) -> usize {
+        num_tokens.saturating_sub(num_tokens / 2)
+    }
+
+    fn prefill_allocation_plan(
+        &self,
+        kv_cache: &KVCacheManager,
+        prompt_tokens: &[u32],
+        total_tokens_after: usize,
+        existing_blocks: usize,
+    ) -> PrefillAllocationPlan {
+        let total_blocks_needed = kv_cache.blocks_for_tokens(total_tokens_after);
+        let reusable_blocks = if existing_blocks == 0 {
+            kv_cache.estimate_prefix_reuse_blocks(prompt_tokens, total_blocks_needed)
+        } else {
+            0
+        };
+        let additional_blocks =
+            total_blocks_needed.saturating_sub(existing_blocks.saturating_add(reusable_blocks));
+        PrefillAllocationPlan {
+            total_blocks_needed,
+            reusable_blocks,
+            additional_blocks,
+        }
     }
 
     fn adaptive_waiting_score(&self, request_id: &RequestId) -> f64 {
@@ -1371,5 +1500,129 @@ mod tests {
             "Non-TTS zero max_tokens should be normalized to a safe decode budget"
         );
         assert_eq!(second.decode_requests[0].request_id, request_id);
+    }
+
+    #[test]
+    fn test_prefill_chunk_backoff_when_kv_is_tight() {
+        let config = SchedulerConfig {
+            max_batch_size: 1,
+            max_tokens_per_step: 16,
+            min_tokens_per_step: 1,
+            policy: SchedulingPolicy::FCFS,
+            enable_chunked_prefill: true,
+            chunked_prefill_threshold: 8,
+            enable_preemption: false,
+            enable_adaptive_batching: false,
+            ..Default::default()
+        };
+        let mut scheduler = Scheduler::new(config);
+        let mut kv_cache = KVCacheManager::new(super::super::kv_cache::KVCacheConfig {
+            max_blocks: 1,
+            block_size: 4,
+            ..Default::default()
+        });
+
+        let request_id = "backoff-prefill".to_string();
+        let mut request = EngineCoreRequest::tts("long prompt");
+        request.id = request_id.clone();
+        request.prompt_tokens = vec![7; 8];
+        scheduler.add_request(&request);
+
+        let scheduled = scheduler.schedule(&mut kv_cache);
+        assert_eq!(scheduled.prefill_requests.len(), 1);
+        assert_eq!(scheduled.prefill_requests[0].request_id, request_id);
+        assert_eq!(
+            scheduled.prefill_requests[0].num_tokens, 4,
+            "Scheduler should back off prefill chunk to fit KV capacity"
+        );
+    }
+
+    #[test]
+    fn test_prefill_defer_skips_oversized_head_request() {
+        let config = SchedulerConfig {
+            max_batch_size: 1,
+            max_tokens_per_step: 32,
+            min_tokens_per_step: 1,
+            policy: SchedulingPolicy::FCFS,
+            enable_chunked_prefill: false,
+            enable_preemption: false,
+            enable_adaptive_batching: false,
+            ..Default::default()
+        };
+        let mut scheduler = Scheduler::new(config);
+        let mut kv_cache = KVCacheManager::new(super::super::kv_cache::KVCacheConfig {
+            max_blocks: 2,
+            block_size: 4,
+            ..Default::default()
+        });
+
+        let big_id = "big-head".to_string();
+        let mut big = EngineCoreRequest::tts("big prompt");
+        big.id = big_id.clone();
+        big.prompt_tokens = vec![1; 12];
+        scheduler.add_request(&big);
+
+        let small_id = "small-tail".to_string();
+        let mut small = EngineCoreRequest::tts("small prompt");
+        small.id = small_id.clone();
+        small.prompt_tokens = vec![2; 4];
+        scheduler.add_request(&small);
+
+        let scheduled = scheduler.schedule(&mut kv_cache);
+        assert_eq!(scheduled.prefill_requests.len(), 1);
+        assert_eq!(
+            scheduled.prefill_requests[0].request_id, small_id,
+            "Oversized head request should be deferred instead of blocking all admissions"
+        );
+        assert_eq!(scheduler.get_status(&big_id), Some(RequestStatus::Waiting));
+    }
+
+    #[test]
+    fn test_prefix_reuse_allows_prefill_when_free_blocks_are_zero() {
+        let config = SchedulerConfig {
+            max_batch_size: 2,
+            max_tokens_per_step: 32,
+            min_tokens_per_step: 1,
+            policy: SchedulingPolicy::FCFS,
+            enable_chunked_prefill: false,
+            enable_preemption: false,
+            enable_adaptive_batching: false,
+            ..Default::default()
+        };
+        let mut scheduler = Scheduler::new(config);
+        let mut kv_cache = KVCacheManager::new(super::super::kv_cache::KVCacheConfig {
+            max_blocks: 2,
+            block_size: 2,
+            ..Default::default()
+        });
+
+        let req1_id = "prefix-source".to_string();
+        let mut req1 = EngineCoreRequest::tts("prefix source");
+        req1.id = req1_id.clone();
+        req1.prompt_tokens = vec![10, 11, 12, 13];
+        scheduler.add_request(&req1);
+
+        let first = scheduler.schedule(&mut kv_cache);
+        assert_eq!(first.prefill_requests.len(), 1);
+        scheduler.update_after_step(&req1_id, 4, 0, Vec::new(), 1.0);
+
+        let req2_id = "prefix-reuser".to_string();
+        let mut req2 = EngineCoreRequest::tts("prefix reuser");
+        req2.id = req2_id.clone();
+        req2.prompt_tokens = vec![10, 11, 12, 13];
+        scheduler.add_request(&req2);
+
+        let second = scheduler.schedule(&mut kv_cache);
+        assert!(
+            second
+                .prefill_requests
+                .iter()
+                .any(|entry| entry.request_id == req2_id),
+            "Second request should be admitted via shared-prefix block reuse"
+        );
+        assert_eq!(
+            second.blocks_allocated, 0,
+            "Prefix-reused prefill should avoid fresh KV block allocation"
+        );
     }
 }
