@@ -29,7 +29,7 @@ izwi pull qwen3-tts-0.6b-base
 izwi pull qwen3-asr-0.6b
 
 # Chat (optional, for smarter responses)
-izwi pull qwen3-chat-0.6b-4bit
+izwi pull qwen3-0.6b
 ```
 
 ### Start Voice Mode

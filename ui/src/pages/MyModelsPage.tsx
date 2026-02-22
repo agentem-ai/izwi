@@ -205,6 +205,14 @@ export const MODEL_DETAILS: Record<
     size: "0.8 GB",
   },
   // Text Chat
+  "Qwen3-0.6B": {
+    shortName: "Qwen3 Chat 0.6B",
+    fullName: "Qwen3 0.6B",
+    description: "Compact text-to-text model for local chat",
+    category: "chat",
+    capabilities: ["Text Chat", "Full precision"],
+    size: "1.4 GB",
+  },
   "Qwen3-0.6B-4bit": {
     shortName: "Qwen3 Chat 0.6B",
     fullName: "Qwen3 0.6B (MLX 4-bit)",

@@ -1106,6 +1106,7 @@ impl ModelDownloader {
                     | ModelVariant::Qwen3Tts12Hz17BCustomVoice
                     | ModelVariant::Qwen3Tts12Hz17BVoiceDesign => 3_850_000_000,
                     ModelVariant::Qwen3Asr06B => 1_800_000_000,
+                    ModelVariant::Qwen306B => 1_520_000_000,
                     ModelVariant::Qwen306B4Bit => 800_000_000,
                     ModelVariant::Qwen317B4Bit => 1_115_000_000,
                     ModelVariant::Qwen3ForcedAligner06B4Bit => 703_000_000,

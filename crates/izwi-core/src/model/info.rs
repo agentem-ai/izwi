@@ -105,6 +105,9 @@ pub enum ModelVariant {
     /// Streaming Sortformer 4-speaker diarization model (.nemo)
     #[serde(rename = "diar_streaming_sortformer_4spk-v2.1")]
     DiarStreamingSortformer4SpkV21,
+    /// Qwen3 0.6B text model
+    #[serde(rename = "Qwen3-0.6B")]
+    Qwen306B,
     /// Qwen3 0.6B text model (MLX 4-bit)
     #[serde(rename = "Qwen3-0.6B-4bit")]
     Qwen306B4Bit,
@@ -188,6 +191,7 @@ impl ModelVariant {
             Self::ParakeetTdt06BV24Bit => "mlx-community/parakeet-tdt-0.6b-v2",
             Self::ParakeetTdt06BV34Bit => "mlx-community/parakeet-tdt-0.6b-v3",
             Self::DiarStreamingSortformer4SpkV21 => "nvidia/diar_streaming_sortformer_4spk-v2.1",
+            Self::Qwen306B => "Qwen/Qwen3-0.6B",
             Self::Qwen306B4Bit => "mlx-community/Qwen3-0.6B-4bit",
             Self::Qwen317B => "Qwen/Qwen3-1.7B",
             Self::Qwen317B4Bit => "mlx-community/Qwen3-1.7B-4bit",
@@ -235,6 +239,7 @@ impl ModelVariant {
             Self::ParakeetTdt06BV24Bit => "Parakeet TDT 0.6B v2 4-bit",
             Self::ParakeetTdt06BV34Bit => "Parakeet TDT 0.6B v3 4-bit",
             Self::DiarStreamingSortformer4SpkV21 => "Streaming Sortformer 4spk v2.1",
+            Self::Qwen306B => "Qwen3 0.6B",
             Self::Qwen306B4Bit => "Qwen3 0.6B 4-bit",
             Self::Qwen317B => "Qwen3 1.7B",
             Self::Qwen317B4Bit => "Qwen3 1.7B 4-bit",
@@ -282,6 +287,7 @@ impl ModelVariant {
             Self::ParakeetTdt06BV24Bit => "Parakeet-TDT-0.6B-v2-4bit",
             Self::ParakeetTdt06BV34Bit => "Parakeet-TDT-0.6B-v3-4bit",
             Self::DiarStreamingSortformer4SpkV21 => "diar_streaming_sortformer_4spk-v2.1",
+            Self::Qwen306B => "Qwen3-0.6B",
             Self::Qwen306B4Bit => "Qwen3-0.6B-4bit",
             Self::Qwen317B => "Qwen3-1.7B",
             Self::Qwen317B4Bit => "Qwen3-1.7B-4bit",
@@ -329,6 +335,7 @@ impl ModelVariant {
             Self::ParakeetTdt06BV24Bit => 2_656_300_000, // ~2.47 GB
             Self::ParakeetTdt06BV34Bit => 3_160_000_000, // ~2.94 GB (est)
             Self::DiarStreamingSortformer4SpkV21 => 510_000_000, // ~0.47 GB (est)
+            Self::Qwen306B => 1_520_000_000,            // ~1.42 GB (est)
             Self::Qwen306B4Bit => 900_000_000,          // ~0.84 GB (est)
             Self::Qwen317B => 4_080_000_000,            // ~3.80 GB (actual: 3.44GB + 622MB shards)
             Self::Qwen317B4Bit => 1_115_700_000,        // ~1.04 GB
@@ -375,6 +382,7 @@ impl ModelVariant {
             Self::ParakeetTdt06BV24Bit => 4.0,
             Self::ParakeetTdt06BV34Bit => 5.0,
             Self::DiarStreamingSortformer4SpkV21 => 3.0,
+            Self::Qwen306B => 3.0,
             Self::Qwen306B4Bit => 2.0,
             Self::Qwen317B => 5.0,
             Self::Qwen317B4Bit => 3.0,
@@ -517,7 +525,8 @@ impl ModelVariant {
     /// Whether this variant is currently enabled in the application catalog.
     pub fn is_enabled(&self) -> bool {
         match self {
-            Self::Qwen306B4Bit
+            Self::Qwen306B
+            | Self::Qwen306B4Bit
             | Self::Qwen317B
             | Self::Qwen317B4Bit
             | Self::Gemma31BIt
@@ -579,6 +588,7 @@ impl ModelVariant {
             Self::ParakeetTdt06BV24Bit,
             Self::ParakeetTdt06BV34Bit,
             Self::DiarStreamingSortformer4SpkV21,
+            Self::Qwen306B,
             Self::Qwen306B4Bit,
             Self::Qwen317B,
             Self::Qwen317B4Bit,

@@ -128,6 +128,7 @@ Note: `--word-timestamps` is accepted by the CLI but currently ignored by the se
 ### Chat
 
 ```bash
+izwi chat --model qwen3-0.6b
 izwi chat --model qwen3-0.6b-4bit
 izwi chat --model qwen3-0.6b-4bit --system "You are concise."
 ```

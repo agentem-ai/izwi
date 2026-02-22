@@ -103,7 +103,7 @@ impl ModelVariant {
                 ModelFamily::ParakeetAsr
             }
             DiarStreamingSortformer4SpkV21 => ModelFamily::SortformerDiarization,
-            Qwen306B4Bit | Qwen317B | Qwen317B4Bit => ModelFamily::Qwen3Chat,
+            Qwen306B | Qwen306B4Bit | Qwen317B | Qwen317B4Bit => ModelFamily::Qwen3Chat,
             Gemma31BIt | Gemma34BIt => ModelFamily::Gemma3Chat,
             Qwen3ForcedAligner06B | Qwen3ForcedAligner06B4Bit => ModelFamily::Qwen3ForcedAligner,
             VoxtralMini4BRealtime2602 => ModelFamily::Voxtral,
@@ -359,7 +359,7 @@ fn resolve_by_heuristic(normalized: &str) -> Option<ModelVariant> {
         }
         if normalized.contains("06b") || normalized.contains("0dot6b") || normalized.contains("06")
         {
-            return Some(Qwen306B4Bit);
+            return Some(if q4 { Qwen306B4Bit } else { Qwen306B });
         }
     }
 
@@ -528,6 +528,30 @@ mod tests {
     fn parse_qwen_chat_17b_4bit() {
         let parsed = parse_chat_model_variant(Some("Qwen3-1.7B-4bit")).unwrap();
         assert_eq!(parsed, ModelVariant::Qwen317B4Bit);
+    }
+
+    #[test]
+    fn parse_qwen_chat_06b() {
+        let parsed = parse_chat_model_variant(Some("Qwen3-0.6B")).unwrap();
+        assert_eq!(parsed, ModelVariant::Qwen306B);
+    }
+
+    #[test]
+    fn parse_qwen_chat_06b_repo() {
+        let parsed = parse_chat_model_variant(Some("Qwen/Qwen3-0.6B")).unwrap();
+        assert_eq!(parsed, ModelVariant::Qwen306B);
+    }
+
+    #[test]
+    fn parse_qwen_chat_06b_lowercase_alias() {
+        let parsed = parse_model_variant("qwen3-0.6b").unwrap();
+        assert_eq!(parsed, ModelVariant::Qwen306B);
+    }
+
+    #[test]
+    fn parse_qwen_chat_06b_4bit() {
+        let parsed = parse_chat_model_variant(Some("Qwen3-0.6B-4bit")).unwrap();
+        assert_eq!(parsed, ModelVariant::Qwen306B4Bit);
     }
 
     #[test]

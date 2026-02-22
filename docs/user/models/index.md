@@ -39,6 +39,7 @@ Izwi supports several model families optimized for different tasks:
 
 | Model | Size | Description |
 |-------|------|-------------|
+| `Qwen3-0.6B` | ~1.4 GB | Compact Qwen3 chat model (full precision) |
 | `Qwen3-0.6B-4bit` | ~0.8 GB | Compact Qwen3 chat model |
 | `Qwen3-1.7B` | ~3.8 GB | Larger Qwen3 chat model |
 | `Gemma-3-1b-it` | ~2.0 GB | Google Gemma 3 1B Instruct |
