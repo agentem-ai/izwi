@@ -52,7 +52,7 @@ pub use types::{
 
 use crate::error::Result;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Notify, RwLock};
 use tracing::{debug, info, warn};
 
 /// Main inference engine - the primary interface for audio generation.
@@ -72,6 +72,8 @@ pub struct Engine {
     running: std::sync::atomic::AtomicBool,
     /// Metrics collector
     metrics: Arc<RwLock<EngineMetrics>>,
+    /// Event-driven wakeup for run-loop when new requests arrive.
+    wake_notify: Arc<Notify>,
 }
 
 impl Engine {
@@ -96,6 +98,7 @@ impl Engine {
             config,
             running: std::sync::atomic::AtomicBool::new(false),
             metrics: Arc::new(RwLock::new(EngineMetrics::default())),
+            wake_notify: Arc::new(Notify::new()),
         })
     }
 
@@ -111,6 +114,7 @@ impl Engine {
         // Add to engine core
         let mut core = self.core.write().await;
         core.add_request(processed)?;
+        self.wake_notify.notify_one();
 
         debug!("Added request {} to engine", request_id);
         Ok(request_id)
@@ -209,8 +213,11 @@ impl Engine {
                     warn!("Engine step error: {}", e);
                 }
             } else {
-                // No work, sleep briefly to avoid busy-waiting
-                tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+                // Event-driven wait to avoid hot polling on local/edge devices.
+                tokio::select! {
+                    _ = self.wake_notify.notified() => {},
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {},
+                }
             }
         }
 
@@ -222,6 +229,7 @@ impl Engine {
     pub fn stop(&self) {
         use std::sync::atomic::Ordering;
         self.running.store(false, Ordering::SeqCst);
+        self.wake_notify.notify_waiters();
     }
 
     /// Check if the engine is running.
