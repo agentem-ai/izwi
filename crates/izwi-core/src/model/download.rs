@@ -395,30 +395,11 @@ impl ModelDownloader {
 
         match variant.family() {
             ModelFamily::Lfm2Audio => {
-                if variant.is_lfm2_gguf() {
-                    match variant {
-                        ModelVariant::Lfm2Audio15BGguf => {
-                            path.join("LFM2-Audio-1.5B-Q8_0.gguf").exists()
-                                && path
-                                    .join("mmproj-audioencoder-LFM2-Audio-1.5B-Q8_0.gguf")
-                                    .exists()
-                                && path.join("audiodecoder-LFM2-Audio-1.5B-Q8_0.gguf").exists()
-                        }
-                        ModelVariant::Lfm25Audio15BGguf => {
-                            path.join("LFM2.5-Audio-1.5B-Q8_0.gguf").exists()
-                                && path.join("mmproj-LFM2.5-Audio-1.5B-Q8_0.gguf").exists()
-                                && path.join("vocoder-LFM2.5-Audio-1.5B-Q8_0.gguf").exists()
-                                && path.join("tokenizer-LFM2.5-Audio-1.5B-Q8_0.gguf").exists()
-                        }
-                        _ => false,
-                    }
-                } else {
-                    // LFM2-Audio safetensors checkpoints require model.safetensors, config.json,
-                    // and tokenizer files.
-                    path.join("model.safetensors").exists()
-                        && path.join("config.json").exists()
-                        && path.join("tokenizer.json").exists()
-                }
+                // LFM2-Audio safetensors checkpoints require model.safetensors, config.json,
+                // and tokenizer files.
+                path.join("model.safetensors").exists()
+                    && path.join("config.json").exists()
+                    && path.join("tokenizer.json").exists()
             }
             ModelFamily::Qwen3Asr => {
                 let has_config = path.join("config.json").exists();
@@ -866,43 +847,21 @@ impl ModelDownloader {
     /// Based on actual repo structure on HuggingFace
     fn get_model_files(&self, variant: ModelVariant) -> Vec<String> {
         match variant.family() {
-            ModelFamily::Lfm2Audio => {
-                if variant.is_lfm2_gguf() {
-                    match variant {
-                        ModelVariant::Lfm2Audio15BGguf => vec![
-                            "LFM2-Audio-1.5B-Q8_0.gguf".to_string(),
-                            "mmproj-audioencoder-LFM2-Audio-1.5B-Q8_0.gguf".to_string(),
-                            "audiodecoder-LFM2-Audio-1.5B-Q8_0.gguf".to_string(),
-                            "leap/Q8_0.json".to_string(),
-                            "README.md".to_string(),
-                        ],
-                        ModelVariant::Lfm25Audio15BGguf => vec![
-                            "LFM2.5-Audio-1.5B-Q8_0.gguf".to_string(),
-                            "mmproj-LFM2.5-Audio-1.5B-Q8_0.gguf".to_string(),
-                            "vocoder-LFM2.5-Audio-1.5B-Q8_0.gguf".to_string(),
-                            "tokenizer-LFM2.5-Audio-1.5B-Q8_0.gguf".to_string(),
-                            "README.md".to_string(),
-                        ],
-                        _ => Vec::new(),
-                    }
-                } else {
-                    vec![
-                        "config.json".to_string(),
-                        "model.safetensors".to_string(),
-                        "tokenizer.json".to_string(),
-                        "tokenizer_config.json".to_string(),
-                        "special_tokens_map.json".to_string(),
-                        "tokenizer-e351c8d8-checkpoint125.safetensors".to_string(),
-                        "chat_template.jinja".to_string(),
-                        // Present on newer checkpoints such as LFM2.5; missing files are skipped.
-                        "audio_detokenizer/config.json".to_string(),
-                        "audio_detokenizer/model.safetensors".to_string(),
-                        "audio_detokenizer/special_tokens_map.json".to_string(),
-                        "audio_detokenizer/tokenizer.json".to_string(),
-                        "audio_detokenizer/tokenizer_config.json".to_string(),
-                    ]
-                }
-            }
+            ModelFamily::Lfm2Audio => vec![
+                "config.json".to_string(),
+                "model.safetensors".to_string(),
+                "tokenizer.json".to_string(),
+                "tokenizer_config.json".to_string(),
+                "special_tokens_map.json".to_string(),
+                "tokenizer-e351c8d8-checkpoint125.safetensors".to_string(),
+                "chat_template.jinja".to_string(),
+                // Present on newer checkpoints such as LFM2.5; missing files are skipped.
+                "audio_detokenizer/config.json".to_string(),
+                "audio_detokenizer/model.safetensors".to_string(),
+                "audio_detokenizer/special_tokens_map.json".to_string(),
+                "audio_detokenizer/tokenizer.json".to_string(),
+                "audio_detokenizer/tokenizer_config.json".to_string(),
+            ],
             ModelFamily::Qwen3Asr => {
                 let mut files = vec![
                     "config.json".to_string(),
@@ -1253,10 +1212,6 @@ impl ModelDownloader {
                 1_100_000_000
             } else if file.contains("Qwen3-1.7B") {
                 2_400_000_000
-            } else if file.contains("LFM2.5-Audio-1.5B") {
-                1_300_000_000
-            } else if file.contains("LFM2-Audio-1.5B") {
-                1_200_000_000
             } else {
                 1_000_000_000
             }
@@ -1280,8 +1235,6 @@ impl ModelDownloader {
                     ModelVariant::Lfm25Audio15B4Bit => 884_000_000,
                     ModelVariant::Qwen306BGguf => 1_100_000_000,
                     ModelVariant::Qwen317BGguf => 2_400_000_000,
-                    ModelVariant::Lfm2Audio15BGguf => 5_200_000_000,
-                    ModelVariant::Lfm25Audio15BGguf => 5_800_000_000,
                     ModelVariant::ParakeetTdt06BV24Bit => 2_656_300_000,
                     ModelVariant::ParakeetTdt06BV34Bit => 3_160_000_000,
                     ModelVariant::Gemma31BIt => 2_100_000_000,

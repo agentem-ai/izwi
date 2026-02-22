@@ -483,7 +483,7 @@ fn resolve_lfm2_variant(model_id: Option<&str>) -> Result<ModelVariant, ApiError
         parse_model_variant(model_id).map_err(|err| ApiError::bad_request(err.to_string()))?;
     if !variant.is_lfm2() {
         return Err(ApiError::bad_request(format!(
-            "Unsupported speech-to-speech model '{}'. Supported: LFM2-Audio-1.5B, LFM2.5-Audio-1.5B, LFM2-Audio-1.5B-GGUF, LFM2.5-Audio-1.5B-GGUF",
+            "Unsupported speech-to-speech model '{}'. Supported: LFM2-Audio-1.5B, LFM2.5-Audio-1.5B",
             model_id
         )));
     }

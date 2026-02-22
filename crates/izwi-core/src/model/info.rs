@@ -66,12 +66,6 @@ pub enum ModelVariant {
     /// LFM2.5-Audio 1.5B model from Liquid AI (MLX 4-bit)
     #[serde(rename = "LFM2.5-Audio-1.5B-4bit")]
     Lfm25Audio15B4Bit,
-    /// LFM2-Audio 1.5B model from Liquid AI (GGUF bundle)
-    #[serde(rename = "LFM2-Audio-1.5B-GGUF")]
-    Lfm2Audio15BGguf,
-    /// LFM2.5-Audio 1.5B model from Liquid AI (GGUF bundle)
-    #[serde(rename = "LFM2.5-Audio-1.5B-GGUF")]
-    Lfm25Audio15BGguf,
     /// Qwen3-ASR 0.6B model
     #[serde(rename = "Qwen3-ASR-0.6B")]
     Qwen3Asr06B,
@@ -190,8 +184,6 @@ impl ModelVariant {
             Self::Lfm2Audio15B => "LiquidAI/LFM2-Audio-1.5B",
             Self::Lfm25Audio15B => "LiquidAI/LFM2.5-Audio-1.5B",
             Self::Lfm25Audio15B4Bit => "mlx-community/LFM2.5-Audio-1.5B-4bit",
-            Self::Lfm2Audio15BGguf => "LiquidAI/LFM2-Audio-1.5B-GGUF",
-            Self::Lfm25Audio15BGguf => "LiquidAI/LFM2.5-Audio-1.5B-GGUF",
             Self::Qwen3Asr06B => "Qwen/Qwen3-ASR-0.6B",
             Self::Qwen3Asr06B4Bit => "mlx-community/Qwen3-ASR-0.6B-4bit",
             Self::Qwen3Asr06B8Bit => "mlx-community/Qwen3-ASR-0.6B-8bit",
@@ -242,8 +234,6 @@ impl ModelVariant {
             Self::Lfm2Audio15B => "LFM2-Audio 1.5B",
             Self::Lfm25Audio15B => "LFM2.5-Audio 1.5B",
             Self::Lfm25Audio15B4Bit => "LFM2.5-Audio 1.5B 4-bit",
-            Self::Lfm2Audio15BGguf => "LFM2-Audio 1.5B GGUF",
-            Self::Lfm25Audio15BGguf => "LFM2.5-Audio 1.5B GGUF",
             Self::Qwen3Asr06B => "Qwen3-ASR 0.6B",
             Self::Qwen3Asr06B4Bit => "Qwen3-ASR 0.6B 4-bit",
             Self::Qwen3Asr06B8Bit => "Qwen3-ASR 0.6B 8-bit",
@@ -294,8 +284,6 @@ impl ModelVariant {
             Self::Lfm2Audio15B => "LFM2-Audio-1.5B",
             Self::Lfm25Audio15B => "LFM2.5-Audio-1.5B",
             Self::Lfm25Audio15B4Bit => "LFM2.5-Audio-1.5B-4bit",
-            Self::Lfm2Audio15BGguf => "LFM2-Audio-1.5B-GGUF",
-            Self::Lfm25Audio15BGguf => "LFM2.5-Audio-1.5B-GGUF",
             Self::Qwen3Asr06B => "Qwen3-ASR-0.6B",
             Self::Qwen3Asr06B4Bit => "Qwen3-ASR-0.6B-4bit",
             Self::Qwen3Asr06B8Bit => "Qwen3-ASR-0.6B-8bit",
@@ -346,8 +334,6 @@ impl ModelVariant {
             Self::Lfm2Audio15B => 3_000_000_000,        // ~2.79 GB (est)
             Self::Lfm25Audio15B => 3_200_000_000,       // ~2.98 GB (est)
             Self::Lfm25Audio15B4Bit => 884_000_000,     // ~0.82 GB
-            Self::Lfm2Audio15BGguf => 5_200_000_000,    // ~4.84 GB (bundle est)
-            Self::Lfm25Audio15BGguf => 5_800_000_000,   // ~5.40 GB (bundle est)
             Self::Qwen3Asr06B => 1_880_619_678,         // ~1.75 GB
             Self::Qwen3Asr06B4Bit => 712_781_279,       // ~0.66 GB
             Self::Qwen3Asr06B8Bit => 1_010_773_761,     // ~0.94 GB
@@ -396,7 +382,7 @@ impl ModelVariant {
             | Self::Qwen3Tts12Hz17BVoiceDesignBf16 => 6.0,
             Self::Qwen3TtsTokenizer12Hz => 1.0,
             Self::Lfm2Audio15B | Self::Lfm25Audio15B => 6.0,
-            Self::Lfm25Audio15B4Bit | Self::Lfm2Audio15BGguf | Self::Lfm25Audio15BGguf => 4.5,
+            Self::Lfm25Audio15B4Bit => 4.5,
             Self::Qwen3Asr06B
             | Self::Qwen3Asr06B4Bit
             | Self::Qwen3Asr06B8Bit
@@ -551,30 +537,17 @@ impl ModelVariant {
                 | Self::Qwen306BGguf
                 | Self::Qwen317BGguf
                 | Self::Qwen3ForcedAligner06B4Bit
-                | Self::Lfm2Audio15BGguf
-                | Self::Lfm25Audio15BGguf
         )
     }
 
     /// Whether this variant uses GGUF weights.
     pub fn is_gguf(&self) -> bool {
-        matches!(
-            self,
-            Self::Qwen306BGguf
-                | Self::Qwen317BGguf
-                | Self::Lfm2Audio15BGguf
-                | Self::Lfm25Audio15BGguf
-        )
+        matches!(self, Self::Qwen306BGguf | Self::Qwen317BGguf)
     }
 
     /// Whether this is a Qwen3 chat GGUF variant.
     pub fn is_qwen_chat_gguf(&self) -> bool {
         matches!(self, Self::Qwen306BGguf | Self::Qwen317BGguf)
-    }
-
-    /// Whether this is an LFM2/LFM2.5 GGUF variant.
-    pub fn is_lfm2_gguf(&self) -> bool {
-        matches!(self, Self::Lfm2Audio15BGguf | Self::Lfm25Audio15BGguf)
     }
 
     /// Whether this variant is currently enabled in the application catalog.
@@ -595,9 +568,7 @@ impl ModelVariant {
             | Self::Qwen3Tts12Hz17BCustomVoice4Bit
             | Self::Qwen3Tts12Hz17BVoiceDesign4Bit
             | Self::Qwen3ForcedAligner06B4Bit
-            | Self::Lfm25Audio15B4Bit
-            | Self::Lfm2Audio15BGguf
-            | Self::Lfm25Audio15BGguf => true,
+            | Self::Lfm25Audio15B4Bit => true,
             Self::Gemma34BIt => false,
             Self::Lfm2Audio15B | Self::Lfm25Audio15B => true,
             Self::VoxtralMini4BRealtime2602 => false,
@@ -634,8 +605,6 @@ impl ModelVariant {
             Self::Lfm2Audio15B,
             Self::Lfm25Audio15B,
             Self::Lfm25Audio15B4Bit,
-            Self::Lfm2Audio15BGguf,
-            Self::Lfm25Audio15BGguf,
             Self::Qwen3Asr06B,
             Self::Qwen3Asr06B4Bit,
             Self::Qwen3Asr06B8Bit,

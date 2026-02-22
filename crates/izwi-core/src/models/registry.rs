@@ -119,15 +119,9 @@ fn load_voxtral_model(
 
 fn load_lfm2_model(
     model_dir: &Path,
-    variant: ModelVariant,
+    _variant: ModelVariant,
     device: DeviceProfile,
 ) -> Result<Lfm2AudioModel> {
-    if variant.is_lfm2_gguf() {
-        return Err(Error::ModelLoadError(format!(
-            "LFM2 GGUF variant {} is downloaded, but native multimodal GGUF execution is not yet implemented in izwi-core. Use LFM2-Audio-1.5B or LFM2.5-Audio-1.5B safetensors variants for inference.",
-            variant.dir_name()
-        )));
-    }
     Lfm2AudioModel::load(model_dir, device)
 }
 
