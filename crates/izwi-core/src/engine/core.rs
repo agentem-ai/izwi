@@ -128,6 +128,57 @@ pub struct EngineCore {
 }
 
 impl EngineCore {
+    fn build_compatible_subbatches<'a>(
+        request_refs: &'a [&'a EngineCoreRequest],
+        scheduled: &[super::scheduler::ScheduledRequest],
+    ) -> Vec<(
+        Vec<&'a EngineCoreRequest>,
+        Vec<super::scheduler::ScheduledRequest>,
+    )> {
+        if request_refs.is_empty() || scheduled.is_empty() {
+            return Vec::new();
+        }
+
+        let mut request_by_id = HashMap::with_capacity(request_refs.len());
+        for req in request_refs {
+            request_by_id.insert(req.id.as_str(), *req);
+        }
+
+        let mut groups: Vec<(
+            (super::types::TaskType, Option<crate::model::ModelVariant>),
+            Vec<super::scheduler::ScheduledRequest>,
+        )> = Vec::new();
+
+        for item in scheduled {
+            let Some(req) = request_by_id.get(item.request_id.as_str()) else {
+                continue;
+            };
+            let key = (req.task_type, req.model_variant);
+            if let Some((_, bucket)) = groups.iter_mut().find(|(group_key, _)| *group_key == key) {
+                bucket.push(item.clone());
+            } else {
+                groups.push((key, vec![item.clone()]));
+            }
+        }
+
+        let mut outputs = Vec::new();
+        for (_, bucket) in groups {
+            let mut bucket_refs = Vec::with_capacity(bucket.len());
+            let mut seen = HashSet::new();
+            for item in &bucket {
+                if !seen.insert(item.request_id.as_str()) {
+                    continue;
+                }
+                if let Some(req) = request_by_id.get(item.request_id.as_str()) {
+                    bucket_refs.push(*req);
+                }
+            }
+            outputs.push((bucket_refs, bucket));
+        }
+
+        outputs
+    }
+
     /// Create a new engine core.
     pub fn new(config: EngineCoreConfig) -> Result<Self> {
         let worker_config = WorkerConfig::from(&config);
@@ -293,10 +344,12 @@ impl EngineCore {
                 return Ok((Vec::new(), std::time::Duration::ZERO));
             }
             let started = Instant::now();
-            let outputs = self
-                .executor
-                .execute_decode(&decode_request_refs, &decode_scheduled)
-                .await?;
+            let sub_batches =
+                Self::build_compatible_subbatches(&decode_request_refs, &decode_scheduled);
+            let mut outputs = Vec::new();
+            for (refs, batch) in sub_batches {
+                outputs.extend(self.executor.execute_decode(&refs, &batch).await?);
+            }
             Ok::<_, Error>((outputs, started.elapsed()))
         };
         let run_prefill = async {
@@ -304,10 +357,12 @@ impl EngineCore {
                 return Ok((Vec::new(), std::time::Duration::ZERO));
             }
             let started = Instant::now();
-            let outputs = self
-                .executor
-                .execute_prefill(&prefill_request_refs, &prefill_scheduled)
-                .await?;
+            let sub_batches =
+                Self::build_compatible_subbatches(&prefill_request_refs, &prefill_scheduled);
+            let mut outputs = Vec::new();
+            for (refs, batch) in sub_batches {
+                outputs.extend(self.executor.execute_prefill(&refs, &batch).await?);
+            }
             Ok::<_, Error>((outputs, started.elapsed()))
         };
 

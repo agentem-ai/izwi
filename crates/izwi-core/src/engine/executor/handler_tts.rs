@@ -157,47 +157,71 @@ impl NativeExecutor {
                 }
             };
 
-            let step = Self::run_blocking(|| model.tts_decode_step(&mut active_state.state))?;
-            let step_tokens_generated = step
-                .frames_generated
-                .saturating_sub(active_state.last_frames_generated);
-            active_state.last_frames_generated = step.frames_generated;
+            let decode_iterations = if scheduled.is_prefill {
+                1
+            } else {
+                scheduled.num_tokens.max(1)
+            };
+            let mut total_tokens_generated = 0usize;
+            let mut decode_steps_ran = 0usize;
+            let mut finished = false;
 
-            let mut tokens_processed = scheduled.num_tokens.max(1);
+            for _ in 0..decode_iterations {
+                let step = Self::run_blocking(|| model.tts_decode_step(&mut active_state.state))?;
+                decode_steps_ran = decode_steps_ran.saturating_add(1);
+                let step_tokens_generated = step
+                    .frames_generated
+                    .saturating_sub(active_state.last_frames_generated);
+                active_state.last_frames_generated = step.frames_generated;
+                total_tokens_generated =
+                    total_tokens_generated.saturating_add(step_tokens_generated);
+
+                if !step.samples.is_empty() {
+                    active_state
+                        .audio_samples_accum
+                        .extend_from_slice(&step.samples);
+                    if let Some(tx) = stream_tx.as_ref() {
+                        Self::stream_audio(
+                            tx,
+                            &request.id,
+                            &mut active_state.stream_sequence,
+                            step.samples.clone(),
+                            24_000,
+                            false,
+                        )?;
+                    }
+                }
+
+                if step.finished {
+                    if let Some(tx) = stream_tx.as_ref() {
+                        Self::stream_final_marker(
+                            tx,
+                            &request.id,
+                            &mut active_state.stream_sequence,
+                        )?;
+                    }
+                    finished = true;
+                    break;
+                }
+            }
+
+            let mut tokens_processed = if scheduled.is_prefill {
+                scheduled.num_tokens.max(1)
+            } else {
+                decode_steps_ran.max(1)
+            };
             if !active_state.prompt_accounted {
                 active_state.prompt_accounted = true;
                 tokens_processed = tokens_processed.saturating_add(request.num_prompt_tokens());
             }
 
-            if !step.samples.is_empty() {
-                active_state
-                    .audio_samples_accum
-                    .extend_from_slice(&step.samples);
-                if let Some(tx) = stream_tx.as_ref() {
-                    Self::stream_audio(
-                        tx,
-                        &request.id,
-                        &mut active_state.stream_sequence,
-                        step.samples.clone(),
-                        24_000,
-                        false,
-                    )?;
-                }
-            }
-
-            if step.finished {
-                if let Some(tx) = stream_tx.as_ref() {
-                    Self::stream_final_marker(tx, &request.id, &mut active_state.stream_sequence)?;
-                }
-            }
-
-            let finished_samples = if step.finished {
+            let finished_samples = if finished {
                 active_state.audio_samples_accum.clone()
             } else {
                 Vec::new()
             };
 
-            if !step.finished {
+            if !finished {
                 let mut guard = self.qwen_tts_decode_states.lock().map_err(|_| {
                     Error::InferenceError("Qwen TTS decode state mutex poisoned".to_string())
                 })?;
@@ -209,8 +233,8 @@ impl NativeExecutor {
                 audio: Some(AudioOutput::new(finished_samples, 24_000)),
                 text: None,
                 tokens_processed,
-                tokens_generated: step_tokens_generated,
-                finished: step.finished,
+                tokens_generated: total_tokens_generated,
+                finished,
                 error: None,
             })
         })
@@ -300,54 +324,73 @@ impl NativeExecutor {
             }
         };
 
-        let step = Self::run_blocking(|| model.tts_decode_step(&mut active_state.state))?;
-        let step_tokens_generated = step
-            .tokens_generated
-            .saturating_sub(active_state.last_tokens_generated);
-        active_state.last_tokens_generated = step.tokens_generated;
+        let decode_iterations = if scheduled.is_prefill {
+            1
+        } else {
+            scheduled.num_tokens.max(1)
+        };
+        let mut total_tokens_generated = 0usize;
+        let mut decode_steps_ran = 0usize;
+        let mut finished = false;
 
-        let mut tokens_processed = scheduled.num_tokens.max(1);
+        for _ in 0..decode_iterations {
+            let step = Self::run_blocking(|| model.tts_decode_step(&mut active_state.state))?;
+            decode_steps_ran = decode_steps_ran.saturating_add(1);
+            let step_tokens_generated = step
+                .tokens_generated
+                .saturating_sub(active_state.last_tokens_generated);
+            active_state.last_tokens_generated = step.tokens_generated;
+            total_tokens_generated = total_tokens_generated.saturating_add(step_tokens_generated);
+
+            if let Some(tx) = stream_tx.as_ref() {
+                if !step.delta.is_empty() {
+                    Self::stream_text(
+                        tx,
+                        &request.id,
+                        &mut active_state.stream_sequence,
+                        step.delta.clone(),
+                    )?;
+                }
+            }
+
+            if let Some(frame) = step.audio_frame.as_ref() {
+                active_state.audio_frames_accum.push(frame.clone());
+
+                if let Some(tx) = stream_tx.as_ref() {
+                    let chunk_samples = Self::run_blocking(|| model.decode_audio_frame(frame))?;
+                    if !chunk_samples.is_empty() {
+                        Self::stream_audio(
+                            tx,
+                            &request.id,
+                            &mut active_state.stream_sequence,
+                            chunk_samples,
+                            24_000,
+                            false,
+                        )?;
+                    }
+                }
+            }
+
+            if step.finished {
+                if let Some(tx) = stream_tx.as_ref() {
+                    Self::stream_final_marker(tx, &request.id, &mut active_state.stream_sequence)?;
+                }
+                finished = true;
+                break;
+            }
+        }
+
+        let mut tokens_processed = if scheduled.is_prefill {
+            scheduled.num_tokens.max(1)
+        } else {
+            decode_steps_ran.max(1)
+        };
         if !active_state.prompt_accounted {
             active_state.prompt_accounted = true;
             tokens_processed = tokens_processed.saturating_add(request.num_prompt_tokens());
         }
 
-        if let Some(tx) = stream_tx.as_ref() {
-            if !step.delta.is_empty() {
-                Self::stream_text(
-                    tx,
-                    &request.id,
-                    &mut active_state.stream_sequence,
-                    step.delta.clone(),
-                )?;
-            }
-        }
-
-        if let Some(frame) = step.audio_frame.as_ref() {
-            active_state.audio_frames_accum.push(frame.clone());
-
-            if let Some(tx) = stream_tx.as_ref() {
-                let chunk_samples = Self::run_blocking(|| model.decode_audio_frame(frame))?;
-                if !chunk_samples.is_empty() {
-                    Self::stream_audio(
-                        tx,
-                        &request.id,
-                        &mut active_state.stream_sequence,
-                        chunk_samples,
-                        24_000,
-                        false,
-                    )?;
-                }
-            }
-        }
-
-        if step.finished {
-            if let Some(tx) = stream_tx.as_ref() {
-                Self::stream_final_marker(tx, &request.id, &mut active_state.stream_sequence)?;
-            }
-        }
-
-        let finished_samples = if step.finished {
+        let finished_samples = if finished {
             if stream_tx.is_some() {
                 Vec::new()
             } else {
@@ -358,7 +401,7 @@ impl NativeExecutor {
             Vec::new()
         };
 
-        if !step.finished {
+        if !finished {
             let mut guard = self.lfm2_tts_decode_states.lock().map_err(|_| {
                 Error::InferenceError("LFM2 TTS decode state mutex poisoned".to_string())
             })?;
@@ -370,8 +413,8 @@ impl NativeExecutor {
             audio: Some(AudioOutput::new(finished_samples, 24_000)),
             text: None,
             tokens_processed,
-            tokens_generated: step_tokens_generated,
-            finished: step.finished,
+            tokens_generated: total_tokens_generated,
+            finished,
             error: None,
         })
     }

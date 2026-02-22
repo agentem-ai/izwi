@@ -272,12 +272,26 @@ pub struct KVCacheManager {
     shared_prefix_level_ref_counts: HashMap<(usize, u64), usize>,
     /// Prefix index entries registered by request (for cleanup).
     request_prefix_entries: HashMap<RequestId, Vec<(usize, u64)>>,
+    /// Persistent prefix snapshots retained across completed request lifetimes.
+    persistent_prefix_entries: HashMap<(usize, u64), PersistentPrefixEntry>,
+    /// LRU order for persistent prefix snapshots.
+    persistent_prefix_lru: VecDeque<(usize, u64)>,
+    /// Max persistent prefix snapshots to retain.
+    persistent_prefix_max_entries: usize,
+    /// Prefix snapshot lifetime in cache-operation ticks.
+    persistent_prefix_ttl_ops: u64,
     /// Minimum soft-cap floor for adaptive tuning.
     min_soft_blocks: usize,
     /// Last operation count sampled for churn tuning.
     last_tuned_ops: u64,
     /// Churn and sharing telemetry.
     telemetry: KVCacheTelemetry,
+}
+
+#[derive(Debug, Clone)]
+struct PersistentPrefixEntry {
+    block_ids: Vec<BlockId>,
+    last_touched_ops: u64,
 }
 
 /// KV cache runtime telemetry.
@@ -323,6 +337,10 @@ impl KVCacheManager {
             shared_prefix_levels: HashMap::new(),
             shared_prefix_level_ref_counts: HashMap::new(),
             request_prefix_entries: HashMap::new(),
+            persistent_prefix_entries: HashMap::new(),
+            persistent_prefix_lru: VecDeque::new(),
+            persistent_prefix_max_entries: 64,
+            persistent_prefix_ttl_ops: 512,
             min_soft_blocks,
             last_tuned_ops: 0,
             telemetry: KVCacheTelemetry {
@@ -336,9 +354,9 @@ impl KVCacheManager {
         }
     }
 
-    /// Check if n blocks can be allocated.
-    pub fn can_allocate(&self, n: usize) -> bool {
-        self.allocator.can_allocate(n)
+    /// Check if n blocks can be allocated, reclaiming persistent snapshots on pressure.
+    pub fn can_allocate(&mut self, n: usize) -> bool {
+        self.ensure_capacity_for(n)
     }
 
     /// Allocate blocks for a request.
@@ -376,6 +394,10 @@ impl KVCacheManager {
 
         let remaining = num_blocks.saturating_sub(block_ids.len());
         if remaining > 0 {
+            if !self.ensure_capacity_for(remaining) {
+                self.allocator.free_blocks(&block_ids);
+                return Vec::new();
+            }
             if let Some(mut fresh_blocks) = self.allocator.allocate(remaining) {
                 self.telemetry.total_allocations += fresh_blocks.len() as u64;
                 block_ids.append(&mut fresh_blocks);
@@ -429,6 +451,44 @@ impl KVCacheManager {
         self.allocate(request_id, additional_blocks)
     }
 
+    fn blocks_are_live(&self, candidate_blocks: &[BlockId], required_blocks: usize) -> bool {
+        if candidate_blocks.len() < required_blocks {
+            return false;
+        }
+        candidate_blocks
+            .iter()
+            .take(required_blocks)
+            .all(|block_id| {
+                self.allocator
+                    .get_block(*block_id)
+                    .map(|block| block.ref_count > 0)
+                    .unwrap_or(false)
+            })
+    }
+
+    fn lookup_prefix_candidate_blocks(
+        &mut self,
+        token_len: usize,
+        prefix_hash: u64,
+    ) -> Option<Vec<BlockId>> {
+        if let Some(level) = self.shared_prefix_levels.get(&token_len) {
+            if let Some(candidate_blocks) = level.get(&prefix_hash) {
+                return Some(candidate_blocks.clone());
+            }
+        }
+
+        let key = (token_len, prefix_hash);
+        let now_ops = self.telemetry.total_ops();
+        if let Some(entry) = self.persistent_prefix_entries.get_mut(&key) {
+            entry.last_touched_ops = now_ops;
+            self.persistent_prefix_lru
+                .retain(|existing| existing != &key);
+            self.persistent_prefix_lru.push_back(key);
+            return Some(entry.block_ids.clone());
+        }
+        None
+    }
+
     /// Estimate how many leading prompt blocks can be reused from shared-prefix cache.
     pub fn estimate_prefix_reuse_blocks(&self, prompt_tokens: &[u32], num_blocks: usize) -> usize {
         if num_blocks == 0 || prompt_tokens.is_empty() {
@@ -447,18 +507,17 @@ impl KVCacheManager {
             let prefix_hash = Self::hash_prefix_tokens(&prompt_tokens[..prefix_tokens]);
             if let Some(level) = self.shared_prefix_levels.get(&prefix_tokens) {
                 if let Some(candidate_blocks) = level.get(&prefix_hash) {
-                    if candidate_blocks.len() < blocks {
-                        continue;
-                    }
-                    let all_live = candidate_blocks.iter().take(blocks).all(|block_id| {
-                        self.allocator
-                            .get_block(*block_id)
-                            .map(|block| block.ref_count > 0)
-                            .unwrap_or(false)
-                    });
-                    if all_live {
+                    if self.blocks_are_live(candidate_blocks, blocks) {
                         return blocks;
                     }
+                }
+            }
+            if let Some(entry) = self
+                .persistent_prefix_entries
+                .get(&(prefix_tokens, prefix_hash))
+            {
+                if self.blocks_are_live(&entry.block_ids, blocks) {
+                    return blocks;
                 }
             }
         }
@@ -488,26 +547,26 @@ impl KVCacheManager {
             for blocks in (1..=max_reusable_blocks).rev() {
                 let prefix_tokens = blocks * block_size;
                 let prefix_hash = Self::hash_prefix_tokens(&prompt_tokens[..prefix_tokens]);
-                if let Some(level) = self.shared_prefix_levels.get(&prefix_tokens) {
-                    if let Some(candidate_blocks) = level.get(&prefix_hash) {
-                        let mut acquired = Vec::with_capacity(blocks);
-                        let mut ok = true;
-                        for block_id in candidate_blocks.iter().take(blocks) {
-                            if self.allocator.incref(*block_id) {
-                                acquired.push(*block_id);
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        if ok && acquired.len() == blocks {
-                            reused = acquired;
-                            self.telemetry.shared_prefix_hits += 1;
+                if let Some(candidate_blocks) =
+                    self.lookup_prefix_candidate_blocks(prefix_tokens, prefix_hash)
+                {
+                    let mut acquired = Vec::with_capacity(blocks);
+                    let mut ok = true;
+                    for block_id in candidate_blocks.iter().take(blocks) {
+                        if self.allocator.incref(*block_id) {
+                            acquired.push(*block_id);
+                        } else {
+                            ok = false;
                             break;
                         }
-                        if !acquired.is_empty() {
-                            self.allocator.free_blocks(&acquired);
-                        }
+                    }
+                    if ok && acquired.len() == blocks {
+                        reused = acquired;
+                        self.telemetry.shared_prefix_hits += 1;
+                        break;
+                    }
+                    if !acquired.is_empty() {
+                        self.allocator.free_blocks(&acquired);
                     }
                 }
             }
@@ -516,6 +575,10 @@ impl KVCacheManager {
         let mut block_ids = reused;
         let remaining = num_blocks.saturating_sub(block_ids.len());
         if remaining > 0 {
+            if !self.ensure_capacity_for(remaining) {
+                self.allocator.free_blocks(&block_ids);
+                return Vec::new();
+            }
             if let Some(mut fresh_blocks) = self.allocator.allocate(remaining) {
                 self.telemetry.total_allocations += fresh_blocks.len() as u64;
                 block_ids.append(&mut fresh_blocks);
@@ -552,6 +615,7 @@ impl KVCacheManager {
     /// Free all blocks for a request.
     pub fn free(&mut self, request_id: &RequestId) {
         let released_blocks = self.request_blocks.remove(request_id).unwrap_or_default();
+        self.persist_request_prefix_snapshot(request_id, &released_blocks);
         if !released_blocks.is_empty() {
             let allocated_before = self.allocator.num_allocated();
             debug!(
@@ -645,6 +709,148 @@ impl KVCacheManager {
                     }
                 }
             }
+        }
+    }
+
+    fn persist_request_prefix_snapshot(
+        &mut self,
+        request_id: &RequestId,
+        released_blocks: &[BlockId],
+    ) {
+        if released_blocks.is_empty() {
+            return;
+        }
+        let Some(entries) = self.request_prefix_entries.get(request_id) else {
+            return;
+        };
+        let Some((token_len, hash)) = entries.iter().max_by_key(|(token_len, _)| *token_len) else {
+            return;
+        };
+
+        let block_size = self.config.block_size.max(1);
+        let prefix_blocks = token_len / block_size;
+        if prefix_blocks == 0 || prefix_blocks > released_blocks.len() {
+            return;
+        }
+
+        let block_ids = released_blocks[..prefix_blocks].to_vec();
+        self.insert_persistent_prefix_entry(*token_len, *hash, block_ids);
+    }
+
+    fn insert_persistent_prefix_entry(
+        &mut self,
+        token_len: usize,
+        hash: u64,
+        block_ids: Vec<BlockId>,
+    ) {
+        if block_ids.is_empty() {
+            return;
+        }
+        let key = (token_len, hash);
+        let now_ops = self.telemetry.total_ops();
+
+        if let Some(entry) = self.persistent_prefix_entries.get_mut(&key) {
+            entry.last_touched_ops = now_ops;
+            self.persistent_prefix_lru
+                .retain(|existing| existing != &key);
+            self.persistent_prefix_lru.push_back(key);
+            return;
+        }
+
+        let mut acquired = Vec::with_capacity(block_ids.len());
+        for block_id in &block_ids {
+            if self.allocator.incref(*block_id) {
+                acquired.push(*block_id);
+            } else {
+                if !acquired.is_empty() {
+                    self.allocator.free_blocks(&acquired);
+                }
+                return;
+            }
+        }
+
+        self.persistent_prefix_entries.insert(
+            key,
+            PersistentPrefixEntry {
+                block_ids,
+                last_touched_ops: now_ops,
+            },
+        );
+        self.persistent_prefix_lru
+            .retain(|existing| existing != &key);
+        self.persistent_prefix_lru.push_back(key);
+        self.evict_persistent_prefix_entries_if_needed();
+    }
+
+    fn evict_persistent_prefix_entry(&mut self, key: (usize, u64)) {
+        let Some(entry) = self.persistent_prefix_entries.remove(&key) else {
+            return;
+        };
+        self.persistent_prefix_lru
+            .retain(|existing| existing != &key);
+        let allocated_before = self.allocator.num_allocated();
+        self.allocator.free_blocks(&entry.block_ids);
+        let freed = allocated_before.saturating_sub(self.allocator.num_allocated());
+        self.telemetry.total_frees += freed as u64;
+    }
+
+    fn evict_persistent_prefix_entries_if_needed(&mut self) {
+        while self.persistent_prefix_entries.len() > self.persistent_prefix_max_entries {
+            let Some(key) = self.persistent_prefix_lru.pop_front() else {
+                break;
+            };
+            self.evict_persistent_prefix_entry(key);
+        }
+    }
+
+    fn evict_persistent_prefixes_for_capacity(&mut self, required_blocks: usize) {
+        if required_blocks == 0 {
+            return;
+        }
+        while !self.allocator.can_allocate(required_blocks) {
+            let Some(key) = self.persistent_prefix_lru.front().copied() else {
+                break;
+            };
+            self.evict_persistent_prefix_entry(key);
+        }
+    }
+
+    fn ensure_capacity_for(&mut self, required_blocks: usize) -> bool {
+        if required_blocks == 0 {
+            return true;
+        }
+        if self.allocator.can_allocate(required_blocks) {
+            return true;
+        }
+
+        // First drop stale snapshots, then LRU-evict snapshots until headroom exists.
+        self.maybe_evict_stale_persistent_prefixes();
+        if self.allocator.can_allocate(required_blocks) {
+            return true;
+        }
+        self.evict_persistent_prefixes_for_capacity(required_blocks);
+        self.allocator.can_allocate(required_blocks)
+    }
+
+    fn maybe_evict_stale_persistent_prefixes(&mut self) {
+        if self.persistent_prefix_entries.is_empty() {
+            return;
+        }
+
+        let now_ops = self.telemetry.total_ops();
+        let stale_keys: Vec<(usize, u64)> = self
+            .persistent_prefix_entries
+            .iter()
+            .filter_map(|(key, entry)| {
+                if now_ops.saturating_sub(entry.last_touched_ops) > self.persistent_prefix_ttl_ops {
+                    Some(*key)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for key in stale_keys {
+            self.evict_persistent_prefix_entry(key);
         }
     }
 
@@ -746,7 +952,7 @@ impl KVCacheManager {
         if !shared {
             return Some(block_id);
         }
-        if !self.allocator.can_allocate(1) {
+        if !self.ensure_capacity_for(1) {
             return None;
         }
 
@@ -821,7 +1027,7 @@ impl KVCacheManager {
             memory_capacity_bytes: self.allocator.memory_capacity_bytes(),
             gpu_resident_blocks,
             pinned_blocks,
-            shared_prefixes: self.shared_prefixes.len(),
+            shared_prefixes: self.shared_prefixes.len() + self.persistent_prefix_entries.len(),
             telemetry: self.telemetry.clone(),
         }
     }
@@ -849,7 +1055,7 @@ impl KVCacheManager {
 
     /// Get the number of shared prefixes.
     pub fn shared_prefix_count(&self) -> usize {
-        self.shared_prefixes.len()
+        self.shared_prefixes.len() + self.persistent_prefix_entries.len()
     }
 
     /// Compact shared prefixes by removing unused ones.
@@ -871,6 +1077,9 @@ impl KVCacheManager {
     }
 
     fn maybe_tune_soft_limit(&mut self) {
+        self.maybe_evict_stale_persistent_prefixes();
+        self.evict_persistent_prefix_entries_if_needed();
+
         let total_ops = self.telemetry.total_ops();
         let delta_ops = total_ops.saturating_sub(self.last_tuned_ops);
         if delta_ops < 64 {
@@ -1436,5 +1645,31 @@ mod tests {
         // req-2 still references the shared prefix. A new request should reuse it.
         let blocks3 = manager.allocate_with_prefix_tokens(&"req-3".to_string(), 2, &prompt);
         assert_eq!(blocks3, blocks2);
+    }
+
+    #[test]
+    fn test_persistent_prefix_snapshot_reuses_after_request_finishes() {
+        let config = KVCacheConfig {
+            max_blocks: 2,
+            block_size: 2,
+            ..Default::default()
+        };
+        let mut manager = KVCacheManager::new(config);
+
+        let prompt = vec![21, 22, 23, 24];
+        let req1 = "persist-1".to_string();
+        let blocks1 = manager.allocate_with_prefix_tokens(&req1, 2, &prompt);
+        assert_eq!(blocks1.len(), 2);
+
+        // Free the original request; persistent snapshot retains reusable block refs.
+        manager.free(&req1);
+        assert_eq!(manager.stats().free_blocks, 0);
+
+        // Even with no free blocks, identical prefix can still be admitted via persistent reuse.
+        let req2 = "persist-2".to_string();
+        let blocks2 = manager.allocate_with_prefix_tokens(&req2, 2, &prompt);
+        assert_eq!(blocks2.len(), 2);
+        assert_eq!(blocks2, blocks1);
+        assert!(manager.stats().telemetry.shared_prefix_hits >= 1);
     }
 }
