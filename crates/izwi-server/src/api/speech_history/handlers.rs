@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::api::request_context::RequestContext;
+use crate::api::tts_long_form::{expand_generation_requests_for_long_form, generate_long_form_tts};
 use crate::error::ApiError;
 use crate::speech_history_store::{
     NewSpeechHistoryRecord, SpeechHistoryRecord, SpeechHistoryRecordSummary, SpeechRouteKind,
@@ -296,9 +297,9 @@ async fn create_record(
 
     let generation_request =
         build_generation_request(req.clone(), ctx.correlation_id, input_text.clone(), false);
-
+    let runtime = state.runtime.clone();
     let output = tokio::time::timeout(timeout, async {
-        state.runtime.generate(generation_request).await
+        generate_long_form_tts(&runtime, variant, generation_request).await
     })
     .await
     .map_err(|_| ApiError::internal("Speech generation timed out"))??;
@@ -339,12 +340,13 @@ async fn stream_record_creation(
     ctx: RequestContext,
     req: CreateSpeechHistoryRecordRequest,
     route_kind: SpeechRouteKind,
-    _variant: ModelVariant,
+    variant: ModelVariant,
     model_id: String,
     input_text: String,
 ) -> Result<Response, ApiError> {
     let generation_request =
         build_generation_request(req.clone(), ctx.correlation_id, input_text.clone(), true);
+    let planned_requests = expand_generation_requests_for_long_form(&generation_request, variant);
     let stream_request_id = generation_request.id.clone();
 
     let runtime = state.runtime.clone();
@@ -408,139 +410,36 @@ async fn stream_record_creation(
             error: None,
         }));
 
-        let (chunk_tx, mut chunk_rx) = mpsc::channel::<AudioChunk>(32);
-        let generation_engine = runtime.clone();
-        let generation_task = tokio::spawn(async move {
-            generation_engine
-                .generate_streaming(generation_request, chunk_tx)
-                .await
-        });
-
         let mut total_samples = 0usize;
+        let mut total_tokens = 0usize;
         let stream_started = std::time::Instant::now();
         let stream_encoder = AudioEncoder::new(sample_rate, 1);
         let mut merged_samples: Vec<f32> = Vec::new();
+        let mut global_sequence = 0usize;
+        let mut failed = false;
+        for request in planned_requests {
+            let (chunk_tx, mut chunk_rx) = mpsc::channel::<AudioChunk>(32);
+            let generation_engine = runtime.clone();
+            let generation_task = tokio::spawn(async move {
+                generation_engine
+                    .generate_streaming(request, chunk_tx)
+                    .await
+            });
 
-        while let Some(chunk) = chunk_rx.recv().await {
-            if chunk.samples.is_empty() {
-                continue;
-            }
-
-            total_samples += chunk.samples.len();
-            merged_samples.extend_from_slice(&chunk.samples);
-
-            let chunk_bytes = match stream_encoder.encode(&chunk.samples, AudioFormat::RawI16) {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
-                        event: "error",
-                        request_id: Some(stream_request_id.clone()),
-                        sequence: None,
-                        audio_base64: None,
-                        sample_count: None,
-                        sample_rate: None,
-                        audio_format: None,
-                        tokens_generated: None,
-                        generation_time_ms: None,
-                        audio_duration_secs: None,
-                        rtf: None,
-                        record: None,
-                        error: Some(format!("Failed to encode stream chunk: {err}")),
-                    }));
-                    break;
+            let mut encoding_failed = false;
+            while let Some(chunk) = chunk_rx.recv().await {
+                if chunk.samples.is_empty() {
+                    continue;
                 }
-            };
 
-            let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
-                event: "chunk",
-                request_id: Some(chunk.request_id.clone()),
-                sequence: Some(chunk.sequence),
-                audio_base64: Some(base64::engine::general_purpose::STANDARD.encode(chunk_bytes)),
-                sample_count: Some(chunk.samples.len()),
-                sample_rate: None,
-                audio_format: None,
-                tokens_generated: None,
-                generation_time_ms: None,
-                audio_duration_secs: None,
-                rtf: None,
-                record: None,
-                error: None,
-            }));
-        }
+                total_samples += chunk.samples.len();
+                if let Some(stats) = chunk.stats.as_ref() {
+                    total_tokens = total_tokens.saturating_add(stats.tokens_generated);
+                }
+                merged_samples.extend_from_slice(&chunk.samples);
 
-        match generation_task.await {
-            Ok(Ok(())) => {
-                let generation_time_ms = stream_started.elapsed().as_secs_f32() * 1000.0;
-                let audio_duration_secs = total_samples as f32 / sample_rate as f32;
-                let tokens_generated = total_samples / 256;
-                let rtf = if audio_duration_secs > 0.0 {
-                    (generation_time_ms / 1000.0) / audio_duration_secs
-                } else {
-                    0.0
-                };
-
-                let wav_encoder = AudioEncoder::new(sample_rate, 1);
-                match wav_encoder.encode(merged_samples.as_slice(), AudioFormat::Wav) {
-                    Ok(wav_bytes) => {
-                        let record_result = speech_store
-                            .create_record(NewSpeechHistoryRecord {
-                                route_kind,
-                                model_id: Some(model_id),
-                                speaker: req.speaker,
-                                language: req.language,
-                                input_text,
-                                voice_description: req.voice_description,
-                                reference_text: req.reference_text,
-                                generation_time_ms: generation_time_ms as f64,
-                                audio_duration_secs: Some(audio_duration_secs as f64),
-                                rtf: Some(rtf as f64),
-                                tokens_generated: Some(tokens_generated),
-                                audio_mime_type: AudioEncoder::content_type(AudioFormat::Wav)
-                                    .to_string(),
-                                audio_filename: Some(default_audio_filename(route_kind, "wav")),
-                                audio_bytes: wav_bytes,
-                            })
-                            .await;
-
-                        match record_result {
-                            Ok(record) => {
-                                let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
-                                    event: "final",
-                                    request_id: Some(stream_request_id.clone()),
-                                    sequence: None,
-                                    audio_base64: None,
-                                    sample_count: None,
-                                    sample_rate: None,
-                                    audio_format: None,
-                                    tokens_generated: Some(tokens_generated),
-                                    generation_time_ms: Some(generation_time_ms),
-                                    audio_duration_secs: Some(audio_duration_secs),
-                                    rtf: Some(rtf),
-                                    record: Some(record),
-                                    error: None,
-                                }));
-                            }
-                            Err(err) => {
-                                let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
-                                    event: "error",
-                                    request_id: Some(stream_request_id.clone()),
-                                    sequence: None,
-                                    audio_base64: None,
-                                    sample_count: None,
-                                    sample_rate: None,
-                                    audio_format: None,
-                                    tokens_generated: None,
-                                    generation_time_ms: None,
-                                    audio_duration_secs: None,
-                                    rtf: None,
-                                    record: None,
-                                    error: Some(format!(
-                                        "Failed to save speech history record: {err}"
-                                    )),
-                                }));
-                            }
-                        }
-                    }
+                let chunk_bytes = match stream_encoder.encode(&chunk.samples, AudioFormat::RawI16) {
+                    Ok(bytes) => bytes,
                     Err(err) => {
                         let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
                             event: "error",
@@ -555,44 +454,172 @@ async fn stream_record_creation(
                             audio_duration_secs: None,
                             rtf: None,
                             record: None,
-                            error: Some(format!("Failed to encode final WAV output: {err}")),
+                            error: Some(format!("Failed to encode stream chunk: {err}")),
                         }));
+                        encoding_failed = true;
+                        break;
                     }
+                };
+
+                let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
+                    event: "chunk",
+                    request_id: Some(stream_request_id.clone()),
+                    sequence: Some(global_sequence),
+                    audio_base64: Some(
+                        base64::engine::general_purpose::STANDARD.encode(chunk_bytes),
+                    ),
+                    sample_count: Some(chunk.samples.len()),
+                    sample_rate: None,
+                    audio_format: None,
+                    tokens_generated: None,
+                    generation_time_ms: None,
+                    audio_duration_secs: None,
+                    rtf: None,
+                    record: None,
+                    error: None,
+                }));
+                global_sequence = global_sequence.saturating_add(1);
+            }
+
+            let generation_outcome = generation_task.await;
+            if encoding_failed {
+                let _ = generation_outcome;
+                failed = true;
+                break;
+            }
+
+            match generation_outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
+                        event: "error",
+                        request_id: Some(stream_request_id.clone()),
+                        sequence: None,
+                        audio_base64: None,
+                        sample_count: None,
+                        sample_rate: None,
+                        audio_format: None,
+                        tokens_generated: None,
+                        generation_time_ms: None,
+                        audio_duration_secs: None,
+                        rtf: None,
+                        record: None,
+                        error: Some(err.to_string()),
+                    }));
+                    failed = true;
+                    break;
+                }
+                Err(err) => {
+                    let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
+                        event: "error",
+                        request_id: Some(stream_request_id.clone()),
+                        sequence: None,
+                        audio_base64: None,
+                        sample_count: None,
+                        sample_rate: None,
+                        audio_format: None,
+                        tokens_generated: None,
+                        generation_time_ms: None,
+                        audio_duration_secs: None,
+                        rtf: None,
+                        record: None,
+                        error: Some(format!("Streaming task failed: {err}")),
+                    }));
+                    failed = true;
+                    break;
                 }
             }
-            Ok(Err(err)) => {
-                let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
-                    event: "error",
-                    request_id: Some(stream_request_id.clone()),
-                    sequence: None,
-                    audio_base64: None,
-                    sample_count: None,
-                    sample_rate: None,
-                    audio_format: None,
-                    tokens_generated: None,
-                    generation_time_ms: None,
-                    audio_duration_secs: None,
-                    rtf: None,
-                    record: None,
-                    error: Some(err.to_string()),
-                }));
+        }
+
+        if !failed {
+            let generation_time_ms = stream_started.elapsed().as_secs_f32() * 1000.0;
+            let audio_duration_secs = total_samples as f32 / sample_rate as f32;
+            if total_tokens == 0 {
+                total_tokens = total_samples / 256;
             }
-            Err(err) => {
-                let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
-                    event: "error",
-                    request_id: Some(stream_request_id.clone()),
-                    sequence: None,
-                    audio_base64: None,
-                    sample_count: None,
-                    sample_rate: None,
-                    audio_format: None,
-                    tokens_generated: None,
-                    generation_time_ms: None,
-                    audio_duration_secs: None,
-                    rtf: None,
-                    record: None,
-                    error: Some(format!("Streaming task failed: {err}")),
-                }));
+            let rtf = if audio_duration_secs > 0.0 {
+                (generation_time_ms / 1000.0) / audio_duration_secs
+            } else {
+                0.0
+            };
+
+            let wav_encoder = AudioEncoder::new(sample_rate, 1);
+            match wav_encoder.encode(merged_samples.as_slice(), AudioFormat::Wav) {
+                Ok(wav_bytes) => {
+                    let record_result = speech_store
+                        .create_record(NewSpeechHistoryRecord {
+                            route_kind,
+                            model_id: Some(model_id),
+                            speaker: req.speaker,
+                            language: req.language,
+                            input_text,
+                            voice_description: req.voice_description,
+                            reference_text: req.reference_text,
+                            generation_time_ms: generation_time_ms as f64,
+                            audio_duration_secs: Some(audio_duration_secs as f64),
+                            rtf: Some(rtf as f64),
+                            tokens_generated: Some(total_tokens),
+                            audio_mime_type: AudioEncoder::content_type(AudioFormat::Wav)
+                                .to_string(),
+                            audio_filename: Some(default_audio_filename(route_kind, "wav")),
+                            audio_bytes: wav_bytes,
+                        })
+                        .await;
+
+                    match record_result {
+                        Ok(record) => {
+                            let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
+                                event: "final",
+                                request_id: Some(stream_request_id.clone()),
+                                sequence: None,
+                                audio_base64: None,
+                                sample_count: None,
+                                sample_rate: None,
+                                audio_format: None,
+                                tokens_generated: Some(total_tokens),
+                                generation_time_ms: Some(generation_time_ms),
+                                audio_duration_secs: Some(audio_duration_secs),
+                                rtf: Some(rtf),
+                                record: Some(record),
+                                error: None,
+                            }));
+                        }
+                        Err(err) => {
+                            let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
+                                event: "error",
+                                request_id: Some(stream_request_id.clone()),
+                                sequence: None,
+                                audio_base64: None,
+                                sample_count: None,
+                                sample_rate: None,
+                                audio_format: None,
+                                tokens_generated: None,
+                                generation_time_ms: None,
+                                audio_duration_secs: None,
+                                rtf: None,
+                                record: None,
+                                error: Some(format!("Failed to save speech history record: {err}")),
+                            }));
+                        }
+                    }
+                }
+                Err(err) => {
+                    let _ = event_tx.send(to_stream_json(SpeechStreamEvent {
+                        event: "error",
+                        request_id: Some(stream_request_id.clone()),
+                        sequence: None,
+                        audio_base64: None,
+                        sample_count: None,
+                        sample_rate: None,
+                        audio_format: None,
+                        tokens_generated: None,
+                        generation_time_ms: None,
+                        audio_duration_secs: None,
+                        rtf: None,
+                        record: None,
+                        error: Some(format!("Failed to encode final WAV output: {err}")),
+                    }));
+                }
             }
         }
 

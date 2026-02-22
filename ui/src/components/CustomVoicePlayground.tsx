@@ -38,87 +38,8 @@ interface CustomVoicePlaygroundProps {
   onModelRequired: () => void;
 }
 
-const QWEN_LONG_FORM_CHUNK_MAX_CHARS = 1450;
 const MAX_BUFFERED_PCM_BYTES = 256 * 1024 * 1024;
 const ABORT_ERROR_NAME = "AbortError";
-
-function isQwenTtsModelId(modelId: string | null): boolean {
-  return modelId?.toLowerCase().startsWith("qwen3-tts") ?? false;
-}
-
-function splitLongFormQwenText(text: string): string[] {
-  const normalized = text.replace(/\r\n/g, "\n").trim();
-  if (!normalized) {
-    return [];
-  }
-
-  const sentenceUnits = normalized
-    .split(/\n{2,}/)
-    .flatMap((paragraph) => {
-      const trimmed = paragraph.trim();
-      if (!trimmed) {
-        return [];
-      }
-      const matches = trimmed.match(/[^.!?。！？；;:：]+[.!?。！？；;:：]*/g);
-      return (matches ?? [trimmed]).map((piece) => piece.trim()).filter(Boolean);
-    });
-  const units = sentenceUnits.length > 0 ? sentenceUnits : [normalized];
-
-  const boundedUnits: string[] = [];
-  for (const unit of units) {
-    if (unit.length <= QWEN_LONG_FORM_CHUNK_MAX_CHARS) {
-      boundedUnits.push(unit);
-      continue;
-    }
-
-    const words = unit.split(/\s+/).filter(Boolean);
-    if (words.length > 1) {
-      let current = "";
-      for (const word of words) {
-        const sep = current ? " " : "";
-        const candidate = `${current}${sep}${word}`;
-        if (candidate.length <= QWEN_LONG_FORM_CHUNK_MAX_CHARS) {
-          current = candidate;
-          continue;
-        }
-
-        if (current) {
-          boundedUnits.push(current);
-        }
-
-        if (word.length <= QWEN_LONG_FORM_CHUNK_MAX_CHARS) {
-          current = word;
-          continue;
-        }
-
-        for (
-          let offset = 0;
-          offset < word.length;
-          offset += QWEN_LONG_FORM_CHUNK_MAX_CHARS
-        ) {
-          boundedUnits.push(
-            word.slice(offset, offset + QWEN_LONG_FORM_CHUNK_MAX_CHARS),
-          );
-        }
-        current = "";
-      }
-      if (current) {
-        boundedUnits.push(current);
-      }
-      continue;
-    }
-
-    for (
-      let offset = 0;
-      offset < unit.length;
-      offset += QWEN_LONG_FORM_CHUNK_MAX_CHARS
-    ) {
-      boundedUnits.push(unit.slice(offset, offset + QWEN_LONG_FORM_CHUNK_MAX_CHARS));
-    }
-  }
-
-  return boundedUnits.length > 0 ? boundedUnits : [normalized];
-}
 
 function createAbortError(message: string): Error {
   const error = new Error(message);
@@ -360,11 +281,8 @@ export function CustomVoicePlayground({
         speaker,
         voice_description: instruct.trim() || undefined,
       };
-      const textChunks = isQwenTtsModelId(selectedModel)
-        ? splitLongFormQwenText(trimmedText)
-        : [trimmedText];
 
-      if (!streamingEnabled && textChunks.length <= 1) {
+      if (!streamingEnabled) {
         const record = await api.createTextToSpeechRecord({
           ...requestBase,
           text: trimmedText,
@@ -381,11 +299,9 @@ export function CustomVoicePlayground({
         return;
       }
 
-      if (streamingEnabled) {
-        const audioContext = new AudioContext();
-        playbackContextRef.current = audioContext;
-        nextPlaybackTimeRef.current = audioContext.currentTime + 0.05;
-      }
+      const audioContext = new AudioContext();
+      playbackContextRef.current = audioContext;
+      nextPlaybackTimeRef.current = audioContext.currentTime + 0.05;
       streamSampleRateRef.current = 24000;
       streamPcmChunksRef.current = [];
       bufferedPcmBytesRef.current = 0;
@@ -446,12 +362,10 @@ export function CustomVoicePlayground({
         }
       };
 
-      const latestChunkRecordRef = { current: null as SpeechHistoryRecord | null };
-      let totalGenerationMs = 0;
-      let totalAudioSecs = 0;
-      let totalTokens = 0;
+      const finalRecordRef = { current: null as SpeechHistoryRecord | null };
+      const finalStatsRef = { current: null as TTSGenerationStats | null };
 
-      const streamChunk = (chunkText: string): Promise<void> =>
+      const streamRequest = (): Promise<void> =>
         new Promise((resolve, reject) => {
           let settled = false;
           const resolveOnce = () => {
@@ -468,7 +382,7 @@ export function CustomVoicePlayground({
           streamAbortRef.current = api.createTextToSpeechRecordStream(
             {
               ...requestBase,
-              text: chunkText,
+              text: trimmedText,
             },
             {
               onStart: ({ sampleRate, audioFormat }) => {
@@ -498,10 +412,8 @@ export function CustomVoicePlayground({
                 if (generationSession !== generationSessionRef.current) {
                   return;
                 }
-                latestChunkRecordRef.current = record;
-                totalGenerationMs += stats.generation_time_ms;
-                totalAudioSecs += stats.audio_duration_secs;
-                totalTokens += stats.tokens_generated;
+                finalRecordRef.current = record;
+                finalStatsRef.current = stats;
               },
               onError: (errorMessage) => {
                 if (generationSession !== generationSessionRef.current) {
@@ -518,30 +430,23 @@ export function CustomVoicePlayground({
           );
         });
 
-      for (const chunkText of textChunks) {
-        if (generationSession !== generationSessionRef.current) {
-          throw createAbortError("Generation cancelled");
-        }
-        await streamChunk(chunkText);
+      if (generationSession !== generationSessionRef.current) {
+        throw createAbortError("Generation cancelled");
       }
+      await streamRequest();
 
       if (generationSession !== generationSessionRef.current) {
         throw createAbortError("Generation cancelled");
       }
 
-      if (totalTokens > 0 || totalGenerationMs > 0 || totalAudioSecs > 0) {
-        setGenerationStats({
-          generation_time_ms: totalGenerationMs,
-          audio_duration_secs: totalAudioSecs,
-          rtf: totalAudioSecs > 0 ? totalGenerationMs / 1000 / totalAudioSecs : 0,
-          tokens_generated: totalTokens,
-        });
+      if (finalStatsRef.current) {
+        setGenerationStats(finalStatsRef.current);
       }
-      const latestChunkRecord = latestChunkRecordRef.current;
-      if (latestChunkRecord) {
-        setLatestRecord(latestChunkRecord);
+      const finalRecord = finalRecordRef.current;
+      if (finalRecord) {
+        setLatestRecord(finalRecord);
       }
-      const latestChunkRecordId = latestChunkRecord?.id;
+      const finalRecordId = finalRecord?.id;
 
       if (
         !mergeSuppressedRef.current &&
@@ -554,14 +459,8 @@ export function CustomVoicePlayground({
           bufferedPcmBytesRef.current,
         );
         replaceAudioUrl(URL.createObjectURL(wavBlob));
-      } else if (latestChunkRecordId) {
-        replaceAudioUrl(api.textToSpeechRecordAudioUrl(latestChunkRecordId));
-      }
-
-      if (!streamingEnabled) {
-        setTimeout(() => {
-          audioRef.current?.play().catch(() => {});
-        }, 100);
+      } else if (finalRecordId) {
+        replaceAudioUrl(api.textToSpeechRecordAudioUrl(finalRecordId));
       }
 
       setIsStreaming(false);

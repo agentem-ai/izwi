@@ -9,5 +9,6 @@ pub mod request_context;
 mod router;
 pub mod speech_history;
 pub mod transcription;
+pub(crate) mod tts_long_form;
 
 pub use router::create_router;
