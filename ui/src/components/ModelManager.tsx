@@ -36,6 +36,19 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function getModelSizeBytes(model: ModelInfo): number {
+  if (model.size_bytes !== null && model.size_bytes > 0) {
+    return model.size_bytes;
+  }
+  const fallback = MODEL_DETAILS[model.variant]?.size;
+  return fallback ? parseSize(fallback) : 0;
+}
+
+function getModelSizeLabel(model: ModelInfo): string {
+  const bytes = getModelSizeBytes(model);
+  return bytes > 0 ? formatBytes(bytes) : "Size unknown";
+}
+
 function requiresManualDownload(variant: string): boolean {
   return variant === "Gemma-3-1b-it";
 }
@@ -420,8 +433,8 @@ export function ModelManager({
     .filter((m) => (modelFilter ? modelFilter(m.variant) : true))
     .sort((a, b) => {
       // Sort by size (smallest to largest)
-      const sizeA = parseSize(MODEL_DETAILS[a.variant]?.size || "0");
-      const sizeB = parseSize(MODEL_DETAILS[b.variant]?.size || "0");
+      const sizeA = getModelSizeBytes(a);
+      const sizeB = getModelSizeBytes(b);
       if (sizeA !== sizeB) {
         return sizeA - sizeB;
       }
@@ -559,7 +572,7 @@ export function ModelManager({
                     )}
                   </div>
                   <div className="text-xs text-gray-500 mt-0.5">
-                    {details.size}
+                    {getModelSizeLabel(model)}
                     {isDownloading && progressValue && (
                       <>
                         {" "}

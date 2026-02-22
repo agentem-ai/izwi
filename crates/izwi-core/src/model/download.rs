@@ -131,6 +131,7 @@ pub struct ModelDownloader {
     active_downloads: Arc<RwLock<std::collections::HashMap<ModelVariant, ActiveDownload>>>,
     latest_progress: Arc<RwLock<std::collections::HashMap<ModelVariant, DownloadProgress>>>,
     repo_tree_cache: Arc<RwLock<HashMap<String, HashMap<String, u64>>>>,
+    expected_size_cache: Arc<RwLock<HashMap<ModelVariant, u64>>>,
     multi_progress: MultiProgress,
     state_manager: DownloadStateManager,
 }
@@ -158,6 +159,7 @@ impl ModelDownloader {
             active_downloads: Arc::new(RwLock::new(std::collections::HashMap::new())),
             latest_progress: Arc::new(RwLock::new(std::collections::HashMap::new())),
             repo_tree_cache: Arc::new(RwLock::new(HashMap::new())),
+            expected_size_cache: Arc::new(RwLock::new(HashMap::new())),
             multi_progress,
             state_manager: DownloadStateManager::new(),
         })
@@ -594,6 +596,7 @@ impl ModelDownloader {
             active_downloads: Arc::clone(&self.active_downloads),
             latest_progress: Arc::clone(&self.latest_progress),
             repo_tree_cache: Arc::clone(&self.repo_tree_cache),
+            expected_size_cache: Arc::clone(&self.expected_size_cache),
             multi_progress: MultiProgress::new(), // Each spawned task gets its own multi-progress
             state_manager: self.state_manager.clone(),
         }
@@ -1156,6 +1159,34 @@ impl ModelDownloader {
         } else {
             None
         }
+    }
+
+    /// Resolve the expected total download size for a model variant.
+    ///
+    /// This uses the same file planning logic as the downloader itself, then caches
+    /// results so list APIs do not repeatedly hit Hugging Face.
+    pub async fn expected_size_bytes(&self, variant: ModelVariant) -> u64 {
+        if let Some(size) = self.expected_size_cache.read().await.get(&variant).copied() {
+            return size;
+        }
+
+        let resolved = match self.get_file_download_plans(variant).await {
+            Ok(plans) => plans.iter().map(|plan| plan.expected_size).sum::<u64>(),
+            Err(err) => {
+                warn!(
+                    "Falling back to built-in size estimate for {}: {}",
+                    variant, err
+                );
+                variant.estimated_size()
+            }
+        };
+
+        self.expected_size_cache
+            .write()
+            .await
+            .insert(variant, resolved);
+
+        resolved
     }
 
     /// Subscribe to progress updates for an active download
