@@ -33,9 +33,18 @@ struct HfRepoTreeEntry {
 
 #[derive(Debug, Clone)]
 struct FileDownloadPlan {
-    file: String,
+    source_repo: String,
+    source_file: String,
+    local_file: String,
     expected_size: u64,
     strict_size_check: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ModelFileSpec {
+    source_repo: String,
+    source_file: String,
+    local_file: String,
 }
 
 /// Progress update for model downloads
@@ -386,10 +395,30 @@ impl ModelDownloader {
 
         match variant.family() {
             ModelFamily::Lfm2Audio => {
-                // LFM2-Audio requires model.safetensors, config.json, and tokenizer files.
-                path.join("model.safetensors").exists()
-                    && path.join("config.json").exists()
-                    && path.join("tokenizer.json").exists()
+                if variant.is_lfm2_gguf() {
+                    match variant {
+                        ModelVariant::Lfm2Audio15BGguf => {
+                            path.join("LFM2-Audio-1.5B-Q8_0.gguf").exists()
+                                && path
+                                    .join("mmproj-audioencoder-LFM2-Audio-1.5B-Q8_0.gguf")
+                                    .exists()
+                                && path.join("audiodecoder-LFM2-Audio-1.5B-Q8_0.gguf").exists()
+                        }
+                        ModelVariant::Lfm25Audio15BGguf => {
+                            path.join("LFM2.5-Audio-1.5B-Q8_0.gguf").exists()
+                                && path.join("mmproj-LFM2.5-Audio-1.5B-Q8_0.gguf").exists()
+                                && path.join("vocoder-LFM2.5-Audio-1.5B-Q8_0.gguf").exists()
+                                && path.join("tokenizer-LFM2.5-Audio-1.5B-Q8_0.gguf").exists()
+                        }
+                        _ => false,
+                    }
+                } else {
+                    // LFM2-Audio safetensors checkpoints require model.safetensors, config.json,
+                    // and tokenizer files.
+                    path.join("model.safetensors").exists()
+                        && path.join("config.json").exists()
+                        && path.join("tokenizer.json").exists()
+                }
             }
             ModelFamily::Qwen3Asr => {
                 let has_config = path.join("config.json").exists();
@@ -425,12 +454,23 @@ impl ModelDownloader {
                 .join("diar_streaming_sortformer_4spk-v2.1.nemo")
                 .exists(),
             ModelFamily::Qwen3Chat | ModelFamily::Gemma3Chat => {
-                let has_config = path.join("config.json").exists();
-                let has_tokenizer = path.join("tokenizer.json").exists()
-                    || path.join("tokenizer.model").exists()
-                    || (path.join("vocab.json").exists() && path.join("merges.txt").exists());
-                let has_model = path.join("model.safetensors").exists() || has_sharded_model();
-                has_config && has_tokenizer && has_model
+                if variant.is_qwen_chat_gguf() {
+                    let gguf_file = match variant {
+                        ModelVariant::Qwen306BGguf => "Qwen3-0.6B-Q8_0.gguf",
+                        ModelVariant::Qwen317BGguf => "Qwen3-1.7B-Q8_0.gguf",
+                        _ => unreachable!("checked by is_qwen_chat_gguf"),
+                    };
+                    path.join(gguf_file).exists()
+                        && path.join("tokenizer.json").exists()
+                        && path.join("tokenizer_config.json").exists()
+                } else {
+                    let has_config = path.join("config.json").exists();
+                    let has_tokenizer = path.join("tokenizer.json").exists()
+                        || path.join("tokenizer.model").exists()
+                        || (path.join("vocab.json").exists() && path.join("merges.txt").exists());
+                    let has_model = path.join("model.safetensors").exists() || has_sharded_model();
+                    has_config && has_tokenizer && has_model
+                }
             }
             ModelFamily::Qwen3ForcedAligner => {
                 path.join("config.json").exists()
@@ -451,11 +491,10 @@ impl ModelDownloader {
 
     /// Download a model with multi-progress bar display
     pub async fn download(&self, variant: ModelVariant) -> Result<PathBuf> {
-        let repo_id = variant.repo_id();
         let local_dir = self.model_path(variant);
 
         tokio::fs::create_dir_all(&local_dir).await?;
-        info!("Downloading {} to {:?}", repo_id, local_dir);
+        info!("Downloading {} to {:?}", variant.repo_id(), local_dir);
 
         // Create overall progress bar
         let file_plans = self.get_file_download_plans(variant).await?;
@@ -473,7 +512,7 @@ impl ModelDownloader {
         let mut downloaded_bytes: u64 = 0;
 
         for plan in &file_plans {
-            let file = &plan.file;
+            let file = &plan.local_file;
             let dest = local_dir.join(file);
 
             // Skip if already downloaded
@@ -500,13 +539,20 @@ impl ModelDownloader {
 
             // Stream download with progress
             match self
-                .download_file_streaming(repo_id, file, &dest, Some(file_pb.clone()), None, None)
+                .download_file_streaming(
+                    &plan.source_repo,
+                    &plan.source_file,
+                    &dest,
+                    Some(file_pb.clone()),
+                    None,
+                    None,
+                )
                 .await
             {
                 Ok(bytes_downloaded) => {
                     debug!(
-                        "Downloaded: {} -> {:?} ({} bytes)",
-                        file, dest, bytes_downloaded
+                        "Downloaded: {}/{} -> {:?} ({} bytes)",
+                        plan.source_repo, plan.source_file, dest, bytes_downloaded
                     );
                     downloaded_bytes += bytes_downloaded;
                     overall_pb.set_position(downloaded_bytes);
@@ -630,12 +676,11 @@ impl ModelDownloader {
         variant: ModelVariant,
         progress_tx: broadcast::Sender<DownloadProgress>,
     ) -> Result<PathBuf> {
-        let repo_id = variant.repo_id();
         let local_dir = self.model_path(variant);
 
         tokio::fs::create_dir_all(&local_dir).await?;
 
-        info!("Downloading {} to {:?}", repo_id, local_dir);
+        info!("Downloading {} to {:?}", variant.repo_id(), local_dir);
 
         let file_plans = self.get_file_download_plans(variant).await?;
         let total_files = file_plans.len();
@@ -644,7 +689,7 @@ impl ModelDownloader {
         const MAX_FILE_DOWNLOAD_ATTEMPTS: usize = 4;
 
         for (idx, plan) in file_plans.iter().enumerate() {
-            let file = &plan.file;
+            let file = &plan.local_file;
             let file_size = plan.expected_size;
             let dest = local_dir.join(file);
 
@@ -731,8 +776,8 @@ impl ModelDownloader {
 
                 match self
                     .download_file_streaming(
-                        repo_id,
-                        file,
+                        &plan.source_repo,
+                        &plan.source_file,
                         &dest,
                         Some(file_pb.clone()),
                         Some(progress_tx.clone()),
@@ -821,21 +866,43 @@ impl ModelDownloader {
     /// Based on actual repo structure on HuggingFace
     fn get_model_files(&self, variant: ModelVariant) -> Vec<String> {
         match variant.family() {
-            ModelFamily::Lfm2Audio => vec![
-                "config.json".to_string(),
-                "model.safetensors".to_string(),
-                "tokenizer.json".to_string(),
-                "tokenizer_config.json".to_string(),
-                "special_tokens_map.json".to_string(),
-                "tokenizer-e351c8d8-checkpoint125.safetensors".to_string(),
-                "chat_template.jinja".to_string(),
-                // Present on newer checkpoints such as LFM2.5; missing files are skipped.
-                "audio_detokenizer/config.json".to_string(),
-                "audio_detokenizer/model.safetensors".to_string(),
-                "audio_detokenizer/special_tokens_map.json".to_string(),
-                "audio_detokenizer/tokenizer.json".to_string(),
-                "audio_detokenizer/tokenizer_config.json".to_string(),
-            ],
+            ModelFamily::Lfm2Audio => {
+                if variant.is_lfm2_gguf() {
+                    match variant {
+                        ModelVariant::Lfm2Audio15BGguf => vec![
+                            "LFM2-Audio-1.5B-Q8_0.gguf".to_string(),
+                            "mmproj-audioencoder-LFM2-Audio-1.5B-Q8_0.gguf".to_string(),
+                            "audiodecoder-LFM2-Audio-1.5B-Q8_0.gguf".to_string(),
+                            "leap/Q8_0.json".to_string(),
+                            "README.md".to_string(),
+                        ],
+                        ModelVariant::Lfm25Audio15BGguf => vec![
+                            "LFM2.5-Audio-1.5B-Q8_0.gguf".to_string(),
+                            "mmproj-LFM2.5-Audio-1.5B-Q8_0.gguf".to_string(),
+                            "vocoder-LFM2.5-Audio-1.5B-Q8_0.gguf".to_string(),
+                            "tokenizer-LFM2.5-Audio-1.5B-Q8_0.gguf".to_string(),
+                            "README.md".to_string(),
+                        ],
+                        _ => Vec::new(),
+                    }
+                } else {
+                    vec![
+                        "config.json".to_string(),
+                        "model.safetensors".to_string(),
+                        "tokenizer.json".to_string(),
+                        "tokenizer_config.json".to_string(),
+                        "special_tokens_map.json".to_string(),
+                        "tokenizer-e351c8d8-checkpoint125.safetensors".to_string(),
+                        "chat_template.jinja".to_string(),
+                        // Present on newer checkpoints such as LFM2.5; missing files are skipped.
+                        "audio_detokenizer/config.json".to_string(),
+                        "audio_detokenizer/model.safetensors".to_string(),
+                        "audio_detokenizer/special_tokens_map.json".to_string(),
+                        "audio_detokenizer/tokenizer.json".to_string(),
+                        "audio_detokenizer/tokenizer_config.json".to_string(),
+                    ]
+                }
+            }
             ModelFamily::Qwen3Asr => {
                 let mut files = vec![
                     "config.json".to_string(),
@@ -891,6 +958,20 @@ impl ModelDownloader {
                 "safety.md".to_string(),
             ],
             ModelFamily::Qwen3Chat | ModelFamily::Gemma3Chat => {
+                if variant.is_qwen_chat_gguf() {
+                    let gguf_file = match variant {
+                        ModelVariant::Qwen306BGguf => "Qwen3-0.6B-Q8_0.gguf",
+                        ModelVariant::Qwen317BGguf => "Qwen3-1.7B-Q8_0.gguf",
+                        _ => unreachable!("checked by is_qwen_chat_gguf"),
+                    };
+                    return vec![
+                        gguf_file.to_string(),
+                        "params".to_string(),
+                        "README.md".to_string(),
+                        "tokenizer.json".to_string(),
+                        "tokenizer_config.json".to_string(),
+                    ];
+                }
                 let mut files = vec![
                     "config.json".to_string(),
                     "generation_config.json".to_string(),
@@ -963,6 +1044,46 @@ impl ModelDownloader {
         }
     }
 
+    fn get_model_file_specs(&self, variant: ModelVariant) -> Vec<ModelFileSpec> {
+        let default_repo = variant.repo_id().to_string();
+
+        if variant.is_qwen_chat_gguf() {
+            let tokenizer_repo = match variant {
+                ModelVariant::Qwen306BGguf => "Qwen/Qwen3-0.6B",
+                ModelVariant::Qwen317BGguf => "Qwen/Qwen3-1.7B",
+                _ => variant.repo_id(),
+            };
+
+            return self
+                .get_model_files(variant)
+                .into_iter()
+                .map(|file| {
+                    let source_repo = if file == "tokenizer.json" || file == "tokenizer_config.json"
+                    {
+                        tokenizer_repo.to_string()
+                    } else {
+                        default_repo.clone()
+                    };
+
+                    ModelFileSpec {
+                        source_repo,
+                        source_file: file.clone(),
+                        local_file: file,
+                    }
+                })
+                .collect();
+        }
+
+        self.get_model_files(variant)
+            .into_iter()
+            .map(|file| ModelFileSpec {
+                source_repo: default_repo.clone(),
+                source_file: file.clone(),
+                local_file: file,
+            })
+            .collect()
+    }
+
     /// Get actual file size from HTTP HEAD request
     async fn get_actual_file_size(&self, repo_id: &str, filename: &str) -> Result<u64> {
         let url = format!("{}/{}/resolve/main/{}", HF_BASE_URL, repo_id, filename);
@@ -998,34 +1119,59 @@ impl ModelDownloader {
         &self,
         variant: ModelVariant,
     ) -> Result<Vec<FileDownloadPlan>> {
-        let files = self.get_model_files(variant);
-        let repo_id = variant.repo_id();
+        let file_specs = self.get_model_file_specs(variant);
         let local_dir = self.model_path(variant);
 
-        if let Ok(repo_tree_index) = self.get_repo_tree_index(repo_id).await {
-            let mut plans = Vec::with_capacity(files.len());
+        let mut repo_tree_indexes: HashMap<String, HashMap<String, u64>> = HashMap::new();
+        let mut repo_tree_planning_available = true;
+        for spec in &file_specs {
+            if repo_tree_indexes.contains_key(&spec.source_repo) {
+                continue;
+            }
+            match self.get_repo_tree_index(&spec.source_repo).await {
+                Ok(index) => {
+                    repo_tree_indexes.insert(spec.source_repo.clone(), index);
+                }
+                Err(err) => {
+                    warn!(
+                        "Repo tree lookup failed for {} while planning {}: {}",
+                        spec.source_repo, variant, err
+                    );
+                    repo_tree_planning_available = false;
+                    break;
+                }
+            }
+        }
+
+        if repo_tree_planning_available {
+            let mut plans = Vec::with_capacity(file_specs.len());
             let mut skipped = 0usize;
 
-            for file in &files {
-                if let Some(size) = repo_tree_index.get(file) {
+            for spec in &file_specs {
+                if let Some(size) = repo_tree_indexes
+                    .get(&spec.source_repo)
+                    .and_then(|index| index.get(&spec.source_file))
+                {
                     plans.push(FileDownloadPlan {
-                        file: file.clone(),
+                        source_repo: spec.source_repo.clone(),
+                        source_file: spec.source_file.clone(),
+                        local_file: spec.local_file.clone(),
                         expected_size: *size,
                         strict_size_check: *size > 0,
                     });
                 } else {
                     skipped += 1;
                     debug!(
-                        "Skipping unavailable file for {}: {} (not present in repo tree)",
-                        variant, file
+                        "Skipping unavailable file for {}: {}/{} (not present in repo tree)",
+                        variant, spec.source_repo, spec.source_file
                     );
                 }
             }
 
             if plans.is_empty() {
                 return Err(Error::DownloadError(format!(
-                    "No downloadable files discovered for {} in repo {}",
-                    variant, repo_id
+                    "No downloadable files discovered for {}",
+                    variant
                 )));
             }
 
@@ -1040,24 +1186,29 @@ impl ModelDownloader {
         }
 
         warn!(
-            "Falling back to per-file HEAD planning for {} because repo tree query failed",
+            "Falling back to per-file HEAD planning for {} because repo tree planning was unavailable",
             variant
         );
 
-        let mut plans = Vec::with_capacity(files.len());
-        for file in &files {
-            let dest = local_dir.join(file);
-            match self.get_actual_file_size(&repo_id, file).await {
+        let mut plans = Vec::with_capacity(file_specs.len());
+        for spec in &file_specs {
+            let dest = local_dir.join(&spec.local_file);
+            match self
+                .get_actual_file_size(&spec.source_repo, &spec.source_file)
+                .await
+            {
                 Ok(size) => plans.push(FileDownloadPlan {
-                    file: file.clone(),
+                    source_repo: spec.source_repo.clone(),
+                    source_file: spec.source_file.clone(),
+                    local_file: spec.local_file.clone(),
                     expected_size: size,
                     strict_size_check: true,
                 }),
                 Err(e) => {
                     if Self::is_not_found_hf_error(&e) {
                         debug!(
-                            "Skipping unavailable file for {}: {} (HEAD returned 404)",
-                            variant, file
+                            "Skipping unavailable file for {}: {}/{} (HEAD returned 404)",
+                            variant, spec.source_repo, spec.source_file
                         );
                         continue;
                     }
@@ -1067,13 +1218,17 @@ impl ModelDownloader {
                         tokio::fs::metadata(&dest)
                             .await
                             .map(|m| m.len())
-                            .unwrap_or_else(|_| self.get_single_file_size_estimate(variant, file))
+                            .unwrap_or_else(|_| {
+                                self.get_single_file_size_estimate(variant, &spec.local_file)
+                            })
                     } else {
-                        self.get_single_file_size_estimate(variant, file)
+                        self.get_single_file_size_estimate(variant, &spec.local_file)
                     };
 
                     plans.push(FileDownloadPlan {
-                        file: file.clone(),
+                        source_repo: spec.source_repo.clone(),
+                        source_file: spec.source_file.clone(),
+                        local_file: spec.local_file.clone(),
                         expected_size: fallback_size,
                         strict_size_check: false,
                     });
@@ -1093,7 +1248,19 @@ impl ModelDownloader {
 
     /// Get estimated size for a single file (fallback when HEAD fails)
     fn get_single_file_size_estimate(&self, variant: ModelVariant, file: &str) -> u64 {
-        if file.contains("model.safetensors") && !file.contains("index") {
+        if file.ends_with(".gguf") {
+            if file.contains("Qwen3-0.6B") {
+                1_100_000_000
+            } else if file.contains("Qwen3-1.7B") {
+                2_400_000_000
+            } else if file.contains("LFM2.5-Audio-1.5B") {
+                1_300_000_000
+            } else if file.contains("LFM2-Audio-1.5B") {
+                1_200_000_000
+            } else {
+                1_000_000_000
+            }
+        } else if file.contains("model.safetensors") && !file.contains("index") {
             if file.contains("00001") || file.contains("00002") {
                 2_000_000_000
             } else {
@@ -1111,6 +1278,10 @@ impl ModelDownloader {
                     ModelVariant::Qwen317B4Bit => 1_115_000_000,
                     ModelVariant::Qwen3ForcedAligner06B4Bit => 703_000_000,
                     ModelVariant::Lfm25Audio15B4Bit => 884_000_000,
+                    ModelVariant::Qwen306BGguf => 1_100_000_000,
+                    ModelVariant::Qwen317BGguf => 2_400_000_000,
+                    ModelVariant::Lfm2Audio15BGguf => 5_200_000_000,
+                    ModelVariant::Lfm25Audio15BGguf => 5_800_000_000,
                     ModelVariant::ParakeetTdt06BV24Bit => 2_656_300_000,
                     ModelVariant::ParakeetTdt06BV34Bit => 3_160_000_000,
                     ModelVariant::Gemma31BIt => 2_100_000_000,
@@ -1145,10 +1316,10 @@ impl ModelDownloader {
     /// Get estimated file sizes for a model variant (in bytes)
     /// These are approximate sizes based on model architecture
     fn get_file_sizes(&self, variant: ModelVariant) -> Vec<u64> {
-        let files = self.get_model_files(variant);
+        let files = self.get_model_file_specs(variant);
         files
             .iter()
-            .map(|file| self.get_single_file_size_estimate(variant, file))
+            .map(|file| self.get_single_file_size_estimate(variant, &file.local_file))
             .collect()
     }
 

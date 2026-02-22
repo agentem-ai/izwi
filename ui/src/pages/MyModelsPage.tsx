@@ -204,6 +204,22 @@ export const MODEL_DETAILS: Record<
     capabilities: ["TTS", "ASR", "Audio Chat", "4-bit"],
     size: "0.8 GB",
   },
+  "LFM2-Audio-1.5B-GGUF": {
+    shortName: "LFM2 Audio 1.5B GGUF",
+    fullName: "LFM2-Audio 1.5B (GGUF Q8_0 bundle)",
+    description: "GGUF audio bundle with model/projector/decoder files",
+    category: "tts",
+    capabilities: ["TTS", "ASR", "Audio Chat", "GGUF", "Q8_0"],
+    size: "4.8 GB",
+  },
+  "LFM2.5-Audio-1.5B-GGUF": {
+    shortName: "LFM2.5 Audio 1.5B GGUF",
+    fullName: "LFM2.5-Audio 1.5B (GGUF Q8_0 bundle)",
+    description: "GGUF audio bundle with model/mmproj/vocoder/tokenizer files",
+    category: "tts",
+    capabilities: ["TTS", "ASR", "Audio Chat", "GGUF", "Q8_0"],
+    size: "5.4 GB",
+  },
   // Text Chat
   "Qwen3-0.6B": {
     shortName: "Qwen3 Chat 0.6B",
@@ -228,6 +244,22 @@ export const MODEL_DETAILS: Record<
     category: "chat",
     capabilities: ["Text Chat", "4-bit"],
     size: "1.1 GB",
+  },
+  "Qwen3-0.6B-GGUF": {
+    shortName: "Qwen3 Chat 0.6B GGUF",
+    fullName: "Qwen3 0.6B (GGUF Q8_0)",
+    description: "Compact text-to-text model in GGUF format",
+    category: "chat",
+    capabilities: ["Text Chat", "GGUF", "Q8_0"],
+    size: "1.0 GB",
+  },
+  "Qwen3-1.7B-GGUF": {
+    shortName: "Qwen3 Chat 1.7B GGUF",
+    fullName: "Qwen3 1.7B (GGUF Q8_0)",
+    description: "Higher-quality 1.7B chat model in GGUF format",
+    category: "chat",
+    capabilities: ["Text Chat", "GGUF", "Q8_0"],
+    size: "2.2 GB",
   },
   "Gemma-3-1b-it": {
     shortName: "Gemma 3 1B",
