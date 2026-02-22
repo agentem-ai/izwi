@@ -1,5 +1,6 @@
 //! Model lifecycle management
 
+use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,6 +40,9 @@ impl ModelManager {
                 info.status = ModelStatus::Downloaded;
                 info.local_path = Some(downloader.model_path(*variant));
                 info.size_bytes = downloader.get_cached_size(*variant);
+            } else {
+                // Use built-in estimates until Hugging Face totals are resolved.
+                info.size_bytes = Some(variant.estimated_size());
             }
 
             models.insert(
@@ -58,31 +62,80 @@ impl ModelManager {
     }
 
     async fn refresh_model_states(&self) {
+        let variants: Vec<(ModelVariant, ModelStatus)> = {
+            let models = self.models.read().await;
+            models
+                .iter()
+                .map(|(variant, state)| (*variant, state.info.status))
+                .collect()
+        };
+
+        let updates = stream::iter(variants.into_iter())
+            .filter(|(_, status)| {
+                futures::future::ready(
+                    *status != ModelStatus::Ready && *status != ModelStatus::Loading,
+                )
+            })
+            .map(|(variant, _)| async move {
+                let download_state = self.downloader.state_manager().get_state(variant).await;
+                let latest_progress = if download_state == DownloadState::Downloading {
+                    self.downloader.get_latest_progress(variant).await
+                } else {
+                    None
+                };
+
+                let is_downloaded = self.downloader.is_downloaded(variant);
+                let size_bytes = if is_downloaded {
+                    self.downloader.get_cached_size(variant)
+                } else if let Some(progress) = &latest_progress {
+                    if progress.total_bytes > 0 {
+                        Some(progress.total_bytes)
+                    } else {
+                        Some(self.downloader.expected_size_bytes(variant).await)
+                    }
+                } else {
+                    Some(self.downloader.expected_size_bytes(variant).await)
+                };
+
+                (
+                    variant,
+                    download_state,
+                    latest_progress,
+                    is_downloaded,
+                    size_bytes,
+                )
+            })
+            .buffer_unordered(8)
+            .collect::<Vec<_>>()
+            .await;
+
         let mut models = self.models.write().await;
-        for (variant, state) in models.iter_mut() {
+        for (variant, download_state, latest_progress, is_downloaded, size_bytes) in updates {
+            let Some(state) = models.get_mut(&variant) else {
+                continue;
+            };
+
             if state.info.status == ModelStatus::Ready || state.info.status == ModelStatus::Loading
             {
                 continue;
             }
 
-            let download_state = self.downloader.state_manager().get_state(*variant).await;
-
             if download_state == DownloadState::Downloading {
                 state.info.status = ModelStatus::Downloading;
-                if let Some(progress) = self.downloader.get_latest_progress(*variant).await {
+                if let Some(progress) = latest_progress {
                     state.info.download_progress = Some(progress.total_percent());
                 } else if state.info.download_progress.is_none() {
                     state.info.download_progress = Some(0.0);
                 }
+                state.info.size_bytes = size_bytes.or(Some(variant.estimated_size()));
                 state.info.error_message = None;
                 continue;
             }
 
-            let is_downloaded = self.downloader.is_downloaded(*variant);
             if is_downloaded {
                 state.info.status = ModelStatus::Downloaded;
-                state.info.local_path = Some(self.downloader.model_path(*variant));
-                state.info.size_bytes = self.downloader.get_cached_size(*variant);
+                state.info.local_path = Some(self.downloader.model_path(variant));
+                state.info.size_bytes = size_bytes;
                 state.info.download_progress = Some(100.0);
                 state.info.error_message = None;
                 continue;
@@ -91,13 +144,17 @@ impl ModelManager {
             match download_state {
                 DownloadState::Error => {
                     state.info.status = ModelStatus::Error;
+                    state.info.local_path = None;
+                    state.info.size_bytes = size_bytes.or(Some(variant.estimated_size()));
+                    state.info.download_progress = None;
                     state.info.error_message = Some("Download failed".to_string());
                 }
                 DownloadState::Downloaded | DownloadState::NotDownloaded => {
                     state.info.status = ModelStatus::NotDownloaded;
                     state.info.local_path = None;
-                    state.info.size_bytes = None;
+                    state.info.size_bytes = size_bytes.or(Some(variant.estimated_size()));
                     state.info.download_progress = None;
+                    state.info.error_message = None;
                 }
                 DownloadState::Downloading => {}
             }

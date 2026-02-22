@@ -141,15 +141,15 @@ function getModelSizeLabel(
     totalBytes: number;
   } | undefined,
 ): string {
-  const knownSize = MODEL_DETAILS[model.variant]?.size;
-  if (knownSize) {
-    return knownSize;
-  }
   if (progress && progress.totalBytes > 0) {
     return formatBytes(progress.totalBytes);
   }
   if (model.size_bytes !== null) {
     return formatBytes(model.size_bytes);
+  }
+  const knownSize = MODEL_DETAILS[model.variant]?.size;
+  if (knownSize) {
+    return knownSize;
   }
   return "Size unknown";
 }

@@ -392,6 +392,19 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function getModelSizeBytes(model: ModelInfo): number {
+  if (model.size_bytes !== null && model.size_bytes > 0) {
+    return model.size_bytes;
+  }
+  const fallback = MODEL_DETAILS[model.variant]?.size;
+  return fallback ? parseSize(fallback) : 0;
+}
+
+function getModelSizeLabel(model: ModelInfo): string {
+  const bytes = getModelSizeBytes(model);
+  return bytes > 0 ? formatBytes(bytes) : "Size unknown";
+}
+
 function getStatusLabel(status: ModelInfo["status"]): string {
   switch (status) {
     case "ready":
@@ -523,8 +536,8 @@ export function MyModelsPage({
       })
       .sort((a, b) => {
         // Stable sort independent of status so cards do not jump while downloading/loading.
-        const sizeA = parseSize(MODEL_DETAILS[a.variant]?.size || "0");
-        const sizeB = parseSize(MODEL_DETAILS[b.variant]?.size || "0");
+        const sizeA = getModelSizeBytes(a);
+        const sizeB = getModelSizeBytes(b);
         if (sizeA !== sizeB) return sizeA - sizeB;
         return a.variant.localeCompare(b.variant);
       });
@@ -542,10 +555,7 @@ export function MyModelsPage({
       ).length,
       totalSize: visibleModels
         .filter((m) => m.status === "downloaded" || m.status === "ready")
-        .reduce(
-          (acc, m) => acc + parseSize(MODEL_DETAILS[m.variant]?.size || "0"),
-          0,
-        ),
+        .reduce((acc, m) => acc + getModelSizeBytes(m), 0),
     };
   }, [models]);
 
@@ -769,7 +779,7 @@ export function MyModelsPage({
                         </>
                       )}
                       <span aria-hidden>•</span>
-                      <span>{details.size}</span>
+                      <span>{getModelSizeLabel(model)}</span>
                     </div>
 
                     {isDownloading && (
