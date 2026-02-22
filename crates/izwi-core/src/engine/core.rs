@@ -11,13 +11,13 @@ use std::time::Instant;
 use tracing::{debug, info};
 
 use super::config::EngineCoreConfig;
-use super::executor::{UnifiedExecutor, WorkerConfig};
+use super::executor::{ExecutorOutput, UnifiedExecutor, WorkerConfig};
 use super::kv_cache::{KVCacheConfig, KVCacheManager, KVCacheStats};
 use super::metal_kv_cache::{MetalKVCacheConfig, MetalKVCacheManager};
 use super::output::OutputProcessor;
 use super::request::{EngineCoreRequest, RequestStatus};
 use super::scheduler::{Scheduler, SchedulerConfig};
-use super::types::{EngineOutput, LatencyBreakdown, RequestId};
+use super::types::{AudioOutput, EngineOutput, LatencyBreakdown, RequestId};
 use crate::error::{Error, Result};
 use crate::models::DeviceSelector;
 
@@ -177,6 +177,179 @@ impl EngineCore {
         }
 
         outputs
+    }
+
+    fn should_microbatch_decode(scheduled: &[super::scheduler::ScheduledRequest]) -> bool {
+        scheduled.len() > 1 && scheduled.iter().any(|entry| entry.num_tokens > 1)
+    }
+
+    fn merge_audio_output(
+        existing: Option<AudioOutput>,
+        current: Option<AudioOutput>,
+    ) -> Option<AudioOutput> {
+        match (existing, current) {
+            (None, None) => None,
+            (Some(existing), None) => Some(existing),
+            (None, Some(current)) => Some(current),
+            (Some(mut existing), Some(current)) => {
+                if existing.sample_rate != current.sample_rate {
+                    return Some(current);
+                }
+                if current.samples.is_empty() {
+                    return Some(existing);
+                }
+                if existing.samples.is_empty() {
+                    return Some(current);
+                }
+
+                let looks_cumulative = current.samples.len() >= existing.samples.len()
+                    && current
+                        .samples
+                        .iter()
+                        .zip(existing.samples.iter())
+                        .all(|(cur, prev)| cur == prev);
+
+                if looks_cumulative {
+                    Some(current)
+                } else {
+                    existing.append(&current);
+                    Some(existing)
+                }
+            }
+        }
+    }
+
+    fn merge_executor_output(
+        existing: Option<ExecutorOutput>,
+        current: ExecutorOutput,
+    ) -> ExecutorOutput {
+        let Some(mut merged) = existing else {
+            return current;
+        };
+
+        if merged.request_id != current.request_id {
+            return current;
+        }
+        if merged.finished || merged.error.is_some() {
+            return merged;
+        }
+
+        let ExecutorOutput {
+            request_id: _,
+            audio,
+            text,
+            tokens_processed,
+            tokens_generated,
+            finished,
+            error,
+        } = current;
+
+        merged.audio = Self::merge_audio_output(merged.audio.take(), audio);
+        if text.is_some() {
+            merged.text = text;
+        }
+        merged.tokens_processed = merged.tokens_processed.saturating_add(tokens_processed);
+        merged.tokens_generated = merged.tokens_generated.saturating_add(tokens_generated);
+        merged.finished |= finished;
+        if error.is_some() {
+            merged.error = error;
+        }
+
+        merged
+    }
+
+    async fn execute_decode_subbatch(
+        &self,
+        request_refs: &[&EngineCoreRequest],
+        scheduled: &[super::scheduler::ScheduledRequest],
+    ) -> Result<Vec<ExecutorOutput>> {
+        if !Self::should_microbatch_decode(scheduled) {
+            return self.executor.execute_decode(request_refs, scheduled).await;
+        }
+
+        let mut remaining_tokens: Vec<usize> = scheduled
+            .iter()
+            .map(|entry| entry.num_tokens.max(1))
+            .collect();
+        let mut merged_outputs: Vec<Option<ExecutorOutput>> = vec![None; scheduled.len()];
+
+        let request_idx_by_id: HashMap<&str, usize> = scheduled
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| (entry.request_id.as_str(), idx))
+            .collect();
+
+        while remaining_tokens.iter().any(|remaining| *remaining > 0) {
+            let mut round_indices = Vec::new();
+            let mut round_schedule = Vec::new();
+
+            for (idx, entry) in scheduled.iter().enumerate() {
+                if remaining_tokens[idx] == 0 {
+                    continue;
+                }
+                let mut single = entry.clone();
+                single.num_tokens = 1;
+                round_indices.push(idx);
+                round_schedule.push(single);
+            }
+
+            if round_schedule.is_empty() {
+                break;
+            }
+
+            let round_outputs = self
+                .executor
+                .execute_decode(request_refs, &round_schedule)
+                .await?;
+            let mut seen = vec![false; scheduled.len()];
+
+            for output in round_outputs {
+                let Some(&idx) = request_idx_by_id.get(output.request_id.as_str()) else {
+                    continue;
+                };
+                if remaining_tokens[idx] == 0 {
+                    continue;
+                }
+
+                seen[idx] = true;
+                let combined = Self::merge_executor_output(merged_outputs[idx].take(), output);
+                if combined.finished || combined.error.is_some() {
+                    remaining_tokens[idx] = 0;
+                } else {
+                    remaining_tokens[idx] = remaining_tokens[idx].saturating_sub(1);
+                }
+                merged_outputs[idx] = Some(combined);
+            }
+
+            for idx in round_indices {
+                if seen[idx] {
+                    continue;
+                }
+
+                remaining_tokens[idx] = 0;
+                let fallback = ExecutorOutput::error(
+                    scheduled[idx].request_id.clone(),
+                    "Decode micro-batch round did not return an output for a scheduled request",
+                );
+                merged_outputs[idx] = Some(Self::merge_executor_output(
+                    merged_outputs[idx].take(),
+                    fallback,
+                ));
+            }
+        }
+
+        Ok(merged_outputs
+            .into_iter()
+            .enumerate()
+            .map(|(idx, output)| {
+                output.unwrap_or_else(|| {
+                    ExecutorOutput::error(
+                        scheduled[idx].request_id.clone(),
+                        "Decode micro-batch did not produce any output",
+                    )
+                })
+            })
+            .collect())
     }
 
     /// Create a new engine core.
@@ -348,7 +521,7 @@ impl EngineCore {
                 Self::build_compatible_subbatches(&decode_request_refs, &decode_scheduled);
             let mut outputs = Vec::new();
             for (refs, batch) in sub_batches {
-                outputs.extend(self.executor.execute_decode(&refs, &batch).await?);
+                outputs.extend(self.execute_decode_subbatch(&refs, &batch).await?);
             }
             Ok::<_, Error>((outputs, started.elapsed()))
         };
@@ -583,7 +756,7 @@ impl Drop for EngineCore {
 mod tests {
     use super::super::executor::{ExecutorOutput, ModelExecutor};
     use super::super::scheduler::ScheduledRequest;
-    use super::super::types::Priority;
+    use super::super::types::{AudioOutput, Priority};
     use super::*;
     use std::sync::{Arc, Mutex};
 
@@ -654,6 +827,76 @@ mod tests {
         }
     }
 
+    struct TraceDecodeExecutor {
+        decode_calls: Arc<Mutex<Vec<Vec<(String, usize)>>>>,
+    }
+
+    impl TraceDecodeExecutor {
+        fn new(decode_calls: Arc<Mutex<Vec<Vec<(String, usize)>>>>) -> Self {
+            Self { decode_calls }
+        }
+    }
+
+    impl ModelExecutor for TraceDecodeExecutor {
+        fn execute_prefill(
+            &self,
+            _requests: &[&EngineCoreRequest],
+            scheduled: &[ScheduledRequest],
+        ) -> Result<Vec<ExecutorOutput>> {
+            Ok(scheduled
+                .iter()
+                .map(|entry| ExecutorOutput {
+                    request_id: entry.request_id.clone(),
+                    audio: Some(AudioOutput::empty(24_000)),
+                    text: None,
+                    tokens_processed: entry.num_tokens.max(1),
+                    tokens_generated: 0,
+                    finished: false,
+                    error: None,
+                })
+                .collect())
+        }
+
+        fn execute_decode(
+            &self,
+            _requests: &[&EngineCoreRequest],
+            scheduled: &[ScheduledRequest],
+        ) -> Result<Vec<ExecutorOutput>> {
+            if let Ok(mut calls) = self.decode_calls.lock() {
+                calls.push(
+                    scheduled
+                        .iter()
+                        .map(|entry| (entry.request_id.clone(), entry.num_tokens))
+                        .collect(),
+                );
+            }
+            Ok(scheduled
+                .iter()
+                .map(|entry| ExecutorOutput {
+                    request_id: entry.request_id.clone(),
+                    audio: Some(AudioOutput::empty(24_000)),
+                    text: Some(format!("step-{}", entry.request_id)),
+                    tokens_processed: entry.num_tokens.max(1),
+                    tokens_generated: entry.num_tokens.max(1),
+                    finished: false,
+                    error: None,
+                })
+                .collect())
+        }
+
+        fn is_ready(&self) -> bool {
+            true
+        }
+
+        fn initialize(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn shutdown(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_engine_core_creation() {
         let config = EngineCoreConfig::default();
@@ -716,5 +959,94 @@ mod tests {
             core.get_request_status(&"low-priority".to_string()),
             Some(RequestStatus::Running)
         );
+    }
+
+    #[test]
+    fn test_merge_executor_output_replaces_cumulative_audio_snapshots() {
+        let first = ExecutorOutput {
+            request_id: "req-a".to_string(),
+            audio: Some(AudioOutput::new(vec![0.1, 0.2], 24_000)),
+            text: Some("hello".to_string()),
+            tokens_processed: 1,
+            tokens_generated: 1,
+            finished: false,
+            error: None,
+        };
+        let second = ExecutorOutput {
+            request_id: "req-a".to_string(),
+            audio: Some(AudioOutput::new(vec![0.1, 0.2, 0.3], 24_000)),
+            text: Some("hello world".to_string()),
+            tokens_processed: 1,
+            tokens_generated: 1,
+            finished: true,
+            error: None,
+        };
+
+        let merged = EngineCore::merge_executor_output(Some(first), second);
+        let audio = merged.audio.expect("merged audio");
+        assert_eq!(audio.samples, vec![0.1, 0.2, 0.3]);
+        assert_eq!(merged.text.as_deref(), Some("hello world"));
+        assert_eq!(merged.tokens_processed, 2);
+        assert_eq!(merged.tokens_generated, 2);
+        assert!(merged.finished);
+    }
+
+    #[tokio::test]
+    async fn test_execute_decode_subbatch_round_robins_multi_token_requests() {
+        let decode_calls = Arc::new(Mutex::new(Vec::new()));
+        let executor =
+            UnifiedExecutor::new_for_test(Box::new(TraceDecodeExecutor::new(decode_calls.clone())));
+
+        let config = EngineCoreConfig::default();
+        let core = EngineCore::new_with_unified_executor(config, executor).unwrap();
+
+        let mut req_a = EngineCoreRequest::tts("a");
+        req_a.id = "req-a".to_string();
+        let mut req_b = EngineCoreRequest::tts("b");
+        req_b.id = "req-b".to_string();
+        let req_refs = vec![&req_a, &req_b];
+
+        let scheduled = vec![
+            ScheduledRequest {
+                request_id: req_a.id.clone(),
+                sequence_id: 0,
+                num_tokens: 3,
+                is_prefill: false,
+                block_ids: Vec::new(),
+                num_computed_tokens: 0,
+            },
+            ScheduledRequest {
+                request_id: req_b.id.clone(),
+                sequence_id: 1,
+                num_tokens: 2,
+                is_prefill: false,
+                block_ids: Vec::new(),
+                num_computed_tokens: 0,
+            },
+        ];
+
+        let outputs = core
+            .execute_decode_subbatch(&req_refs, &scheduled)
+            .await
+            .unwrap();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].request_id, "req-a");
+        assert_eq!(outputs[0].tokens_processed, 3);
+        assert_eq!(outputs[0].tokens_generated, 3);
+        assert_eq!(outputs[1].request_id, "req-b");
+        assert_eq!(outputs[1].tokens_processed, 2);
+        assert_eq!(outputs[1].tokens_generated, 2);
+
+        let calls = decode_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(
+            calls[0],
+            vec![("req-a".to_string(), 1), ("req-b".to_string(), 1)]
+        );
+        assert_eq!(
+            calls[1],
+            vec![("req-a".to_string(), 1), ("req-b".to_string(), 1)]
+        );
+        assert_eq!(calls[2], vec![("req-a".to_string(), 1)]);
     }
 }
