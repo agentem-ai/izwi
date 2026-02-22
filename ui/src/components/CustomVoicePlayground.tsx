@@ -38,10 +38,98 @@ interface CustomVoicePlaygroundProps {
   onModelRequired: () => void;
 }
 
-function decodePcmI16Base64(base64Data: string): Float32Array {
+const QWEN_LONG_FORM_CHUNK_MAX_CHARS = 1450;
+const MAX_BUFFERED_PCM_BYTES = 256 * 1024 * 1024;
+const ABORT_ERROR_NAME = "AbortError";
+
+function isQwenTtsModelId(modelId: string | null): boolean {
+  return modelId?.toLowerCase().startsWith("qwen3-tts") ?? false;
+}
+
+function splitLongFormQwenText(text: string): string[] {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const sentenceUnits = normalized
+    .split(/\n{2,}/)
+    .flatMap((paragraph) => {
+      const trimmed = paragraph.trim();
+      if (!trimmed) {
+        return [];
+      }
+      const matches = trimmed.match(/[^.!?。！？；;:：]+[.!?。！？；;:：]*/g);
+      return (matches ?? [trimmed]).map((piece) => piece.trim()).filter(Boolean);
+    });
+  const units = sentenceUnits.length > 0 ? sentenceUnits : [normalized];
+
+  const boundedUnits: string[] = [];
+  for (const unit of units) {
+    if (unit.length <= QWEN_LONG_FORM_CHUNK_MAX_CHARS) {
+      boundedUnits.push(unit);
+      continue;
+    }
+
+    const words = unit.split(/\s+/).filter(Boolean);
+    if (words.length > 1) {
+      let current = "";
+      for (const word of words) {
+        const sep = current ? " " : "";
+        const candidate = `${current}${sep}${word}`;
+        if (candidate.length <= QWEN_LONG_FORM_CHUNK_MAX_CHARS) {
+          current = candidate;
+          continue;
+        }
+
+        if (current) {
+          boundedUnits.push(current);
+        }
+
+        if (word.length <= QWEN_LONG_FORM_CHUNK_MAX_CHARS) {
+          current = word;
+          continue;
+        }
+
+        for (
+          let offset = 0;
+          offset < word.length;
+          offset += QWEN_LONG_FORM_CHUNK_MAX_CHARS
+        ) {
+          boundedUnits.push(
+            word.slice(offset, offset + QWEN_LONG_FORM_CHUNK_MAX_CHARS),
+          );
+        }
+        current = "";
+      }
+      if (current) {
+        boundedUnits.push(current);
+      }
+      continue;
+    }
+
+    for (
+      let offset = 0;
+      offset < unit.length;
+      offset += QWEN_LONG_FORM_CHUNK_MAX_CHARS
+    ) {
+      boundedUnits.push(unit.slice(offset, offset + QWEN_LONG_FORM_CHUNK_MAX_CHARS));
+    }
+  }
+
+  return boundedUnits.length > 0 ? boundedUnits : [normalized];
+}
+
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = ABORT_ERROR_NAME;
+  return error;
+}
+
+function decodePcmI16Base64(base64Data: string): Int16Array {
   const binary = atob(base64Data);
   const sampleCount = Math.floor(binary.length / 2);
-  const out = new Float32Array(sampleCount);
+  const out = new Int16Array(sampleCount);
 
   for (let i = 0; i < sampleCount; i += 1) {
     const lo = binary.charCodeAt(i * 2);
@@ -50,27 +138,25 @@ function decodePcmI16Base64(base64Data: string): Float32Array {
     if (value & 0x8000) {
       value -= 0x10000;
     }
-    out[i] = value / 0x8000;
+    out[i] = value;
   }
 
   return out;
 }
 
-function mergeSampleChunks(chunks: Float32Array[]): Float32Array {
-  const totalSamples = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-  const merged = new Float32Array(totalSamples);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
+function pcmI16ToFloat32(samples: Int16Array): Float32Array<ArrayBuffer> {
+  const floatSamples = new Float32Array(
+    samples.length,
+  ) as Float32Array<ArrayBuffer>;
+  for (let i = 0; i < samples.length; i += 1) {
+    floatSamples[i] = samples[i] / 0x8000;
   }
-  return merged;
+  return floatSamples;
 }
 
-function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
+function wavHeader(sampleRate: number, dataSize: number): Uint8Array {
   const bytesPerSample = 2;
-  const dataSize = samples.length * bytesPerSample;
-  const buffer = new ArrayBuffer(44 + dataSize);
+  const buffer = new ArrayBuffer(44);
   const view = new DataView(buffer);
 
   const writeString = (offset: number, value: string) => {
@@ -93,15 +179,28 @@ function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
   writeString(36, "data");
   view.setUint32(40, dataSize, true);
 
-  let offset = 44;
-  for (let i = 0; i < samples.length; i += 1) {
-    const clamped = Math.max(-1, Math.min(1, samples[i]));
-    const int16 = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
-    view.setInt16(offset, int16, true);
-    offset += 2;
+  return new Uint8Array(buffer, 0, 44);
+}
+
+function copyToArrayBuffer(view: Uint8Array): ArrayBuffer {
+  const copied = new Uint8Array(view.byteLength);
+  copied.set(view);
+  return copied.buffer;
+}
+
+function encodeWavPcm16Chunks(
+  sampleRate: number,
+  pcmChunks: Uint8Array[],
+  totalPcmBytes: number,
+): Blob {
+  const parts: BlobPart[] = [copyToArrayBuffer(wavHeader(sampleRate, totalPcmBytes))];
+  for (const chunk of pcmChunks) {
+    parts.push(copyToArrayBuffer(chunk));
   }
 
-  return new Blob([buffer], { type: "audio/wav" });
+  return new Blob(parts, {
+    type: "audio/wav",
+  });
 }
 
 function revokeObjectUrlIfNeeded(url: string | null): void {
@@ -151,7 +250,10 @@ export function CustomVoicePlayground({
   const playbackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const nextPlaybackTimeRef = useRef(0);
   const streamSampleRateRef = useRef(24000);
-  const streamSamplesRef = useRef<Float32Array[]>([]);
+  const streamPcmChunksRef = useRef<Uint8Array[]>([]);
+  const bufferedPcmBytesRef = useRef(0);
+  const mergeSuppressedRef = useRef(false);
+  const generationSessionRef = useRef(0);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const isLfm2Model = selectedModel ? isLfmAudioVariant(selectedModel) : false;
   const availableSpeakers = useMemo(
@@ -196,6 +298,7 @@ export function CustomVoicePlayground({
   }, []);
 
   const stopStreamingSession = useCallback(() => {
+    generationSessionRef.current += 1;
     if (streamAbortRef.current) {
       streamAbortRef.current.abort();
       streamAbortRef.current = null;
@@ -216,7 +319,9 @@ export function CustomVoicePlayground({
     }
 
     nextPlaybackTimeRef.current = 0;
-    streamSamplesRef.current = [];
+    streamPcmChunksRef.current = [];
+    bufferedPcmBytesRef.current = 0;
+    mergeSuppressedRef.current = false;
   }, []);
 
   useEffect(() => {
@@ -238,6 +343,8 @@ export function CustomVoicePlayground({
       return;
     }
 
+    const trimmedText = text.trim();
+
     try {
       setGenerating(true);
       setIsStreaming(false);
@@ -245,17 +352,23 @@ export function CustomVoicePlayground({
       setGenerationStats(null);
       stopStreamingSession();
       replaceAudioUrl(null);
+      const generationSession = generationSessionRef.current;
 
-      const request = {
-        text: text.trim(),
+      const requestBase = {
         model_id: selectedModel,
         max_tokens: 0,
         speaker,
         voice_description: instruct.trim() || undefined,
       };
+      const textChunks = isQwenTtsModelId(selectedModel)
+        ? splitLongFormQwenText(trimmedText)
+        : [trimmedText];
 
-      if (!streamingEnabled) {
-        const record = await api.createTextToSpeechRecord(request);
+      if (!streamingEnabled && textChunks.length <= 1) {
+        const record = await api.createTextToSpeechRecord({
+          ...requestBase,
+          text: trimmedText,
+        });
         replaceAudioUrl(api.textToSpeechRecordAudioUrl(record.id));
         setGenerationStats(mapRecordToStats(record));
         setLatestRecord(record);
@@ -268,87 +381,197 @@ export function CustomVoicePlayground({
         return;
       }
 
-      const audioContext = new AudioContext();
-      playbackContextRef.current = audioContext;
-      nextPlaybackTimeRef.current = audioContext.currentTime + 0.05;
+      if (streamingEnabled) {
+        const audioContext = new AudioContext();
+        playbackContextRef.current = audioContext;
+        nextPlaybackTimeRef.current = audioContext.currentTime + 0.05;
+      }
       streamSampleRateRef.current = 24000;
-      streamSamplesRef.current = [];
-      setIsStreaming(true);
+      streamPcmChunksRef.current = [];
+      bufferedPcmBytesRef.current = 0;
+      mergeSuppressedRef.current = false;
+      setIsStreaming(streamingEnabled);
 
-      let finalRecord: SpeechHistoryRecord | null = null;
-      streamAbortRef.current = api.createTextToSpeechRecordStream(request, {
-        onStart: ({ sampleRate, audioFormat }) => {
-          streamSampleRateRef.current = sampleRate;
-          if (audioFormat !== "pcm_i16") {
-            setError(
-              `Unsupported streamed audio format '${audioFormat}'. Expected pcm_i16.`,
-            );
-          }
-        },
-        onChunk: ({ audioBase64 }) => {
-          const context = playbackContextRef.current;
-          if (!context) return;
+      const appendPcmChunk = (pcmSamples: Int16Array) => {
+        if (mergeSuppressedRef.current) {
+          return;
+        }
+        const pcmBytes = new Uint8Array(pcmSamples.buffer);
+        const nextTotal = bufferedPcmBytesRef.current + pcmBytes.byteLength;
+        if (nextTotal > MAX_BUFFERED_PCM_BYTES) {
+          mergeSuppressedRef.current = true;
+          streamPcmChunksRef.current = [];
+          bufferedPcmBytesRef.current = 0;
+          return;
+        }
+        streamPcmChunksRef.current.push(pcmBytes);
+        bufferedPcmBytesRef.current = nextTotal;
+      };
 
-          const samples = decodePcmI16Base64(audioBase64);
-          if (samples.length === 0) return;
-          streamSamplesRef.current.push(samples);
+      const schedulePlayback = (pcmSamples: Int16Array) => {
+        if (!streamingEnabled) {
+          return;
+        }
+        const context = playbackContextRef.current;
+        if (!context) {
+          return;
+        }
 
-          const buffer = context.createBuffer(
-            1,
-            samples.length,
-            streamSampleRateRef.current,
-          );
-          const chunkForPlayback = new Float32Array(samples.length);
-          chunkForPlayback.set(samples);
-          buffer.copyToChannel(chunkForPlayback, 0);
+        const floatSamples = pcmI16ToFloat32(pcmSamples);
+        const buffer = context.createBuffer(
+          1,
+          floatSamples.length,
+          streamSampleRateRef.current,
+        );
+        buffer.copyToChannel(floatSamples, 0);
 
-          const source = context.createBufferSource();
-          source.buffer = buffer;
-          source.connect(context.destination);
+        const source = context.createBufferSource();
+        source.buffer = buffer;
+        source.connect(context.destination);
 
-          const scheduledAt = Math.max(
-            context.currentTime + 0.02,
-            nextPlaybackTimeRef.current,
-          );
-          source.start(scheduledAt);
-          nextPlaybackTimeRef.current = scheduledAt + buffer.duration;
+        const scheduledAt = Math.max(
+          context.currentTime + 0.02,
+          nextPlaybackTimeRef.current,
+        );
+        source.start(scheduledAt);
+        nextPlaybackTimeRef.current = scheduledAt + buffer.duration;
 
-          playbackSourcesRef.current.add(source);
-          source.onended = () => {
-            playbackSourcesRef.current.delete(source);
+        playbackSourcesRef.current.add(source);
+        source.onended = () => {
+          playbackSourcesRef.current.delete(source);
+        };
+
+        if (context.state === "suspended") {
+          context.resume().catch(() => {});
+        }
+      };
+
+      const latestChunkRecordRef = { current: null as SpeechHistoryRecord | null };
+      let totalGenerationMs = 0;
+      let totalAudioSecs = 0;
+      let totalTokens = 0;
+
+      const streamChunk = (chunkText: string): Promise<void> =>
+        new Promise((resolve, reject) => {
+          let settled = false;
+          const resolveOnce = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          };
+          const rejectOnce = (error: Error) => {
+            if (settled) return;
+            settled = true;
+            reject(error);
           };
 
-          if (context.state === "suspended") {
-            context.resume().catch(() => {});
-          }
-        },
-        onFinal: ({ record, stats }) => {
-          finalRecord = record;
-          setGenerationStats(stats);
-          setLatestRecord(record);
-        },
-        onError: (errorMessage) => {
-          setError(errorMessage);
-        },
-        onDone: () => {
-          streamAbortRef.current = null;
-          setIsStreaming(false);
-          setGenerating(false);
+          streamAbortRef.current = api.createTextToSpeechRecordStream(
+            {
+              ...requestBase,
+              text: chunkText,
+            },
+            {
+              onStart: ({ sampleRate, audioFormat }) => {
+                if (generationSession !== generationSessionRef.current) {
+                  return;
+                }
+                streamSampleRateRef.current = sampleRate;
+                if (audioFormat !== "pcm_i16") {
+                  const message = `Unsupported streamed audio format '${audioFormat}'. Expected pcm_i16.`;
+                  setError(message);
+                  streamAbortRef.current?.abort();
+                  rejectOnce(new Error(message));
+                }
+              },
+              onChunk: ({ audioBase64 }) => {
+                if (generationSession !== generationSessionRef.current) {
+                  return;
+                }
+                const pcmSamples = decodePcmI16Base64(audioBase64);
+                if (pcmSamples.length === 0) {
+                  return;
+                }
+                appendPcmChunk(pcmSamples);
+                schedulePlayback(pcmSamples);
+              },
+              onFinal: ({ record, stats }) => {
+                if (generationSession !== generationSessionRef.current) {
+                  return;
+                }
+                latestChunkRecordRef.current = record;
+                totalGenerationMs += stats.generation_time_ms;
+                totalAudioSecs += stats.audio_duration_secs;
+                totalTokens += stats.tokens_generated;
+              },
+              onError: (errorMessage) => {
+                if (generationSession !== generationSessionRef.current) {
+                  return;
+                }
+                setError(errorMessage);
+                rejectOnce(new Error(errorMessage));
+              },
+              onDone: () => {
+                streamAbortRef.current = null;
+                resolveOnce();
+              },
+            },
+          );
+        });
 
-          if (finalRecord) {
-            replaceAudioUrl(api.textToSpeechRecordAudioUrl(finalRecord.id));
-            return;
-          }
+      for (const chunkText of textChunks) {
+        if (generationSession !== generationSessionRef.current) {
+          throw createAbortError("Generation cancelled");
+        }
+        await streamChunk(chunkText);
+      }
 
-          const merged = mergeSampleChunks(streamSamplesRef.current);
-          if (merged.length > 0) {
-            const wavBlob = encodeWavPcm16(merged, streamSampleRateRef.current);
-            const url = URL.createObjectURL(wavBlob);
-            replaceAudioUrl(url);
-          }
-        },
-      });
+      if (generationSession !== generationSessionRef.current) {
+        throw createAbortError("Generation cancelled");
+      }
+
+      if (totalTokens > 0 || totalGenerationMs > 0 || totalAudioSecs > 0) {
+        setGenerationStats({
+          generation_time_ms: totalGenerationMs,
+          audio_duration_secs: totalAudioSecs,
+          rtf: totalAudioSecs > 0 ? totalGenerationMs / 1000 / totalAudioSecs : 0,
+          tokens_generated: totalTokens,
+        });
+      }
+      const latestChunkRecord = latestChunkRecordRef.current;
+      if (latestChunkRecord) {
+        setLatestRecord(latestChunkRecord);
+      }
+      const latestChunkRecordId = latestChunkRecord?.id;
+
+      if (
+        !mergeSuppressedRef.current &&
+        bufferedPcmBytesRef.current > 0 &&
+        streamPcmChunksRef.current.length > 0
+      ) {
+        const wavBlob = encodeWavPcm16Chunks(
+          streamSampleRateRef.current,
+          streamPcmChunksRef.current,
+          bufferedPcmBytesRef.current,
+        );
+        replaceAudioUrl(URL.createObjectURL(wavBlob));
+      } else if (latestChunkRecordId) {
+        replaceAudioUrl(api.textToSpeechRecordAudioUrl(latestChunkRecordId));
+      }
+
+      if (!streamingEnabled) {
+        setTimeout(() => {
+          audioRef.current?.play().catch(() => {});
+        }, 100);
+      }
+
+      setIsStreaming(false);
+      setGenerating(false);
     } catch (err) {
+      if ((err as Error).name === ABORT_ERROR_NAME) {
+        setGenerating(false);
+        setIsStreaming(false);
+        return;
+      }
       setError(err instanceof Error ? err.message : "Generation failed");
       setGenerating(false);
       setIsStreaming(false);
