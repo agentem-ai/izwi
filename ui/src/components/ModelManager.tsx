@@ -245,22 +245,6 @@ const MODEL_DETAILS: Record<
     size: "0.8 GB",
     quantization: "4-bit",
   },
-  "LFM2-Audio-1.5B-GGUF": {
-    shortName: "LFM2 1.5B GGUF",
-    fullName: "LFM2-Audio 1.5B (GGUF Q8_0 bundle)",
-    description: "GGUF audio bundle from LiquidAI (Q8_0 + projector + decoder)",
-    features: ["GGUF", "Q8_0", "Audio bundle"],
-    size: "4.8 GB",
-    quantization: "Q8_0",
-  },
-  "LFM2.5-Audio-1.5B-GGUF": {
-    shortName: "LFM2.5 1.5B GGUF",
-    fullName: "LFM2.5-Audio 1.5B (GGUF Q8_0 bundle)",
-    description: "GGUF audio bundle from LiquidAI (Q8_0 + mmproj + vocoder)",
-    features: ["GGUF", "Q8_0", "Audio bundle"],
-    size: "5.4 GB",
-    quantization: "Q8_0",
-  },
   "Qwen3-0.6B": {
     shortName: "Qwen3 Chat 0.6B",
     fullName: "Qwen3 0.6B",

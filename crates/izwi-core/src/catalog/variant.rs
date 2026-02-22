@@ -96,8 +96,7 @@ impl ModelVariant {
             | Qwen3Tts12Hz17BVoiceDesign8Bit
             | Qwen3Tts12Hz17BVoiceDesignBf16 => ModelFamily::Qwen3Tts,
             Qwen3TtsTokenizer12Hz => ModelFamily::Tokenizer,
-            Lfm2Audio15B | Lfm25Audio15B | Lfm25Audio15B4Bit | Lfm2Audio15BGguf
-            | Lfm25Audio15BGguf => ModelFamily::Lfm2Audio,
+            Lfm2Audio15B | Lfm25Audio15B | Lfm25Audio15B4Bit => ModelFamily::Lfm2Audio,
             Qwen3Asr06B | Qwen3Asr06B4Bit | Qwen3Asr06B8Bit | Qwen3Asr06BBf16 | Qwen3Asr17B
             | Qwen3Asr17B4Bit | Qwen3Asr17B8Bit | Qwen3Asr17BBf16 => ModelFamily::Qwen3Asr,
             ParakeetTdt06BV2 | ParakeetTdt06BV3 | ParakeetTdt06BV24Bit | ParakeetTdt06BV34Bit => {
@@ -405,18 +404,18 @@ fn resolve_lfm2_audio_variant(normalized: &str) -> Option<ModelVariant> {
     }
 
     if normalized.contains("lfm25") || normalized.contains("lfm2dot5") {
-        if normalized.contains("gguf") {
-            return Some(Lfm25Audio15BGguf);
-        }
         if normalized.contains("4bit") || normalized.contains("int4") {
             return Some(Lfm25Audio15B4Bit);
+        }
+        if normalized.contains("gguf") {
+            return None;
         }
         return Some(Lfm25Audio15B);
     }
 
     if normalized.contains("lfm2") {
         if normalized.contains("gguf") {
-            return Some(Lfm2Audio15BGguf);
+            return None;
         }
         return Some(Lfm2Audio15B);
     }
@@ -590,15 +589,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_lfm2_audio_gguf() {
-        let parsed = parse_tts_model_variant("LFM2-Audio-1.5B-GGUF").unwrap();
-        assert_eq!(parsed, ModelVariant::Lfm2Audio15BGguf);
+    fn parse_lfm2_audio_gguf_is_rejected() {
+        assert!(parse_tts_model_variant("LFM2-Audio-1.5B-GGUF").is_err());
     }
 
     #[test]
-    fn parse_lfm25_audio_gguf() {
-        let parsed = parse_tts_model_variant("LiquidAI/LFM2.5-Audio-1.5B-GGUF").unwrap();
-        assert_eq!(parsed, ModelVariant::Lfm25Audio15BGguf);
+    fn parse_lfm25_audio_gguf_is_rejected() {
+        assert!(parse_tts_model_variant("LiquidAI/LFM2.5-Audio-1.5B-GGUF").is_err());
     }
 
     #[test]
