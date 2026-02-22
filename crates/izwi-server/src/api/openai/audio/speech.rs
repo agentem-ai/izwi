@@ -121,35 +121,7 @@ pub async fn speech(
     let format = parse_response_format(req.response_format.as_deref().unwrap_or("wav"))?;
 
     let result = tokio::time::timeout(timeout, async {
-        let mut gen_config = GenerationConfig {
-            streaming: false,
-            ..GenerationConfig::default()
-        };
-        if let Some(temp) = req.temperature {
-            gen_config.options.temperature = temp;
-        }
-        if let Some(speed) = req.speed {
-            gen_config.options.speed = speed;
-        }
-        if let Some(max_tokens) = req.max_output_tokens.or(req.max_tokens) {
-            gen_config.options.max_tokens = max_tokens;
-        }
-        if let Some(top_k) = req.top_k {
-            gen_config.options.top_k = top_k;
-        }
-        gen_config.options.speaker = req.voice.clone();
-
-        let gen_request = GenerationRequest {
-            id: uuid::Uuid::new_v4().to_string(),
-            correlation_id: Some(ctx.correlation_id.clone()),
-            text: req.input.clone(),
-            config: gen_config,
-            language: req.language.clone(),
-            reference_audio: req.reference_audio.clone(),
-            reference_text: req.reference_text.clone(),
-            voice_description: req.instructions.clone(),
-        };
-
+        let gen_request = build_generation_request(&req, ctx.correlation_id, false);
         state.runtime.generate(gen_request).await
     })
     .await
@@ -234,36 +206,7 @@ async fn stream_speech(
     correlation_id: String,
 ) -> Result<Response<Body>, ApiError> {
     let format = parse_response_format(req.response_format.as_deref().unwrap_or("pcm"))?;
-
-    let mut gen_config = GenerationConfig {
-        streaming: true,
-        ..GenerationConfig::default()
-    };
-    if let Some(temp) = req.temperature {
-        gen_config.options.temperature = temp;
-    }
-    if let Some(speed) = req.speed {
-        gen_config.options.speed = speed;
-    }
-    if let Some(max_tokens) = req.max_output_tokens.or(req.max_tokens) {
-        gen_config.options.max_tokens = max_tokens;
-    }
-    if let Some(top_k) = req.top_k {
-        gen_config.options.top_k = top_k;
-    }
-    gen_config.options.speaker = req.voice.clone();
-
-    let gen_request = GenerationRequest {
-        id: uuid::Uuid::new_v4().to_string(),
-        correlation_id: Some(correlation_id),
-        text: req.input.clone(),
-        config: gen_config,
-        language: req.language.clone(),
-        reference_audio: req.reference_audio.clone(),
-        reference_text: req.reference_text.clone(),
-        voice_description: req.instructions.clone(),
-    };
-
+    let gen_request = build_generation_request(&req, correlation_id, true);
     let stream_request_id = gen_request.id.clone();
     let stream_audio_format = stream_audio_format_label(format);
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<String>();
@@ -340,7 +283,6 @@ async fn stream_speech(
         let mut total_samples = 0usize;
         let stream_started = Instant::now();
         let encoder = izwi_core::audio::AudioEncoder::new(sample_rate, 1);
-
         while let Some(chunk) = chunk_rx.recv().await {
             if chunk.samples.is_empty() {
                 continue;
@@ -485,6 +427,41 @@ async fn stream_speech(
         .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from_stream(stream))
         .unwrap())
+}
+
+fn build_generation_request(
+    req: &SpeechRequest,
+    correlation_id: String,
+    streaming: bool,
+) -> GenerationRequest {
+    let mut gen_config = GenerationConfig {
+        streaming,
+        ..GenerationConfig::default()
+    };
+    if let Some(temp) = req.temperature {
+        gen_config.options.temperature = temp;
+    }
+    if let Some(speed) = req.speed {
+        gen_config.options.speed = speed;
+    }
+    if let Some(max_tokens) = req.max_output_tokens.or(req.max_tokens) {
+        gen_config.options.max_tokens = max_tokens;
+    }
+    if let Some(top_k) = req.top_k {
+        gen_config.options.top_k = top_k;
+    }
+    gen_config.options.speaker = req.voice.clone();
+
+    GenerationRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        correlation_id: Some(correlation_id),
+        text: req.input.clone(),
+        config: gen_config,
+        language: req.language.clone(),
+        reference_audio: req.reference_audio.clone(),
+        reference_text: req.reference_text.clone(),
+        voice_description: req.instructions.clone(),
+    }
 }
 
 fn parse_response_format(format: &str) -> Result<AudioFormat, ApiError> {
