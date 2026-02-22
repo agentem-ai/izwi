@@ -35,11 +35,17 @@ function getChatModelName(variant: string): string {
   if (variant === "Qwen3-0.6B-4bit") {
     return withQwen3Prefix("Chat 0.6B 4-bit", variant);
   }
+  if (variant === "Qwen3-0.6B-GGUF") {
+    return withQwen3Prefix("Chat 0.6B GGUF", variant);
+  }
   if (variant === "Qwen3-1.7B") {
     return withQwen3Prefix("Chat 1.7B", variant);
   }
   if (variant === "Qwen3-1.7B-4bit") {
     return withQwen3Prefix("Chat 1.7B 4-bit", variant);
+  }
+  if (variant === "Qwen3-1.7B-GGUF") {
+    return withQwen3Prefix("Chat 1.7B GGUF", variant);
   }
   if (variant === "Gemma-3-1b-it") {
     return "Gemma 3 1B Instruct";

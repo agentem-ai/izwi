@@ -96,14 +96,17 @@ impl ModelVariant {
             | Qwen3Tts12Hz17BVoiceDesign8Bit
             | Qwen3Tts12Hz17BVoiceDesignBf16 => ModelFamily::Qwen3Tts,
             Qwen3TtsTokenizer12Hz => ModelFamily::Tokenizer,
-            Lfm2Audio15B | Lfm25Audio15B | Lfm25Audio15B4Bit => ModelFamily::Lfm2Audio,
+            Lfm2Audio15B | Lfm25Audio15B | Lfm25Audio15B4Bit | Lfm2Audio15BGguf
+            | Lfm25Audio15BGguf => ModelFamily::Lfm2Audio,
             Qwen3Asr06B | Qwen3Asr06B4Bit | Qwen3Asr06B8Bit | Qwen3Asr06BBf16 | Qwen3Asr17B
             | Qwen3Asr17B4Bit | Qwen3Asr17B8Bit | Qwen3Asr17BBf16 => ModelFamily::Qwen3Asr,
             ParakeetTdt06BV2 | ParakeetTdt06BV3 | ParakeetTdt06BV24Bit | ParakeetTdt06BV34Bit => {
                 ModelFamily::ParakeetAsr
             }
             DiarStreamingSortformer4SpkV21 => ModelFamily::SortformerDiarization,
-            Qwen306B | Qwen306B4Bit | Qwen317B | Qwen317B4Bit => ModelFamily::Qwen3Chat,
+            Qwen306B | Qwen306B4Bit | Qwen306BGguf | Qwen317B | Qwen317B4Bit | Qwen317BGguf => {
+                ModelFamily::Qwen3Chat
+            }
             Gemma31BIt | Gemma34BIt => ModelFamily::Gemma3Chat,
             Qwen3ForcedAligner06B | Qwen3ForcedAligner06B4Bit => ModelFamily::Qwen3ForcedAligner,
             VoxtralMini4BRealtime2602 => ModelFamily::Voxtral,
@@ -353,13 +356,27 @@ fn resolve_by_heuristic(normalized: &str) -> Option<ModelVariant> {
     if normalized.contains("qwen3") && !normalized.contains("asr") && !normalized.contains("tts") {
         let is_17b = normalized.contains("17b") || normalized.contains("17");
         let q4 = normalized.contains("4bit") || normalized.contains("int4");
+        let gguf =
+            normalized.contains("gguf") || normalized.contains("q80") || normalized.contains("q8");
 
         if is_17b {
-            return Some(if q4 { Qwen317B4Bit } else { Qwen317B });
+            return Some(if q4 {
+                Qwen317B4Bit
+            } else if gguf {
+                Qwen317BGguf
+            } else {
+                Qwen317B
+            });
         }
         if normalized.contains("06b") || normalized.contains("0dot6b") || normalized.contains("06")
         {
-            return Some(if q4 { Qwen306B4Bit } else { Qwen306B });
+            return Some(if q4 {
+                Qwen306B4Bit
+            } else if gguf {
+                Qwen306BGguf
+            } else {
+                Qwen306B
+            });
         }
     }
 
@@ -388,6 +405,9 @@ fn resolve_lfm2_audio_variant(normalized: &str) -> Option<ModelVariant> {
     }
 
     if normalized.contains("lfm25") || normalized.contains("lfm2dot5") {
+        if normalized.contains("gguf") {
+            return Some(Lfm25Audio15BGguf);
+        }
         if normalized.contains("4bit") || normalized.contains("int4") {
             return Some(Lfm25Audio15B4Bit);
         }
@@ -395,6 +415,9 @@ fn resolve_lfm2_audio_variant(normalized: &str) -> Option<ModelVariant> {
     }
 
     if normalized.contains("lfm2") {
+        if normalized.contains("gguf") {
+            return Some(Lfm2Audio15BGguf);
+        }
         return Some(Lfm2Audio15B);
     }
 
@@ -552,6 +575,30 @@ mod tests {
     fn parse_qwen_chat_06b_4bit() {
         let parsed = parse_chat_model_variant(Some("Qwen3-0.6B-4bit")).unwrap();
         assert_eq!(parsed, ModelVariant::Qwen306B4Bit);
+    }
+
+    #[test]
+    fn parse_qwen_chat_06b_gguf() {
+        let parsed = parse_chat_model_variant(Some("Qwen3-0.6B-GGUF")).unwrap();
+        assert_eq!(parsed, ModelVariant::Qwen306BGguf);
+    }
+
+    #[test]
+    fn parse_qwen_chat_17b_gguf_repo() {
+        let parsed = parse_chat_model_variant(Some("Qwen/Qwen3-1.7B-GGUF")).unwrap();
+        assert_eq!(parsed, ModelVariant::Qwen317BGguf);
+    }
+
+    #[test]
+    fn parse_lfm2_audio_gguf() {
+        let parsed = parse_tts_model_variant("LFM2-Audio-1.5B-GGUF").unwrap();
+        assert_eq!(parsed, ModelVariant::Lfm2Audio15BGguf);
+    }
+
+    #[test]
+    fn parse_lfm25_audio_gguf() {
+        let parsed = parse_tts_model_variant("LiquidAI/LFM2.5-Audio-1.5B-GGUF").unwrap();
+        assert_eq!(parsed, ModelVariant::Lfm25Audio15BGguf);
     }
 
     #[test]

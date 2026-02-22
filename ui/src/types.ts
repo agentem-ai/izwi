@@ -77,13 +77,15 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
     modelFilter: (variant) =>
       variant === "Qwen3-0.6B" ||
       variant === "Qwen3-0.6B-4bit" ||
+      variant === "Qwen3-0.6B-GGUF" ||
       variant === "Qwen3-1.7B" ||
       variant === "Qwen3-1.7B-4bit" ||
+      variant === "Qwen3-1.7B-GGUF" ||
       variant === "Gemma-3-1b-it" ||
       variant === "Gemma-3-4b-it",
     emptyStateTitle: "No Chat Model Loaded",
     emptyStateDescription:
-      "Load Qwen3-0.6B, Qwen3-0.6B-4bit, Qwen3-1.7B-4bit, Qwen3-1.7B, or Gemma-3-1b-it to start chatting",
+      "Load a Qwen3 or Gemma chat model (including GGUF variants) to start chatting",
   },
 };
 

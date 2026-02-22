@@ -2,15 +2,20 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::BufReader;
 use std::path::Path;
+use std::sync::Mutex;
 
+use candle_core::quantized::gguf_file;
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
+use candle_transformers::models::quantized_qwen3::ModelWeights as QuantizedQwen3Model;
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::info;
 
 use crate::error::{Error, Result};
+use crate::model::ModelVariant;
 use crate::models::architectures::qwen3::core::{Qwen3Cache, Qwen3Config, Qwen3Model};
 use crate::models::shared::chat::{ChatMessage, ChatRole};
 use crate::models::shared::device::DeviceProfile;
@@ -68,8 +73,8 @@ struct ChatTokenizer {
 }
 
 impl ChatTokenizer {
-    fn load(model_dir: &Path, expected_vocab_size: usize) -> Result<Self> {
-        let inner = Tokenizer::from_path_with_expected_vocab(model_dir, Some(expected_vocab_size))?;
+    fn load(model_dir: &Path, expected_vocab_size: Option<usize>) -> Result<Self> {
+        let inner = Tokenizer::from_path_with_expected_vocab(model_dir, expected_vocab_size)?;
         let vocab_size = inner.vocab_size();
 
         let config_path = model_dir.join("tokenizer_config.json");
@@ -123,19 +128,36 @@ impl ChatTokenizer {
     }
 }
 
+enum Qwen3ChatBackend {
+    Native {
+        text_model: Qwen3Model,
+    },
+    Gguf {
+        text_model: Mutex<QuantizedQwen3Model>,
+        gguf_file: String,
+    },
+}
+
 pub struct Qwen3ChatModel {
     device: DeviceProfile,
     tokenizer: ChatTokenizer,
-    text_model: Qwen3Model,
+    backend: Qwen3ChatBackend,
 }
 
 impl Qwen3ChatModel {
-    pub fn load(model_dir: &Path, device: DeviceProfile) -> Result<Self> {
+    pub fn load(model_dir: &Path, variant: ModelVariant, device: DeviceProfile) -> Result<Self> {
+        if variant.is_qwen_chat_gguf() {
+            return Self::load_gguf(model_dir, variant, device);
+        }
+        Self::load_safetensors(model_dir, device)
+    }
+
+    fn load_safetensors(model_dir: &Path, device: DeviceProfile) -> Result<Self> {
         let config_path = model_dir.join("config.json");
         let config_str = fs::read_to_string(config_path)?;
         let config = parse_qwen3_config(&config_str)?;
 
-        let tokenizer = ChatTokenizer::load(model_dir, config.vocab_size)?;
+        let tokenizer = ChatTokenizer::load(model_dir, Some(config.vocab_size))?;
         let dtype_override = std::env::var("IZWI_CHAT_DTYPE")
             .ok()
             .or_else(|| std::env::var("IZWI_QWEN_DTYPE").ok());
@@ -184,7 +206,50 @@ impl Qwen3ChatModel {
         Ok(Self {
             device,
             tokenizer,
-            text_model,
+            backend: Qwen3ChatBackend::Native { text_model },
+        })
+    }
+
+    fn load_gguf(model_dir: &Path, variant: ModelVariant, device: DeviceProfile) -> Result<Self> {
+        let gguf_name = match variant {
+            ModelVariant::Qwen306BGguf => "Qwen3-0.6B-Q8_0.gguf",
+            ModelVariant::Qwen317BGguf => "Qwen3-1.7B-Q8_0.gguf",
+            _ => {
+                return Err(Error::ModelLoadError(format!(
+                    "Unsupported GGUF chat variant: {variant}"
+                )))
+            }
+        };
+        let gguf_path = model_dir.join(gguf_name);
+        if !gguf_path.exists() {
+            return Err(Error::ModelLoadError(format!(
+                "GGUF checkpoint not found: {}",
+                gguf_path.display()
+            )));
+        }
+
+        let tokenizer = ChatTokenizer::load(model_dir, None)?;
+        let mut reader = BufReader::new(fs::File::open(&gguf_path)?);
+        let content = gguf_file::Content::read(&mut reader)
+            .map_err(|e| Error::ModelLoadError(format!("Failed to parse GGUF header: {e}")))?;
+        let text_model = QuantizedQwen3Model::from_gguf(content, &mut reader, &device.device)
+            .map_err(|e| {
+                Error::ModelLoadError(format!("Failed to load quantized Qwen3 GGUF model: {e}"))
+            })?;
+
+        info!(
+            "Loaded Qwen3 GGUF chat model on {:?} from {}",
+            device.kind,
+            gguf_path.display()
+        );
+
+        Ok(Self {
+            device,
+            tokenizer,
+            backend: Qwen3ChatBackend::Gguf {
+                text_model: Mutex::new(text_model),
+                gguf_file: gguf_name.to_string(),
+            },
         })
     }
 
@@ -203,20 +268,27 @@ impl Qwen3ChatModel {
         max_new_tokens: usize,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ChatGenerationOutput> {
-        let mut state = self.start_decode(messages, max_new_tokens)?;
-        loop {
-            let step = self.decode_step(&mut state)?;
-            if !step.delta.is_empty() {
-                for ch in step.delta.chars() {
-                    let mut buf = [0u8; 4];
-                    on_delta(ch.encode_utf8(&mut buf));
+        match &self.backend {
+            Qwen3ChatBackend::Native { .. } => {
+                let mut state = self.start_decode(messages, max_new_tokens)?;
+                loop {
+                    let step = self.decode_step(&mut state)?;
+                    if !step.delta.is_empty() {
+                        for ch in step.delta.chars() {
+                            let mut buf = [0u8; 4];
+                            on_delta(ch.encode_utf8(&mut buf));
+                        }
+                    }
+                    if step.finished {
+                        return Ok(ChatGenerationOutput {
+                            text: step.text,
+                            tokens_generated: step.tokens_generated,
+                        });
+                    }
                 }
             }
-            if step.finished {
-                return Ok(ChatGenerationOutput {
-                    text: step.text,
-                    tokens_generated: step.tokens_generated,
-                });
+            Qwen3ChatBackend::Gguf { .. } => {
+                self.generate_with_callback_gguf(messages, max_new_tokens, on_delta)
             }
         }
     }
@@ -226,6 +298,16 @@ impl Qwen3ChatModel {
         messages: &[ChatMessage],
         max_new_tokens: usize,
     ) -> Result<ChatDecodeState> {
+        let text_model = match &self.backend {
+            Qwen3ChatBackend::Native { text_model } => text_model,
+            Qwen3ChatBackend::Gguf { gguf_file, .. } => {
+                return Err(Error::InvalidInput(format!(
+                    "Incremental chat decode is unavailable for GGUF model {}",
+                    gguf_file
+                )))
+            }
+        };
+
         let prompt_ids = self.build_prompt(messages)?;
         let input_ids = Tensor::from_vec(
             prompt_ids.clone(),
@@ -233,8 +315,8 @@ impl Qwen3ChatModel {
             &self.device.device,
         )?;
 
-        let mut cache = Qwen3Cache::new(self.text_model.num_layers());
-        let embeds = self.text_model.forward(&input_ids, 0, Some(&mut cache))?;
+        let mut cache = Qwen3Cache::new(text_model.num_layers());
+        let embeds = text_model.forward(&input_ids, 0, Some(&mut cache))?;
         let pos = embeds.dim(1)?;
 
         Ok(ChatDecodeState {
@@ -249,6 +331,16 @@ impl Qwen3ChatModel {
     }
 
     pub fn decode_step(&self, state: &mut ChatDecodeState) -> Result<ChatDecodeStep> {
+        let text_model = match &self.backend {
+            Qwen3ChatBackend::Native { text_model } => text_model,
+            Qwen3ChatBackend::Gguf { gguf_file, .. } => {
+                return Err(Error::InvalidInput(format!(
+                    "Incremental chat decode is unavailable for GGUF model {}",
+                    gguf_file
+                )))
+            }
+        };
+
         if state.finished || state.generated_ids.len() >= state.max_new_tokens {
             state.finished = true;
             return Ok(ChatDecodeStep {
@@ -281,9 +373,7 @@ impl Qwen3ChatModel {
         state.assembled = decoded;
 
         let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
-        state.embeds = self
-            .text_model
-            .forward(&next_tensor, state.pos, Some(&mut state.cache))?;
+        state.embeds = text_model.forward(&next_tensor, state.pos, Some(&mut state.cache))?;
         state.pos += 1;
 
         if state.generated_ids.len() >= state.max_new_tokens {
@@ -295,6 +385,76 @@ impl Qwen3ChatModel {
             text: state.assembled.trim().to_string(),
             tokens_generated: state.generated_ids.len(),
             finished: state.finished,
+        })
+    }
+
+    pub fn supports_incremental_decode(&self) -> bool {
+        matches!(&self.backend, Qwen3ChatBackend::Native { .. })
+    }
+
+    fn generate_with_callback_gguf(
+        &self,
+        messages: &[ChatMessage],
+        max_new_tokens: usize,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ChatGenerationOutput> {
+        let prompt_ids = self.build_prompt(messages)?;
+        let mut model = match &self.backend {
+            Qwen3ChatBackend::Gguf { text_model, .. } => text_model.lock().map_err(|_| {
+                Error::InferenceError("Qwen3 GGUF model mutex poisoned".to_string())
+            })?,
+            Qwen3ChatBackend::Native { .. } => {
+                return Err(Error::InferenceError(
+                    "Internal error: GGUF generation called on safetensors backend".to_string(),
+                ))
+            }
+        };
+
+        model.clear_kv_cache();
+        let input_ids = Tensor::from_vec(
+            prompt_ids.clone(),
+            (1, prompt_ids.len()),
+            &self.device.device,
+        )?;
+        let mut logits = model
+            .forward(&input_ids, 0)
+            .map_err(|e| Error::InferenceError(format!("Qwen3 GGUF forward failed: {e}")))?;
+        let mut position = prompt_ids.len();
+
+        let mut generated_ids = Vec::new();
+        let mut assembled = String::new();
+        let max_new_tokens = max_new_tokens.max(1);
+
+        while generated_ids.len() < max_new_tokens {
+            let next = argmax(&logits)?;
+            if next == self.tokenizer.specials.im_end
+                || next == self.tokenizer.specials.eos
+                || self.tokenizer.specials.eos_alt == Some(next)
+            {
+                break;
+            }
+
+            generated_ids.push(next);
+            let decoded = self.tokenizer.decode_text(&generated_ids)?;
+            let delta = text_delta(&assembled, &decoded);
+            if !delta.is_empty() {
+                for ch in delta.chars() {
+                    let mut buf = [0u8; 4];
+                    on_delta(ch.encode_utf8(&mut buf));
+                }
+            }
+            assembled = decoded;
+
+            let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
+            logits = model
+                .forward(&next_tensor, position)
+                .map_err(|e| Error::InferenceError(format!("Qwen3 GGUF decode failed: {e}")))?;
+            position += 1;
+        }
+
+        Ok(ChatGenerationOutput {
+            text: assembled.trim().to_string(),
+            tokens_generated: generated_ids.len(),
         })
     }
 
@@ -382,7 +542,23 @@ fn parse_qwen3_config(config_str: &str) -> Result<Qwen3Config> {
 }
 
 fn argmax(logits: &Tensor) -> Result<u32> {
-    let values = logits.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+    let values = match logits.rank() {
+        1 => logits.to_dtype(DType::F32)?.to_vec1::<f32>()?,
+        2 => {
+            let (batch, _vocab) = logits.dims2()?;
+            if batch != 1 {
+                return Err(Error::InferenceError(format!(
+                    "Unexpected batched logits for argmax: expected batch=1, got {batch}"
+                )));
+            }
+            logits.i(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?
+        }
+        rank => {
+            return Err(Error::InferenceError(format!(
+                "Unexpected logits rank for argmax: {rank}"
+            )))
+        }
+    };
     let (idx, _) = values
         .iter()
         .enumerate()
