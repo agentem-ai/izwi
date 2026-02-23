@@ -898,9 +898,9 @@ export function SpeechHistoryPanel({
                               className={clsx(
                                 "mt-3 rounded-lg border px-3 py-2 text-xs flex items-center gap-2",
                                 downloadState === "downloading" &&
-                                  "border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)]",
+                                  "border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] text-[var(--status-warning-text)]",
                                 downloadState === "success" &&
-                                  "border-emerald-900/50 bg-emerald-950/40 text-emerald-300",
+                                  "border-[var(--status-positive-border)] bg-[var(--status-positive-bg)] text-[var(--status-positive-text)]",
                                 downloadState === "error" &&
                                   "border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)]",
                               )}

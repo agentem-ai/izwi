@@ -905,11 +905,11 @@ export function CustomVoicePlayground({
               className={clsx(
                 "p-2 rounded border text-xs flex items-center gap-2",
                 downloadState === "downloading" &&
-                  "bg-[var(--bg-surface-2)] border-[var(--border-strong)] text-[var(--text-secondary)]",
+                  "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]",
                 downloadState === "success" &&
-                  "bg-emerald-950/40 border-emerald-900/50 text-emerald-300",
+                  "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]",
                 downloadState === "error" &&
-                  "bg-red-950/50 border-red-900/50 text-red-400",
+                  "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
               )}
             >
               {downloadState === "downloading" ? (
