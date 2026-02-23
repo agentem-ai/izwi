@@ -1,7 +1,27 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload, Mic, Square, Play, Check, X } from "lucide-react";
+import {
+  Upload,
+  Mic,
+  Square,
+  Play,
+  Check,
+  X,
+  BookmarkPlus,
+  Loader2,
+  RefreshCw,
+  Library,
+} from "lucide-react";
 import clsx from "clsx";
+import { api, type SavedVoiceSummary } from "../api";
+import { blobToBase64Payload } from "../utils/audioBase64";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select";
 
 interface VoiceCloneProps {
   onVoiceCloneReady: (audioBase64: string, transcript: string) => void;
@@ -84,13 +104,24 @@ async function normalizeToWavBlob(inputBlob: Blob): Promise<Blob> {
 }
 
 export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
-  const [mode, setMode] = useState<"upload" | "record" | null>(null);
+  const [mode, setMode] = useState<"upload" | "record" | "saved" | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [transcript, setTranscript] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isConfirmed, setIsConfirmed] = useState(false);
+  const [savedVoices, setSavedVoices] = useState<SavedVoiceSummary[]>([]);
+  const [savedVoicesLoading, setSavedVoicesLoading] = useState(false);
+  const [savedVoicesError, setSavedVoicesError] = useState<string | null>(null);
+  const [selectedSavedVoiceId, setSelectedSavedVoiceId] = useState("");
+  const [isApplyingSavedVoice, setIsApplyingSavedVoice] = useState(false);
+  const [saveVoiceName, setSaveVoiceName] = useState("");
+  const [isSavingVoice, setIsSavingVoice] = useState(false);
+  const [saveVoiceStatus, setSaveVoiceStatus] = useState<{
+    tone: "success" | "error";
+    message: string;
+  } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -98,8 +129,27 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
   const chunksRef = useRef<Blob[]>([]);
   const isConfirmingRef = useRef(false);
 
+  const loadSavedVoices = useCallback(async () => {
+    setSavedVoicesLoading(true);
+    setSavedVoicesError(null);
+    try {
+      const records = await api.listSavedVoices();
+      setSavedVoices(records);
+    } catch (err) {
+      setSavedVoicesError(
+        err instanceof Error ? err.message : "Failed to load saved voices.",
+      );
+    } finally {
+      setSavedVoicesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSavedVoices();
+  }, [loadSavedVoices]);
+
   const prepareAudioBlob = useCallback(
-    async (inputBlob: Blob, inputMode: "upload" | "record") => {
+    async (inputBlob: Blob, inputMode: "upload" | "record" | "saved") => {
       try {
         const wavBlob = await normalizeToWavBlob(inputBlob);
         if (audioUrl) {
@@ -109,6 +159,7 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
         setAudioUrl(URL.createObjectURL(wavBlob));
         setMode(inputMode);
         setError(null);
+        setIsConfirmed(false);
       } catch (err) {
         console.error("[VoiceClone] Failed to normalize audio to WAV:", err);
         setError(
@@ -210,7 +261,41 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
       return;
     }
 
+    setSelectedSavedVoiceId("");
+    setSaveVoiceStatus(null);
     void prepareAudioBlob(file, "upload");
+  };
+
+  const handleSavedVoiceSelect = async (voiceId: string) => {
+    setSelectedSavedVoiceId(voiceId);
+    if (!voiceId) {
+      return;
+    }
+
+    setIsApplyingSavedVoice(true);
+    setError(null);
+    setSaveVoiceStatus(null);
+
+    try {
+      const [voice, audioResponse] = await Promise.all([
+        api.getSavedVoice(voiceId),
+        fetch(api.savedVoiceAudioUrl(voiceId)),
+      ]);
+
+      if (!audioResponse.ok) {
+        throw new Error(`Failed to load saved voice audio (${audioResponse.status})`);
+      }
+
+      setTranscript(voice.reference_text);
+      const voiceAudio = await audioResponse.blob();
+      await prepareAudioBlob(voiceAudio, "saved");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to load selected saved voice.",
+      );
+    } finally {
+      setIsApplyingSavedVoice(false);
+    }
   };
 
   const startRecording = async () => {
@@ -260,6 +345,8 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
       setIsRecording(true);
       setMode("record");
       setError(null);
+      setSelectedSavedVoiceId("");
+      setSaveVoiceStatus(null);
     } catch (err) {
       setError("Microphone access denied. Please allow microphone access.");
       console.error("Recording error:", err);
@@ -287,7 +374,54 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
     setMode(null);
     setError(null);
     setIsConfirmed(false);
+    setSelectedSavedVoiceId("");
+    setSaveVoiceName("");
+    setSaveVoiceStatus(null);
     onClear();
+  };
+
+  const handleSaveVoice = async () => {
+    if (!audioBlob || !transcript.trim() || isSavingVoice) {
+      return;
+    }
+
+    const trimmedName = saveVoiceName.trim();
+    if (!trimmedName) {
+      setSaveVoiceStatus({
+        tone: "error",
+        message: "Enter a voice name before saving.",
+      });
+      return;
+    }
+
+    setIsSavingVoice(true);
+    setSaveVoiceStatus(null);
+
+    try {
+      const audioBase64 = await blobToBase64Payload(audioBlob);
+      await api.createSavedVoice({
+        name: trimmedName,
+        reference_text: transcript.trim(),
+        audio_base64: audioBase64,
+        audio_mime_type: audioBlob.type || "audio/wav",
+        audio_filename: `voice-clone-saved-${Date.now()}.wav`,
+        source_route_kind: "voice_cloning",
+      });
+
+      setSaveVoiceName("");
+      setSaveVoiceStatus({
+        tone: "success",
+        message: `Saved voice profile "${trimmedName}".`,
+      });
+      await loadSavedVoices();
+    } catch (err) {
+      setSaveVoiceStatus({
+        tone: "error",
+        message: err instanceof Error ? err.message : "Failed to save voice profile.",
+      });
+    } finally {
+      setIsSavingVoice(false);
+    }
   };
 
   const handleConfirm = async () => {
@@ -353,51 +487,147 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
           className="textarea text-sm"
         />
         <p className="text-xs text-gray-600 mt-1">
-          Type what you'll say, then record or upload audio
+          Type transcript text, then upload, record, or choose a saved voice
         </p>
       </div>
 
       {/* Audio controls */}
       {!audioBlob ? (
-        <div className="grid grid-cols-2 gap-2">
-          {/* Upload button */}
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="flex flex-col items-center gap-2 p-4 rounded-lg border border-[#2a2a2a] bg-[#161616] hover:bg-[#1a1a1a] transition-colors min-h-[80px]"
-          >
-            <Upload className="w-5 h-5 text-gray-400" />
-            <span className="text-xs text-gray-400">Upload Audio</span>
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="audio/*"
-            onChange={handleFileUpload}
-            className="hidden"
-          />
+        <div className="space-y-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {/* Upload button */}
+            <button
+              onClick={() => {
+                setMode("upload");
+                fileInputRef.current?.click();
+              }}
+              className={clsx(
+                "flex flex-col items-center gap-2 p-4 rounded-lg border transition-colors min-h-[80px]",
+                mode === "upload"
+                  ? "border-white/40 bg-[#1a1a1a]"
+                  : "border-[#2a2a2a] bg-[#161616] hover:bg-[#1a1a1a]",
+              )}
+            >
+              <Upload className="w-5 h-5 text-gray-400" />
+              <span className="text-xs text-gray-400">Upload Audio</span>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
 
-          {/* Record button */}
-          <button
-            onClick={isRecording ? stopRecording : startRecording}
-            className={clsx(
-              "flex flex-col items-center gap-2 p-4 rounded-lg border transition-colors min-h-[80px]",
-              isRecording
-                ? "border-white/50 bg-[#1a1a1a]"
-                : "border-[#2a2a2a] bg-[#161616] hover:bg-[#1a1a1a]",
+            {/* Record button */}
+            <button
+              onClick={isRecording ? stopRecording : startRecording}
+              className={clsx(
+                "flex flex-col items-center gap-2 p-4 rounded-lg border transition-colors min-h-[80px]",
+                isRecording || mode === "record"
+                  ? "border-white/50 bg-[#1a1a1a]"
+                  : "border-[#2a2a2a] bg-[#161616] hover:bg-[#1a1a1a]",
+              )}
+            >
+              {isRecording ? (
+                <>
+                  <Square className="w-5 h-5 text-white" />
+                  <span className="text-xs text-white">Stop Recording</span>
+                </>
+              ) : (
+                <>
+                  <Mic className="w-5 h-5 text-gray-400" />
+                  <span className="text-xs text-gray-400">Record Voice</span>
+                </>
+              )}
+            </button>
+
+            {/* Saved voice dropdown */}
+            <button
+              onClick={() => {
+                setMode("saved");
+                setError(null);
+                if (!savedVoices.length && !savedVoicesLoading) {
+                  void loadSavedVoices();
+                }
+              }}
+              className={clsx(
+                "flex flex-col items-center gap-2 p-4 rounded-lg border transition-colors min-h-[80px]",
+                mode === "saved"
+                  ? "border-white/40 bg-[#1a1a1a]"
+                  : "border-[#2a2a2a] bg-[#161616] hover:bg-[#1a1a1a]",
+              )}
+            >
+              <Library className="w-5 h-5 text-gray-400" />
+              <span className="text-xs text-gray-400">Saved Voice</span>
+            </button>
+          </div>
+
+          <AnimatePresence>
+            {mode === "saved" && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="p-3 rounded-lg border border-[#2a2a2a] bg-[#161616] space-y-2 overflow-hidden"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs text-gray-400">
+                    Select Saved Voice
+                  </label>
+                  <button
+                    onClick={() => void loadSavedVoices()}
+                    disabled={savedVoicesLoading}
+                    className="btn btn-ghost text-xs min-h-[32px]"
+                  >
+                    <RefreshCw
+                      className={clsx(
+                        "w-3.5 h-3.5",
+                        savedVoicesLoading && "animate-spin",
+                      )}
+                    />
+                    Refresh
+                  </button>
+                </div>
+                <Select
+                  value={selectedSavedVoiceId}
+                  onValueChange={(value) => {
+                    void handleSavedVoiceSelect(value);
+                  }}
+                  disabled={
+                    savedVoicesLoading ||
+                    isApplyingSavedVoice ||
+                    savedVoices.length === 0
+                  }
+                >
+                  <SelectTrigger className="text-sm">
+                    <SelectValue placeholder="Choose a saved voice" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {savedVoices.map((voice) => (
+                      <SelectItem key={voice.id} value={voice.id}>
+                        {voice.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {savedVoicesError && (
+                  <p className="text-xs text-red-400">{savedVoicesError}</p>
+                )}
+                {!savedVoicesLoading && !savedVoicesError && savedVoices.length === 0 && (
+                  <p className="text-xs text-gray-500">
+                    No saved voices yet. Save one from Voice Design or after uploading/recording.
+                  </p>
+                )}
+                {isApplyingSavedVoice && (
+                  <div className="text-xs text-gray-400 inline-flex items-center gap-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Loading selected voice...
+                  </div>
+                )}
+              </motion.div>
             )}
-          >
-            {isRecording ? (
-              <>
-                <Square className="w-5 h-5 text-white" />
-                <span className="text-xs text-white">Stop Recording</span>
-              </>
-            ) : (
-              <>
-                <Mic className="w-5 h-5 text-gray-400" />
-                <span className="text-xs text-gray-400">Record Voice</span>
-              </>
-            )}
-          </button>
+          </AnimatePresence>
         </div>
       ) : (
         <div className="space-y-3">
@@ -411,7 +641,11 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
                 <Play className="w-3.5 h-3.5 text-white" />
               </button>
               <div className="flex-1 text-xs text-gray-500">
-                {mode === "upload" ? "Uploaded audio" : "Recorded audio"}
+                {mode === "upload"
+                  ? "Uploaded audio"
+                  : mode === "record"
+                    ? "Recorded audio"
+                    : "Saved voice audio"}
               </div>
               <div className="text-xs text-gray-600">
                 {(audioBlob.size / 1024).toFixed(0)} KB
@@ -450,6 +684,60 @@ export function VoiceClone({ onVoiceCloneReady, onClear }: VoiceCloneProps) {
               Clear
             </button>
           </div>
+
+          {mode !== "saved" && (
+            <div className="p-3 rounded-lg border border-[#2a2a2a] bg-[#161616] space-y-2">
+              <label className="text-xs text-gray-400 block">
+                Save This Voice
+              </label>
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr),auto]">
+                <input
+                  value={saveVoiceName}
+                  onChange={(event) => setSaveVoiceName(event.target.value)}
+                  placeholder="Voice name"
+                  className="input text-sm"
+                  disabled={isSavingVoice}
+                />
+                <button
+                  onClick={handleSaveVoice}
+                  disabled={isSavingVoice || !transcript.trim()}
+                  className="btn btn-secondary min-h-[40px] sm:min-w-[130px]"
+                >
+                  {isSavingVoice ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <BookmarkPlus className="w-4 h-4" />
+                      Save Voice
+                    </>
+                  )}
+                </button>
+              </div>
+              <p className="text-[10px] text-gray-500">
+                Stores this audio sample and transcript for one-click reuse in cloning.
+              </p>
+              <AnimatePresence>
+                {saveVoiceStatus && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className={clsx(
+                      "p-2 rounded border text-xs",
+                      saveVoiceStatus.tone === "success"
+                        ? "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]"
+                        : "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
+                    )}
+                  >
+                    {saveVoiceStatus.message}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
         </div>
       )}
     </div>
