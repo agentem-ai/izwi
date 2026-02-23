@@ -254,7 +254,7 @@ impl SavedVoiceStore {
             let audio_storage_path = storage_layout::persist_audio_file(
                 &media_root,
                 MediaGroup::Generated,
-                "saved-voices",
+                "voices",
                 &voice_id,
                 audio_filename.as_deref(),
                 audio_mime_type.as_str(),

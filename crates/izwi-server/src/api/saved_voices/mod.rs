@@ -11,14 +11,28 @@ pub fn router() -> Router<AppState> {
 
     Router::new()
         .route(
+            "/voices",
+            get(handlers::list_saved_voices)
+                .post(handlers::create_saved_voice)
+                .layer(DefaultBodyLimit::max(AUDIO_UPLOAD_LIMIT_BYTES)),
+        )
+        .route(
             "/saved-voices",
             get(handlers::list_saved_voices)
                 .post(handlers::create_saved_voice)
                 .layer(DefaultBodyLimit::max(AUDIO_UPLOAD_LIMIT_BYTES)),
         )
         .route(
+            "/voices/:voice_id",
+            get(handlers::get_saved_voice).delete(handlers::delete_saved_voice),
+        )
+        .route(
             "/saved-voices/:voice_id",
             get(handlers::get_saved_voice).delete(handlers::delete_saved_voice),
+        )
+        .route(
+            "/voices/:voice_id/audio",
+            get(handlers::get_saved_voice_audio),
         )
         .route(
             "/saved-voices/:voice_id/audio",
