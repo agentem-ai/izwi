@@ -541,7 +541,7 @@ export function VoiceClonePlayground({
 
         {selectedModelReady && !isVoiceReady && (
           <p className="text-xs text-gray-400">
-            Record or upload a voice sample to get started
+            Upload, record, or select a saved voice sample to get started
           </p>
         )}
       </div>

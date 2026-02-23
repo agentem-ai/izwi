@@ -5,6 +5,7 @@ import {
   Square,
   Download,
   RotateCcw,
+  BookmarkPlus,
   ChevronDown,
   Loader2,
   CheckCircle2,
@@ -22,6 +23,7 @@ import clsx from "clsx";
 import { GenerationStats } from "./GenerationStats";
 import { SpeechHistoryPanel } from "./SpeechHistoryPanel";
 import { useDownloadIndicator } from "../utils/useDownloadIndicator";
+import { blobToBase64Payload } from "../utils/audioBase64";
 
 interface ModelOption {
   value: string;
@@ -74,6 +76,13 @@ export function VoiceDesignPlayground({
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [generationStats, setGenerationStats] = useState<TTSGenerationStats | null>(null);
   const [latestRecord, setLatestRecord] = useState<SpeechHistoryRecord | null>(null);
+  const [saveVoiceName, setSaveVoiceName] = useState("");
+  const [saveReferenceText, setSaveReferenceText] = useState("");
+  const [savingVoice, setSavingVoice] = useState(false);
+  const [saveVoiceStatus, setSaveVoiceStatus] = useState<{
+    tone: "success" | "error";
+    message: string;
+  } | null>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const {
     downloadState,
@@ -109,6 +118,15 @@ export function VoiceDesignPlayground({
     return () => window.removeEventListener("mousedown", onPointerDown);
   }, []);
 
+  useEffect(() => {
+    if (!latestRecord) {
+      return;
+    }
+    setSaveVoiceName("");
+    setSaveReferenceText(latestRecord.input_text);
+    setSaveVoiceStatus(null);
+  }, [latestRecord?.id, latestRecord?.input_text]);
+
   const handleGenerate = async () => {
     if (!selectedModel || !selectedModelReady) {
       onModelRequired();
@@ -129,6 +147,7 @@ export function VoiceDesignPlayground({
       setGenerating(true);
       setError(null);
       setGenerationStats(null);
+      setSaveVoiceStatus(null);
 
       revokeObjectUrlIfNeeded(audioUrl);
       setAudioUrl(null);
@@ -204,6 +223,67 @@ export function VoiceDesignPlayground({
   const handlePresetSelect = (description: string) => {
     setVoiceDescription(description);
     setShowPresets(false);
+  };
+
+  const handleSaveVoice = async () => {
+    if (!latestRecord || savingVoice) {
+      return;
+    }
+
+    const trimmedName = saveVoiceName.trim();
+    if (!trimmedName) {
+      setSaveVoiceStatus({
+        tone: "error",
+        message: "Enter a name before saving this voice.",
+      });
+      return;
+    }
+
+    const trimmedReferenceText = saveReferenceText.trim();
+    if (!trimmedReferenceText) {
+      setSaveVoiceStatus({
+        tone: "error",
+        message: "Reference text is required for voice cloning.",
+      });
+      return;
+    }
+
+    setSavingVoice(true);
+    setSaveVoiceStatus(null);
+
+    try {
+      const response = await fetch(api.voiceDesignRecordAudioUrl(latestRecord.id));
+      if (!response.ok) {
+        throw new Error(`Failed to load generated audio (${response.status})`);
+      }
+
+      const audioBlob = await response.blob();
+      const audioBase64 = await blobToBase64Payload(audioBlob);
+
+      await api.createSavedVoice({
+        name: trimmedName,
+        reference_text: trimmedReferenceText,
+        audio_base64: audioBase64,
+        audio_mime_type: latestRecord.audio_mime_type || audioBlob.type || "audio/wav",
+        audio_filename:
+          latestRecord.audio_filename || `voice-design-saved-${Date.now()}.wav`,
+        source_route_kind: "voice_design",
+        source_record_id: latestRecord.id,
+      });
+
+      setSaveVoiceName("");
+      setSaveVoiceStatus({
+        tone: "success",
+        message: `Saved voice profile "${trimmedName}".`,
+      });
+    } catch (err) {
+      setSaveVoiceStatus({
+        tone: "error",
+        message: err instanceof Error ? err.message : "Failed to save voice profile.",
+      });
+    } finally {
+      setSavingVoice(false);
+    }
   };
 
   const getStatusTone = (option: ModelOption): string => {
@@ -579,6 +659,72 @@ export function VoiceDesignPlayground({
             </div>
             {generationStats && (
               <GenerationStats stats={generationStats} type="tts" />
+            )}
+            {latestRecord && (
+              <div className="p-3 rounded bg-[#161616] border border-[#2a2a2a] space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-medium text-white">
+                    Save for Voice Cloning
+                  </div>
+                  <span className="text-[10px] text-gray-500">
+                    Reuse this voice on /voice-clone
+                  </span>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr),auto]">
+                  <input
+                    value={saveVoiceName}
+                    onChange={(event) => setSaveVoiceName(event.target.value)}
+                    placeholder="Voice name (e.g., Support Voice)"
+                    className="input text-sm"
+                    disabled={savingVoice}
+                  />
+                  <button
+                    onClick={handleSaveVoice}
+                    disabled={savingVoice}
+                    className="btn btn-secondary min-h-[40px] sm:min-w-[140px]"
+                  >
+                    {savingVoice ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Saving...
+                      </>
+                    ) : (
+                      <>
+                        <BookmarkPlus className="w-4 h-4" />
+                        Save Voice
+                      </>
+                    )}
+                  </button>
+                </div>
+                <textarea
+                  value={saveReferenceText}
+                  onChange={(event) => setSaveReferenceText(event.target.value)}
+                  rows={2}
+                  className="textarea text-sm"
+                  disabled={savingVoice}
+                  placeholder="Reference transcript for cloning"
+                />
+                <p className="text-[10px] text-gray-500">
+                  Keep this transcript aligned with the generated audio sample.
+                </p>
+                <AnimatePresence>
+                  {saveVoiceStatus && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className={clsx(
+                        "p-2 rounded border text-xs",
+                        saveVoiceStatus.tone === "success"
+                          ? "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]"
+                          : "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
+                      )}
+                    >
+                      {saveVoiceStatus.message}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
             )}
           </motion.div>
         )}

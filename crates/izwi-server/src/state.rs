@@ -2,6 +2,7 @@
 
 use crate::chat_store::ChatStore;
 use crate::diarization_store::DiarizationStore;
+use crate::saved_voice_store::SavedVoiceStore;
 use crate::speech_history_store::SpeechHistoryStore;
 use crate::transcription_store::TranscriptionStore;
 use izwi_core::RuntimeService;
@@ -48,6 +49,8 @@ pub struct AppState {
     pub diarization_store: Arc<DiarizationStore>,
     /// SQLite-backed speech generation history store.
     pub speech_history_store: Arc<SpeechHistoryStore>,
+    /// SQLite-backed saved voice store.
+    pub saved_voice_store: Arc<SavedVoiceStore>,
 }
 
 impl AppState {
@@ -68,6 +71,7 @@ impl AppState {
         let transcription_store = Arc::new(TranscriptionStore::initialize()?);
         let diarization_store = Arc::new(DiarizationStore::initialize()?);
         let speech_history_store = Arc::new(SpeechHistoryStore::initialize()?);
+        let saved_voice_store = Arc::new(SavedVoiceStore::initialize()?);
 
         Ok(Self {
             runtime: Arc::new(runtime),
@@ -78,6 +82,7 @@ impl AppState {
             transcription_store,
             diarization_store,
             speech_history_store,
+            saved_voice_store,
         })
     }
 

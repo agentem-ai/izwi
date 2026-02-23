@@ -9,6 +9,7 @@ mod api;
 mod chat_store;
 mod diarization_store;
 mod error;
+mod saved_voice_store;
 mod speech_history_store;
 mod state;
 mod storage_layout;

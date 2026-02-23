@@ -377,6 +377,43 @@ export interface SpeechHistoryRecordStreamCallbacks {
   onDone?: () => void;
 }
 
+export type SavedVoiceSourceRouteKind = "voice_design" | "voice_cloning";
+
+export interface SavedVoiceSummary {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  name: string;
+  reference_text_preview: string;
+  reference_text_chars: number;
+  audio_mime_type: string;
+  audio_filename: string | null;
+  source_route_kind: SavedVoiceSourceRouteKind | null;
+  source_record_id: string | null;
+}
+
+export interface SavedVoice {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  name: string;
+  reference_text: string;
+  audio_mime_type: string;
+  audio_filename: string | null;
+  source_route_kind: SavedVoiceSourceRouteKind | null;
+  source_record_id: string | null;
+}
+
+export interface SavedVoiceCreateRequest {
+  name: string;
+  reference_text: string;
+  audio_base64: string;
+  audio_mime_type?: string;
+  audio_filename?: string;
+  source_route_kind?: SavedVoiceSourceRouteKind;
+  source_record_id?: string;
+}
+
 // ============================================================================
 // Unified STT (ASR) Types
 // ============================================================================
@@ -1321,6 +1358,65 @@ class ApiClient {
     recordId: string,
   ): Promise<{ id: string; deleted: boolean }> {
     return this.deleteSpeechHistoryRecord("voice-cloning", recordId);
+  }
+
+  async listSavedVoices(): Promise<SavedVoiceSummary[]> {
+    const payload = await this.request<{ voices: SavedVoiceSummary[] }>(
+      "/saved-voices",
+    );
+    return payload.voices ?? [];
+  }
+
+  async getSavedVoice(voiceId: string): Promise<SavedVoice> {
+    return this.request(`/saved-voices/${encodeURIComponent(voiceId)}`);
+  }
+
+  async createSavedVoice(request: SavedVoiceCreateRequest): Promise<SavedVoice> {
+    const response = await fetch(`${this.baseUrl}/saved-voices`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: request.name,
+        reference_text: request.reference_text,
+        audio_base64: request.audio_base64,
+        audio_mime_type: request.audio_mime_type,
+        audio_filename: request.audio_filename,
+        source_route_kind: request.source_route_kind,
+        source_record_id: request.source_record_id,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response
+        .json()
+        .catch(() => ({ error: { message: "Failed to save voice" } }));
+      throw new Error(error.error?.message || "Failed to save voice");
+    }
+
+    return response.json();
+  }
+
+  savedVoiceAudioUrl(
+    voiceId: string,
+    options?: {
+      download?: boolean;
+    },
+  ): string {
+    const base = `${this.baseUrl}/saved-voices/${encodeURIComponent(voiceId)}/audio`;
+    if (options?.download) {
+      return `${base}?download=true`;
+    }
+    return base;
+  }
+
+  async deleteSavedVoice(
+    voiceId: string,
+  ): Promise<{ id: string; deleted: boolean }> {
+    return this.request(`/saved-voices/${encodeURIComponent(voiceId)}`, {
+      method: "DELETE",
+    });
   }
 
   // ========================================================================

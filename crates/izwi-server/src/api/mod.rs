@@ -7,6 +7,7 @@ pub mod internal;
 pub mod openai;
 pub mod request_context;
 mod router;
+pub mod saved_voices;
 pub mod speech_history;
 pub mod transcription;
 pub(crate) mod tts_long_form;
