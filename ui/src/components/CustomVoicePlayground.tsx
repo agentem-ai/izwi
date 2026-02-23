@@ -488,13 +488,35 @@ export function CustomVoicePlayground({
     }
   };
 
-  const handleDownload = () => {
-    if (audioUrl) {
+  const handleDownload = async () => {
+    const record = latestRecord;
+    if (record) {
+      const downloadUrl = api.textToSpeechRecordAudioUrl(record.id, {
+        download: true,
+      });
+      const filename =
+        record.audio_filename || `izwi-${speaker.toLowerCase()}-${Date.now()}.wav`;
+      const savedByDesktop = await api
+        .saveAudioFile(downloadUrl, filename)
+        .catch(() => false);
+      if (savedByDesktop) {
+        return;
+      }
+
       const a = document.createElement("a");
-      a.href = audioUrl;
-      a.download = `izwi-${speaker.toLowerCase()}-${Date.now()}.wav`;
+      a.href = downloadUrl;
+      a.download = filename;
       a.click();
+      return;
     }
+
+    if (!audioUrl) {
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = audioUrl;
+    a.download = `izwi-${speaker.toLowerCase()}-${Date.now()}.wav`;
+    a.click();
   };
 
   const handleReset = () => {
