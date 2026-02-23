@@ -1166,30 +1166,53 @@ class ApiClient {
     return base;
   }
 
-  async saveAudioFile(url: string, suggestedFilename: string): Promise<boolean> {
-    if (typeof window === "undefined") {
-      return false;
-    }
+  async downloadAudioFile(url: string, suggestedFilename: string): Promise<void> {
+    if (typeof window !== "undefined") {
+      const internals = (
+        window as unknown as {
+          __TAURI_INTERNALS__?: {
+            invoke?: (
+              command: string,
+              args?: Record<string, unknown>,
+            ) => Promise<unknown>;
+          };
+        }
+      ).__TAURI_INTERNALS__;
 
-    const internals = (
-      window as unknown as {
-        __TAURI_INTERNALS__?: {
-          invoke?: (
-            command: string,
-            args?: Record<string, unknown>,
-          ) => Promise<unknown>;
-        };
+      if (
+        typeof internals?.invoke === "function" &&
+        /^https?:\/\//i.test(url)
+      ) {
+        await internals.invoke("download_audio_file", {
+          url,
+          suggested_filename: suggestedFilename,
+        });
+        return;
       }
-    ).__TAURI_INTERNALS__;
-    if (typeof internals?.invoke !== "function") {
-      return false;
     }
 
-    await internals.invoke("download_audio_file", {
-      url,
-      suggested_filename: suggestedFilename,
-    });
-    return true;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Audio download failed (${response.status})`);
+    }
+
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = suggestedFilename;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+
+    window.setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+    }, 1000);
+  }
+
+  async saveAudioFile(url: string, suggestedFilename: string): Promise<void> {
+    await this.downloadAudioFile(url, suggestedFilename);
   }
 
   async deleteSpeechHistoryRecord(

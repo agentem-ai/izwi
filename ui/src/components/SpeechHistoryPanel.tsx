@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  AlertCircle,
   AlertTriangle,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -24,6 +26,7 @@ import {
   type SpeechHistoryRecordSummary,
   type SpeechHistoryRoute,
 } from "../api";
+import { useDownloadIndicator } from "../utils/useDownloadIndicator";
 
 interface SpeechHistoryPanelProps {
   route: SpeechHistoryRoute;
@@ -138,6 +141,14 @@ export function SpeechHistoryPanel({
   const [deleteTargetRecordId, setDeleteTargetRecordId] = useState<string | null>(null);
   const [deleteRecordPending, setDeleteRecordPending] = useState(false);
   const [deleteRecordError, setDeleteRecordError] = useState<string | null>(null);
+  const {
+    downloadState,
+    downloadMessage,
+    isDownloading,
+    beginDownload,
+    completeDownload,
+    failDownload,
+  } = useDownloadIndicator();
 
   const mergeHistorySummary = useCallback((summary: SpeechHistoryRecordSummary) => {
     setRecords((previous) => {
@@ -506,25 +517,29 @@ export function SpeechHistoryPanel({
   }, [activeRecord]);
 
   const handleDownloadAudio = useCallback(async () => {
-    if (!activeRecord) {
-      return;
-    }
-    const downloadUrl = api.speechHistoryRecordAudioUrl(route, activeRecord.id, {
-      download: true,
-    });
-    const filename = activeRecord.audio_filename || `${activeRecord.id}.wav`;
-    const savedByDesktop = await api
-      .saveAudioFile(downloadUrl, filename)
-      .catch(() => false);
-    if (savedByDesktop) {
+    if (!activeRecord || isDownloading) {
       return;
     }
 
-    const anchor = document.createElement("a");
-    anchor.href = downloadUrl;
-    anchor.download = filename;
-    anchor.click();
-  }, [activeRecord, route]);
+    beginDownload();
+    try {
+      const downloadUrl = api.speechHistoryRecordAudioUrl(route, activeRecord.id, {
+        download: true,
+      });
+      const filename = activeRecord.audio_filename || `${activeRecord.id}.wav`;
+      await api.downloadAudioFile(downloadUrl, filename);
+      completeDownload();
+    } catch (error) {
+      failDownload(error);
+    }
+  }, [
+    activeRecord,
+    beginDownload,
+    completeDownload,
+    failDownload,
+    isDownloading,
+    route,
+  ]);
 
   useEffect(() => {
     const audio = document.getElementById(
@@ -861,13 +876,46 @@ export function SpeechHistoryPanel({
                           {selectedAudioUrl && (
                             <button
                               onClick={handleDownloadAudio}
-                              className="ml-auto inline-flex items-center gap-1 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+                              className="ml-auto inline-flex items-center gap-1 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-45"
+                              disabled={isDownloading}
                             >
-                              <Download className="w-3.5 h-3.5" />
-                              Audio
+                              {isDownloading ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Download className="w-3.5 h-3.5" />
+                              )}
+                              {isDownloading ? "Downloading..." : "Audio"}
                             </button>
                           )}
                         </div>
+
+                        <AnimatePresence>
+                          {downloadState !== "idle" && downloadMessage && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: "auto" }}
+                              exit={{ opacity: 0, height: 0 }}
+                              className={clsx(
+                                "mt-3 rounded-lg border px-3 py-2 text-xs flex items-center gap-2",
+                                downloadState === "downloading" &&
+                                  "border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)]",
+                                downloadState === "success" &&
+                                  "border-emerald-900/50 bg-emerald-950/40 text-emerald-300",
+                                downloadState === "error" &&
+                                  "border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)]",
+                              )}
+                            >
+                              {downloadState === "downloading" ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : downloadState === "success" ? (
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                              ) : (
+                                <AlertCircle className="h-3.5 w-3.5" />
+                              )}
+                              {downloadMessage}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
                       </div>
 
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">

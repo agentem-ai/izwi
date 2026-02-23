@@ -7,6 +7,8 @@ import {
   RotateCcw,
   ChevronDown,
   Loader2,
+  CheckCircle2,
+  AlertCircle,
   Globe,
   Settings2,
 } from "lucide-react";
@@ -19,6 +21,7 @@ import { LANGUAGES, VOICE_DESIGN_PRESETS } from "../types";
 import clsx from "clsx";
 import { GenerationStats } from "./GenerationStats";
 import { SpeechHistoryPanel } from "./SpeechHistoryPanel";
+import { useDownloadIndicator } from "../utils/useDownloadIndicator";
 
 interface ModelOption {
   value: string;
@@ -72,6 +75,14 @@ export function VoiceDesignPlayground({
   const [generationStats, setGenerationStats] = useState<TTSGenerationStats | null>(null);
   const [latestRecord, setLatestRecord] = useState<SpeechHistoryRecord | null>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
+  const {
+    downloadState,
+    downloadMessage,
+    isDownloading,
+    beginDownload,
+    completeDownload,
+    failDownload,
+  } = useDownloadIndicator();
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -153,32 +164,31 @@ export function VoiceDesignPlayground({
 
   const handleDownload = async () => {
     const record = latestRecord;
-    if (record) {
-      const downloadUrl = api.voiceDesignRecordAudioUrl(record.id, {
-        download: true,
-      });
-      const filename = record.audio_filename || `izwi-voice-design-${Date.now()}.wav`;
-      const savedByDesktop = await api
-        .saveAudioFile(downloadUrl, filename)
-        .catch(() => false);
-      if (savedByDesktop) {
+    const localAudioUrl = !record ? audioUrl : null;
+    if ((!record && !localAudioUrl) || isDownloading) {
+      return;
+    }
+
+    beginDownload();
+    try {
+      if (record) {
+        const downloadUrl = api.voiceDesignRecordAudioUrl(record.id, {
+          download: true,
+        });
+        const filename = record.audio_filename || `izwi-voice-design-${Date.now()}.wav`;
+        await api.downloadAudioFile(downloadUrl, filename);
+        completeDownload();
         return;
       }
 
-      const a = document.createElement("a");
-      a.href = downloadUrl;
-      a.download = filename;
-      a.click();
-      return;
+      if (!localAudioUrl) {
+        return;
+      }
+      await api.downloadAudioFile(localAudioUrl, `izwi-voice-design-${Date.now()}.wav`);
+      completeDownload();
+    } catch (error) {
+      failDownload(error);
     }
-
-    if (!audioUrl) {
-      return;
-    }
-    const a = document.createElement("a");
-    a.href = audioUrl;
-    a.download = `izwi-voice-design-${Date.now()}.wav`;
-    a.click();
   };
 
   const handleReset = () => {
@@ -498,9 +508,17 @@ export function VoiceDesignPlayground({
               </button>
               <button
                 onClick={handleDownload}
-                className="btn btn-secondary min-h-[44px] min-w-[44px]"
+                disabled={isDownloading}
+                className={clsx(
+                  "btn btn-secondary min-h-[44px] min-w-[44px]",
+                  isDownloading && "opacity-75",
+                )}
               >
-                <Download className="w-4 h-4" />
+                {isDownloading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4" />
+                )}
               </button>
               <button
                 onClick={handleReset}
@@ -511,6 +529,34 @@ export function VoiceDesignPlayground({
             </>
           )}
         </div>
+
+        <AnimatePresence>
+          {downloadState !== "idle" && downloadMessage && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className={clsx(
+                "p-2 rounded border text-xs flex items-center gap-2",
+                downloadState === "downloading" &&
+                  "bg-[#161616] border-[#2a2a2a] text-gray-300",
+                downloadState === "success" &&
+                  "bg-emerald-950/40 border-emerald-900/50 text-emerald-300",
+                downloadState === "error" &&
+                  "bg-red-950/50 border-red-900/50 text-red-400",
+              )}
+            >
+              {downloadState === "downloading" ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : downloadState === "success" ? (
+                <CheckCircle2 className="w-3.5 h-3.5" />
+              ) : (
+                <AlertCircle className="w-3.5 h-3.5" />
+              )}
+              {downloadMessage}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {!selectedModelReady && (
           <p className="text-xs text-gray-400">
