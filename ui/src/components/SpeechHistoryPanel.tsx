@@ -505,6 +505,27 @@ export function SpeechHistoryPanel({
     URL.revokeObjectURL(url);
   }, [activeRecord]);
 
+  const handleDownloadAudio = useCallback(async () => {
+    if (!activeRecord) {
+      return;
+    }
+    const downloadUrl = api.speechHistoryRecordAudioUrl(route, activeRecord.id, {
+      download: true,
+    });
+    const filename = activeRecord.audio_filename || `${activeRecord.id}.wav`;
+    const savedByDesktop = await api
+      .saveAudioFile(downloadUrl, filename)
+      .catch(() => false);
+    if (savedByDesktop) {
+      return;
+    }
+
+    const anchor = document.createElement("a");
+    anchor.href = downloadUrl;
+    anchor.download = filename;
+    anchor.click();
+  }, [activeRecord, route]);
+
   useEffect(() => {
     const audio = document.getElementById(
       "speech-history-audio",
@@ -838,14 +859,13 @@ export function SpeechHistoryPanel({
                             <option value={2}>2.0x</option>
                           </select>
                           {selectedAudioUrl && (
-                            <a
-                              href={selectedAudioUrl}
-                              download={activeRecord.audio_filename || `${activeRecord.id}.wav`}
+                            <button
+                              onClick={handleDownloadAudio}
                               className="ml-auto inline-flex items-center gap-1 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
                             >
                               <Download className="w-3.5 h-3.5" />
                               Audio
-                            </a>
+                            </button>
                           )}
                         </div>
                       </div>

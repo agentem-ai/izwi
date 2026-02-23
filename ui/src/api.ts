@@ -1152,8 +1152,44 @@ class ApiClient {
     return abortController;
   }
 
-  speechHistoryRecordAudioUrl(route: SpeechHistoryRoute, recordId: string): string {
-    return `${this.baseUrl}${this.speechHistoryRoutePrefix(route)}/records/${encodeURIComponent(recordId)}/audio`;
+  speechHistoryRecordAudioUrl(
+    route: SpeechHistoryRoute,
+    recordId: string,
+    options?: {
+      download?: boolean;
+    },
+  ): string {
+    const base = `${this.baseUrl}${this.speechHistoryRoutePrefix(route)}/records/${encodeURIComponent(recordId)}/audio`;
+    if (options?.download) {
+      return `${base}?download=true`;
+    }
+    return base;
+  }
+
+  async saveAudioFile(url: string, suggestedFilename: string): Promise<boolean> {
+    if (typeof window === "undefined") {
+      return false;
+    }
+
+    const internals = (
+      window as unknown as {
+        __TAURI_INTERNALS__?: {
+          invoke?: (
+            command: string,
+            args?: Record<string, unknown>,
+          ) => Promise<unknown>;
+        };
+      }
+    ).__TAURI_INTERNALS__;
+    if (typeof internals?.invoke !== "function") {
+      return false;
+    }
+
+    await internals.invoke("download_audio_file", {
+      url,
+      suggested_filename: suggestedFilename,
+    });
+    return true;
   }
 
   async deleteSpeechHistoryRecord(
@@ -1191,8 +1227,13 @@ class ApiClient {
     );
   }
 
-  textToSpeechRecordAudioUrl(recordId: string): string {
-    return this.speechHistoryRecordAudioUrl("text-to-speech", recordId);
+  textToSpeechRecordAudioUrl(
+    recordId: string,
+    options?: {
+      download?: boolean;
+    },
+  ): string {
+    return this.speechHistoryRecordAudioUrl("text-to-speech", recordId, options);
   }
 
   async deleteTextToSpeechRecord(
@@ -1215,8 +1256,13 @@ class ApiClient {
     return this.createSpeechHistoryRecord("voice-design", request);
   }
 
-  voiceDesignRecordAudioUrl(recordId: string): string {
-    return this.speechHistoryRecordAudioUrl("voice-design", recordId);
+  voiceDesignRecordAudioUrl(
+    recordId: string,
+    options?: {
+      download?: boolean;
+    },
+  ): string {
+    return this.speechHistoryRecordAudioUrl("voice-design", recordId, options);
   }
 
   async deleteVoiceDesignRecord(
@@ -1239,8 +1285,13 @@ class ApiClient {
     return this.createSpeechHistoryRecord("voice-cloning", request);
   }
 
-  voiceCloningRecordAudioUrl(recordId: string): string {
-    return this.speechHistoryRecordAudioUrl("voice-cloning", recordId);
+  voiceCloningRecordAudioUrl(
+    recordId: string,
+    options?: {
+      download?: boolean;
+    },
+  ): string {
+    return this.speechHistoryRecordAudioUrl("voice-cloning", recordId, options);
   }
 
   async deleteVoiceCloningRecord(

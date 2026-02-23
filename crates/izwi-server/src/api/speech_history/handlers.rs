@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use axum::{
     body::Body,
-    extract::{Extension, Json, Path, State},
+    extract::{Extension, Json, Path, Query, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -25,6 +25,12 @@ use izwi_core::{
 };
 
 const HISTORY_LIST_LIMIT: usize = 200;
+
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct RecordAudioQuery {
+    #[serde(default)]
+    download: bool,
+}
 
 #[derive(Debug, Serialize)]
 pub struct SpeechHistoryRecordListResponse {
@@ -138,22 +144,43 @@ pub async fn get_voice_cloning_record(
 pub async fn get_text_to_speech_record_audio(
     State(state): State<AppState>,
     Path(record_id): Path<String>,
+    Query(query): Query<RecordAudioQuery>,
 ) -> Result<Response, ApiError> {
-    get_record_audio(state, SpeechRouteKind::TextToSpeech, record_id).await
+    get_record_audio(
+        state,
+        SpeechRouteKind::TextToSpeech,
+        record_id,
+        query.download,
+    )
+    .await
 }
 
 pub async fn get_voice_design_record_audio(
     State(state): State<AppState>,
     Path(record_id): Path<String>,
+    Query(query): Query<RecordAudioQuery>,
 ) -> Result<Response, ApiError> {
-    get_record_audio(state, SpeechRouteKind::VoiceDesign, record_id).await
+    get_record_audio(
+        state,
+        SpeechRouteKind::VoiceDesign,
+        record_id,
+        query.download,
+    )
+    .await
 }
 
 pub async fn get_voice_cloning_record_audio(
     State(state): State<AppState>,
     Path(record_id): Path<String>,
+    Query(query): Query<RecordAudioQuery>,
 ) -> Result<Response, ApiError> {
-    get_record_audio(state, SpeechRouteKind::VoiceCloning, record_id).await
+    get_record_audio(
+        state,
+        SpeechRouteKind::VoiceCloning,
+        record_id,
+        query.download,
+    )
+    .await
 }
 
 pub async fn delete_text_to_speech_record(
@@ -231,6 +258,7 @@ async fn get_record_audio(
     state: AppState,
     route_kind: SpeechRouteKind,
     record_id: String,
+    as_attachment: bool,
 ) -> Result<Response, ApiError> {
     let audio = state
         .speech_history_store
@@ -238,7 +266,7 @@ async fn get_record_audio(
         .await
         .map_err(map_store_error)?
         .ok_or_else(|| ApiError::not_found("History audio not found"))?;
-    Ok(audio_response(audio))
+    Ok(audio_response(audio, as_attachment))
 }
 
 async fn delete_record(
@@ -817,18 +845,26 @@ fn to_stream_json(event: SpeechStreamEvent) -> String {
     serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string())
 }
 
-fn audio_response(audio: StoredSpeechAudio) -> Response {
+fn audio_response(audio: StoredSpeechAudio, as_attachment: bool) -> Response {
     let mut response = Response::builder().status(StatusCode::OK);
 
     if let Ok(content_type) = HeaderValue::from_str(audio.audio_mime_type.as_str()) {
         response = response.header(header::CONTENT_TYPE, content_type);
     }
 
-    if let Some(filename) = audio.audio_filename {
-        let disposition = format!("inline; filename=\"{}\"", filename.replace('"', ""));
-        if let Ok(value) = HeaderValue::from_str(disposition.as_str()) {
-            response = response.header(header::CONTENT_DISPOSITION, value);
-        }
+    let disposition = if as_attachment {
+        audio
+            .audio_filename
+            .as_deref()
+            .map(|filename| format!("attachment; filename=\"{}\"", filename.replace('"', "")))
+            .unwrap_or_else(|| "attachment".to_string())
+    } else if let Some(filename) = audio.audio_filename.as_deref() {
+        format!("inline; filename=\"{}\"", filename.replace('"', ""))
+    } else {
+        "inline".to_string()
+    };
+    if let Ok(value) = HeaderValue::from_str(disposition.as_str()) {
+        response = response.header(header::CONTENT_DISPOSITION, value);
     }
 
     response

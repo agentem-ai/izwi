@@ -18,3 +18,5 @@ clap = { version = "4.5", features = ["derive"] }
 anyhow = { workspace = true }
 url = "2.5"
 tauri = { version = "2.10.2", features = [] }
+dirs = { workspace = true }
+reqwest = { workspace = true }
