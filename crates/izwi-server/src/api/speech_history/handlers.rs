@@ -287,16 +287,20 @@ async fn create_record(
             .await;
     }
 
+    let generation_request =
+        build_generation_request(req.clone(), ctx.correlation_id, input_text.clone(), false);
+    let planned_request_count =
+        expand_generation_requests_for_long_form(&generation_request, variant).len();
+
     let _permit = state.acquire_permit().await;
     let timeout = Duration::from_secs(resolve_generation_timeout_secs(
         state.request_timeout_secs,
         variant,
         req.max_output_tokens.or(req.max_tokens),
         req.speed,
+        planned_request_count,
     ));
 
-    let generation_request =
-        build_generation_request(req.clone(), ctx.correlation_id, input_text.clone(), false);
     let runtime = state.runtime.clone();
     let output = tokio::time::timeout(timeout, async {
         generate_long_form_tts(&runtime, variant, generation_request).await
@@ -748,6 +752,7 @@ fn resolve_generation_timeout_secs(
     variant: ModelVariant,
     requested_frames: Option<usize>,
     requested_speed: Option<f32>,
+    planned_request_count: usize,
 ) -> u64 {
     let Some(model_max_frames) = variant.tts_max_output_frames_hint() else {
         return default_timeout_secs.max(1);
@@ -783,7 +788,20 @@ fn resolve_generation_timeout_secs(
         .saturating_add(timeout_padding_secs)
         .min(timeout_max_secs.max(1));
 
-    default_timeout_secs.max(suggested_secs).max(1)
+    let per_request_timeout_secs = default_timeout_secs.max(suggested_secs).max(1);
+    let request_count = planned_request_count.max(1) as u64;
+    if request_count == 1 {
+        return per_request_timeout_secs;
+    }
+
+    let long_form_timeout_max_secs = std::env::var("IZWI_TTS_LONG_FORM_TIMEOUT_MAX_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(24 * 60 * 60);
+
+    per_request_timeout_secs
+        .saturating_mul(request_count)
+        .min(long_form_timeout_max_secs.max(per_request_timeout_secs))
 }
 
 fn default_audio_filename(route_kind: SpeechRouteKind, extension: &str) -> String {

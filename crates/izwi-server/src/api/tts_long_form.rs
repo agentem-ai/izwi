@@ -265,4 +265,24 @@ mod tests {
         );
         assert_eq!(chunks.len(), 1);
     }
+
+    #[test]
+    fn qwen_voice_design_auto_chunking_splits_sentences() {
+        let chunks = split_tts_text_for_long_form(
+            ModelVariant::Qwen3Tts12Hz17BVoiceDesign,
+            0,
+            "Voice design sentence one. Voice design sentence two.",
+        );
+        assert_eq!(chunks.len(), 2);
+    }
+
+    #[test]
+    fn qwen_base_auto_chunking_splits_sentences() {
+        let chunks = split_tts_text_for_long_form(
+            ModelVariant::Qwen3Tts12Hz06BBase,
+            0,
+            "Voice cloning sentence one. Voice cloning sentence two.",
+        );
+        assert_eq!(chunks.len(), 2);
+    }
 }
