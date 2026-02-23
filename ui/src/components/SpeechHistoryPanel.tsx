@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertCircle,
   AlertTriangle,
+  BookmarkPlus,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -27,6 +28,7 @@ import {
   type SpeechHistoryRoute,
 } from "../api";
 import { useDownloadIndicator } from "../utils/useDownloadIndicator";
+import { blobToBase64Payload } from "../utils/audioBase64";
 
 interface SpeechHistoryPanelProps {
   route: SpeechHistoryRoute;
@@ -141,6 +143,13 @@ export function SpeechHistoryPanel({
   const [deleteTargetRecordId, setDeleteTargetRecordId] = useState<string | null>(null);
   const [deleteRecordPending, setDeleteRecordPending] = useState(false);
   const [deleteRecordError, setDeleteRecordError] = useState<string | null>(null);
+  const [historyVoiceName, setHistoryVoiceName] = useState("");
+  const [historyVoiceReferenceText, setHistoryVoiceReferenceText] = useState("");
+  const [historyVoiceSaving, setHistoryVoiceSaving] = useState(false);
+  const [historyVoiceStatus, setHistoryVoiceStatus] = useState<{
+    tone: "success" | "error";
+    message: string;
+  } | null>(null);
   const {
     downloadState,
     downloadMessage,
@@ -365,6 +374,23 @@ export function SpeechHistoryPanel({
   const activeRecord =
     selectedRecord && selectedRecord.id === selectedRecordId ? selectedRecord : null;
 
+  useEffect(() => {
+    if (route !== "voice-cloning" || !activeRecord) {
+      setHistoryVoiceName("");
+      setHistoryVoiceReferenceText("");
+      setHistoryVoiceStatus(null);
+      return;
+    }
+
+    setHistoryVoiceName("");
+    setHistoryVoiceReferenceText(
+      activeRecord.input_text?.trim() ||
+        activeRecord.reference_text?.trim() ||
+        "",
+    );
+    setHistoryVoiceStatus(null);
+  }, [activeRecord?.id, route]);
+
   const deleteTargetRecord = useMemo(() => {
     if (!deleteTargetRecordId) {
       return null;
@@ -538,6 +564,79 @@ export function SpeechHistoryPanel({
     completeDownload,
     failDownload,
     isDownloading,
+    route,
+  ]);
+
+  const handleSaveHistoryVoice = useCallback(async () => {
+    if (route !== "voice-cloning" || !activeRecord || historyVoiceSaving) {
+      return;
+    }
+
+    const trimmedName = historyVoiceName.trim();
+    if (!trimmedName) {
+      setHistoryVoiceStatus({
+        tone: "error",
+        message: "Enter a voice name before saving.",
+      });
+      return;
+    }
+
+    const trimmedReferenceText = historyVoiceReferenceText.trim();
+    if (!trimmedReferenceText) {
+      setHistoryVoiceStatus({
+        tone: "error",
+        message: "Reference text is required to save a voice profile.",
+      });
+      return;
+    }
+
+    setHistoryVoiceSaving(true);
+    setHistoryVoiceStatus(null);
+
+    try {
+      const audioResponse = await fetch(
+        api.speechHistoryRecordAudioUrl(route, activeRecord.id),
+      );
+      if (!audioResponse.ok) {
+        throw new Error(
+          `Failed to load history audio (${audioResponse.status}).`,
+        );
+      }
+
+      const audioBlob = await audioResponse.blob();
+      const audioBase64 = await blobToBase64Payload(audioBlob);
+
+      await api.createSavedVoice({
+        name: trimmedName,
+        reference_text: trimmedReferenceText,
+        audio_base64: audioBase64,
+        audio_mime_type:
+          activeRecord.audio_mime_type || audioBlob.type || "audio/wav",
+        audio_filename:
+          activeRecord.audio_filename ||
+          `voice-from-history-${activeRecord.id}.wav`,
+        source_route_kind: "voice_cloning",
+        source_record_id: activeRecord.id,
+      });
+
+      setHistoryVoiceName("");
+      setHistoryVoiceStatus({
+        tone: "success",
+        message: `Saved voice profile "${trimmedName}".`,
+      });
+    } catch (err) {
+      setHistoryVoiceStatus({
+        tone: "error",
+        message: err instanceof Error ? err.message : "Failed to save voice.",
+      });
+    } finally {
+      setHistoryVoiceSaving(false);
+    }
+  }, [
+    activeRecord,
+    historyVoiceName,
+    historyVoiceReferenceText,
+    historyVoiceSaving,
     route,
   ]);
 
@@ -1027,6 +1126,78 @@ export function SpeechHistoryPanel({
                         <p className="text-sm text-[var(--text-secondary)] whitespace-pre-wrap leading-relaxed">
                           {activeRecord.reference_text}
                         </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {route === "voice-cloning" && activeRecord && (
+                    <div className="mt-4">
+                      <h5 className="text-xs font-medium text-[var(--text-muted)] mb-2 uppercase tracking-wide">
+                        Save as Voice
+                      </h5>
+                      <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-3 space-y-2.5">
+                        <p className="text-xs text-[var(--text-subtle)]">
+                          Save this cloned output as a reusable voice profile.
+                        </p>
+                        <input
+                          value={historyVoiceName}
+                          onChange={(event) =>
+                            setHistoryVoiceName(event.target.value)
+                          }
+                          placeholder="Voice name"
+                          className="input text-sm"
+                          disabled={historyVoiceSaving}
+                        />
+                        <textarea
+                          value={historyVoiceReferenceText}
+                          onChange={(event) =>
+                            setHistoryVoiceReferenceText(event.target.value)
+                          }
+                          rows={3}
+                          className="textarea text-sm"
+                          disabled={historyVoiceSaving}
+                          placeholder="Transcript matching this audio"
+                        />
+                        <div className="flex justify-end">
+                          <button
+                            onClick={() => void handleSaveHistoryVoice()}
+                            className="btn btn-secondary text-xs min-h-[34px]"
+                            disabled={
+                              historyVoiceSaving ||
+                              !historyVoiceName.trim() ||
+                              !historyVoiceReferenceText.trim()
+                            }
+                          >
+                            {historyVoiceSaving ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                Saving...
+                              </>
+                            ) : (
+                              <>
+                                <BookmarkPlus className="w-3.5 h-3.5" />
+                                Save Voice
+                              </>
+                            )}
+                          </button>
+                        </div>
+                        <AnimatePresence>
+                          {historyVoiceStatus && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: "auto" }}
+                              exit={{ opacity: 0, height: 0 }}
+                              className={clsx(
+                                "rounded-md border px-3 py-2 text-xs",
+                                historyVoiceStatus.tone === "success"
+                                  ? "border-[var(--status-positive-border)] bg-[var(--status-positive-bg)] text-[var(--status-positive-text)]"
+                                  : "border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)]",
+                              )}
+                            >
+                              {historyVoiceStatus.message}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
                       </div>
                     </div>
                   )}

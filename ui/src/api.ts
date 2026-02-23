@@ -1362,17 +1362,17 @@ class ApiClient {
 
   async listSavedVoices(): Promise<SavedVoiceSummary[]> {
     const payload = await this.request<{ voices: SavedVoiceSummary[] }>(
-      "/saved-voices",
+      "/voices",
     );
     return payload.voices ?? [];
   }
 
   async getSavedVoice(voiceId: string): Promise<SavedVoice> {
-    return this.request(`/saved-voices/${encodeURIComponent(voiceId)}`);
+    return this.request(`/voices/${encodeURIComponent(voiceId)}`);
   }
 
   async createSavedVoice(request: SavedVoiceCreateRequest): Promise<SavedVoice> {
-    const response = await fetch(`${this.baseUrl}/saved-voices`, {
+    const response = await fetch(`${this.baseUrl}/voices`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1404,7 +1404,7 @@ class ApiClient {
       download?: boolean;
     },
   ): string {
-    const base = `${this.baseUrl}/saved-voices/${encodeURIComponent(voiceId)}/audio`;
+    const base = `${this.baseUrl}/voices/${encodeURIComponent(voiceId)}/audio`;
     if (options?.download) {
       return `${base}?download=true`;
     }
@@ -1414,7 +1414,7 @@ class ApiClient {
   async deleteSavedVoice(
     voiceId: string,
   ): Promise<{ id: string; deleted: boolean }> {
-    return this.request(`/saved-voices/${encodeURIComponent(voiceId)}`, {
+    return this.request(`/voices/${encodeURIComponent(voiceId)}`, {
       method: "DELETE",
     });
   }
