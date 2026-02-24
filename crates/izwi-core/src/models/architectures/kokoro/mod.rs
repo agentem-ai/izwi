@@ -16,6 +16,7 @@ pub use config::KokoroConfig;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use candle_core::pickle::read_pth_tensor_info;
 use candle_core::{DType, IndexOp, Tensor};
@@ -42,6 +43,19 @@ const CHECKPOINT_SUBMODULE_KEYS: &[&str] = &[
     "text_encoder",
     "decoder",
 ];
+
+fn kokoro_profile_enabled() -> bool {
+    std::env::var_os("IZWI_KOKORO_PROFILE").is_some()
+}
+
+fn log_kokoro_profile(stage: &str, dur: Duration) {
+    if kokoro_profile_enabled() {
+        eprintln!(
+            "kokoro profile: {stage} = {:.2} ms",
+            dur.as_secs_f64() * 1_000.0
+        );
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct KokoroPreparedRequest {
@@ -288,18 +302,25 @@ impl KokoroTtsModel {
         language: Option<&str>,
         speed: f32,
     ) -> Result<KokoroSynthesisResult> {
+        let t0 = Instant::now();
         let prepared = self.prepare_request(text, speaker, language, speed)?;
+        log_kokoro_profile("tts.prepare_request", t0.elapsed());
+        let t1 = Instant::now();
         let predecoder = self.run_predecoder(&prepared)?;
+        log_kokoro_profile("tts.predecoder", t1.elapsed());
         let style = prepared
             .ref_style
             .i((.., 0..self.config.style_dim))
             .map_err(Error::from)?;
+        let t2 = Instant::now();
         let samples = self.decoder.forward(
             &predecoder.asr,
             &predecoder.prosody.f0,
             &predecoder.prosody.n,
             &style,
         )?;
+        log_kokoro_profile("tts.decoder", t2.elapsed());
+        log_kokoro_profile("tts.total", t0.elapsed());
         Ok(KokoroSynthesisResult {
             tokens_generated: prepared.token_ids.len(),
             phonemes: prepared.phonemes,
@@ -317,12 +338,17 @@ impl KokoroTtsModel {
         speed: f32,
         rng_seed: u64,
     ) -> Result<KokoroSynthesisResult> {
+        let t0 = Instant::now();
         let prepared = self.prepare_request(text, speaker, language, speed)?;
+        log_kokoro_profile("tts.prepare_request", t0.elapsed());
+        let t1 = Instant::now();
         let predecoder = self.run_predecoder(&prepared)?;
+        log_kokoro_profile("tts.predecoder", t1.elapsed());
         let style = prepared
             .ref_style
             .i((.., 0..self.config.style_dim))
             .map_err(Error::from)?;
+        let t2 = Instant::now();
         let samples = self.decoder.forward_with_seed(
             &predecoder.asr,
             &predecoder.prosody.f0,
@@ -330,6 +356,8 @@ impl KokoroTtsModel {
             &style,
             Some(rng_seed),
         )?;
+        log_kokoro_profile("tts.decoder", t2.elapsed());
+        log_kokoro_profile("tts.total", t0.elapsed());
         Ok(KokoroSynthesisResult {
             tokens_generated: prepared.token_ids.len(),
             phonemes: prepared.phonemes,
