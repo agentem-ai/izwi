@@ -16,10 +16,7 @@ impl RuntimeService {
             .map(|variant| matches!(variant.family(), crate::catalog::ModelFamily::KokoroTts))
             .unwrap_or(false)
         {
-            return Err(Error::InferenceError(
-                "Kokoro-82M runtime inference is not implemented yet in izwi (Rust-only integration planned)."
-                    .to_string(),
-            ));
+            return self.kokoro_tts_generate(request).await;
         }
         if loaded_variant
             .map(|variant| matches!(variant.family(), crate::catalog::ModelFamily::Lfm2Audio))
@@ -73,10 +70,7 @@ impl RuntimeService {
             .map(|variant| matches!(variant.family(), crate::catalog::ModelFamily::KokoroTts))
             .unwrap_or(false)
         {
-            return Err(Error::InferenceError(
-                "Kokoro-82M streaming runtime inference is not implemented yet in izwi (Rust-only integration planned)."
-                    .to_string(),
-            ));
+            return self.kokoro_tts_generate_streaming(request, chunk_tx).await;
         }
         if loaded_variant
             .map(|variant| matches!(variant.family(), crate::catalog::ModelFamily::Lfm2Audio))

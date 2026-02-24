@@ -44,7 +44,7 @@ impl RuntimeService {
                 self.model_manager.mark_loaded(variant).await;
             }
             ModelFamily::KokoroTts => {
-                // Reserved for future native Kokoro runtime integration.
+                // Kokoro owns active TTS routing and does not use the legacy Qwen slot.
                 let mut model_guard = self.tts_model.write().await;
                 *model_guard = None;
                 drop(model_guard);

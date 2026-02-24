@@ -30,6 +30,7 @@ impl RuntimeService {
                 self.clear_active_tts_variant().await;
             }
             ModelFamily::KokoroTts => {
+                self.model_registry.unload_kokoro(variant).await;
                 self.clear_active_tts_variant().await;
             }
             ModelFamily::Tokenizer => {
