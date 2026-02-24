@@ -21,17 +21,35 @@ export function isLfmAudioVariant(variant: string): boolean {
   return normalized.includes("lfm2") && normalized.includes("audio");
 }
 
+export function isKokoroVariant(variant: string): boolean {
+  const normalized = variant.toLowerCase();
+  return normalized === "kokoro-82m" || normalized.includes("kokoro-82m");
+}
+
+export function getSpeakerProfilesForVariant(variant: string | null): SpeakerProfile[] {
+  if (!variant) {
+    return QWEN_SPEAKERS;
+  }
+  if (isLfmAudioVariant(variant)) {
+    return LFM2_SPEAKERS;
+  }
+  if (isKokoroVariant(variant)) {
+    return KOKORO_SPEAKERS;
+  }
+  return QWEN_SPEAKERS;
+}
+
 export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
   "custom-voice": {
     id: "custom-voice",
     label: "Text to Speech",
-    description: "Generate speech with built-in voice profiles (Qwen3 + LFM2)",
+    description: "Generate speech with built-in voice profiles (Qwen3, Kokoro, LFM2)",
     icon: "Volume2",
     modelFilter: (variant) =>
-      variant.includes("CustomVoice") || isLfmAudioVariant(variant),
+      variant.includes("CustomVoice") || isLfmAudioVariant(variant) || isKokoroVariant(variant),
     emptyStateTitle: "No TTS Model Loaded",
     emptyStateDescription:
-      "Load a CustomVoice or LFM2 model to generate speech",
+      "Load a CustomVoice, Kokoro, or LFM2 model to generate speech",
   },
   "voice-clone": {
     id: "voice-clone",
@@ -179,6 +197,111 @@ export const LFM2_SPEAKERS: SpeakerProfile[] = [
     description: "UK male preset voice",
   },
 ];
+
+const KOKORO_VOICE_IDS = [
+  "af_alloy",
+  "af_aoede",
+  "af_bella",
+  "af_heart",
+  "af_jessica",
+  "af_kore",
+  "af_nicole",
+  "af_nova",
+  "af_river",
+  "af_sarah",
+  "af_sky",
+  "am_adam",
+  "am_echo",
+  "am_eric",
+  "am_fenrir",
+  "am_liam",
+  "am_michael",
+  "am_onyx",
+  "am_puck",
+  "am_santa",
+  "bf_alice",
+  "bf_emma",
+  "bf_isabella",
+  "bf_lily",
+  "bm_daniel",
+  "bm_fable",
+  "bm_george",
+  "bm_lewis",
+  "ef_dora",
+  "em_alex",
+  "em_santa",
+  "ff_siwis",
+  "hf_alpha",
+  "hf_beta",
+  "hm_omega",
+  "hm_psi",
+  "if_sara",
+  "im_nicola",
+  "jf_alpha",
+  "jf_gongitsune",
+  "jf_nezumi",
+  "jf_tebukuro",
+  "jm_kumo",
+  "pf_dora",
+  "pm_alex",
+  "pm_santa",
+  "zf_xiaobei",
+  "zf_xiaoni",
+  "zf_xiaoxiao",
+  "zf_xiaoyi",
+  "zm_yunjian",
+  "zm_yunxi",
+  "zm_yunxia",
+  "zm_yunyang",
+] as const;
+
+function kokoroLanguageForVoice(voiceId: string): string {
+  const prefix = voiceId.slice(0, 1);
+  switch (prefix) {
+    case "a":
+      return "American English";
+    case "b":
+      return "British English";
+    case "j":
+      return "Japanese";
+    case "z":
+      return "Mandarin Chinese";
+    case "e":
+      return "Spanish";
+    case "f":
+      return "French";
+    case "h":
+      return "Hindi";
+    case "i":
+      return "Italian";
+    case "p":
+      return "Brazilian Portuguese";
+    default:
+      return "Multilingual";
+  }
+}
+
+function kokoroDisplayName(voiceId: string): string {
+  const [, rawName = voiceId] = voiceId.split("_", 2);
+  return rawName
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function kokoroGenderLabel(voiceId: string): string {
+  const genderCode = voiceId.slice(1, 2);
+  if (genderCode === "f") return "Female";
+  if (genderCode === "m") return "Male";
+  return "Voice";
+}
+
+export const KOKORO_SPEAKERS: SpeakerProfile[] = KOKORO_VOICE_IDS.map((id) => ({
+  id,
+  name: kokoroDisplayName(id),
+  language: kokoroLanguageForVoice(id),
+  description: `${kokoroLanguageForVoice(id)} ${kokoroGenderLabel(id)} voice (Kokoro)`,
+}));
 
 export const SPEAKERS = QWEN_SPEAKERS;
 

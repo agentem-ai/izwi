@@ -245,6 +245,14 @@ const MODEL_DETAILS: Record<
     size: "0.8 GB",
     quantization: "4-bit",
   },
+  "Kokoro-82M": {
+    shortName: "Kokoro 82M",
+    fullName: "Kokoro-82M by hexgrad",
+    description:
+      "Lightweight multilingual TTS model with 54 built-in voices (Rust runtime integration pending)",
+    features: ["TTS", "54 built-in voices", "24 kHz output", "PyTorch checkpoint"],
+    size: "346 MB",
+  },
   "Qwen3-0.6B": {
     shortName: "Qwen3 Chat 0.6B",
     fullName: "Qwen3 0.6B",

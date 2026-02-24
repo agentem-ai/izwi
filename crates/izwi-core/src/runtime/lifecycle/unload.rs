@@ -29,6 +29,9 @@ impl RuntimeService {
                 drop(model_guard);
                 self.clear_active_tts_variant().await;
             }
+            ModelFamily::KokoroTts => {
+                self.clear_active_tts_variant().await;
+            }
             ModelFamily::Tokenizer => {
                 let mut tokenizer_guard = self.tokenizer.write().await;
                 *tokenizer_guard = None;

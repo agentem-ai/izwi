@@ -7,6 +7,7 @@ use crate::model::ModelVariant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelFamily {
     Qwen3Tts,
+    KokoroTts,
     Qwen3Asr,
     ParakeetAsr,
     SortformerDiarization,
@@ -95,6 +96,7 @@ impl ModelVariant {
             | Qwen3Tts12Hz17BVoiceDesign4Bit
             | Qwen3Tts12Hz17BVoiceDesign8Bit
             | Qwen3Tts12Hz17BVoiceDesignBf16 => ModelFamily::Qwen3Tts,
+            Kokoro82M => ModelFamily::KokoroTts,
             Qwen3TtsTokenizer12Hz => ModelFamily::Tokenizer,
             Lfm2Audio15B | Lfm25Audio15B | Lfm25Audio15B4Bit => ModelFamily::Lfm2Audio,
             Qwen3Asr06B | Qwen3Asr06B4Bit | Qwen3Asr06B8Bit | Qwen3Asr06BBf16 | Qwen3Asr17B
@@ -114,7 +116,7 @@ impl ModelVariant {
 
     pub fn primary_task(&self) -> ModelTask {
         match self.family() {
-            ModelFamily::Qwen3Tts => ModelTask::Tts,
+            ModelFamily::Qwen3Tts | ModelFamily::KokoroTts => ModelTask::Tts,
             ModelFamily::Qwen3Asr | ModelFamily::ParakeetAsr => ModelTask::Asr,
             ModelFamily::SortformerDiarization => ModelTask::Diarization,
             ModelFamily::Qwen3Chat | ModelFamily::Gemma3Chat => ModelTask::Chat,
@@ -351,6 +353,10 @@ fn resolve_by_heuristic(normalized: &str) -> Option<ModelVariant> {
             (_, _, true) => Qwen3Tts12Hz06BBaseBf16,
             _ => Qwen3Tts12Hz06BBase,
         });
+    }
+
+    if normalized.contains("kokoro") && normalized.contains("82m") {
+        return Some(Kokoro82M);
     }
 
     if normalized.contains("qwen3") && !normalized.contains("asr") && !normalized.contains("tts") {
@@ -600,6 +606,18 @@ mod tests {
     #[test]
     fn parse_lfm2_audio_gguf_is_rejected() {
         assert!(parse_tts_model_variant("LFM2-Audio-1.5B-GGUF").is_err());
+    }
+
+    #[test]
+    fn parse_kokoro_by_repo_id() {
+        let parsed = parse_tts_model_variant("hexgrad/Kokoro-82M").unwrap();
+        assert_eq!(parsed, ModelVariant::Kokoro82M);
+    }
+
+    #[test]
+    fn parse_kokoro_by_display_name() {
+        let parsed = parse_model_variant("Kokoro 82M").unwrap();
+        assert_eq!(parsed, ModelVariant::Kokoro82M);
     }
 
     #[test]

@@ -13,6 +13,15 @@ impl RuntimeService {
     pub async fn generate(&self, request: GenerationRequest) -> Result<GenerationResult> {
         let loaded_variant = *self.loaded_tts_variant.read().await;
         if loaded_variant
+            .map(|variant| matches!(variant.family(), crate::catalog::ModelFamily::KokoroTts))
+            .unwrap_or(false)
+        {
+            return Err(Error::InferenceError(
+                "Kokoro-82M runtime inference is not implemented yet in izwi (Rust-only integration planned)."
+                    .to_string(),
+            ));
+        }
+        if loaded_variant
             .map(|variant| matches!(variant.family(), crate::catalog::ModelFamily::Lfm2Audio))
             .unwrap_or(false)
         {
@@ -60,6 +69,15 @@ impl RuntimeService {
         chunk_tx: mpsc::Sender<AudioChunk>,
     ) -> Result<()> {
         let loaded_variant = *self.loaded_tts_variant.read().await;
+        if loaded_variant
+            .map(|variant| matches!(variant.family(), crate::catalog::ModelFamily::KokoroTts))
+            .unwrap_or(false)
+        {
+            return Err(Error::InferenceError(
+                "Kokoro-82M streaming runtime inference is not implemented yet in izwi (Rust-only integration planned)."
+                    .to_string(),
+            ));
+        }
         if loaded_variant
             .map(|variant| matches!(variant.family(), crate::catalog::ModelFamily::Lfm2Audio))
             .unwrap_or(false)

@@ -43,6 +43,14 @@ impl RuntimeService {
                 self.set_active_tts_variant(variant, model_path).await;
                 self.model_manager.mark_loaded(variant).await;
             }
+            ModelFamily::KokoroTts => {
+                // Reserved for future native Kokoro runtime integration.
+                let mut model_guard = self.tts_model.write().await;
+                *model_guard = None;
+                drop(model_guard);
+                self.set_active_tts_variant(variant, model_path).await;
+                self.model_manager.mark_loaded(variant).await;
+            }
             ModelFamily::Tokenizer => {
                 if let InstantiatedPayload::Tokenizer(Some(tokenizer)) = payload {
                     let mut guard = self.tokenizer.write().await;

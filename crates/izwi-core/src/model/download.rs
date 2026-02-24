@@ -401,6 +401,11 @@ impl ModelDownloader {
                     && path.join("config.json").exists()
                     && path.join("tokenizer.json").exists()
             }
+            ModelFamily::KokoroTts => {
+                path.join("config.json").exists()
+                    && path.join("kokoro-v1_0.pth").exists()
+                    && path.join("voices").join("af_heart.pt").exists()
+            }
             ModelFamily::Qwen3Asr => {
                 let has_config = path.join("config.json").exists();
                 let has_vocab = path.join("vocab.json").exists();
@@ -862,6 +867,64 @@ impl ModelDownloader {
                 "audio_detokenizer/tokenizer.json".to_string(),
                 "audio_detokenizer/tokenizer_config.json".to_string(),
             ],
+            ModelFamily::KokoroTts => vec![
+                "config.json".to_string(),
+                "kokoro-v1_0.pth".to_string(),
+                "voices/af_alloy.pt".to_string(),
+                "voices/af_aoede.pt".to_string(),
+                "voices/af_bella.pt".to_string(),
+                "voices/af_heart.pt".to_string(),
+                "voices/af_jessica.pt".to_string(),
+                "voices/af_kore.pt".to_string(),
+                "voices/af_nicole.pt".to_string(),
+                "voices/af_nova.pt".to_string(),
+                "voices/af_river.pt".to_string(),
+                "voices/af_sarah.pt".to_string(),
+                "voices/af_sky.pt".to_string(),
+                "voices/am_adam.pt".to_string(),
+                "voices/am_echo.pt".to_string(),
+                "voices/am_eric.pt".to_string(),
+                "voices/am_fenrir.pt".to_string(),
+                "voices/am_liam.pt".to_string(),
+                "voices/am_michael.pt".to_string(),
+                "voices/am_onyx.pt".to_string(),
+                "voices/am_puck.pt".to_string(),
+                "voices/am_santa.pt".to_string(),
+                "voices/bf_alice.pt".to_string(),
+                "voices/bf_emma.pt".to_string(),
+                "voices/bf_isabella.pt".to_string(),
+                "voices/bf_lily.pt".to_string(),
+                "voices/bm_daniel.pt".to_string(),
+                "voices/bm_fable.pt".to_string(),
+                "voices/bm_george.pt".to_string(),
+                "voices/bm_lewis.pt".to_string(),
+                "voices/ef_dora.pt".to_string(),
+                "voices/em_alex.pt".to_string(),
+                "voices/em_santa.pt".to_string(),
+                "voices/ff_siwis.pt".to_string(),
+                "voices/hf_alpha.pt".to_string(),
+                "voices/hf_beta.pt".to_string(),
+                "voices/hm_omega.pt".to_string(),
+                "voices/hm_psi.pt".to_string(),
+                "voices/if_sara.pt".to_string(),
+                "voices/im_nicola.pt".to_string(),
+                "voices/jf_alpha.pt".to_string(),
+                "voices/jf_gongitsune.pt".to_string(),
+                "voices/jf_nezumi.pt".to_string(),
+                "voices/jf_tebukuro.pt".to_string(),
+                "voices/jm_kumo.pt".to_string(),
+                "voices/pf_dora.pt".to_string(),
+                "voices/pm_alex.pt".to_string(),
+                "voices/pm_santa.pt".to_string(),
+                "voices/zf_xiaobei.pt".to_string(),
+                "voices/zf_xiaoni.pt".to_string(),
+                "voices/zf_xiaoxiao.pt".to_string(),
+                "voices/zf_xiaoyi.pt".to_string(),
+                "voices/zm_yunjian.pt".to_string(),
+                "voices/zm_yunxi.pt".to_string(),
+                "voices/zm_yunxia.pt".to_string(),
+                "voices/zm_yunyang.pt".to_string(),
+            ],
             ModelFamily::Qwen3Asr => {
                 let mut files = vec![
                     "config.json".to_string(),
@@ -1244,6 +1307,10 @@ impl ModelDownloader {
                     _ => 1_500_000_000,
                 }
             }
+        } else if file.ends_with(".pth") && file.contains("kokoro-v1_0") {
+            327_212_226
+        } else if file.starts_with("voices/") && file.ends_with(".pt") {
+            550_000
         } else if file.ends_with(".nemo") {
             match variant {
                 ModelVariant::ParakeetTdt06BV2 => 4_926_457_088,

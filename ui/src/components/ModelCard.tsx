@@ -25,6 +25,7 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
   "Qwen3-TTS-12Hz-1.7B-CustomVoice": "1.7B CustomVoice",
   "Qwen3-TTS-12Hz-1.7B-VoiceDesign": "1.7B VoiceDesign",
   "Qwen3-TTS-Tokenizer-12Hz": "Tokenizer 12Hz",
+  "Kokoro-82M": "Kokoro 82M",
 };
 
 const formatBytes = (bytes: number | null): string => {

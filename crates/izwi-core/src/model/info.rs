@@ -66,6 +66,9 @@ pub enum ModelVariant {
     /// LFM2.5-Audio 1.5B model from Liquid AI (MLX 4-bit)
     #[serde(rename = "LFM2.5-Audio-1.5B-4bit")]
     Lfm25Audio15B4Bit,
+    /// Kokoro-82M TTS model from hexgrad
+    #[serde(rename = "Kokoro-82M")]
+    Kokoro82M,
     /// Qwen3-ASR 0.6B model
     #[serde(rename = "Qwen3-ASR-0.6B")]
     Qwen3Asr06B,
@@ -184,6 +187,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B => "LiquidAI/LFM2-Audio-1.5B",
             Self::Lfm25Audio15B => "LiquidAI/LFM2.5-Audio-1.5B",
             Self::Lfm25Audio15B4Bit => "mlx-community/LFM2.5-Audio-1.5B-4bit",
+            Self::Kokoro82M => "hexgrad/Kokoro-82M",
             Self::Qwen3Asr06B => "Qwen/Qwen3-ASR-0.6B",
             Self::Qwen3Asr06B4Bit => "mlx-community/Qwen3-ASR-0.6B-4bit",
             Self::Qwen3Asr06B8Bit => "mlx-community/Qwen3-ASR-0.6B-8bit",
@@ -234,6 +238,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B => "LFM2-Audio 1.5B",
             Self::Lfm25Audio15B => "LFM2.5-Audio 1.5B",
             Self::Lfm25Audio15B4Bit => "LFM2.5-Audio 1.5B 4-bit",
+            Self::Kokoro82M => "Kokoro 82M",
             Self::Qwen3Asr06B => "Qwen3-ASR 0.6B",
             Self::Qwen3Asr06B4Bit => "Qwen3-ASR 0.6B 4-bit",
             Self::Qwen3Asr06B8Bit => "Qwen3-ASR 0.6B 8-bit",
@@ -284,6 +289,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B => "LFM2-Audio-1.5B",
             Self::Lfm25Audio15B => "LFM2.5-Audio-1.5B",
             Self::Lfm25Audio15B4Bit => "LFM2.5-Audio-1.5B-4bit",
+            Self::Kokoro82M => "Kokoro-82M",
             Self::Qwen3Asr06B => "Qwen3-ASR-0.6B",
             Self::Qwen3Asr06B4Bit => "Qwen3-ASR-0.6B-4bit",
             Self::Qwen3Asr06B8Bit => "Qwen3-ASR-0.6B-8bit",
@@ -334,6 +340,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B => 3_000_000_000,        // ~2.79 GB (est)
             Self::Lfm25Audio15B => 3_200_000_000,       // ~2.98 GB (est)
             Self::Lfm25Audio15B4Bit => 884_000_000,     // ~0.82 GB
+            Self::Kokoro82M => 363_323_757,            // ~346 MB (HF tree total, Apr 2025)
             Self::Qwen3Asr06B => 1_880_619_678,         // ~1.75 GB
             Self::Qwen3Asr06B4Bit => 712_781_279,       // ~0.66 GB
             Self::Qwen3Asr06B8Bit => 1_010_773_761,     // ~0.94 GB
@@ -383,6 +390,7 @@ impl ModelVariant {
             Self::Qwen3TtsTokenizer12Hz => 1.0,
             Self::Lfm2Audio15B | Self::Lfm25Audio15B => 6.0,
             Self::Lfm25Audio15B4Bit => 4.5,
+            Self::Kokoro82M => 2.0,
             Self::Qwen3Asr06B
             | Self::Qwen3Asr06B4Bit
             | Self::Qwen3Asr06B8Bit
@@ -420,6 +428,11 @@ impl ModelVariant {
         matches!(self.family(), crate::catalog::ModelFamily::Lfm2Audio)
     }
 
+    /// Whether this is a Kokoro TTS model
+    pub fn is_kokoro(&self) -> bool {
+        matches!(self.family(), crate::catalog::ModelFamily::KokoroTts)
+    }
+
     /// Whether this is a Qwen3-ASR model
     pub fn is_asr(&self) -> bool {
         matches!(
@@ -453,12 +466,15 @@ impl ModelVariant {
     }
 
     pub fn is_tts(&self) -> bool {
-        matches!(self.family(), crate::catalog::ModelFamily::Qwen3Tts)
+        matches!(
+            self.family(),
+            crate::catalog::ModelFamily::Qwen3Tts | crate::catalog::ModelFamily::KokoroTts
+        )
     }
 
     /// Max output codec frames for this TTS variant, if known.
     pub fn tts_max_output_frames_hint(&self) -> Option<usize> {
-        if self.is_tts() {
+        if matches!(self.family(), crate::catalog::ModelFamily::Qwen3Tts) {
             Some(Self::QWEN3_TTS_MAX_OUTPUT_FRAMES)
         } else {
             None
@@ -467,7 +483,7 @@ impl ModelVariant {
 
     /// Codec frame-rate hint for this TTS variant, if known.
     pub fn tts_output_frame_rate_hz_hint(&self) -> Option<f32> {
-        if self.is_tts() {
+        if matches!(self.family(), crate::catalog::ModelFamily::Qwen3Tts) {
             Some(Self::QWEN3_TTS_FRAME_RATE_HZ)
         } else {
             None
@@ -567,7 +583,8 @@ impl ModelVariant {
             | Self::Qwen3Tts12Hz17BCustomVoice4Bit
             | Self::Qwen3Tts12Hz17BVoiceDesign4Bit
             | Self::Qwen3ForcedAligner06B4Bit
-            | Self::Lfm25Audio15B4Bit => true,
+            | Self::Lfm25Audio15B4Bit
+            | Self::Kokoro82M => true,
             Self::Gemma34BIt => false,
             Self::Lfm2Audio15B | Self::Lfm25Audio15B => true,
             Self::VoxtralMini4BRealtime2602 => false,
@@ -604,6 +621,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B,
             Self::Lfm25Audio15B,
             Self::Lfm25Audio15B4Bit,
+            Self::Kokoro82M,
             Self::Qwen3Asr06B,
             Self::Qwen3Asr06B4Bit,
             Self::Qwen3Asr06B8Bit,
