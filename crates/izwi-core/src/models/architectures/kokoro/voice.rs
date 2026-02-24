@@ -92,7 +92,11 @@ impl VoiceLibrary {
     }
 }
 
-fn read_single_tensor_pth(path: &Path, device: &candle_core::Device, dtype: DType) -> Result<Tensor> {
+fn read_single_tensor_pth(
+    path: &Path,
+    device: &candle_core::Device,
+    dtype: DType,
+) -> Result<Tensor> {
     let (tensor_info, archive_member_path) = read_single_tensor_info(path)?;
     let tensor = read_tensor_from_zip(path, &tensor_info, &archive_member_path)?;
     let tensor = if tensor.dtype() != dtype {
@@ -206,7 +210,9 @@ fn read_tensor_from_zip(path: &Path, info: &TensorInfo, member_path: &str) -> Re
     let elem_count = info.layout.shape().elem_count();
     let byte_len = elem_count
         .checked_mul(std::mem::size_of::<f32>())
-        .ok_or_else(|| Error::ModelLoadError("Kokoro voice tensor byte length overflow".to_string()))?;
+        .ok_or_else(|| {
+            Error::ModelLoadError("Kokoro voice tensor byte length overflow".to_string())
+        })?;
     let mut raw = vec![0u8; byte_len];
     reader.read_exact(&mut raw)?;
     let mut data = Vec::with_capacity(elem_count);

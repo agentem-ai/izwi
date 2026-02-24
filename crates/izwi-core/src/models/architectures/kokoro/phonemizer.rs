@@ -16,7 +16,11 @@ impl EspeakPhonemizer {
     }
 
     pub fn auto() -> Result<Self> {
-        for candidate in ["/opt/homebrew/bin/espeak-ng", "/usr/local/bin/espeak-ng", "espeak-ng"] {
+        for candidate in [
+            "/opt/homebrew/bin/espeak-ng",
+            "/usr/local/bin/espeak-ng",
+            "espeak-ng",
+        ] {
             if let Some(path) = resolve_bin(candidate) {
                 return Ok(Self::new(path));
             }
@@ -26,7 +30,12 @@ impl EspeakPhonemizer {
         ))
     }
 
-    pub fn phonemize(&self, text: &str, language: Option<&str>, speaker: Option<&str>) -> Result<String> {
+    pub fn phonemize(
+        &self,
+        text: &str,
+        language: Option<&str>,
+        speaker: Option<&str>,
+    ) -> Result<String> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Err(Error::InvalidInput(

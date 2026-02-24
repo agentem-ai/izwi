@@ -1,9 +1,9 @@
 use candle_core::{DType, IndexOp, Tensor};
+use candle_nn::rnn::Direction;
 use candle_nn::{
     ops, Conv1d, Conv1dConfig, ConvTranspose1d, ConvTranspose1dConfig, Linear, Module, VarBuilder,
 };
 use candle_nn::{LSTMConfig, RNN};
-use candle_nn::rnn::Direction;
 
 use crate::error::{Error, Result};
 
@@ -44,21 +44,62 @@ impl KokoroProsodyPredictor {
         let root = vb.pp("module");
         let hidden_dim = cfg.hidden_dim;
         let style_dim = cfg.style_dim;
-        let duration_encoder = DurationEncoder::load(style_dim, hidden_dim, cfg.n_layer, root.pp("text_encoder"))?;
+        let duration_encoder =
+            DurationEncoder::load(style_dim, hidden_dim, cfg.n_layer, root.pp("text_encoder"))?;
         let duration_lstm = BiLstm1::load(hidden_dim + style_dim, hidden_dim / 2, root.pp("lstm"))?;
-        let duration_proj = candle_nn::linear(hidden_dim, cfg.max_dur, root.pp("duration_proj.linear_layer"))
-            .map_err(Error::from)?;
+        let duration_proj = candle_nn::linear(
+            hidden_dim,
+            cfg.max_dur,
+            root.pp("duration_proj.linear_layer"),
+        )
+        .map_err(Error::from)?;
         let shared_lstm = BiLstm1::load(hidden_dim + style_dim, hidden_dim / 2, root.pp("shared"))?;
 
         let mut f0_blocks = Vec::with_capacity(3);
-        f0_blocks.push(AdainResBlk1d::load(hidden_dim, hidden_dim, style_dim, false, root.pp("F0.0"))?);
-        f0_blocks.push(AdainResBlk1d::load(hidden_dim, hidden_dim / 2, style_dim, true, root.pp("F0.1"))?);
-        f0_blocks.push(AdainResBlk1d::load(hidden_dim / 2, hidden_dim / 2, style_dim, false, root.pp("F0.2"))?);
+        f0_blocks.push(AdainResBlk1d::load(
+            hidden_dim,
+            hidden_dim,
+            style_dim,
+            false,
+            root.pp("F0.0"),
+        )?);
+        f0_blocks.push(AdainResBlk1d::load(
+            hidden_dim,
+            hidden_dim / 2,
+            style_dim,
+            true,
+            root.pp("F0.1"),
+        )?);
+        f0_blocks.push(AdainResBlk1d::load(
+            hidden_dim / 2,
+            hidden_dim / 2,
+            style_dim,
+            false,
+            root.pp("F0.2"),
+        )?);
 
         let mut n_blocks = Vec::with_capacity(3);
-        n_blocks.push(AdainResBlk1d::load(hidden_dim, hidden_dim, style_dim, false, root.pp("N.0"))?);
-        n_blocks.push(AdainResBlk1d::load(hidden_dim, hidden_dim / 2, style_dim, true, root.pp("N.1"))?);
-        n_blocks.push(AdainResBlk1d::load(hidden_dim / 2, hidden_dim / 2, style_dim, false, root.pp("N.2"))?);
+        n_blocks.push(AdainResBlk1d::load(
+            hidden_dim,
+            hidden_dim,
+            style_dim,
+            false,
+            root.pp("N.0"),
+        )?);
+        n_blocks.push(AdainResBlk1d::load(
+            hidden_dim,
+            hidden_dim / 2,
+            style_dim,
+            true,
+            root.pp("N.1"),
+        )?);
+        n_blocks.push(AdainResBlk1d::load(
+            hidden_dim / 2,
+            hidden_dim / 2,
+            style_dim,
+            false,
+            root.pp("N.2"),
+        )?);
 
         let f0_proj = load_plain_conv1d(root.pp("F0_proj"), Conv1dConfig::default())?;
         let n_proj = load_plain_conv1d(root.pp("N_proj"), Conv1dConfig::default())?;
@@ -241,7 +282,8 @@ impl DurationEncoder {
                     let bt = cur.transpose(1, 2).map_err(Error::from)?; // [B,T,H]
                     let out = ada.forward(&bt, style)?; // [B,T,H]
                     let out = out.transpose(1, 2).map_err(Error::from)?; // [B,H,T]
-                    cur = Tensor::cat(&[out, style_ch.clone()], 1).map_err(Error::from)?; // [B,H+S,T]
+                    cur = Tensor::cat(&[out, style_ch.clone()], 1).map_err(Error::from)?;
+                    // [B,H+S,T]
                 }
             }
         }
@@ -276,7 +318,10 @@ impl AdaLayerNorm {
         }
         let mean = x.mean_keepdim(2).map_err(Error::from)?;
         let var = x.var_keepdim(2).map_err(Error::from)?;
-        let denom = (var + self.eps).map_err(Error::from)?.sqrt().map_err(Error::from)?;
+        let denom = (var + self.eps)
+            .map_err(Error::from)?
+            .sqrt()
+            .map_err(Error::from)?;
         let xhat = (x.broadcast_sub(&mean).map_err(Error::from)?)
             .broadcast_div(&denom)
             .map_err(Error::from)?;
@@ -320,7 +365,10 @@ impl AdaIN1d {
         }
         let mean = x.mean_keepdim(2).map_err(Error::from)?;
         let var = x.var_keepdim(2).map_err(Error::from)?;
-        let denom = (var + self.eps).map_err(Error::from)?.sqrt().map_err(Error::from)?;
+        let denom = (var + self.eps)
+            .map_err(Error::from)?
+            .sqrt()
+            .map_err(Error::from)?;
         let xhat = (x.broadcast_sub(&mean).map_err(Error::from)?)
             .broadcast_div(&denom)
             .map_err(Error::from)?;
@@ -420,7 +468,11 @@ impl AdainResBlk1d {
     }
 
     fn shortcut(&self, x: &Tensor) -> Result<Tensor> {
-        let mut y = if self.upsample { upsample_nearest_2x_1d(x)? } else { x.clone() };
+        let mut y = if self.upsample {
+            upsample_nearest_2x_1d(x)?
+        } else {
+            x.clone()
+        };
         if self.learned_sc {
             y = self
                 .conv1x1
@@ -469,13 +521,23 @@ impl BiLstm1 {
         let (b, t, _c) = x.dims3().map_err(Error::from)?;
         let x = x.contiguous().map_err(Error::from)?;
         let fwd_states = self.fwd.seq(&x).map_err(Error::from)?;
-        let fwd = self.fwd.states_to_tensor(&fwd_states).map_err(Error::from)?;
+        let fwd = self
+            .fwd
+            .states_to_tensor(&fwd_states)
+            .map_err(Error::from)?;
 
         let rev_idx: Vec<u32> = (0..t as u32).rev().collect();
         let rev_idx = Tensor::new(&rev_idx[..], x.device()).map_err(Error::from)?;
-        let x_rev = x.index_select(&rev_idx, 1).map_err(Error::from)?.contiguous().map_err(Error::from)?;
+        let x_rev = x
+            .index_select(&rev_idx, 1)
+            .map_err(Error::from)?
+            .contiguous()
+            .map_err(Error::from)?;
         let bwd_states = self.bwd.seq(&x_rev).map_err(Error::from)?;
-        let bwd_rev = self.bwd.states_to_tensor(&bwd_states).map_err(Error::from)?;
+        let bwd_rev = self
+            .bwd
+            .states_to_tensor(&bwd_states)
+            .map_err(Error::from)?;
         let bwd = bwd_rev
             .contiguous()
             .map_err(Error::from)?
@@ -496,7 +558,10 @@ impl BiLstm1 {
     }
 }
 
-pub(crate) fn build_alignment_matrix(durations: &[u32], device: &candle_core::Device) -> Result<Tensor> {
+pub(crate) fn build_alignment_matrix(
+    durations: &[u32],
+    device: &candle_core::Device,
+) -> Result<Tensor> {
     let t = durations.len();
     let frames: usize = durations.iter().map(|&v| v as usize).sum();
     let frames = frames.max(1);
@@ -526,9 +591,14 @@ fn upsample_nearest_2x_1d(x: &Tensor) -> Result<Tensor> {
 }
 
 pub(crate) fn load_plain_conv1d(vb: VarBuilder, cfg: Conv1dConfig) -> Result<Conv1d> {
-    let w = vb.get_unchecked_dtype("weight", DType::F32).map_err(Error::from)?;
+    let w = vb
+        .get_unchecked_dtype("weight", DType::F32)
+        .map_err(Error::from)?;
     let b = if vb.contains_tensor("bias") {
-        Some(vb.get_unchecked_dtype("bias", DType::F32).map_err(Error::from)?)
+        Some(
+            vb.get_unchecked_dtype("bias", DType::F32)
+                .map_err(Error::from)?,
+        )
     } else {
         None
     };
@@ -536,10 +606,17 @@ pub(crate) fn load_plain_conv1d(vb: VarBuilder, cfg: Conv1dConfig) -> Result<Con
 }
 
 pub(crate) fn load_weight_norm_conv1d(vb: VarBuilder, cfg: Conv1dConfig) -> Result<Conv1d> {
-    let wv = vb.get_unchecked_dtype("weight_v", DType::F32).map_err(Error::from)?;
-    let wg = vb.get_unchecked_dtype("weight_g", DType::F32).map_err(Error::from)?;
+    let wv = vb
+        .get_unchecked_dtype("weight_v", DType::F32)
+        .map_err(Error::from)?;
+    let wg = vb
+        .get_unchecked_dtype("weight_g", DType::F32)
+        .map_err(Error::from)?;
     let b = if vb.contains_tensor("bias") {
-        Some(vb.get_unchecked_dtype("bias", DType::F32).map_err(Error::from)?)
+        Some(
+            vb.get_unchecked_dtype("bias", DType::F32)
+                .map_err(Error::from)?,
+        )
     } else {
         None
     };
@@ -551,10 +628,17 @@ pub(crate) fn load_weight_norm_conv_transpose1d(
     vb: VarBuilder,
     cfg: ConvTranspose1dConfig,
 ) -> Result<ConvTranspose1d> {
-    let wv = vb.get_unchecked_dtype("weight_v", DType::F32).map_err(Error::from)?;
-    let wg = vb.get_unchecked_dtype("weight_g", DType::F32).map_err(Error::from)?;
+    let wv = vb
+        .get_unchecked_dtype("weight_v", DType::F32)
+        .map_err(Error::from)?;
+    let wg = vb
+        .get_unchecked_dtype("weight_g", DType::F32)
+        .map_err(Error::from)?;
     let b = if vb.contains_tensor("bias") {
-        Some(vb.get_unchecked_dtype("bias", DType::F32).map_err(Error::from)?)
+        Some(
+            vb.get_unchecked_dtype("bias", DType::F32)
+                .map_err(Error::from)?,
+        )
     } else {
         None
     };

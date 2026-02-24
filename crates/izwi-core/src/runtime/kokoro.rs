@@ -21,7 +21,10 @@ impl RuntimeService {
         Self::default_kokoro_variant()
     }
 
-    pub async fn kokoro_tts_generate(&self, request: GenerationRequest) -> Result<GenerationResult> {
+    pub async fn kokoro_tts_generate(
+        &self,
+        request: GenerationRequest,
+    ) -> Result<GenerationResult> {
         let variant = self.resolve_active_kokoro_variant().await;
         self.load_model(variant).await?;
         let model = self

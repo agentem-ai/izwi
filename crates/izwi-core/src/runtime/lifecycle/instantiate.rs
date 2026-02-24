@@ -88,7 +88,9 @@ impl RuntimeService {
                 InstantiatedPayload::None
             }
             ModelFamily::KokoroTts => {
-                self.model_registry.load_kokoro(variant, &model_path).await?;
+                self.model_registry
+                    .load_kokoro(variant, &model_path)
+                    .await?;
                 InstantiatedPayload::None
             }
             ModelFamily::Qwen3Tts => {

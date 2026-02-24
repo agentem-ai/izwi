@@ -4,10 +4,9 @@ use candle_core::pickle::{read_pth_tensor_info, PthTensors};
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let model_dir = args
-        .get(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/Users/lennex/Library/Application Support/izwi/models/Kokoro-82M"));
+    let model_dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| {
+        PathBuf::from("/Users/lennex/Library/Application Support/izwi/models/Kokoro-82M")
+    });
 
     let ckpt = model_dir.join("kokoro-v1_0.pth");
     println!("== checkpoint ==");
@@ -109,7 +108,11 @@ fn main() -> anyhow::Result<()> {
                 println!("tensor count: {}", names.len());
                 for name in names.iter().take(40) {
                     let info = &pth.tensor_infos()[name];
-                    println!("{name} | {:?} | {:?}", info.dtype, info.layout.shape().dims());
+                    println!(
+                        "{name} | {:?} | {:?}",
+                        info.dtype,
+                        info.layout.shape().dims()
+                    );
                 }
                 if names.len() > 40 {
                     println!("... ({} more)", names.len() - 40);
@@ -138,7 +141,11 @@ fn main() -> anyhow::Result<()> {
         Ok(pth) => {
             println!("tensor count: {}", pth.tensor_infos().len());
             for (name, info) in pth.tensor_infos() {
-                println!("{name} | {:?} | {:?}", info.dtype, info.layout.shape().dims());
+                println!(
+                    "{name} | {:?} | {:?}",
+                    info.dtype,
+                    info.layout.shape().dims()
+                );
             }
         }
         Err(err) => println!("error: {err}"),

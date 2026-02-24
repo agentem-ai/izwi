@@ -340,7 +340,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B => 3_000_000_000,        // ~2.79 GB (est)
             Self::Lfm25Audio15B => 3_200_000_000,       // ~2.98 GB (est)
             Self::Lfm25Audio15B4Bit => 884_000_000,     // ~0.82 GB
-            Self::Kokoro82M => 363_323_757,            // ~346 MB (HF tree total, Apr 2025)
+            Self::Kokoro82M => 363_323_757,             // ~346 MB (HF tree total, Apr 2025)
             Self::Qwen3Asr06B => 1_880_619_678,         // ~1.75 GB
             Self::Qwen3Asr06B4Bit => 712_781_279,       // ~0.66 GB
             Self::Qwen3Asr06B8Bit => 1_010_773_761,     // ~0.94 GB
