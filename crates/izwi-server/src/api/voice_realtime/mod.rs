@@ -50,6 +50,17 @@ const DEFAULT_AGENT_SYSTEM_PROMPT: &str =
     "You are a helpful voice assistant. Reply with concise spoken-friendly language. Avoid markdown. Do not output <think> tags or internal reasoning. Return only the final spoken answer. Keep responses brief unless asked for details.";
 const DEFAULT_CHAT_MODEL: &str = "Qwen3-0.6B-4bit";
 const MAX_UTTERANCE_BYTES: usize = 16 * 1024 * 1024;
+const WS_BIN_MAGIC: &[u8; 4] = b"IVWS";
+const WS_BIN_VERSION: u8 = 1;
+const WS_BIN_KIND_CLIENT_PCM16: u8 = 1;
+const WS_BIN_KIND_ASSISTANT_PCM16: u8 = 2;
+const WS_BIN_CLIENT_HEADER_LEN: usize = 16;
+const WS_BIN_ASSISTANT_HEADER_LEN: usize = 24;
+const DEFAULT_STREAM_VAD_THRESHOLD: f32 = 0.02;
+const DEFAULT_STREAM_MIN_SPEECH_MS: u32 = 300;
+const DEFAULT_STREAM_SILENCE_MS: u32 = 900;
+const DEFAULT_STREAM_MAX_UTTERANCE_MS: u32 = 20_000;
+const DEFAULT_STREAM_PRE_ROLL_MS: u32 = 160;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/voice/realtime/ws", get(ws_upgrade))
@@ -71,15 +82,7 @@ enum ClientEvent {
         #[serde(default)]
         system_prompt: Option<String>,
     },
-    InputAudioStart {
-        utterance_id: String,
-        utterance_seq: u64,
-    },
-    InputAudioCommit {
-        utterance_id: String,
-        utterance_seq: u64,
-        #[serde(default)]
-        mime_type: Option<String>,
+    InputStreamStart {
         asr_model_id: String,
         text_model_id: String,
         tts_model_id: String,
@@ -89,7 +92,20 @@ enum ClientEvent {
         asr_language: Option<String>,
         #[serde(default)]
         max_output_tokens: Option<usize>,
+        #[serde(default)]
+        vad_threshold: Option<f32>,
+        #[serde(default)]
+        min_speech_ms: Option<u32>,
+        #[serde(default)]
+        silence_duration_ms: Option<u32>,
+        #[serde(default)]
+        max_utterance_ms: Option<u32>,
+        #[serde(default)]
+        pre_roll_ms: Option<u32>,
+        #[serde(default)]
+        input_sample_rate: Option<u32>,
     },
+    InputStreamStop,
     Interrupt {
         #[serde(default)]
         reason: Option<String>,
@@ -104,7 +120,6 @@ enum ClientEvent {
 struct PendingAudioCommit {
     utterance_id: String,
     utterance_seq: u64,
-    mime_type: Option<String>,
     asr_model_id: String,
     text_model_id: String,
     tts_model_id: String,
@@ -120,11 +135,73 @@ struct ActiveTurn {
     task: tokio::task::JoinHandle<()>,
 }
 
+#[derive(Debug, Clone)]
+struct StreamingInputConfig {
+    asr_model_id: String,
+    text_model_id: String,
+    tts_model_id: String,
+    speaker: Option<String>,
+    asr_language: Option<String>,
+    max_output_tokens: usize,
+    vad_threshold: f32,
+    min_speech_ms: u32,
+    silence_duration_ms: u32,
+    max_utterance_ms: u32,
+    pre_roll_ms: u32,
+    input_sample_rate_hint: Option<u32>,
+}
+
+#[derive(Debug)]
+struct StreamingActiveUtterance {
+    utterance_id: String,
+    utterance_seq: u64,
+    samples_i16: Vec<i16>,
+    voiced_ms: f32,
+    total_ms: f32,
+    silence_ms: f32,
+}
+
+#[derive(Debug)]
+struct StreamingInputState {
+    config: StreamingInputConfig,
+    next_utterance_seq: u64,
+    frame_seq_last: Option<u32>,
+    current_sample_rate: Option<u32>,
+    pre_roll: Vec<i16>,
+    active: Option<StreamingActiveUtterance>,
+}
+
+#[derive(Debug)]
+enum BinaryMessageKind {
+    ClientPcm16Frame {
+        frame_seq: u32,
+        sample_rate: u32,
+        payload: Vec<u8>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UtteranceEndReason {
+    Silence,
+    MaxDuration,
+    StreamStopped,
+}
+
+impl UtteranceEndReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Silence => "silence",
+            Self::MaxDuration => "max_duration",
+            Self::StreamStopped => "stream_stopped",
+        }
+    }
+}
+
 struct ConnectionState {
     system_prompt: String,
     agent_session_id: Option<String>,
     agent_session_system_prompt: Option<String>,
-    pending_audio_commit: Option<PendingAudioCommit>,
+    streaming_input: Option<StreamingInputState>,
     active_turn: Option<ActiveTurn>,
     started: bool,
 }
@@ -135,11 +212,323 @@ impl Default for ConnectionState {
             system_prompt: DEFAULT_AGENT_SYSTEM_PROMPT.to_string(),
             agent_session_id: None,
             agent_session_system_prompt: None,
-            pending_audio_commit: None,
+            streaming_input: None,
             active_turn: None,
             started: false,
         }
     }
+}
+
+#[derive(Debug)]
+struct SpeechStartEvent {
+    utterance_id: String,
+    utterance_seq: u64,
+}
+
+#[derive(Debug)]
+struct StreamingFrameResult {
+    speech_start: Option<SpeechStartEvent>,
+    finalized_utterance: Option<(PendingAudioCommit, Vec<u8>, UtteranceEndReason)>,
+}
+
+impl StreamingInputState {
+    fn new(config: StreamingInputConfig) -> Self {
+        Self {
+            config,
+            next_utterance_seq: 0,
+            frame_seq_last: None,
+            current_sample_rate: None,
+            pre_roll: Vec::new(),
+            active: None,
+        }
+    }
+
+    fn handle_pcm16_frame(
+        &mut self,
+        frame_seq: u32,
+        sample_rate: u32,
+        payload: &[u8],
+    ) -> Result<StreamingFrameResult, String> {
+        if sample_rate < 8_000 || sample_rate > 192_000 {
+            return Err(format!("Invalid input sample_rate {sample_rate}"));
+        }
+        if payload.is_empty() {
+            return Ok(StreamingFrameResult {
+                speech_start: None,
+                finalized_utterance: None,
+            });
+        }
+        if payload.len() % 2 != 0 {
+            return Err("PCM16 payload length must be even".to_string());
+        }
+
+        if let Some(last) = self.frame_seq_last {
+            if frame_seq <= last {
+                debug!("voice ws input frame sequence non-increasing: {frame_seq} <= {last}");
+            }
+        }
+        self.frame_seq_last = Some(frame_seq);
+
+        if let Some(current_sr) = self.current_sample_rate {
+            if current_sr != sample_rate {
+                return Err(format!(
+                    "Input stream sample rate changed mid-stream ({current_sr} -> {sample_rate})"
+                ));
+            }
+        } else {
+            self.current_sample_rate = Some(sample_rate);
+        }
+
+        let samples = pcm16_bytes_to_i16(payload);
+        if samples.is_empty() {
+            return Ok(StreamingFrameResult {
+                speech_start: None,
+                finalized_utterance: None,
+            });
+        }
+
+        let rms = rms_i16(&samples);
+        let frame_ms = (samples.len() as f32 * 1000.0) / (sample_rate as f32);
+        let is_speech = rms >= self.config.vad_threshold;
+
+        let mut result = StreamingFrameResult {
+            speech_start: None,
+            finalized_utterance: None,
+        };
+
+        if is_speech {
+            if self.active.is_none() {
+                let utterance_seq = self.next_utterance_seq.saturating_add(1);
+                self.next_utterance_seq = utterance_seq;
+                let utterance_id = format!("utt-{utterance_seq}");
+
+                let mut capture = StreamingActiveUtterance {
+                    utterance_id: utterance_id.clone(),
+                    utterance_seq,
+                    samples_i16: Vec::new(),
+                    voiced_ms: 0.0,
+                    total_ms: 0.0,
+                    silence_ms: 0.0,
+                };
+                if !self.pre_roll.is_empty() {
+                    capture.samples_i16.extend_from_slice(&self.pre_roll);
+                }
+                capture.samples_i16.extend_from_slice(&samples);
+                capture.voiced_ms += frame_ms;
+                capture.total_ms += frame_ms;
+                self.active = Some(capture);
+
+                result.speech_start = Some(SpeechStartEvent {
+                    utterance_id,
+                    utterance_seq,
+                });
+            } else if let Some(active) = self.active.as_mut() {
+                active.samples_i16.extend_from_slice(&samples);
+                active.voiced_ms += frame_ms;
+                active.total_ms += frame_ms;
+                active.silence_ms = 0.0;
+            }
+        } else if let Some(active) = self.active.as_mut() {
+            active.samples_i16.extend_from_slice(&samples);
+            active.total_ms += frame_ms;
+            active.silence_ms += frame_ms;
+        } else {
+            self.push_pre_roll(&samples, sample_rate);
+            return Ok(result);
+        }
+
+        let should_finalize = if let Some(active) = self.active.as_ref() {
+            if active.total_ms >= self.config.max_utterance_ms as f32 {
+                Some(UtteranceEndReason::MaxDuration)
+            } else if active.voiced_ms >= self.config.min_speech_ms as f32
+                && active.silence_ms >= self.config.silence_duration_ms as f32
+            {
+                Some(UtteranceEndReason::Silence)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(reason) = should_finalize {
+            result.finalized_utterance = self.finalize_active_utterance(reason)?;
+        }
+
+        if !is_speech {
+            self.push_pre_roll(&samples, sample_rate);
+        }
+
+        Ok(result)
+    }
+
+    fn finalize_active_utterance(
+        &mut self,
+        reason: UtteranceEndReason,
+    ) -> Result<Option<(PendingAudioCommit, Vec<u8>, UtteranceEndReason)>, String> {
+        let Some(active) = self.active.take() else {
+            return Ok(None);
+        };
+        let sample_rate = self
+            .current_sample_rate
+            .or(self.config.input_sample_rate_hint)
+            .ok_or_else(|| "Missing input sample rate for streamed audio".to_string())?;
+
+        if active.voiced_ms < self.config.min_speech_ms as f32 {
+            return Ok(None);
+        }
+
+        let wav_bytes = wav_bytes_from_pcm16_mono(&active.samples_i16, sample_rate)?;
+        if wav_bytes.len() > MAX_UTTERANCE_BYTES {
+            return Err(format!(
+                "Streamed utterance exceeded max encoded size ({} > {})",
+                wav_bytes.len(),
+                MAX_UTTERANCE_BYTES
+            ));
+        }
+
+        let commit = PendingAudioCommit {
+            utterance_id: active.utterance_id,
+            utterance_seq: active.utterance_seq,
+            asr_model_id: self.config.asr_model_id.clone(),
+            text_model_id: self.config.text_model_id.clone(),
+            tts_model_id: self.config.tts_model_id.clone(),
+            speaker: self.config.speaker.clone(),
+            asr_language: self.config.asr_language.clone(),
+            max_output_tokens: self.config.max_output_tokens,
+        };
+
+        Ok(Some((commit, wav_bytes, reason)))
+    }
+
+    fn push_pre_roll(&mut self, samples: &[i16], sample_rate: u32) {
+        let max_samples = ((sample_rate as u64 * self.config.pre_roll_ms as u64) / 1000) as usize;
+        if max_samples == 0 {
+            self.pre_roll.clear();
+            return;
+        }
+
+        self.pre_roll.extend_from_slice(samples);
+        if self.pre_roll.len() > max_samples {
+            let drain = self.pre_roll.len() - max_samples;
+            self.pre_roll.drain(0..drain);
+        }
+    }
+}
+
+async fn finalize_stream_vad_utterance(
+    state: &AppState,
+    correlation_id: &str,
+    out_tx: &mpsc::UnboundedSender<Message>,
+    conn: &mut ConnectionState,
+    commit: PendingAudioCommit,
+    wav_bytes: Vec<u8>,
+) -> Result<(), String> {
+    interrupt_active_turn(out_tx, &mut conn.active_turn, "preempted_by_new_turn");
+
+    let agent_session_id = ensure_agent_session(
+        state,
+        &mut conn.agent_session_id,
+        &mut conn.agent_session_system_prompt,
+        &conn.system_prompt,
+        &commit.text_model_id,
+    )
+    .await?;
+
+    let task = spawn_turn_task(
+        state.clone(),
+        correlation_id.to_string(),
+        out_tx.clone(),
+        commit.clone(),
+        wav_bytes,
+        agent_session_id,
+    );
+
+    conn.active_turn = Some(ActiveTurn {
+        utterance_id: commit.utterance_id,
+        utterance_seq: commit.utterance_seq,
+        task,
+    });
+
+    Ok(())
+}
+
+fn parse_binary_message(data: &[u8]) -> Result<BinaryMessageKind, String> {
+    if data.len() < WS_BIN_CLIENT_HEADER_LEN || &data[..4] != WS_BIN_MAGIC {
+        return Err("Unexpected binary message (missing voice realtime frame header)".to_string());
+    }
+
+    let version = data[4];
+    if version != WS_BIN_VERSION {
+        return Err(format!("Unsupported binary frame version {version}"));
+    }
+
+    let kind = data[5];
+    match kind {
+        WS_BIN_KIND_CLIENT_PCM16 => {
+            if data.len() < WS_BIN_CLIENT_HEADER_LEN {
+                return Err("Client PCM16 frame too short".to_string());
+            }
+            let sample_rate = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+            let frame_seq = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
+            Ok(BinaryMessageKind::ClientPcm16Frame {
+                frame_seq,
+                sample_rate,
+                payload: data[WS_BIN_CLIENT_HEADER_LEN..].to_vec(),
+            })
+        }
+        other => Err(format!("Unsupported binary frame kind {other}")),
+    }
+}
+
+fn pcm16_bytes_to_i16(bytes: &[u8]) -> Vec<i16> {
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for chunk in bytes.chunks_exact(2) {
+        out.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+    }
+    out
+}
+
+fn rms_i16(samples: &[i16]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let mut sum = 0.0f64;
+    for &s in samples {
+        let v = s as f64 / 32768.0f64;
+        sum += v * v;
+    }
+    (sum / samples.len() as f64).sqrt() as f32
+}
+
+fn wav_bytes_from_pcm16_mono(samples_i16: &[i16], sample_rate: u32) -> Result<Vec<u8>, String> {
+    if sample_rate == 0 {
+        return Err("Invalid sample rate 0".to_string());
+    }
+    let samples_f32: Vec<f32> = samples_i16.iter().map(|s| *s as f32 / 32768.0).collect();
+    AudioEncoder::new(sample_rate, 1)
+        .encode(&samples_f32, AudioFormat::Wav)
+        .map_err(|err| format!("Failed to encode streamed WAV: {err}"))
+}
+
+fn encode_assistant_audio_binary_frame(
+    utterance_seq: u64,
+    chunk_seq: u32,
+    sample_rate: u32,
+    is_final: bool,
+    payload_pcm16: &[u8],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(WS_BIN_ASSISTANT_HEADER_LEN + payload_pcm16.len());
+    out.extend_from_slice(WS_BIN_MAGIC);
+    out.push(WS_BIN_VERSION);
+    out.push(WS_BIN_KIND_ASSISTANT_PCM16);
+    let flags: u16 = if is_final { 1 } else { 0 };
+    out.extend_from_slice(&flags.to_le_bytes());
+    out.extend_from_slice(&utterance_seq.to_le_bytes());
+    out.extend_from_slice(&chunk_seq.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(payload_pcm16);
+    out
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState, correlation_id: String) {
@@ -243,46 +632,22 @@ async fn handle_text_message(
                 }),
             );
         }
-        ClientEvent::InputAudioStart {
-            utterance_id,
-            utterance_seq,
-        } => {
-            if !conn.started {
-                return Err("Session not started. Send `session_start` first.".to_string());
-            }
-
-            debug!("voice ws input_audio_start: {utterance_id}/{utterance_seq}");
-            // Barge-in: stop any in-flight turn before the new utterance is committed.
-            interrupt_active_turn(out_tx, &mut conn.active_turn, "barge_in");
-            send_json(
-                out_tx,
-                json!({
-                    "type": "listening",
-                    "utterance_id": utterance_id,
-                    "utterance_seq": utterance_seq,
-                }),
-            );
-        }
-        ClientEvent::InputAudioCommit {
-            utterance_id,
-            utterance_seq,
-            mime_type,
+        ClientEvent::InputStreamStart {
             asr_model_id,
             text_model_id,
             tts_model_id,
             speaker,
             asr_language,
             max_output_tokens,
+            vad_threshold,
+            min_speech_ms,
+            silence_duration_ms,
+            max_utterance_ms,
+            pre_roll_ms,
+            input_sample_rate,
         } => {
             if !conn.started {
                 return Err("Session not started. Send `session_start` first.".to_string());
-            }
-
-            if conn.pending_audio_commit.is_some() {
-                return Err(
-                    "Server is already waiting for binary audio payload for a prior commit."
-                        .to_string(),
-                );
             }
 
             if asr_model_id.trim().is_empty()
@@ -295,15 +660,11 @@ async fn handle_text_message(
                 );
             }
 
-            // Validate model ids early so protocol errors return before the binary upload.
             let _ = resolve_chat_model_id(Some(text_model_id.trim()))?;
             parse_tts_model_variant(tts_model_id.trim())
                 .map_err(|err| format!("Unsupported TTS model: {err}"))?;
 
-            conn.pending_audio_commit = Some(PendingAudioCommit {
-                utterance_id,
-                utterance_seq,
-                mime_type,
+            conn.streaming_input = Some(StreamingInputState::new(StreamingInputConfig {
                 asr_model_id: asr_model_id.trim().to_string(),
                 text_model_id: text_model_id.trim().to_string(),
                 tts_model_id: tts_model_id.trim().to_string(),
@@ -312,16 +673,63 @@ async fn handle_text_message(
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty()),
                 max_output_tokens: max_output_tokens.unwrap_or(1536).clamp(1, 4096),
-            });
+                vad_threshold: vad_threshold
+                    .filter(|v| v.is_finite() && *v >= 0.0)
+                    .unwrap_or(DEFAULT_STREAM_VAD_THRESHOLD)
+                    .clamp(0.0, 1.0),
+                min_speech_ms: min_speech_ms
+                    .unwrap_or(DEFAULT_STREAM_MIN_SPEECH_MS)
+                    .clamp(50, 10_000),
+                silence_duration_ms: silence_duration_ms
+                    .unwrap_or(DEFAULT_STREAM_SILENCE_MS)
+                    .clamp(50, 10_000),
+                max_utterance_ms: max_utterance_ms
+                    .unwrap_or(DEFAULT_STREAM_MAX_UTTERANCE_MS)
+                    .clamp(1_000, 120_000),
+                pre_roll_ms: pre_roll_ms
+                    .unwrap_or(DEFAULT_STREAM_PRE_ROLL_MS)
+                    .clamp(0, 2_000),
+                input_sample_rate_hint: input_sample_rate.filter(|sr| *sr >= 8_000 && *sr <= 192_000),
+            }));
 
             send_json(
                 out_tx,
                 json!({
-                    "type": "awaiting_audio_binary",
-                    "utterance_id": conn.pending_audio_commit.as_ref().map(|p| &p.utterance_id),
-                    "utterance_seq": conn.pending_audio_commit.as_ref().map(|p| p.utterance_seq),
+                    "type": "input_stream_ready",
+                    "vad": {
+                        "threshold": conn.streaming_input.as_ref().map(|s| s.config.vad_threshold),
+                        "min_speech_ms": conn.streaming_input.as_ref().map(|s| s.config.min_speech_ms),
+                        "silence_duration_ms": conn.streaming_input.as_ref().map(|s| s.config.silence_duration_ms),
+                    }
                 }),
             );
+        }
+        ClientEvent::InputStreamStop => {
+            if let Some(mut streaming) = conn.streaming_input.take() {
+                if let Some((commit, wav_bytes, end_reason)) =
+                    streaming.finalize_active_utterance(UtteranceEndReason::StreamStopped)?
+                {
+                    send_json(
+                        out_tx,
+                        json!({
+                            "type": "user_speech_end",
+                            "utterance_id": commit.utterance_id,
+                            "utterance_seq": commit.utterance_seq,
+                            "reason": end_reason.as_str(),
+                        }),
+                    );
+                    finalize_stream_vad_utterance(
+                        state,
+                        correlation_id,
+                        out_tx,
+                        conn,
+                        commit,
+                        wav_bytes,
+                    )
+                    .await?;
+                }
+            }
+            send_json(out_tx, json!({ "type": "input_stream_stopped" }));
         }
         ClientEvent::Interrupt { reason } => {
             let reason = reason.unwrap_or_else(|| "client_interrupt".to_string());
@@ -351,56 +759,54 @@ async fn handle_binary_message(
     conn: &mut ConnectionState,
     audio_bytes: Vec<u8>,
 ) -> Result<(), String> {
-    let Some(commit) = conn.pending_audio_commit.take() else {
-        return Err("Unexpected binary message (no pending `input_audio_commit`).".to_string());
-    };
+    match parse_binary_message(&audio_bytes)? {
+        BinaryMessageKind::ClientPcm16Frame {
+            frame_seq,
+            sample_rate,
+            payload,
+        } => {
+            if !conn.started {
+                return Err("Session not started. Send `session_start` first.".to_string());
+            }
+            let Some(streaming) = conn.streaming_input.as_mut() else {
+                return Err(
+                    "Received streaming audio frame before `input_stream_start`.".to_string(),
+                );
+            };
 
-    if audio_bytes.is_empty() {
-        return Err("Received empty binary audio payload.".to_string());
+            let frame_result = streaming.handle_pcm16_frame(frame_seq, sample_rate, &payload)?;
+
+            if let Some(evt) = frame_result.speech_start {
+                if conn.active_turn.is_some() {
+                    interrupt_active_turn(out_tx, &mut conn.active_turn, "barge_in");
+                }
+                send_json(
+                    out_tx,
+                    json!({
+                        "type": "user_speech_start",
+                        "utterance_id": evt.utterance_id,
+                        "utterance_seq": evt.utterance_seq,
+                    }),
+                );
+            }
+
+            if let Some((commit, wav_bytes, end_reason)) = frame_result.finalized_utterance {
+                send_json(
+                    out_tx,
+                    json!({
+                        "type": "user_speech_end",
+                        "utterance_id": commit.utterance_id,
+                        "utterance_seq": commit.utterance_seq,
+                        "reason": end_reason.as_str(),
+                    }),
+                );
+                finalize_stream_vad_utterance(state, correlation_id, out_tx, conn, commit, wav_bytes)
+                    .await?;
+            }
+
+            return Ok(());
+        }
     }
-    if audio_bytes.len() > MAX_UTTERANCE_BYTES {
-        return Err(format!(
-            "Audio payload too large ({} bytes). Max allowed is {} bytes.",
-            audio_bytes.len(),
-            MAX_UTTERANCE_BYTES
-        ));
-    }
-
-    debug!(
-        "voice ws committed audio payload: {} bytes (mime={:?}) for {}/{}",
-        audio_bytes.len(),
-        commit.mime_type,
-        commit.utterance_id,
-        commit.utterance_seq
-    );
-
-    interrupt_active_turn(out_tx, &mut conn.active_turn, "preempted_by_new_turn");
-
-    let agent_session_id = ensure_agent_session(
-        state,
-        &mut conn.agent_session_id,
-        &mut conn.agent_session_system_prompt,
-        &conn.system_prompt,
-        &commit.text_model_id,
-    )
-    .await?;
-
-    let task = spawn_turn_task(
-        state.clone(),
-        correlation_id.to_string(),
-        out_tx.clone(),
-        commit.clone(),
-        audio_bytes,
-        agent_session_id,
-    );
-
-    conn.active_turn = Some(ActiveTurn {
-        utterance_id: commit.utterance_id,
-        utterance_seq: commit.utterance_seq,
-        task,
-    });
-
-    Ok(())
 }
 
 fn spawn_turn_task(
@@ -664,18 +1070,15 @@ async fn stream_tts_to_socket(
             .encode(&chunk.samples, AudioFormat::RawI16)
             .map_err(|err| format!("Failed to encode streamed TTS chunk: {err}"))?;
 
-        send_json(
-            out_tx,
-            json!({
-                "type": "assistant_audio_chunk",
-                "utterance_id": commit.utterance_id,
-                "utterance_seq": commit.utterance_seq,
-                "sequence": chunk.sequence,
-                "audio_base64": base64::engine::general_purpose::STANDARD.encode(encoded),
-                "sample_count": chunk.samples.len(),
-                "is_final": chunk.is_final,
-            }),
+        let chunk_seq = u32::try_from(chunk.sequence).unwrap_or(u32::MAX);
+        let frame = encode_assistant_audio_binary_frame(
+            commit.utterance_seq,
+            chunk_seq,
+            sample_rate,
+            chunk.is_final,
+            &encoded,
         );
+        let _ = out_tx.send(Message::Binary(frame.into()));
     }
 
     match generation_task.await {

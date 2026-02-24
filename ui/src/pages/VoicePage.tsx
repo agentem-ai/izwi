@@ -44,8 +44,23 @@ type PipelineMode = "s2s" | "stt_chat_tts";
 type VoiceRealtimeServerEvent =
   | { type: "connected"; protocol: string; server_time_ms?: number }
   | { type: "session_ready"; protocol: string }
-  | { type: "awaiting_audio_binary"; utterance_id?: string; utterance_seq?: number }
+  | {
+      type: "input_stream_ready";
+      vad?: {
+        threshold?: number;
+        min_speech_ms?: number;
+        silence_duration_ms?: number;
+      };
+    }
+  | { type: "input_stream_stopped" }
   | { type: "listening"; utterance_id: string; utterance_seq: number }
+  | { type: "user_speech_start"; utterance_id: string; utterance_seq: number }
+  | {
+      type: "user_speech_end";
+      utterance_id: string;
+      utterance_seq: number;
+      reason?: "silence" | "max_duration" | "stream_stopped";
+    }
   | { type: "turn_processing"; utterance_id: string; utterance_seq: number }
   | { type: "user_transcript_start"; utterance_id: string; utterance_seq: number }
   | {
@@ -78,15 +93,10 @@ type VoiceRealtimeServerEvent =
       audio_format: "pcm_i16" | "pcm_f32" | "wav";
     }
   | {
-      type: "assistant_audio_chunk";
+      type: "assistant_audio_done";
       utterance_id: string;
       utterance_seq: number;
-      sequence: number;
-      audio_base64: string;
-      sample_count?: number;
-      is_final?: boolean;
     }
-  | { type: "assistant_audio_done"; utterance_id: string; utterance_seq: number }
   | {
       type: "turn_done";
       utterance_id: string;
@@ -104,21 +114,39 @@ type VoiceRealtimeServerEvent =
 
 type VoiceRealtimeClientMessage =
   | { type: "session_start"; system_prompt?: string }
-  | { type: "input_audio_start"; utterance_id: string; utterance_seq: number }
   | {
-      type: "input_audio_commit";
-      utterance_id: string;
-      utterance_seq: number;
-      mime_type?: string;
+      type: "input_stream_start";
       asr_model_id: string;
       text_model_id: string;
       tts_model_id: string;
       speaker?: string;
       asr_language?: string;
       max_output_tokens?: number;
+      vad_threshold?: number;
+      min_speech_ms?: number;
+      silence_duration_ms?: number;
+      max_utterance_ms?: number;
+      pre_roll_ms?: number;
+      input_sample_rate?: number;
     }
+  | { type: "input_stream_stop" }
   | { type: "interrupt"; reason?: string }
   | { type: "ping"; timestamp_ms?: number };
+
+const VOICE_WS_BIN_MAGIC = "IVWS";
+const VOICE_WS_BIN_VERSION = 1;
+const VOICE_WS_BIN_KIND_CLIENT_PCM16 = 1;
+const VOICE_WS_BIN_KIND_ASSISTANT_PCM16 = 2;
+const VOICE_WS_BIN_CLIENT_HEADER_LEN = 16;
+const VOICE_WS_BIN_ASSISTANT_HEADER_LEN = 24;
+
+interface VoiceRealtimeAssistantAudioBinaryChunk {
+  utteranceSeq: number;
+  sequence: number;
+  sampleRate: number;
+  isFinal: boolean;
+  pcm16Bytes: Uint8Array;
+}
 
 interface TranscriptEntry {
   id: string;
@@ -334,6 +362,84 @@ function mergeSampleChunks(chunks: Float32Array[]): Float32Array {
   return merged;
 }
 
+function encodeFloat32ToPcm16Bytes(samples: Float32Array): Uint8Array {
+  const out = new Uint8Array(samples.length * 2);
+  const view = new DataView(out.buffer);
+  for (let i = 0; i < samples.length; i += 1) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]));
+    const int16 = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+    view.setInt16(i * 2, int16, true);
+  }
+  return out;
+}
+
+function encodeVoiceRealtimeClientPcm16Frame(
+  pcm16Bytes: Uint8Array,
+  sampleRate: number,
+  frameSeq: number,
+): Uint8Array {
+  const frame = new Uint8Array(VOICE_WS_BIN_CLIENT_HEADER_LEN + pcm16Bytes.length);
+  frame[0] = VOICE_WS_BIN_MAGIC.charCodeAt(0);
+  frame[1] = VOICE_WS_BIN_MAGIC.charCodeAt(1);
+  frame[2] = VOICE_WS_BIN_MAGIC.charCodeAt(2);
+  frame[3] = VOICE_WS_BIN_MAGIC.charCodeAt(3);
+  frame[4] = VOICE_WS_BIN_VERSION;
+  frame[5] = VOICE_WS_BIN_KIND_CLIENT_PCM16;
+  frame[6] = 0;
+  frame[7] = 0;
+  const view = new DataView(frame.buffer);
+  view.setUint32(8, sampleRate >>> 0, true);
+  view.setUint32(12, frameSeq >>> 0, true);
+  frame.set(pcm16Bytes, VOICE_WS_BIN_CLIENT_HEADER_LEN);
+  return frame;
+}
+
+function parseVoiceRealtimeAssistantAudioBinaryChunk(
+  data: ArrayBuffer,
+): VoiceRealtimeAssistantAudioBinaryChunk | null {
+  if (data.byteLength < VOICE_WS_BIN_ASSISTANT_HEADER_LEN) {
+    return null;
+  }
+  const bytes = new Uint8Array(data);
+  if (
+    String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]) !== VOICE_WS_BIN_MAGIC
+  ) {
+    return null;
+  }
+  const view = new DataView(data);
+  const version = view.getUint8(4);
+  const kind = view.getUint8(5);
+  if (version !== VOICE_WS_BIN_VERSION || kind !== VOICE_WS_BIN_KIND_ASSISTANT_PCM16) {
+    return null;
+  }
+  const flags = view.getUint16(6, true);
+  const utteranceSeq = Number(view.getBigUint64(8, true));
+  const sequence = view.getUint32(16, true);
+  const sampleRate = view.getUint32(20, true);
+  const pcm16Bytes = bytes.slice(VOICE_WS_BIN_ASSISTANT_HEADER_LEN);
+  return {
+    utteranceSeq,
+    sequence,
+    sampleRate,
+    isFinal: (flags & 1) === 1,
+    pcm16Bytes,
+  };
+}
+
+function decodePcmI16Bytes(pcm16Bytes: Uint8Array): Float32Array {
+  const sampleCount = Math.floor(pcm16Bytes.length / 2);
+  const out = new Float32Array(sampleCount);
+  const view = new DataView(
+    pcm16Bytes.buffer,
+    pcm16Bytes.byteOffset,
+    pcm16Bytes.byteLength,
+  );
+  for (let i = 0; i < sampleCount; i += 1) {
+    out[i] = view.getInt16(i * 2, true) / 0x8000;
+  }
+  return out;
+}
+
 function buildVoiceRealtimeWebSocketUrl(apiBaseUrl: string): string {
   const base = new URL(apiBaseUrl, window.location.origin);
   base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
@@ -451,6 +557,8 @@ export function VoicePage({
   const chunksRef = useRef<Blob[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const streamingProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const streamingProcessorSinkRef = useRef<GainNode | null>(null);
   const vadTimerRef = useRef<number | null>(null);
   const speechStartRef = useRef<number | null>(null);
   const silenceMsRef = useRef(0);
@@ -475,11 +583,9 @@ export function VoicePage({
   const voiceWsRef = useRef<WebSocket | null>(null);
   const voiceWsConnectingRef = useRef<Promise<WebSocket> | null>(null);
   const voiceWsSessionReadyRef = useRef(false);
-  const voiceRecorderUtteranceRef = useRef<{
-    id: string;
-    seq: number;
-  } | null>(null);
-  const voiceUtteranceSeqRef = useRef(0);
+  const voiceWsInputStreamStartedRef = useRef(false);
+  const voiceWsInputStreamStartingRef = useRef<Promise<void> | null>(null);
+  const voiceWsInputFrameSeqRef = useRef(0);
   const voiceMinAcceptedAssistantSeqRef = useRef(0);
   const voiceUserEntryIdsRef = useRef<Map<string, string>>(new Map());
   const voiceAssistantEntryIdsRef = useRef<Map<string, string>>(new Map());
@@ -777,6 +883,9 @@ export function VoicePage({
 
   const closeVoiceRealtimeSocket = useCallback((reason?: string) => {
     voiceWsSessionReadyRef.current = false;
+    voiceWsInputStreamStartedRef.current = false;
+    voiceWsInputFrameSeqRef.current = 0;
+    voiceWsInputStreamStartingRef.current = null;
     voiceWsConnectingRef.current = null;
 
     const socket = voiceWsRef.current;
@@ -809,11 +918,39 @@ export function VoicePage({
       vadTimerRef.current = null;
     }
 
+    if (voiceWsRef.current && voiceWsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        voiceWsRef.current.send(
+          JSON.stringify({ type: "input_stream_stop" } satisfies VoiceRealtimeClientMessage),
+        );
+      } catch {
+        // Best-effort during shutdown.
+      }
+    }
+
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state === "recording") {
       recorder.stop();
     }
     mediaRecorderRef.current = null;
+
+    if (streamingProcessorRef.current) {
+      try {
+        streamingProcessorRef.current.disconnect();
+      } catch {
+        // Ignore.
+      }
+      streamingProcessorRef.current.onaudioprocess = null;
+      streamingProcessorRef.current = null;
+    }
+    if (streamingProcessorSinkRef.current) {
+      try {
+        streamingProcessorSinkRef.current.disconnect();
+      } catch {
+        // Ignore.
+      }
+      streamingProcessorSinkRef.current = null;
+    }
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
@@ -836,9 +973,7 @@ export function VoicePage({
     }
 
     closeVoiceRealtimeSocket("session_stopped");
-    voiceRecorderUtteranceRef.current = null;
     voiceWsPlaybackRef.current = null;
-    voiceUtteranceSeqRef.current = 0;
     voiceMinAcceptedAssistantSeqRef.current = 0;
     voiceUserEntryIdsRef.current.clear();
     voiceAssistantEntryIdsRef.current.clear();
@@ -883,6 +1018,14 @@ export function VoicePage({
       throw new Error("Voice realtime websocket is not connected");
     }
     socket.send(JSON.stringify(message));
+  }, []);
+
+  const sendVoiceRealtimeBinary = useCallback((data: Uint8Array) => {
+    const socket = voiceWsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      throw new Error("Voice realtime websocket is not connected");
+    }
+    socket.send(data);
   }, []);
 
   const finalizeVoiceWsPlaybackIfComplete = useCallback(
@@ -932,6 +1075,69 @@ export function VoicePage({
     [],
   );
 
+  const handleVoiceRealtimeAssistantAudioBinaryChunk = useCallback(
+    (chunk: VoiceRealtimeAssistantAudioBinaryChunk) => {
+      const playback = voiceWsPlaybackRef.current;
+      if (!playback) return;
+      if (playback.utteranceSeq !== chunk.utteranceSeq) {
+        return;
+      }
+
+      const context = ttsPlaybackContextRef.current;
+      if (!context) return;
+
+      if (chunk.sampleRate > 0 && ttsSampleRateRef.current !== chunk.sampleRate) {
+        ttsSampleRateRef.current = chunk.sampleRate;
+      }
+
+      const samples = decodePcmI16Bytes(chunk.pcm16Bytes);
+      if (samples.length === 0) return;
+
+      if (!playback.playbackStarted) {
+        playback.playbackStarted = true;
+        processingRef.current = false;
+        if (isSessionActiveRef.current) {
+          setRuntimeStatus("assistant_speaking");
+        }
+      }
+
+      ttsSamplesRef.current.push(samples);
+
+      const buffer = context.createBuffer(1, samples.length, ttsSampleRateRef.current);
+      const samplesForPlayback = new Float32Array(samples.length);
+      samplesForPlayback.set(samples);
+      buffer.copyToChannel(samplesForPlayback, 0);
+
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(context.destination);
+
+      const scheduledAt = Math.max(
+        context.currentTime + 0.02,
+        ttsNextPlaybackTimeRef.current,
+      );
+      source.start(scheduledAt);
+      ttsNextPlaybackTimeRef.current = scheduledAt + buffer.duration;
+
+      const streamSession = playback.streamSession;
+      const utteranceSeq = playback.utteranceSeq;
+      ttsPlaybackSourcesRef.current.add(source);
+      source.onended = () => {
+        ttsPlaybackSourcesRef.current.delete(source);
+        finalizeVoiceWsPlaybackIfComplete(utteranceSeq, streamSession);
+      };
+
+      if (chunk.isFinal) {
+        playback.streamDone = true;
+      }
+
+      if (context.state === "suspended") {
+        context.resume().catch(() => {});
+      }
+    },
+    [finalizeVoiceWsPlaybackIfComplete],
+  );
+
   const handleVoiceRealtimeServerEvent = useCallback(
     (event: VoiceRealtimeServerEvent) => {
       const eventSeq =
@@ -957,11 +1163,30 @@ export function VoicePage({
             setRuntimeStatus("listening");
           }
           return;
-        case "awaiting_audio_binary":
+        case "input_stream_ready":
+          voiceWsInputStreamStartedRef.current = true;
+          return;
+        case "input_stream_stopped":
+          voiceWsInputStreamStartedRef.current = false;
           return;
         case "listening":
           if (isSessionActiveRef.current && runtimeStatusRef.current !== "user_speaking") {
             setRuntimeStatus("listening");
+          }
+          return;
+        case "user_speech_start":
+          voiceMinAcceptedAssistantSeqRef.current = Math.max(
+            voiceMinAcceptedAssistantSeqRef.current,
+            event.utterance_seq,
+          );
+          if (isSessionActiveRef.current) {
+            setRuntimeStatus("user_speaking");
+          }
+          return;
+        case "user_speech_end":
+          processingRef.current = true;
+          if (isSessionActiveRef.current) {
+            setRuntimeStatus("processing");
           }
           return;
         case "turn_processing":
@@ -1064,61 +1289,6 @@ export function VoicePage({
           };
           return;
         }
-        case "assistant_audio_chunk": {
-          const playback = voiceWsPlaybackRef.current;
-          if (!playback) return;
-          if (
-            playback.utteranceId !== event.utterance_id ||
-            playback.utteranceSeq !== event.utterance_seq
-          ) {
-            return;
-          }
-
-          const context = ttsPlaybackContextRef.current;
-          if (!context) return;
-
-          const samples = decodePcmI16Base64(event.audio_base64);
-          if (samples.length === 0) return;
-
-          if (!playback.playbackStarted) {
-            playback.playbackStarted = true;
-            processingRef.current = false;
-            if (isSessionActiveRef.current) {
-              setRuntimeStatus("assistant_speaking");
-            }
-          }
-
-          ttsSamplesRef.current.push(samples);
-
-          const buffer = context.createBuffer(1, samples.length, ttsSampleRateRef.current);
-          const samplesForPlayback = new Float32Array(samples.length);
-          samplesForPlayback.set(samples);
-          buffer.copyToChannel(samplesForPlayback, 0);
-
-          const source = context.createBufferSource();
-          source.buffer = buffer;
-          source.connect(context.destination);
-
-          const scheduledAt = Math.max(
-            context.currentTime + 0.02,
-            ttsNextPlaybackTimeRef.current,
-          );
-          source.start(scheduledAt);
-          ttsNextPlaybackTimeRef.current = scheduledAt + buffer.duration;
-
-          const streamSession = playback.streamSession;
-          const utteranceSeq = playback.utteranceSeq;
-          ttsPlaybackSourcesRef.current.add(source);
-          source.onended = () => {
-            ttsPlaybackSourcesRef.current.delete(source);
-            finalizeVoiceWsPlaybackIfComplete(utteranceSeq, streamSession);
-          };
-
-          if (context.state === "suspended") {
-            context.resume().catch(() => {});
-          }
-          return;
-        }
         case "assistant_audio_done": {
           const playback = voiceWsPlaybackRef.current;
           if (!playback) {
@@ -1210,6 +1380,8 @@ export function VoicePage({
       ws.onopen = () => {
         voiceWsRef.current = ws;
         voiceWsSessionReadyRef.current = false;
+        voiceWsInputStreamStartedRef.current = false;
+        voiceWsInputFrameSeqRef.current = 0;
         try {
           ws.send(
             JSON.stringify({
@@ -1232,9 +1404,23 @@ export function VoicePage({
       };
 
       ws.onmessage = (messageEvent) => {
-        if (typeof messageEvent.data !== "string") {
+        if (messageEvent.data instanceof ArrayBuffer) {
+          const chunk = parseVoiceRealtimeAssistantAudioBinaryChunk(messageEvent.data);
+          if (chunk) {
+            handleVoiceRealtimeAssistantAudioBinaryChunk(chunk);
+          }
           return;
         }
+        if (messageEvent.data instanceof Blob) {
+          void messageEvent.data.arrayBuffer().then((buffer) => {
+            const chunk = parseVoiceRealtimeAssistantAudioBinaryChunk(buffer);
+            if (chunk) {
+              handleVoiceRealtimeAssistantAudioBinaryChunk(chunk);
+            }
+          });
+          return;
+        }
+        if (typeof messageEvent.data !== "string") return;
         try {
           const parsed: unknown = JSON.parse(messageEvent.data);
           if (!isVoiceRealtimeServerEvent(parsed)) {
@@ -1269,6 +1455,9 @@ export function VoicePage({
           voiceWsRef.current = null;
         }
         voiceWsSessionReadyRef.current = false;
+        voiceWsInputStreamStartedRef.current = false;
+        voiceWsInputFrameSeqRef.current = 0;
+        voiceWsInputStreamStartingRef.current = null;
         voiceWsConnectingRef.current = null;
         if (wasActive && wasCurrent) {
           processingRef.current = false;
@@ -1290,7 +1479,66 @@ export function VoicePage({
         voiceWsConnectingRef.current = null;
       }
     }
-  }, [handleVoiceRealtimeServerEvent, onError]);
+  }, [
+    handleVoiceRealtimeAssistantAudioBinaryChunk,
+    handleVoiceRealtimeServerEvent,
+    onError,
+  ]);
+
+  const ensureVoiceRealtimeInputStreamStarted = useCallback(
+    async (inputSampleRate: number) => {
+      if (voiceWsInputStreamStartedRef.current) {
+        return;
+      }
+      if (voiceWsInputStreamStartingRef.current) {
+        return voiceWsInputStreamStartingRef.current;
+      }
+      if (!selectedAsrModel || !selectedTextModel || !selectedTtsModel) {
+        throw new Error("Select ASR, text, and TTS models before starting voice mode.");
+      }
+
+      const startPromise = (async () => {
+        const socket = await ensureVoiceRealtimeSocket();
+        if (socket.readyState !== WebSocket.OPEN) {
+          throw new Error("Voice realtime websocket is not connected");
+        }
+        sendVoiceRealtimeJson({
+          type: "input_stream_start",
+          asr_model_id: selectedAsrModel,
+          text_model_id: selectedTextModel,
+          tts_model_id: selectedTtsModel,
+          speaker: selectedSpeaker,
+          asr_language: "Auto",
+          max_output_tokens: 1536,
+          vad_threshold: vadThreshold,
+          min_speech_ms: minSpeechMs,
+          silence_duration_ms: silenceDurationMs,
+          max_utterance_ms: 20_000,
+          pre_roll_ms: 160,
+          input_sample_rate: Math.round(inputSampleRate),
+        });
+      })();
+
+      voiceWsInputStreamStartingRef.current = startPromise.finally(() => {
+        if (voiceWsInputStreamStartingRef.current === startPromise) {
+          voiceWsInputStreamStartingRef.current = null;
+        }
+      });
+
+      return voiceWsInputStreamStartingRef.current;
+    },
+    [
+      ensureVoiceRealtimeSocket,
+      minSpeechMs,
+      selectedAsrModel,
+      selectedSpeaker,
+      selectedTextModel,
+      selectedTtsModel,
+      sendVoiceRealtimeJson,
+      silenceDurationMs,
+      vadThreshold,
+    ],
+  );
 
   const streamUserTranscription = useCallback(
     (audioBlob: Blob, modelId: string): Promise<string> =>
@@ -1690,72 +1938,6 @@ export function VoicePage({
     [clearAudioPlayback],
   );
 
-  const commitUtteranceViaVoiceRealtime = useCallback(
-    async (
-      audioBlob: Blob,
-      utterance: { id: string; seq: number },
-      currentTurnId: number,
-    ) => {
-      if (!isSessionActiveRef.current || currentTurnId !== turnIdRef.current) {
-        return;
-      }
-
-      if (!selectedAsrModel || !selectedTextModel || !selectedTtsModel) {
-        throw new Error("Select ASR, text, and TTS models before starting voice mode.");
-      }
-      if (!hasRunnableConfig) {
-        throw new Error("Selected models must be loaded. Open Config to manage models.");
-      }
-
-      // Keep backend ASR input format consistent with the previous stable path.
-      const wavBlob = await transcodeToWav(audioBlob, 16000);
-      if (!isSessionActiveRef.current || currentTurnId !== turnIdRef.current) {
-        return;
-      }
-
-      const socket = await ensureVoiceRealtimeSocket();
-      if (!isSessionActiveRef.current || currentTurnId !== turnIdRef.current) {
-        return;
-      }
-      if (socket.readyState !== WebSocket.OPEN) {
-        throw new Error("Voice realtime websocket is not connected");
-      }
-
-      processingRef.current = true;
-      if (isSessionActiveRef.current && runtimeStatusRef.current !== "user_speaking") {
-        setRuntimeStatus("processing");
-      }
-
-      sendVoiceRealtimeJson({
-        type: "input_audio_commit",
-        utterance_id: utterance.id,
-        utterance_seq: utterance.seq,
-        mime_type: wavBlob.type || "audio/wav",
-        asr_model_id: selectedAsrModel,
-        text_model_id: selectedTextModel,
-        tts_model_id: selectedTtsModel,
-        speaker: selectedSpeaker,
-        asr_language: "Auto",
-        max_output_tokens: 1536,
-      });
-
-      const bytes = await wavBlob.arrayBuffer();
-      if (!isSessionActiveRef.current || currentTurnId !== turnIdRef.current) {
-        return;
-      }
-      socket.send(bytes);
-    },
-    [
-      ensureVoiceRealtimeSocket,
-      hasRunnableConfig,
-      selectedAsrModel,
-      selectedSpeaker,
-      selectedTextModel,
-      selectedTtsModel,
-      sendVoiceRealtimeJson,
-    ],
-  );
-
   const processUtterance = useCallback(
     async (audioBlob: Blob) => {
       if (!isSessionActiveRef.current) {
@@ -1972,85 +2154,92 @@ export function VoicePage({
       analyserRef.current = analyser;
 
       let recorder: MediaRecorder | null = null;
-      const mimeCandidates = [
-        "audio/webm;codecs=opus",
-        "audio/webm",
-        "audio/mp4",
-      ];
-      for (const mimeType of mimeCandidates) {
-        if (MediaRecorder.isTypeSupported(mimeType)) {
-          recorder = new MediaRecorder(stream, { mimeType });
-          break;
-        }
-      }
-      if (!recorder) {
-        recorder = new MediaRecorder(stream);
-      }
-
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunksRef.current.push(event.data);
-        }
-      };
-
-      recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, {
-          type: recorder?.mimeType || "audio/webm",
-        });
-        chunksRef.current = [];
-        const utterance = voiceRecorderUtteranceRef.current;
-        voiceRecorderUtteranceRef.current = null;
-
-        if (blob.size < 1200) {
-          processingRef.current = false;
-          if (
-            isSessionActiveRef.current &&
-            runtimeStatusRef.current !== "assistant_speaking"
-          ) {
-            setRuntimeStatus("listening");
+      if (lfm2DirectMode) {
+        const mimeCandidates = [
+          "audio/webm;codecs=opus",
+          "audio/webm",
+          "audio/mp4",
+        ];
+        for (const mimeType of mimeCandidates) {
+          if (MediaRecorder.isTypeSupported(mimeType)) {
+            recorder = new MediaRecorder(stream, { mimeType });
+            break;
           }
-          return;
+        }
+        if (!recorder) {
+          recorder = new MediaRecorder(stream);
         }
 
-        if (lfm2DirectMode) {
-          void processUtterance(blob);
-          return;
-        }
-
-        if (!utterance) {
-          processingRef.current = false;
-          const message = "Missing voice realtime utterance metadata";
-          setError(message);
-          onError?.(message);
-          if (isSessionActiveRef.current) {
-            setRuntimeStatus("listening");
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            chunksRef.current.push(event.data);
           }
-          return;
-        }
+        };
 
-        const turnId = turnIdRef.current + 1;
-        turnIdRef.current = turnId;
+        recorder.onstop = () => {
+          const blob = new Blob(chunksRef.current, {
+            type: recorder?.mimeType || "audio/webm",
+          });
+          chunksRef.current = [];
 
-        void (async () => {
-          try {
-            await commitUtteranceViaVoiceRealtime(blob, utterance, turnId);
-          } catch (err) {
-            if (turnId !== turnIdRef.current) {
-              return;
-            }
-            const message =
-              err instanceof Error ? err.message : "Voice turn failed";
-            setError(message);
-            onError?.(message);
+          if (blob.size < 1200) {
             processingRef.current = false;
-            if (isSessionActiveRef.current) {
+            if (
+              isSessionActiveRef.current &&
+              runtimeStatusRef.current !== "assistant_speaking"
+            ) {
               setRuntimeStatus("listening");
-            } else {
-              setRuntimeStatus("idle");
+            }
+            return;
+          }
+
+          void processUtterance(blob);
+        };
+      } else {
+        const processor = audioContext.createScriptProcessor(2048, 1, 1);
+        const sink = audioContext.createGain();
+        sink.gain.value = 0;
+
+        processor.onaudioprocess = (event) => {
+          if (!isSessionActiveRef.current) return;
+          if (!voiceWsInputStreamStartedRef.current) return;
+
+          const inputBuffer = event.inputBuffer;
+          const channelCount = inputBuffer.numberOfChannels;
+          const frameCount = inputBuffer.length;
+          if (frameCount <= 0 || channelCount <= 0) return;
+
+          const mono = new Float32Array(frameCount);
+          for (let ch = 0; ch < channelCount; ch += 1) {
+            const channel = inputBuffer.getChannelData(ch);
+            for (let i = 0; i < frameCount; i += 1) {
+              mono[i] += (channel[i] ?? 0) / channelCount;
             }
           }
-        })();
-      };
+
+          const pcm16 = encodeFloat32ToPcm16Bytes(mono);
+          const nextSeq = (voiceWsInputFrameSeqRef.current + 1) >>> 0;
+          voiceWsInputFrameSeqRef.current = nextSeq;
+
+          try {
+            sendVoiceRealtimeBinary(
+              encodeVoiceRealtimeClientPcm16Frame(
+                pcm16,
+                Math.round(inputBuffer.sampleRate),
+                nextSeq,
+              ),
+            );
+          } catch {
+            // Best-effort; websocket lifecycle handles reconnect/error surfaces.
+          }
+        };
+
+        source.connect(processor);
+        processor.connect(sink);
+        sink.connect(audioContext.destination);
+        streamingProcessorRef.current = processor;
+        streamingProcessorSinkRef.current = sink;
+      }
 
       mediaRecorderRef.current = recorder;
       isSessionActiveRef.current = true;
@@ -2060,8 +2249,8 @@ export function VoicePage({
       setRuntimeStatus("listening");
 
       if (!lfm2DirectMode) {
-        // Warm up the realtime websocket, but never block microphone startup on network I/O.
-        void ensureVoiceRealtimeSocket().catch((err) => {
+        // Warm up realtime websocket + server-side VAD stream without blocking mic startup.
+        void ensureVoiceRealtimeInputStreamStarted(audioContext.sampleRate).catch((err) => {
           const message =
             err instanceof Error
               ? err.message
@@ -2078,8 +2267,7 @@ export function VoicePage({
       vadTimerRef.current = window.setInterval(() => {
         const analyserNode = analyserRef.current;
         const recorderNode = mediaRecorderRef.current;
-        if (!analyserNode || !recorderNode || !isSessionActiveRef.current)
-          return;
+        if (!analyserNode || !isSessionActiveRef.current) return;
 
         const data = new Uint8Array(analyserNode.fftSize);
         analyserNode.getByteTimeDomainData(data);
@@ -2093,51 +2281,40 @@ export function VoicePage({
         setAudioLevel(rms);
 
         const isSpeech = rms >= vadThreshold;
-        const isRecording = recorderNode.state === "recording";
         const now = Date.now();
+
+        if (!lfm2DirectMode) {
+          if (isSpeech && runtimeStatusRef.current === "assistant_speaking") {
+            const nextAccepted =
+              (voiceWsPlaybackRef.current?.utteranceSeq ?? 0) + 1;
+            voiceMinAcceptedAssistantSeqRef.current = Math.max(
+              voiceMinAcceptedAssistantSeqRef.current,
+              nextAccepted,
+            );
+            try {
+              sendVoiceRealtimeJson({ type: "interrupt", reason: "barge_in" });
+            } catch {
+              // Best-effort; local playback is stopped immediately.
+            }
+            clearAudioPlayback();
+            setRuntimeStatus("listening");
+          }
+          return;
+        }
+
+        if (!recorderNode) return;
+        const isRecording = recorderNode.state === "recording";
 
         if (isSpeech) {
           silenceMsRef.current = 0;
 
           if (runtimeStatusRef.current === "assistant_speaking") {
-            if (!lfm2DirectMode && !isRecording && !processingRef.current) {
-              const nextSeq = voiceUtteranceSeqRef.current + 1;
-              voiceMinAcceptedAssistantSeqRef.current = Math.max(
-                voiceMinAcceptedAssistantSeqRef.current,
-                nextSeq,
-              );
-              try {
-                sendVoiceRealtimeJson({ type: "interrupt", reason: "barge_in" });
-              } catch {
-                // Best-effort; local playback is stopped immediately.
-              }
-            }
             clearAudioPlayback();
             setRuntimeStatus("listening");
           }
 
           if (!isRecording && !processingRef.current) {
             chunksRef.current = [];
-            if (!lfm2DirectMode) {
-              const nextSeq = voiceUtteranceSeqRef.current + 1;
-              voiceUtteranceSeqRef.current = nextSeq;
-              const utterance = {
-                id: `utt-${nextSeq}`,
-                seq: nextSeq,
-              };
-              voiceRecorderUtteranceRef.current = utterance;
-              try {
-                sendVoiceRealtimeJson({
-                  type: "input_audio_start",
-                  utterance_id: utterance.id,
-                  utterance_seq: utterance.seq,
-                });
-              } catch {
-                // Commit path will reconnect/retry if needed.
-              }
-            } else {
-              voiceRecorderUtteranceRef.current = null;
-            }
             recorderNode.start();
             speechStartRef.current = now;
             setRuntimeStatus("user_speaking");
@@ -2173,8 +2350,7 @@ export function VoicePage({
     }
   }, [
     clearAudioPlayback,
-    commitUtteranceViaVoiceRealtime,
-    ensureVoiceRealtimeSocket,
+    ensureVoiceRealtimeInputStreamStarted,
     hasRunnableConfig,
     lfm2DirectMode,
     minSpeechMs,
@@ -2184,6 +2360,7 @@ export function VoicePage({
     selectedS2sModel,
     selectedTextModel,
     selectedTtsModel,
+    sendVoiceRealtimeBinary,
     sendVoiceRealtimeJson,
     silenceDurationMs,
     stopSession,
