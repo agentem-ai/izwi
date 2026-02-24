@@ -481,20 +481,14 @@ export function VoicePage({
     ) {
       const preferredAsr =
         sttAsrModels.find(
-          (m) => m.variant === "Qwen3-ASR-0.6B-4bit" && m.status === "ready",
+          (m) => m.variant === "Qwen3-ASR-0.6B" && m.status === "ready",
         ) ||
         sttAsrModels.find(
-          (m) =>
-            m.variant.includes("Qwen3-ASR-0.6B") &&
-            m.variant.includes("4bit") &&
-            m.status === "ready",
+          (m) => m.variant.includes("Qwen3-ASR-0.6B") && m.status === "ready",
         ) ||
         sttAsrModels.find((m) => m.status === "ready") ||
-        sttAsrModels.find((m) => m.variant === "Qwen3-ASR-0.6B-4bit") ||
-        sttAsrModels.find(
-          (m) =>
-            m.variant.includes("Qwen3-ASR-0.6B") && m.variant.includes("4bit"),
-        ) ||
+        sttAsrModels.find((m) => m.variant === "Qwen3-ASR-0.6B") ||
+        sttAsrModels.find((m) => m.variant.includes("Qwen3-ASR-0.6B")) ||
         sttAsrModels[0];
       setSelectedAsrModel(preferredAsr?.variant ?? null);
     }

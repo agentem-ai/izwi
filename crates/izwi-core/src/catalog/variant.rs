@@ -202,6 +202,7 @@ pub fn resolve_asr_model_variant(input: Option<&str>) -> ModelVariant {
     };
 
     match parse_model_variant(raw) {
+        Ok(Qwen3Asr06B4Bit | Qwen3Asr06B8Bit) => Qwen3Asr06B,
         Ok(variant) if variant.is_asr() || variant.is_voxtral() || variant.is_lfm2() => variant,
         Ok(_) => Qwen3Asr06B,
         Err(_) => {
@@ -295,8 +296,8 @@ fn resolve_by_heuristic(normalized: &str) -> Option<ModelVariant> {
             (true, _, true, _) => Qwen3Asr17B8Bit,
             (true, _, _, true) => Qwen3Asr17BBf16,
             (true, _, _, _) => Qwen3Asr17B,
-            (false, true, _, _) => Qwen3Asr06B4Bit,
-            (false, _, true, _) => Qwen3Asr06B8Bit,
+            (false, true, _, _) => Qwen3Asr06B,
+            (false, _, true, _) => Qwen3Asr06B,
             (false, _, _, true) => Qwen3Asr06BBf16,
             (false, _, _, _) => Qwen3Asr06B,
         });
@@ -484,6 +485,14 @@ mod tests {
     fn resolve_asr_fallback_defaults_to_06b() {
         let resolved = resolve_asr_model_variant(Some("not-a-real-model"));
         assert_eq!(resolved, ModelVariant::Qwen3Asr06B);
+    }
+
+    #[test]
+    fn resolve_asr_demotes_removed_qwen3_06b_quantized_variants() {
+        let q4 = resolve_asr_model_variant(Some("Qwen3-ASR-0.6B-4bit"));
+        let q8 = resolve_asr_model_variant(Some("Qwen3-ASR-0.6B-8bit"));
+        assert_eq!(q4, ModelVariant::Qwen3Asr06B);
+        assert_eq!(q8, ModelVariant::Qwen3Asr06B);
     }
 
     #[test]

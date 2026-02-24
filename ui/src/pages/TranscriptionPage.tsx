@@ -77,7 +77,6 @@ export function TranscriptionPage({
     "LFM2.5-Audio-1.5B-4bit",
     "LFM2.5-Audio-1.5B",
     "LFM2-Audio-1.5B",
-    "Qwen3-ASR-0.6B-4bit",
     "Qwen3-ASR-0.6B",
     "Parakeet-TDT-0.6B-v3-4bit",
     "Parakeet-TDT-0.6B-v3",

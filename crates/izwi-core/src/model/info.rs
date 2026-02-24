@@ -560,7 +560,6 @@ impl ModelVariant {
             | Self::Qwen317B4Bit
             | Self::Qwen317BGguf
             | Self::Gemma31BIt
-            | Self::Qwen3Asr06B4Bit
             | Self::Qwen3Asr17B4Bit
             | Self::Qwen3Tts12Hz06BBase4Bit
             | Self::Qwen3Tts12Hz06BCustomVoice4Bit
@@ -718,5 +717,15 @@ mod tests {
         assert_eq!(variant.tts_max_output_frames_hint(), None);
         assert_eq!(variant.tts_output_frame_rate_hz_hint(), None);
         assert_eq!(variant.tts_max_output_seconds_hint(), None);
+    }
+
+    #[test]
+    fn qwen3_asr_06b_quantized_variants_are_disabled() {
+        let q4 = ModelVariant::Qwen3Asr06B4Bit;
+        let q8 = ModelVariant::Qwen3Asr06B8Bit;
+        assert_eq!(q4.repo_id(), "mlx-community/Qwen3-ASR-0.6B-4bit");
+        assert_eq!(q8.repo_id(), "mlx-community/Qwen3-ASR-0.6B-8bit");
+        assert!(!q4.is_enabled());
+        assert!(!q8.is_enabled());
     }
 }

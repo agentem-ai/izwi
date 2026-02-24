@@ -30,3 +30,5 @@ Cargo.lock
 # Test outputs
 # *.wav
 # *.mp3
+
+/tasks/*
