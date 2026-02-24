@@ -17,6 +17,14 @@ pub struct KokoroProsodyDebugOutput {
     pub n_shape: Vec<usize>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct KokoroProsodyOutput {
+    pub duration_frames: Vec<u32>,
+    pub expanded_frames: usize,
+    pub f0: Tensor,
+    pub n: Tensor,
+}
+
 #[derive(Debug)]
 pub struct KokoroProsodyPredictor {
     duration_encoder: DurationEncoder,
@@ -69,12 +77,12 @@ impl KokoroProsodyPredictor {
         })
     }
 
-    pub fn forward_debug(
+    pub(crate) fn forward(
         &self,
         d_en: &Tensor,      // [B, hidden_dim, T]
         ref_style: &Tensor, // [B, 256]
         speed: f32,
-    ) -> Result<KokoroProsodyDebugOutput> {
+    ) -> Result<KokoroProsodyOutput> {
         let (_b, c, t) = d_en.dims3().map_err(Error::from)?;
         if c != self.hidden_dim {
             return Err(Error::InferenceError(format!(
@@ -125,11 +133,26 @@ impl KokoroProsodyPredictor {
         let en = d_t.matmul(&pred_aln).map_err(Error::from)?; // [B, hidden+style, frames]
         let (f0, n) = self.f0n_train(&en, &style)?;
 
-        Ok(KokoroProsodyDebugOutput {
+        Ok(KokoroProsodyOutput {
             duration_frames: pred_dur,
             expanded_frames,
-            f0_shape: f0.shape().dims().to_vec(),
-            n_shape: n.shape().dims().to_vec(),
+            f0,
+            n,
+        })
+    }
+
+    pub fn forward_debug(
+        &self,
+        d_en: &Tensor,      // [B, hidden_dim, T]
+        ref_style: &Tensor, // [B, 256]
+        speed: f32,
+    ) -> Result<KokoroProsodyDebugOutput> {
+        let out = self.forward(d_en, ref_style, speed)?;
+        Ok(KokoroProsodyDebugOutput {
+            duration_frames: out.duration_frames,
+            expanded_frames: out.expanded_frames,
+            f0_shape: out.f0.shape().dims().to_vec(),
+            n_shape: out.n.shape().dims().to_vec(),
         })
     }
 
@@ -272,14 +295,14 @@ impl AdaLayerNorm {
 }
 
 #[derive(Debug)]
-struct AdaIN1d {
+pub(crate) struct AdaIN1d {
     channels: usize,
     eps: f64,
     fc: Linear,
 }
 
 impl AdaIN1d {
-    fn load(style_dim: usize, channels: usize, vb: VarBuilder) -> Result<Self> {
+    pub(crate) fn load(style_dim: usize, channels: usize, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
             channels,
             eps: 1e-5,
@@ -287,7 +310,7 @@ impl AdaIN1d {
         })
     }
 
-    fn forward(&self, x: &Tensor, style: &Tensor) -> Result<Tensor> {
+    pub(crate) fn forward(&self, x: &Tensor, style: &Tensor) -> Result<Tensor> {
         let (_b, c, _t) = x.dims3().map_err(Error::from)?;
         if c != self.channels {
             return Err(Error::InferenceError(format!(
@@ -314,7 +337,7 @@ impl AdaIN1d {
 }
 
 #[derive(Debug)]
-struct AdainResBlk1d {
+pub(crate) struct AdainResBlk1d {
     norm1: AdaIN1d,
     norm2: AdaIN1d,
     conv1: Conv1d,
@@ -326,7 +349,7 @@ struct AdainResBlk1d {
 }
 
 impl AdainResBlk1d {
-    fn load(
+    pub(crate) fn load(
         dim_in: usize,
         dim_out: usize,
         style_dim: usize,
@@ -389,7 +412,7 @@ impl AdainResBlk1d {
         })
     }
 
-    fn forward(&self, x: &Tensor, style: &Tensor) -> Result<Tensor> {
+    pub(crate) fn forward(&self, x: &Tensor, style: &Tensor) -> Result<Tensor> {
         let shortcut = self.shortcut(x)?;
         let residual = self.residual(x, style)?;
         ((shortcut + residual).map_err(Error::from)? * (1.0f64 / 2.0f64.sqrt()))
@@ -502,7 +525,7 @@ fn upsample_nearest_2x_1d(x: &Tensor) -> Result<Tensor> {
         .map_err(Error::from)
 }
 
-fn load_plain_conv1d(vb: VarBuilder, cfg: Conv1dConfig) -> Result<Conv1d> {
+pub(crate) fn load_plain_conv1d(vb: VarBuilder, cfg: Conv1dConfig) -> Result<Conv1d> {
     let w = vb.get_unchecked_dtype("weight", DType::F32).map_err(Error::from)?;
     let b = if vb.contains_tensor("bias") {
         Some(vb.get_unchecked_dtype("bias", DType::F32).map_err(Error::from)?)
@@ -524,7 +547,7 @@ pub(crate) fn load_weight_norm_conv1d(vb: VarBuilder, cfg: Conv1dConfig) -> Resu
     Ok(Conv1d::new(w, b, cfg))
 }
 
-fn load_weight_norm_conv_transpose1d(
+pub(crate) fn load_weight_norm_conv_transpose1d(
     vb: VarBuilder,
     cfg: ConvTranspose1dConfig,
 ) -> Result<ConvTranspose1d> {
