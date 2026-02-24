@@ -217,6 +217,10 @@ impl AlbertAttention {
             .reshape((b, t, self.num_heads, self.head_dim))
             .map_err(Error::from)?
             .transpose(1, 2)
+            .map_err(Error::from)?
+            .contiguous()
+            .map_err(Error::from)?
+            .reshape((b * self.num_heads, t, self.head_dim))
             .map_err(Error::from)?;
         let k = self
             .key
@@ -225,6 +229,10 @@ impl AlbertAttention {
             .reshape((b, t, self.num_heads, self.head_dim))
             .map_err(Error::from)?
             .transpose(1, 2)
+            .map_err(Error::from)?
+            .contiguous()
+            .map_err(Error::from)?
+            .reshape((b * self.num_heads, t, self.head_dim))
             .map_err(Error::from)?;
         let v = self
             .value
@@ -233,9 +241,17 @@ impl AlbertAttention {
             .reshape((b, t, self.num_heads, self.head_dim))
             .map_err(Error::from)?
             .transpose(1, 2)
+            .map_err(Error::from)?
+            .contiguous()
+            .map_err(Error::from)?
+            .reshape((b * self.num_heads, t, self.head_dim))
             .map_err(Error::from)?;
 
-        let kt = k.transpose(2, 3).map_err(Error::from)?;
+        let kt = k
+            .transpose(1, 2)
+            .map_err(Error::from)?
+            .contiguous()
+            .map_err(Error::from)?;
         let mut scores = q.matmul(&kt).map_err(Error::from)?;
         scores = (scores * (1.0f64 / (self.head_dim as f64).sqrt())).map_err(Error::from)?;
 
@@ -248,14 +264,20 @@ impl AlbertAttention {
             let inv = inv
                 .reshape((b, 1, 1, t))
                 .map_err(Error::from)?
-                .broadcast_as(scores.shape())
+                .broadcast_as((b, self.num_heads, t, t))
+                .map_err(Error::from)?
+                .contiguous()
+                .map_err(Error::from)?
+                .reshape(scores.shape())
                 .map_err(Error::from)?;
             scores = (scores + (inv * -1e4f64).map_err(Error::from)?).map_err(Error::from)?;
         }
 
         let attn = ops::softmax(&scores, D::Minus1).map_err(Error::from)?;
-        let ctx = attn.matmul(&v).map_err(Error::from)?;
+        let ctx = attn.matmul(&v.contiguous().map_err(Error::from)?).map_err(Error::from)?;
         let ctx = ctx
+            .reshape((b, self.num_heads, t, self.head_dim))
+            .map_err(Error::from)?
             .transpose(1, 2)
             .map_err(Error::from)?
             .reshape((b, t, h))
@@ -265,4 +287,3 @@ impl AlbertAttention {
         self.layer_norm.forward(&y).map_err(Error::from)
     }
 }
-
