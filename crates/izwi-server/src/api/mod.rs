@@ -1,6 +1,7 @@
 //! API routes and handlers
 
 pub mod admin;
+pub mod agent;
 pub mod chat;
 pub mod diarization;
 pub mod internal;

@@ -22,7 +22,9 @@ import {
   isKokoroVariant,
   isLfmAudioVariant,
   VIEW_CONFIGS,
+  SPEAKERS,
 } from "../types";
+
 import {
   Select,
   SelectContent,
@@ -68,11 +70,8 @@ interface VoicePageProps {
   onError?: (message: string) => void;
 }
 
-const SYSTEM_PROMPT: ChatMessage = {
-  role: "system",
-  content:
-    "You are a helpful voice assistant. Reply with concise spoken-friendly language. Avoid markdown. Keep responses brief unless asked for details.",
-};
+const VOICE_AGENT_SYSTEM_PROMPT =
+  "You are a helpful voice assistant. Reply with concise spoken-friendly language. Avoid markdown. Keep responses brief unless asked for details.";
 
 const PIPELINE_LABELS: Record<PipelineMode, string> = {
   s2s: "Speech-to-Speech (S2S)",
@@ -131,7 +130,10 @@ function isTtsVariant(variant: string): boolean {
 }
 
 function isCustomVoiceTtsVariant(variant: string): boolean {
-  return (isTtsVariant(variant) && variant.includes("CustomVoice")) || isKokoroVariant(variant);
+  return (
+    (isTtsVariant(variant) && variant.includes("CustomVoice")) ||
+    isKokoroVariant(variant)
+  );
 }
 
 function formatModelVariantLabel(variant: string): string {
@@ -326,7 +328,6 @@ export function VoicePage({
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const [conversation, setConversation] = useState<ChatMessage[]>([]);
   const [audioLevel, setAudioLevel] = useState(0);
 
   const [pipelineMode, setPipelineMode] =
@@ -357,9 +358,9 @@ export function VoicePage({
   const silenceMsRef = useRef(0);
   const processingRef = useRef(false);
   const runtimeStatusRef = useRef<RuntimeStatus>("idle");
-  const conversationRef = useRef<ChatMessage[]>([]);
   const isSessionActiveRef = useRef(false);
   const turnIdRef = useRef(0);
+  const agentSessionIdRef = useRef<string | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
@@ -462,10 +463,6 @@ export function VoicePage({
   }, [runtimeStatus]);
 
   useEffect(() => {
-    conversationRef.current = conversation;
-  }, [conversation]);
-
-  useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [transcript, runtimeStatus]);
 
@@ -482,8 +479,7 @@ export function VoicePage({
     ) {
       const preferredS2s =
         s2sModels.find(
-          (m) =>
-            m.variant === "LFM2.5-Audio-1.5B-4bit" && m.status === "ready",
+          (m) => m.variant === "LFM2.5-Audio-1.5B-4bit" && m.status === "ready",
         ) ||
         s2sModels.find(
           (m) => m.variant === "LFM2.5-Audio-1.5B" && m.status === "ready",
@@ -525,7 +521,9 @@ export function VoicePage({
         textModels.find(
           (m) => m.variant === "Qwen3-0.6B-4bit" && m.status === "ready",
         ) ||
-        textModels.find((m) => m.variant === "Qwen3-0.6B" && m.status === "ready") ||
+        textModels.find(
+          (m) => m.variant === "Qwen3-0.6B" && m.status === "ready",
+        ) ||
         textModels.find(
           (m) => m.variant === "Qwen3-1.7B-4bit" && m.status === "ready",
         ) ||
@@ -805,8 +803,25 @@ export function VoicePage({
     [appendTranscriptEntry, removeTranscriptEntry, setTranscriptEntryText],
   );
 
+  const ensureAgentSession = useCallback(async (modelId: string) => {
+    if (agentSessionIdRef.current) {
+      return agentSessionIdRef.current;
+    }
+
+    const session = await api.createAgentSession({
+      agent_id: "voice-agent",
+      model_id: modelId,
+      system_prompt: VOICE_AGENT_SYSTEM_PROMPT,
+      planning_mode: "auto",
+      title: "Voice Session",
+    });
+
+    agentSessionIdRef.current = session.id;
+    return session.id;
+  }, []);
+
   const streamAssistantResponse = useCallback(
-    (messages: ChatMessage[], modelId: string): Promise<string> =>
+    (userText: string, modelId: string): Promise<string> =>
       new Promise((resolve, reject) => {
         const entryId = makeTranscriptEntryId("assistant");
         let rawText = "";
@@ -830,34 +845,36 @@ export function VoicePage({
           setTranscriptEntryText(entryId, visible);
         };
 
-        chatStreamAbortRef.current = api.chatCompletionsStream(
-          {
-            model_id: modelId,
-            messages,
-            max_tokens: 1536,
-          },
-          {
-            onDelta: (delta) => {
-              rawText += delta;
-              updateVisibleText();
-            },
-            onDone: (message) => {
-              settle(() => {
-                chatStreamAbortRef.current = null;
-                if (message) {
-                  rawText = message;
-                }
+        const abortController = new AbortController();
+        chatStreamAbortRef.current = abortController;
 
-                const finalText = parseFinalAnswer(rawText) || rawText.trim();
-                if (finalText) {
-                  setTranscriptEntryText(entryId, finalText);
-                } else {
-                  removeTranscriptEntry(entryId);
-                }
-                resolve(finalText);
-              });
-            },
-            onError: (errorMessage) => {
+        const run = async () => {
+          try {
+            const sessionId = await ensureAgentSession(modelId);
+            const response = await api.createAgentTurn(
+              sessionId,
+              {
+                input: userText,
+                model_id: modelId,
+                max_output_tokens: 1536,
+              },
+              abortController.signal,
+            );
+
+            rawText = response.assistant_text ?? "";
+            updateVisibleText();
+            settle(() => {
+              chatStreamAbortRef.current = null;
+              const finalText = parseFinalAnswer(rawText) || rawText.trim();
+              if (finalText) {
+                setTranscriptEntryText(entryId, finalText);
+              } else {
+                removeTranscriptEntry(entryId);
+              }
+              resolve(finalText);
+            });
+          } catch (error) {
+            if ((error as Error).name === "AbortError") {
               settle(() => {
                 chatStreamAbortRef.current = null;
                 const finalText = parseFinalAnswer(rawText) || rawText.trim();
@@ -866,13 +883,36 @@ export function VoicePage({
                 } else {
                   removeTranscriptEntry(entryId);
                 }
-                reject(new Error(errorMessage));
+                reject(error as Error);
               });
-            },
-          },
-        );
+              return;
+            }
+
+            settle(() => {
+              chatStreamAbortRef.current = null;
+              const finalText = parseFinalAnswer(rawText) || rawText.trim();
+              if (finalText) {
+                setTranscriptEntryText(entryId, finalText);
+              } else {
+                removeTranscriptEntry(entryId);
+              }
+              reject(
+                error instanceof Error
+                  ? error
+                  : new Error("Agent response failed"),
+              );
+            });
+          }
+        };
+
+        run();
       }),
-    [appendTranscriptEntry, removeTranscriptEntry, setTranscriptEntryText],
+    [
+      appendTranscriptEntry,
+      ensureAgentSession,
+      removeTranscriptEntry,
+      setTranscriptEntryText,
+    ],
   );
 
   const streamAssistantSpeech = useCallback(
@@ -1180,18 +1220,6 @@ export function VoicePage({
             });
           }
 
-          if (userText || assistantText) {
-            setConversation((prev) => [
-              ...prev,
-              ...(userText
-                ? [{ role: "user", content: userText } as ChatMessage]
-                : []),
-              ...(assistantText
-                ? [{ role: "assistant", content: assistantText } as ChatMessage]
-                : []),
-            ]);
-          }
-
           await playAssistantBlob(response.audioBlob, turnId);
           return;
         }
@@ -1212,14 +1240,8 @@ export function VoicePage({
           return;
         }
 
-        const requestMessages: ChatMessage[] = [
-          SYSTEM_PROMPT,
-          ...conversationRef.current,
-          { role: "user", content: userText },
-        ];
-
         const assistantText = await streamAssistantResponse(
-          requestMessages,
+          userText,
           selectedTextModel!,
         );
         if (turnId !== turnIdRef.current || !isSessionActiveRef.current) return;
@@ -1230,12 +1252,6 @@ export function VoicePage({
           }
           return;
         }
-
-        setConversation((prev) => [
-          ...prev,
-          { role: "user", content: userText },
-          { role: "assistant", content: assistantText },
-        ]);
 
         await streamAssistantSpeech(
           assistantText,

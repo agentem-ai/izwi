@@ -170,6 +170,60 @@ export interface ChatThreadStreamCallbacks {
 }
 
 // ============================================================================
+// Agent API Types (minimal MVP)
+// ============================================================================
+
+export type AgentPlanningMode = "off" | "auto" | "on";
+
+export interface AgentSessionCreateRequest {
+  agent_id?: string;
+  model_id?: string;
+  system_prompt?: string;
+  planning_mode?: AgentPlanningMode;
+  title?: string;
+}
+
+export interface AgentSession {
+  id: string;
+  agent_id: string;
+  thread_id: string;
+  model_id: string;
+  planning_mode: AgentPlanningMode;
+  created_at: number;
+  updated_at: number;
+}
+
+export type AgentEvent =
+  | { event: "turn_started"; session_id: string; thread_id: string }
+  | { event: "plan_created"; steps: string[] }
+  | { event: "tool_call_started"; name: string }
+  | { event: "tool_call_completed"; name: string; output: string }
+  | { event: "assistant_message"; content: string }
+  | { event: "turn_completed"; session_id: string; thread_id: string };
+
+export interface AgentToolCallRecord {
+  name: string;
+  input_summary: string;
+  output: string;
+}
+
+export interface AgentTurnRequest {
+  input: string;
+  model_id?: string;
+  max_output_tokens?: number;
+}
+
+export interface AgentTurnResponse {
+  session_id: string;
+  thread_id: string;
+  model_id: string;
+  assistant_text: string;
+  plan: { mode: AgentPlanningMode; steps: string[] } | null;
+  tool_calls: AgentToolCallRecord[];
+  events: AgentEvent[];
+}
+
+// ============================================================================
 // Responses API Types
 // ============================================================================
 
@@ -2453,6 +2507,45 @@ class ApiClient {
 
     startStream();
     return abortController;
+  }
+
+  // ========================================================================
+  // Agent API (minimal MVP)
+  // ========================================================================
+
+  async createAgentSession(
+    request: AgentSessionCreateRequest,
+  ): Promise<AgentSession> {
+    return this.request("/agent/sessions", {
+      method: "POST",
+      body: JSON.stringify({
+        agent_id: request.agent_id,
+        model_id: request.model_id,
+        system_prompt: request.system_prompt,
+        planning_mode: request.planning_mode,
+        title: request.title,
+      }),
+    });
+  }
+
+  async getAgentSession(sessionId: string): Promise<AgentSession> {
+    return this.request(`/agent/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  async createAgentTurn(
+    sessionId: string,
+    request: AgentTurnRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentTurnResponse> {
+    return this.request(`/agent/sessions/${encodeURIComponent(sessionId)}/turns`, {
+      method: "POST",
+      body: JSON.stringify({
+        input: request.input,
+        model_id: request.model_id,
+        max_output_tokens: request.max_output_tokens,
+      }),
+      signal,
+    });
   }
 
   // ========================================================================

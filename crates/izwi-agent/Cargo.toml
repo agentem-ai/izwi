@@ -1,0 +1,15 @@
+[package]
+name = "izwi-agent"
+description = "Minimal agent framework primitives and engine for Izwi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true }
