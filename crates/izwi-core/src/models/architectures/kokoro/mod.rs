@@ -6,6 +6,7 @@
 
 mod albert;
 mod config;
+mod decoder;
 mod phonemizer;
 mod prosody;
 mod text_encoder;
@@ -17,7 +18,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use candle_core::pickle::read_pth_tensor_info;
-use candle_core::{DType, Tensor};
+use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
 use tracing::info;
 
@@ -25,7 +26,9 @@ use crate::error::{Error, Result};
 use crate::models::shared::device::DeviceProfile;
 
 use self::phonemizer::EspeakPhonemizer;
-use self::prosody::{build_alignment_matrix, KokoroProsodyDebugOutput, KokoroProsodyPredictor};
+use self::prosody::{
+    build_alignment_matrix, KokoroProsodyDebugOutput, KokoroProsodyOutput, KokoroProsodyPredictor,
+};
 use self::text_encoder::KokoroTextEncoder;
 use self::voice::VoiceLibrary;
 
@@ -57,6 +60,13 @@ pub struct KokoroPredecoderDebugOutput {
     pub asr_shape: Vec<usize>,
 }
 
+#[derive(Debug, Clone)]
+struct KokoroPredecoderOutput {
+    prosody: KokoroProsodyOutput,
+    text_encoder_shape: Vec<usize>,
+    asr: Tensor,
+}
+
 #[derive(Debug)]
 pub struct KokoroTtsModel {
     model_dir: PathBuf,
@@ -68,6 +78,7 @@ pub struct KokoroTtsModel {
     bert_encoder: Linear,
     prosody: KokoroProsodyPredictor,
     text_encoder: KokoroTextEncoder,
+    decoder: decoder::KokoroDecoder,
     phonemizer: EspeakPhonemizer,
     voices: VoiceLibrary,
     checkpoint_tensor_counts: HashMap<String, usize>,
@@ -177,6 +188,22 @@ impl KokoroTtsModel {
             })?;
             KokoroTextEncoder::load(&config, vb)?
         };
+        let decoder = {
+            let vb = VarBuilder::from_pth_with_state(
+                &checkpoint_path,
+                dtype,
+                "decoder",
+                &device.device,
+            )
+            .map_err(|e| {
+                Error::ModelLoadError(format!(
+                    "Failed to create Kokoro decoder VarBuilder for {}: {}",
+                    checkpoint_path.display(),
+                    e
+                ))
+            })?;
+            decoder::KokoroDecoder::load(&config, vb)?
+        };
 
         info!(
             "Loaded Kokoro scaffolding from {:?} (phonemizer={}, submodules={:?})",
@@ -195,6 +222,7 @@ impl KokoroTtsModel {
             bert_encoder,
             prosody,
             text_encoder,
+            decoder,
             phonemizer,
             voices,
             checkpoint_tensor_counts,
@@ -255,24 +283,23 @@ impl KokoroTtsModel {
         speed: f32,
     ) -> Result<KokoroSynthesisResult> {
         let prepared = self.prepare_request(text, speaker, language, speed)?;
-        let predecoder = self.run_predecoder_debug(&prepared)?;
-
-        // Native neural inference path (ALBERT + prosody + ISTFTNet) is still being
-        // ported into Candle. Keep this error inside the isolated Kokoro module so
-        // runtime routing and model loading stay correct.
-        Err(Error::InferenceError(format!(
-            "Kokoro native Candle inference path is not fully implemented yet (prepared {} phonemes / {} tokens, style {:?}, speed {:.2}; duration_frames={}, expanded_frames={}, F0={:?}, N={:?}, text_encoder={:?}, asr={:?})",
-            prepared.phonemes.chars().count(),
-            prepared.token_ids.len(),
-            prepared.ref_style.shape().dims(),
-            prepared.speed,
-            predecoder.prosody.duration_frames.len(),
-            predecoder.prosody.expanded_frames,
-            predecoder.prosody.f0_shape,
-            predecoder.prosody.n_shape,
-            predecoder.text_encoder_shape,
-            predecoder.asr_shape,
-        )))
+        let predecoder = self.run_predecoder(&prepared)?;
+        let style = prepared
+            .ref_style
+            .i((.., 0..self.config.style_dim))
+            .map_err(Error::from)?;
+        let samples = self.decoder.forward(
+            &predecoder.asr,
+            &predecoder.prosody.f0,
+            &predecoder.prosody.n,
+            &style,
+        )?;
+        Ok(KokoroSynthesisResult {
+            tokens_generated: prepared.token_ids.len(),
+            phonemes: prepared.phonemes,
+            sample_rate: KokoroConfig::TARGET_SAMPLE_RATE,
+            samples,
+        })
     }
 
     pub fn config(&self) -> &KokoroConfig {
@@ -309,12 +336,43 @@ impl KokoroTtsModel {
             .forward_debug(&d_en, &prepared.ref_style, prepared.speed)
     }
 
+    fn run_bert_prosody(
+        &self,
+        prepared: &KokoroPreparedRequest,
+    ) -> Result<KokoroProsodyOutput> {
+        let input_ids = self.build_model_input_ids(prepared)?;
+        let (_b, seq_len) = input_ids.dims2().map_err(Error::from)?;
+        let attention_mask = Tensor::ones((1, seq_len), DType::U32, &self.device.device)?;
+        let bert_hidden = self.bert.forward(&input_ids, Some(&attention_mask))?;
+        let d_en = self
+            .bert_encoder
+            .forward(&bert_hidden)
+            .map_err(Error::from)?
+            .transpose(1, 2)
+            .map_err(Error::from)?;
+        self.prosody.forward(&d_en, &prepared.ref_style, prepared.speed)
+    }
+
     pub fn run_predecoder_debug(
         &self,
         prepared: &KokoroPreparedRequest,
     ) -> Result<KokoroPredecoderDebugOutput> {
+        let out = self.run_predecoder(prepared)?;
+        Ok(KokoroPredecoderDebugOutput {
+            prosody: KokoroProsodyDebugOutput {
+                duration_frames: out.prosody.duration_frames.clone(),
+                expanded_frames: out.prosody.expanded_frames,
+                f0_shape: out.prosody.f0.shape().dims().to_vec(),
+                n_shape: out.prosody.n.shape().dims().to_vec(),
+            },
+            text_encoder_shape: out.text_encoder_shape,
+            asr_shape: out.asr.shape().dims().to_vec(),
+        })
+    }
+
+    fn run_predecoder(&self, prepared: &KokoroPreparedRequest) -> Result<KokoroPredecoderOutput> {
         let input_ids = self.build_model_input_ids(prepared)?;
-        let prosody = self.run_bert_prosody_debug(prepared)?;
+        let prosody = self.run_bert_prosody(prepared)?;
         let pred_aln = build_alignment_matrix(&prosody.duration_frames, &self.device.device)?;
         let t_en = self.text_encoder.forward(&input_ids)?;
         let asr = t_en
@@ -322,10 +380,11 @@ impl KokoroTtsModel {
             .map_err(Error::from)?
             .matmul(&pred_aln.contiguous().map_err(Error::from)?)
             .map_err(Error::from)?;
-        Ok(KokoroPredecoderDebugOutput {
+        let text_encoder_shape = t_en.shape().dims().to_vec();
+        Ok(KokoroPredecoderOutput {
             prosody,
-            text_encoder_shape: t_en.shape().dims().to_vec(),
-            asr_shape: asr.shape().dims().to_vec(),
+            text_encoder_shape,
+            asr,
         })
     }
 
@@ -537,5 +596,25 @@ mod tests {
         assert_eq!(debug.text_encoder_shape.len(), 3);
         assert_eq!(debug.asr_shape.len(), 3);
         assert!(debug.prosody.expanded_frames > 0);
+    }
+
+    #[test]
+    fn kokoro_local_generate_smoke_if_env_set() {
+        let Some(model_dir) = std::env::var_os("IZWI_KOKORO_MODEL_DIR") else {
+            return;
+        };
+
+        let device = DeviceSelector::detect_with_preference(Some("cpu"))
+            .expect("detect cpu device for Kokoro generate smoke");
+        let model = KokoroTtsModel::load(Path::new(&model_dir), device)
+            .expect("load local Kokoro model");
+        let result = model
+            .generate("Hello world.", Some("af_heart"), Some("en-US"), 1.0)
+            .expect("run Kokoro generate");
+
+        assert_eq!(result.sample_rate, KokoroConfig::TARGET_SAMPLE_RATE);
+        assert!(!result.samples.is_empty());
+        assert!(result.samples.iter().all(|v| v.is_finite()));
+        assert!(result.samples.len() > 100);
     }
 }
