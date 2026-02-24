@@ -423,14 +423,14 @@ impl AdainResBlk1d {
 }
 
 #[derive(Debug)]
-struct BiLstm1 {
+pub(crate) struct BiLstm1 {
     fwd: candle_nn::LSTM,
     bwd: candle_nn::LSTM,
     hidden_dim: usize,
 }
 
 impl BiLstm1 {
-    fn load(input_dim: usize, hidden_dim: usize, vb: VarBuilder) -> Result<Self> {
+    pub(crate) fn load(input_dim: usize, hidden_dim: usize, vb: VarBuilder) -> Result<Self> {
         let mut cfg_f = LSTMConfig::default();
         cfg_f.direction = Direction::Forward;
         let mut cfg_b = LSTMConfig::default();
@@ -442,7 +442,7 @@ impl BiLstm1 {
         })
     }
 
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+    pub(crate) fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let (b, t, _c) = x.dims3().map_err(Error::from)?;
         let x = x.contiguous().map_err(Error::from)?;
         let fwd_states = self.fwd.seq(&x).map_err(Error::from)?;
@@ -473,7 +473,7 @@ impl BiLstm1 {
     }
 }
 
-fn build_alignment_matrix(durations: &[u32], device: &candle_core::Device) -> Result<Tensor> {
+pub(crate) fn build_alignment_matrix(durations: &[u32], device: &candle_core::Device) -> Result<Tensor> {
     let t = durations.len();
     let frames: usize = durations.iter().map(|&v| v as usize).sum();
     let frames = frames.max(1);
@@ -512,7 +512,7 @@ fn load_plain_conv1d(vb: VarBuilder, cfg: Conv1dConfig) -> Result<Conv1d> {
     Ok(Conv1d::new(w, b, cfg))
 }
 
-fn load_weight_norm_conv1d(vb: VarBuilder, cfg: Conv1dConfig) -> Result<Conv1d> {
+pub(crate) fn load_weight_norm_conv1d(vb: VarBuilder, cfg: Conv1dConfig) -> Result<Conv1d> {
     let wv = vb.get_unchecked_dtype("weight_v", DType::F32).map_err(Error::from)?;
     let wg = vb.get_unchecked_dtype("weight_g", DType::F32).map_err(Error::from)?;
     let b = if vb.contains_tensor("bias") {
@@ -539,7 +539,7 @@ fn load_weight_norm_conv_transpose1d(
     Ok(ConvTranspose1d::new(w, b, cfg))
 }
 
-fn fuse_weight_norm_dim0(weight_v: &Tensor, weight_g: &Tensor) -> Result<Tensor> {
+pub(crate) fn fuse_weight_norm_dim0(weight_v: &Tensor, weight_g: &Tensor) -> Result<Tensor> {
     let rank = weight_v.rank();
     let sq = (weight_v * weight_v).map_err(Error::from)?;
     let norm = match rank {
