@@ -494,7 +494,7 @@ fn inspect_and_validate_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::shared::device::DeviceSelector;
+    use crate::models::shared::device::{DeviceKind, DeviceSelector};
     use std::path::Path;
 
     #[test]
@@ -616,5 +616,29 @@ mod tests {
         assert!(!result.samples.is_empty());
         assert!(result.samples.iter().all(|v| v.is_finite()));
         assert!(result.samples.len() > 100);
+    }
+
+    #[test]
+    fn kokoro_local_generate_metal_smoke_if_env_set() {
+        let Some(model_dir) = std::env::var_os("IZWI_KOKORO_MODEL_DIR") else {
+            return;
+        };
+
+        let Ok(device) = DeviceSelector::detect_with_preference(Some("metal")) else {
+            return;
+        };
+        if device.kind != DeviceKind::Metal {
+            return;
+        }
+
+        let model = KokoroTtsModel::load(Path::new(&model_dir), device)
+            .expect("load local Kokoro model on Metal");
+        let result = model
+            .generate("Hello my name is Bella", Some("af_bella"), Some("en-US"), 1.0)
+            .expect("run Kokoro generate on Metal");
+
+        assert_eq!(result.sample_rate, KokoroConfig::TARGET_SAMPLE_RATE);
+        assert!(!result.samples.is_empty());
+        assert!(result.samples.iter().all(|v| v.is_finite()));
     }
 }
