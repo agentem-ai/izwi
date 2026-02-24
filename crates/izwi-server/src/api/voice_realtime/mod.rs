@@ -564,14 +564,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, correlation_id: Strin
 
         match message {
             Message::Text(text) => {
-                if let Err(err) = handle_text_message(
-                    &state,
-                    &correlation_id,
-                    &out_tx,
-                    &mut conn,
-                    text.as_str(),
-                )
-                .await
+                if let Err(err) =
+                    handle_text_message(&state, &correlation_id, &out_tx, &mut conn, text.as_str())
+                        .await
                 {
                     send_error(&out_tx, None, None, err);
                 }
@@ -668,7 +663,9 @@ async fn handle_text_message(
                 asr_model_id: asr_model_id.trim().to_string(),
                 text_model_id: text_model_id.trim().to_string(),
                 tts_model_id: tts_model_id.trim().to_string(),
-                speaker: speaker.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+                speaker: speaker
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
                 asr_language: asr_language
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty()),
@@ -689,7 +686,8 @@ async fn handle_text_message(
                 pre_roll_ms: pre_roll_ms
                     .unwrap_or(DEFAULT_STREAM_PRE_ROLL_MS)
                     .clamp(0, 2_000),
-                input_sample_rate_hint: input_sample_rate.filter(|sr| *sr >= 8_000 && *sr <= 192_000),
+                input_sample_rate_hint: input_sample_rate
+                    .filter(|sr| *sr >= 8_000 && *sr <= 192_000),
             }));
 
             send_json(
@@ -800,8 +798,15 @@ async fn handle_binary_message(
                         "reason": end_reason.as_str(),
                     }),
                 );
-                finalize_stream_vad_utterance(state, correlation_id, out_tx, conn, commit, wav_bytes)
-                    .await?;
+                finalize_stream_vad_utterance(
+                    state,
+                    correlation_id,
+                    out_tx,
+                    conn,
+                    commit,
+                    wav_bytes,
+                )
+                .await?;
             }
 
             return Ok(());
@@ -853,7 +858,8 @@ fn spawn_turn_task(
                 let tx = out_tx.clone();
                 let utt_id = commit.utterance_id.clone();
                 let utt_seq = commit.utterance_seq;
-                state.runtime
+                state
+                    .runtime
                     .asr_transcribe_streaming_with_correlation(
                         &audio_base64,
                         Some(&commit.asr_model_id),
@@ -1175,7 +1181,8 @@ async fn run_agent_turn(
 ) -> Result<String, String> {
     let session_record = {
         let store = state.agent_session_store.read().await;
-        store.get(session_id)
+        store
+            .get(session_id)
             .cloned()
             .ok_or_else(|| "Agent session not found".to_string())?
     };
@@ -1247,8 +1254,8 @@ fn resolve_chat_model_id(raw: Option<&str>) -> Result<String, String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(DEFAULT_CHAT_MODEL);
-    let variant =
-        parse_chat_model_variant(Some(requested)).map_err(|err| format!("Invalid chat model: {err}"))?;
+    let variant = parse_chat_model_variant(Some(requested))
+        .map_err(|err| format!("Invalid chat model: {err}"))?;
     Ok(variant.dir_name().to_string())
 }
 
