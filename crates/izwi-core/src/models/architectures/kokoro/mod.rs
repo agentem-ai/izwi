@@ -4,8 +4,10 @@
 //! voice-pack handling, and future Candle inference implementation from the
 //! generic runtime orchestration layer.
 
+mod albert;
 mod config;
 mod phonemizer;
+mod prosody;
 mod voice;
 
 pub use config::KokoroConfig;
@@ -15,13 +17,14 @@ use std::path::{Path, PathBuf};
 
 use candle_core::pickle::read_pth_tensor_info;
 use candle_core::{DType, Tensor};
-use candle_nn::VarBuilder;
+use candle_nn::{Linear, Module, VarBuilder};
 use tracing::info;
 
 use crate::error::{Error, Result};
 use crate::models::shared::device::DeviceProfile;
 
 use self::phonemizer::EspeakPhonemizer;
+use self::prosody::{KokoroProsodyDebugOutput, KokoroProsodyPredictor};
 use self::voice::VoiceLibrary;
 
 const CHECKPOINT_FILE: &str = "kokoro-v1_0.pth";
@@ -52,6 +55,9 @@ pub struct KokoroTtsModel {
     config: KokoroConfig,
     device: DeviceProfile,
     dtype: DType,
+    bert: albert::CustomAlbert,
+    bert_encoder: Linear,
+    prosody: KokoroProsodyPredictor,
     phonemizer: EspeakPhonemizer,
     voices: VoiceLibrary,
     checkpoint_tensor_counts: HashMap<String, usize>,
@@ -97,6 +103,54 @@ impl KokoroTtsModel {
 
         let phonemizer = EspeakPhonemizer::auto()?;
         let voices = VoiceLibrary::new(voices_dir, device.device.clone(), dtype)?;
+        let bert = {
+            let vb = VarBuilder::from_pth_with_state(&checkpoint_path, dtype, "bert", &device.device)
+                .map_err(|e| {
+                    Error::ModelLoadError(format!(
+                        "Failed to create Kokoro BERT VarBuilder for {}: {}",
+                        checkpoint_path.display(),
+                        e
+                    ))
+                })?;
+            albert::CustomAlbert::load(&albert::AlbertModelConfig::from_kokoro(&config), vb.pp("module"))?
+        };
+        let bert_encoder = {
+            let vb = VarBuilder::from_pth_with_state(
+                &checkpoint_path,
+                dtype,
+                "bert_encoder",
+                &device.device,
+            )
+            .map_err(|e| {
+                Error::ModelLoadError(format!(
+                    "Failed to create Kokoro bert_encoder VarBuilder for {}: {}",
+                    checkpoint_path.display(),
+                    e
+                ))
+            })?;
+            candle_nn::linear(
+                config.plbert.hidden_size,
+                config.hidden_dim,
+                vb.pp("module"),
+            )
+            .map_err(Error::from)?
+        };
+        let prosody = {
+            let vb = VarBuilder::from_pth_with_state(
+                &checkpoint_path,
+                dtype,
+                "predictor",
+                &device.device,
+            )
+            .map_err(|e| {
+                Error::ModelLoadError(format!(
+                    "Failed to create Kokoro predictor VarBuilder for {}: {}",
+                    checkpoint_path.display(),
+                    e
+                ))
+            })?;
+            KokoroProsodyPredictor::load(&config, vb)?
+        };
 
         info!(
             "Loaded Kokoro scaffolding from {:?} (phonemizer={}, submodules={:?})",
@@ -111,6 +165,9 @@ impl KokoroTtsModel {
             config,
             device,
             dtype,
+            bert,
+            bert_encoder,
+            prosody,
             phonemizer,
             voices,
             checkpoint_tensor_counts,
@@ -171,16 +228,21 @@ impl KokoroTtsModel {
         speed: f32,
     ) -> Result<KokoroSynthesisResult> {
         let prepared = self.prepare_request(text, speaker, language, speed)?;
+        let prosody = self.run_bert_prosody_debug(&prepared)?;
 
         // Native neural inference path (ALBERT + prosody + ISTFTNet) is still being
         // ported into Candle. Keep this error inside the isolated Kokoro module so
         // runtime routing and model loading stay correct.
         Err(Error::InferenceError(format!(
-            "Kokoro native Candle inference path is not fully implemented yet (prepared {} phonemes / {} tokens, style {:?}, speed {:.2})",
+            "Kokoro native Candle inference path is not fully implemented yet (prepared {} phonemes / {} tokens, style {:?}, speed {:.2}; duration_frames={}, expanded_frames={}, F0={:?}, N={:?})",
             prepared.phonemes.chars().count(),
             prepared.token_ids.len(),
             prepared.ref_style.shape().dims(),
-            prepared.speed
+            prepared.speed,
+            prosody.duration_frames.len(),
+            prosody.expanded_frames,
+            prosody.f0_shape,
+            prosody.n_shape,
         )))
     }
 
@@ -198,6 +260,28 @@ impl KokoroTtsModel {
 
     pub fn checkpoint_tensor_counts(&self) -> &HashMap<String, usize> {
         &self.checkpoint_tensor_counts
+    }
+
+    pub fn run_bert_prosody_debug(
+        &self,
+        prepared: &KokoroPreparedRequest,
+    ) -> Result<KokoroProsodyDebugOutput> {
+        let mut input_ids = Vec::with_capacity(prepared.token_ids.len() + 2);
+        input_ids.push(0u32);
+        input_ids.extend_from_slice(&prepared.token_ids);
+        input_ids.push(0u32);
+        let seq_len = input_ids.len();
+        let input_ids = Tensor::from_vec(input_ids, (1, seq_len), &self.device.device)?;
+        let attention_mask = Tensor::ones((1, seq_len), DType::U32, &self.device.device)?;
+        let bert_hidden = self.bert.forward(&input_ids, Some(&attention_mask))?;
+        let d_en = self
+            .bert_encoder
+            .forward(&bert_hidden)
+            .map_err(Error::from)?
+            .transpose(1, 2)
+            .map_err(Error::from)?;
+        self.prosody
+            .forward_debug(&d_en, &prepared.ref_style, prepared.speed)
     }
 
     fn resolve_speaker(&self, requested: Option<&str>) -> Result<String> {
@@ -354,5 +438,28 @@ mod tests {
         assert!(!prepared.phonemes.is_empty());
         assert!(!prepared.token_ids.is_empty());
         assert_eq!(prepared.ref_style.shape().dims(), &[1, 256]);
+    }
+
+    #[test]
+    fn kokoro_local_bert_prosody_debug_smoke_if_env_set() {
+        let Some(model_dir) = std::env::var_os("IZWI_KOKORO_MODEL_DIR") else {
+            return;
+        };
+
+        let device = DeviceSelector::detect_with_preference(Some("cpu"))
+            .expect("detect cpu device for Kokoro prosody smoke");
+        let model = KokoroTtsModel::load(Path::new(&model_dir), device)
+            .expect("load local Kokoro model");
+        let prepared = model
+            .prepare_request("Hello world.", Some("af_heart"), Some("en-US"), 1.0)
+            .expect("prepare Kokoro request");
+        let debug = model
+            .run_bert_prosody_debug(&prepared)
+            .expect("run Kokoro BERT/prosody debug");
+
+        assert!(!debug.duration_frames.is_empty());
+        assert!(debug.expanded_frames > 0);
+        assert_eq!(debug.f0_shape.len(), 2);
+        assert_eq!(debug.n_shape.len(), 2);
     }
 }
