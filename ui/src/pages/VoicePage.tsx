@@ -149,7 +149,7 @@ interface VoicePageProps {
 }
 
 const VOICE_AGENT_SYSTEM_PROMPT =
-  "You are a helpful voice assistant. Reply with concise spoken-friendly language. Avoid markdown. Keep responses brief unless asked for details.";
+  "You are a helpful voice assistant. Reply with concise spoken-friendly language. Avoid markdown. Do not output <think> tags or internal reasoning. Return only the final spoken answer. Keep responses brief unless asked for details.";
 
 const PIPELINE_LABELS: Record<PipelineMode, string> = {
   s2s: "Speech-to-Speech (S2S)",
@@ -2392,7 +2392,7 @@ export function VoicePage({
           </div>
         </div>
 
-        <div className="card p-4 flex flex-col min-h-[420px] sm:min-h-[520px] lg:min-h-[640px]">
+        <div className="card p-4 flex flex-col h-[420px] sm:h-[520px] lg:h-[640px] overflow-hidden">
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm text-white font-medium">Conversation</span>
             <div className="flex items-center gap-2">
@@ -2405,7 +2405,7 @@ export function VoicePage({
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto pr-1 space-y-3">
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1 space-y-3">
             {transcript.length === 0 ? (
               <div className="h-full flex items-center justify-center text-center">
                 <div>
