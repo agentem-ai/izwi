@@ -11,6 +11,7 @@ mod router;
 pub mod saved_voices;
 pub mod speech_history;
 pub mod transcription;
+pub mod voice_realtime;
 pub(crate) mod tts_long_form;
 
 pub use router::create_router;
