@@ -1,11 +1,18 @@
 use std::f32::consts::PI;
+use std::fmt;
+use std::sync::Arc;
 
 use candle_core::{DType, Tensor};
 use candle_nn::{
     ops, Conv1d, Conv1dConfig, ConvTranspose1d, ConvTranspose1dConfig, Module, VarBuilder,
 };
+use rand::Rng;
+use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
+use rand_distr::Distribution;
+use rand_distr::StandardNormal;
 use rustfft::num_complex::Complex32;
-use rustfft::FftPlanner;
+use rustfft::{Fft, FftPlanner};
 
 use crate::error::{Error, Result};
 
@@ -29,13 +36,43 @@ impl KokoroDecoder {
     pub fn load(cfg: &KokoroConfig, vb: VarBuilder) -> Result<Self> {
         let root = vb.pp("module");
         let style_dim = cfg.style_dim;
-        let encode = AdainResBlk1d::load(cfg.hidden_dim + 2, 1024, style_dim, false, root.pp("encode"))?;
+        let encode = AdainResBlk1d::load(
+            cfg.hidden_dim + 2,
+            1024,
+            style_dim,
+            false,
+            root.pp("encode"),
+        )?;
 
         let mut decode = Vec::with_capacity(4);
-        decode.push(AdainResBlk1d::load(1024 + 2 + 64, 1024, style_dim, false, root.pp("decode.0"))?);
-        decode.push(AdainResBlk1d::load(1024 + 2 + 64, 1024, style_dim, false, root.pp("decode.1"))?);
-        decode.push(AdainResBlk1d::load(1024 + 2 + 64, 1024, style_dim, false, root.pp("decode.2"))?);
-        decode.push(AdainResBlk1d::load(1024 + 2 + 64, 512, style_dim, true, root.pp("decode.3"))?);
+        decode.push(AdainResBlk1d::load(
+            1024 + 2 + 64,
+            1024,
+            style_dim,
+            false,
+            root.pp("decode.0"),
+        )?);
+        decode.push(AdainResBlk1d::load(
+            1024 + 2 + 64,
+            1024,
+            style_dim,
+            false,
+            root.pp("decode.1"),
+        )?);
+        decode.push(AdainResBlk1d::load(
+            1024 + 2 + 64,
+            1024,
+            style_dim,
+            false,
+            root.pp("decode.2"),
+        )?);
+        decode.push(AdainResBlk1d::load(
+            1024 + 2 + 64,
+            512,
+            style_dim,
+            true,
+            root.pp("decode.3"),
+        )?);
 
         let conv_stride2_cfg = Conv1dConfig {
             padding: 1,
@@ -66,6 +103,17 @@ impl KokoroDecoder {
         n_curve: &Tensor,  // [B, 2T]
         style: &Tensor,    // [B, 128]
     ) -> Result<Vec<f32>> {
+        self.forward_with_seed(asr, f0_curve, n_curve, style, None)
+    }
+
+    pub(crate) fn forward_with_seed(
+        &self,
+        asr: &Tensor,      // [B, 512, T]
+        f0_curve: &Tensor, // [B, 2T]
+        n_curve: &Tensor,  // [B, 2T]
+        style: &Tensor,    // [B, 128]
+        rng_seed: Option<u64>,
+    ) -> Result<Vec<f32>> {
         let f0 = self
             .f0_conv
             .forward(&f0_curve.unsqueeze(1).map_err(Error::from)?)
@@ -82,7 +130,8 @@ impl KokoroDecoder {
         let mut still_concat_res = true;
         for block in &self.decode {
             if still_concat_res {
-                x = Tensor::cat(&[x, asr_res.clone(), f0.clone(), n.clone()], 1).map_err(Error::from)?;
+                x = Tensor::cat(&[x, asr_res.clone(), f0.clone(), n.clone()], 1)
+                    .map_err(Error::from)?;
             }
             x = block.forward(&x, style)?;
             let (_b, _c, t) = x.dims3().map_err(Error::from)?;
@@ -92,7 +141,7 @@ impl KokoroDecoder {
             }
         }
 
-        self.generator.forward(&x, style, f0_curve)
+        self.generator.forward(&x, style, f0_curve, rng_seed)
     }
 }
 
@@ -102,6 +151,10 @@ struct KokoroIstftGenerator {
     num_kernels: usize,
     num_upsamples: usize,
     total_scale: usize,
+    harmonic_num: usize,
+    sine_amp: f32,
+    noise_std: f32,
+    voiced_threshold: f32,
     ups: Vec<ConvTranspose1d>,
     resblocks: Vec<AdaInResBlock1>,
     noise_convs: Vec<Conv1d>,
@@ -109,6 +162,7 @@ struct KokoroIstftGenerator {
     conv_post: Conv1d,
     source_linear_w: [f32; 9],
     source_linear_b: f32,
+    stft: KokoroStft,
 }
 
 impl KokoroIstftGenerator {
@@ -172,7 +226,10 @@ impl KokoroIstftGenerator {
         for i in 0..num_upsamples {
             let c_cur = cfg.upsample_initial_channel / (1usize << (i + 1));
             if i + 1 < num_upsamples {
-                let stride_f0 = cfg.upsample_rates[i + 1..].iter().copied().product::<usize>();
+                let stride_f0 = cfg.upsample_rates[i + 1..]
+                    .iter()
+                    .copied()
+                    .product::<usize>();
                 let padding = (stride_f0 + 1) / 2;
                 noise_convs.push(load_plain_conv1d(
                     vb.pp(format!("noise_convs.{i}")),
@@ -227,7 +284,10 @@ impl KokoroIstftGenerator {
             .map_err(Error::from)?;
         let source_linear_w_v = source_linear_w_t.to_vec2::<f32>().map_err(Error::from)?;
         let source_linear_b_v = source_linear_b_t.to_vec1::<f32>().map_err(Error::from)?;
-        if source_linear_w_v.len() != 1 || source_linear_w_v[0].len() != 9 || source_linear_b_v.len() != 1 {
+        if source_linear_w_v.len() != 1
+            || source_linear_w_v[0].len() != 9
+            || source_linear_b_v.len() != 1
+        {
             return Err(Error::ModelLoadError(format!(
                 "Unexpected Kokoro source linear shapes: weight={:?}, bias={:?}",
                 source_linear_w_t.shape().dims(),
@@ -237,12 +297,17 @@ impl KokoroIstftGenerator {
         let mut source_linear_w = [0.0f32; 9];
         source_linear_w.copy_from_slice(&source_linear_w_v[0]);
         let source_linear_b = source_linear_b_v[0];
+        let stft = KokoroStft::new(cfg.gen_istft_n_fft, cfg.gen_istft_hop_size);
 
         Ok(Self {
             cfg: cfg.clone(),
             num_kernels,
             num_upsamples,
             total_scale,
+            harmonic_num: 8,
+            sine_amp: 0.1,
+            noise_std: 0.003,
+            voiced_threshold: 10.0,
             ups,
             resblocks,
             noise_convs,
@@ -250,11 +315,18 @@ impl KokoroIstftGenerator {
             conv_post,
             source_linear_w,
             source_linear_b,
+            stft,
         })
     }
 
-    fn forward(&self, x: &Tensor, style: &Tensor, f0_curve: &Tensor) -> Result<Vec<f32>> {
-        let har = self.harmonic_features(f0_curve, x.device())?; // [B, n_fft+2, T_har]
+    fn forward(
+        &self,
+        x: &Tensor,
+        style: &Tensor,
+        f0_curve: &Tensor,
+        rng_seed: Option<u64>,
+    ) -> Result<Vec<f32>> {
+        let har = self.harmonic_features(f0_curve, x.device(), rng_seed)?; // [B, n_fft+2, T_har]
 
         let mut x = x.clone();
         for i in 0..self.num_upsamples {
@@ -287,17 +359,25 @@ impl KokoroIstftGenerator {
                 n_bins * 2
             )));
         }
-        let spec = x.narrow(1, 0, n_bins).map_err(Error::from)?.exp().map_err(Error::from)?;
+        let spec = x
+            .narrow(1, 0, n_bins)
+            .map_err(Error::from)?
+            .exp()
+            .map_err(Error::from)?;
         let phase = x
             .narrow(1, n_bins, n_bins)
             .map_err(Error::from)?
             .sin()
             .map_err(Error::from)?;
-        let stft = KokoroStft::new(self.cfg.gen_istft_n_fft, self.cfg.gen_istft_hop_size);
-        stft.inverse(&spec, &phase)
+        self.stft.inverse(&spec, &phase)
     }
 
-    fn harmonic_features(&self, f0_curve: &Tensor, device: &candle_core::Device) -> Result<Tensor> {
+    fn harmonic_features(
+        &self,
+        f0_curve: &Tensor,
+        device: &candle_core::Device,
+        rng_seed: Option<u64>,
+    ) -> Result<Tensor> {
         let f0_rows = f0_curve.to_vec2::<f32>().map_err(Error::from)?;
         if f0_rows.len() != 1 {
             return Err(Error::InferenceError(
@@ -311,14 +391,21 @@ impl KokoroIstftGenerator {
             ));
         }
         let upsampled_f0 = repeat_nearest(f0, self.total_scale);
-        let har_source = synth_harmonic_source(
+        let seed = rng_seed.unwrap_or_else(rand::random::<u64>);
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let har_source = synth_harmonic_source_kokoro(
             &upsampled_f0,
+            self.harmonic_num,
+            self.total_scale,
+            self.sine_amp,
+            self.noise_std,
+            self.voiced_threshold,
             &self.source_linear_w,
             self.source_linear_b,
             KokoroConfig::TARGET_SAMPLE_RATE as f32,
+            &mut rng,
         );
-        let stft = KokoroStft::new(self.cfg.gen_istft_n_fft, self.cfg.gen_istft_hop_size);
-        let (mag, phase) = stft.transform(&har_source)?;
+        let (mag, phase) = self.stft.transform(&har_source)?;
         let n_bins = self.cfg.gen_istft_n_fft / 2 + 1;
         let frames = if n_bins == 0 { 0 } else { mag.len() / n_bins };
         let mut har = vec![0.0f32; n_bins * 2 * frames];
@@ -384,8 +471,16 @@ impl AdaInResBlock1 {
                     cudnn_fwd_algo: None,
                 },
             )?);
-            adain1.push(AdaIN1d::load(style_dim, channels, vb.pp(format!("adain1.{j}")))?);
-            adain2.push(AdaIN1d::load(style_dim, channels, vb.pp(format!("adain2.{j}")))?);
+            adain1.push(AdaIN1d::load(
+                style_dim,
+                channels,
+                vb.pp(format!("adain1.{j}")),
+            )?);
+            adain2.push(AdaIN1d::load(
+                style_dim,
+                channels,
+                vb.pp(format!("adain2.{j}")),
+            )?);
             alpha1.push(
                 vb.get_unchecked_dtype(&format!("alpha1.{j}"), DType::F32)
                     .map_err(Error::from)?,
@@ -420,19 +515,45 @@ impl AdaInResBlock1 {
     }
 }
 
-#[derive(Debug, Clone)]
 struct KokoroStft {
     n_fft: usize,
     hop: usize,
     window: Vec<f32>,
+    fft_fwd: Arc<dyn Fft<f32>>,
+    fft_inv: Arc<dyn Fft<f32>>,
+}
+
+impl fmt::Debug for KokoroStft {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KokoroStft")
+            .field("n_fft", &self.n_fft)
+            .field("hop", &self.hop)
+            .field("window_len", &self.window.len())
+            .finish()
+    }
+}
+
+impl Clone for KokoroStft {
+    fn clone(&self) -> Self {
+        Self {
+            n_fft: self.n_fft,
+            hop: self.hop,
+            window: self.window.clone(),
+            fft_fwd: self.fft_fwd.clone(),
+            fft_inv: self.fft_inv.clone(),
+        }
+    }
 }
 
 impl KokoroStft {
     fn new(n_fft: usize, hop: usize) -> Self {
+        let mut planner = FftPlanner::<f32>::new();
         Self {
             n_fft,
             hop,
             window: hann_window_periodic(n_fft),
+            fft_fwd: planner.plan_fft_forward(n_fft.max(1)),
+            fft_inv: planner.plan_fft_inverse(n_fft.max(1)),
         }
     }
 
@@ -454,8 +575,6 @@ impl KokoroStft {
         let frames = (padded.len() - self.n_fft) / self.hop + 1;
         let mut mag = vec![0.0f32; frames * n_bins];
         let mut phase = vec![0.0f32; frames * n_bins];
-        let mut planner = FftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(self.n_fft);
         let mut buf = vec![Complex32::new(0.0, 0.0); self.n_fft];
 
         for frame_idx in 0..frames {
@@ -463,7 +582,7 @@ impl KokoroStft {
             for i in 0..self.n_fft {
                 buf[i] = Complex32::new(padded[start + i] * self.window[i], 0.0);
             }
-            fft.process(&mut buf);
+            self.fft_fwd.process(&mut buf);
             for k in 0..n_bins {
                 let c = buf[k];
                 mag[frame_idx * n_bins + k] = c.norm();
@@ -494,8 +613,6 @@ impl KokoroStft {
         let output_len = (frames - 1) * self.hop + self.n_fft;
         let mut output = vec![0.0f32; output_len];
         let mut envelope = vec![0.0f32; output_len];
-        let mut planner = FftPlanner::<f32>::new();
-        let ifft = planner.plan_fft_inverse(self.n_fft);
         let mut spectrum = vec![Complex32::new(0.0, 0.0); self.n_fft];
 
         for frame_idx in 0..frames {
@@ -508,7 +625,7 @@ impl KokoroStft {
             for k in 1..(n_bins.saturating_sub(1)) {
                 spectrum[self.n_fft - k] = spectrum[k].conj();
             }
-            ifft.process(&mut spectrum);
+            self.fft_inv.process(&mut spectrum);
             let start = frame_idx * self.hop;
             for n in 0..self.n_fft {
                 let sample = (spectrum[n].re / self.n_fft as f32) * self.window[n];
@@ -541,7 +658,10 @@ impl KokoroStft {
 }
 
 fn get_padding(kernel_size: usize, dilation: usize) -> usize {
-    (kernel_size.saturating_mul(dilation).saturating_sub(dilation)) / 2
+    (kernel_size
+        .saturating_mul(dilation)
+        .saturating_sub(dilation))
+        / 2
 }
 
 fn snake1d(x: &Tensor, alpha: &Tensor) -> Result<Tensor> {
@@ -607,31 +727,136 @@ fn repeat_nearest(input: &[f32], factor: usize) -> Vec<f32> {
     out
 }
 
-fn synth_harmonic_source(
+fn synth_harmonic_source_kokoro(
     upsampled_f0: &[f32],
+    harmonic_num: usize,
+    upsample_scale: usize,
+    sine_amp: f32,
+    noise_std: f32,
+    voiced_threshold: f32,
     linear_w: &[f32; 9],
     linear_b: f32,
     sample_rate: f32,
+    rng: &mut ChaCha8Rng,
 ) -> Vec<f32> {
-    let mut out = vec![0.0f32; upsampled_f0.len()];
-    let mut base_phase = 0.0f32;
-    for (i, &f0) in upsampled_f0.iter().enumerate() {
-        if !f0.is_finite() || f0 <= 10.0 {
-            out[i] = 0.0;
-            continue;
+    let t = upsampled_f0.len();
+    if t == 0 {
+        return Vec::new();
+    }
+    let dim = harmonic_num + 1;
+    debug_assert_eq!(dim, 9);
+
+    let mut f0_values = vec![0.0f32; t * dim];
+    let mut uv = vec![0.0f32; t];
+    for (ti, &f0) in upsampled_f0.iter().enumerate() {
+        let voiced = f0.is_finite() && f0 > voiced_threshold;
+        uv[ti] = if voiced { 1.0 } else { 0.0 };
+        let base = if f0.is_finite() { f0.max(0.0) } else { 0.0 };
+        for h in 0..dim {
+            f0_values[ti * dim + h] = base * (h + 1) as f32;
         }
-        let delta = 2.0 * PI * (f0 / sample_rate);
-        base_phase += delta;
-        if base_phase > 2.0 * PI {
-            base_phase %= 2.0 * PI;
+    }
+
+    let mut sine_waves = sinegen_f02sine(&f0_values, t, dim, sample_rate, upsample_scale, rng);
+    for ti in 0..t {
+        let noise_amp = uv[ti] * noise_std + (1.0 - uv[ti]) * (sine_amp / 3.0);
+        for h in 0..dim {
+            let idx = ti * dim + h;
+            let z: f32 = StandardNormal.sample(rng);
+            let noise = noise_amp * z;
+            sine_waves[idx] = sine_waves[idx] * sine_amp * uv[ti] + noise;
         }
+    }
+
+    let mut out = vec![0.0f32; t];
+    for ti in 0..t {
         let mut acc = linear_b;
-        for h in 0..9 {
-            let phase = base_phase * (h as f32 + 1.0);
-            let s = phase.sin() * 0.1;
-            acc += linear_w[h] * s;
+        for h in 0..dim {
+            acc += linear_w[h] * sine_waves[ti * dim + h];
         }
-        out[i] = acc.tanh();
+        out[ti] = acc.tanh();
+    }
+
+    // Mirror SourceModuleHnNSF's unused noise branch RNG draw for behavior parity.
+    for _ in 0..t {
+        let _z: f32 = StandardNormal.sample(rng);
+        let _unused_noise = _z * (sine_amp / 3.0);
+    }
+    out
+}
+
+fn sinegen_f02sine(
+    f0_values: &[f32], // [T, D]
+    t: usize,
+    dim: usize,
+    sample_rate: f32,
+    upsample_scale: usize,
+    rng: &mut ChaCha8Rng,
+) -> Vec<f32> {
+    if t == 0 || dim == 0 {
+        return Vec::new();
+    }
+    let mut rad_values = vec![0.0f32; f0_values.len()];
+    let inv_sr = 1.0f32 / sample_rate.max(1.0);
+    for i in 0..f0_values.len() {
+        let v = f0_values[i] * inv_sr;
+        rad_values[i] = v.rem_euclid(1.0);
+    }
+    for h in 0..dim {
+        let init = if h == 0 { 0.0 } else { rng.gen::<f32>() };
+        rad_values[h] += init;
+    }
+
+    let down_t = (t / upsample_scale.max(1)).max(1);
+    let rad_down = linear_resample_time_time_major(&rad_values, t, down_t, dim);
+    let mut phase_down = vec![0.0f32; rad_down.len()];
+    for h in 0..dim {
+        let mut acc = 0.0f32;
+        for ti in 0..down_t {
+            let idx = ti * dim + h;
+            acc += rad_down[idx];
+            phase_down[idx] = acc * (2.0 * PI);
+        }
+    }
+    let scale = upsample_scale.max(1) as f32;
+    for v in &mut phase_down {
+        *v *= scale;
+    }
+    let phase = linear_resample_time_time_major(&phase_down, down_t, t, dim);
+    phase.into_iter().map(f32::sin).collect()
+}
+
+fn linear_resample_time_time_major(
+    input: &[f32],
+    in_t: usize,
+    out_t: usize,
+    channels: usize,
+) -> Vec<f32> {
+    if in_t == 0 || out_t == 0 || channels == 0 {
+        return Vec::new();
+    }
+    if in_t == out_t {
+        return input.to_vec();
+    }
+    let mut out = vec![0.0f32; out_t * channels];
+    let scale = in_t as f32 / out_t as f32;
+    let max_x = (in_t - 1) as f32;
+    for ot in 0..out_t {
+        let mut x = (ot as f32 + 0.5) * scale - 0.5;
+        if !x.is_finite() {
+            x = 0.0;
+        }
+        x = x.clamp(0.0, max_x);
+        let x0 = x.floor() as usize;
+        let x1 = (x0 + 1).min(in_t - 1);
+        let w1 = (x - x0 as f32).clamp(0.0, 1.0);
+        let w0 = 1.0 - w1;
+        let in0 = x0 * channels;
+        let in1 = x1 * channels;
+        let out_base = ot * channels;
+        for c in 0..channels {
+            out[out_base + c] = input[in0 + c] * w0 + input[in1 + c] * w1;
+        }
     }
     out
 }
@@ -711,9 +936,57 @@ mod tests {
             }
         }
         let mag_t = Tensor::from_vec(mag_ch, (1, n_bins, frames), &device).expect("mag tensor");
-        let phase_t = Tensor::from_vec(phase_ch, (1, n_bins, frames), &device).expect("phase tensor");
+        let phase_t =
+            Tensor::from_vec(phase_ch, (1, n_bins, frames), &device).expect("phase tensor");
         let y = stft.inverse(&mag_t, &phase_t).expect("istft inverse");
         assert!(!y.is_empty());
         assert!(y.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn kokoro_linear_resample_time_major_preserves_constant() {
+        let input = vec![1.25f32; 8 * 3];
+        let down = linear_resample_time_time_major(&input, 8, 2, 3);
+        let up = linear_resample_time_time_major(&down, 2, 8, 3);
+        assert!(up.iter().all(|v| (*v - 1.25).abs() < 1e-5));
+    }
+
+    #[test]
+    fn kokoro_seeded_harmonic_source_is_repeatable() {
+        let f0 = vec![110.0f32; 32];
+        let weights = [0.1f32; 9];
+        let mut rng_a1 = ChaCha8Rng::seed_from_u64(12345);
+        let mut rng_a2 = ChaCha8Rng::seed_from_u64(12345);
+        let mut rng_b = ChaCha8Rng::seed_from_u64(54321);
+        let a1 = synth_harmonic_source_kokoro(
+            &f0,
+            8,
+            5,
+            0.1,
+            0.003,
+            10.0,
+            &weights,
+            0.0,
+            24_000.0,
+            &mut rng_a1,
+        );
+        let a2 = synth_harmonic_source_kokoro(
+            &f0,
+            8,
+            5,
+            0.1,
+            0.003,
+            10.0,
+            &weights,
+            0.0,
+            24_000.0,
+            &mut rng_a2,
+        );
+        let b = synth_harmonic_source_kokoro(
+            &f0, 8, 5, 0.1, 0.003, 10.0, &weights, 0.0, 24_000.0, &mut rng_b,
+        );
+        assert_eq!(a1.len(), f0.len());
+        assert_eq!(a1, a2);
+        assert_ne!(a1, b);
     }
 }

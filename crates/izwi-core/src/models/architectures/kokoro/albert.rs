@@ -1,4 +1,4 @@
-use candle_core::{D, DType, Tensor};
+use candle_core::{DType, Tensor, D};
 use candle_nn::{embedding, ops, Embedding, LayerNorm, Linear, Module, VarBuilder};
 
 use crate::error::{Error, Result};
@@ -90,7 +90,10 @@ impl AlbertEmbeddings {
 
     fn forward(&self, input_ids: &Tensor, token_type_ids: &Tensor) -> Result<Tensor> {
         let (_b, t) = input_ids.dims2()?;
-        let w = self.word_embeddings.forward(input_ids).map_err(Error::from)?;
+        let w = self
+            .word_embeddings
+            .forward(input_ids)
+            .map_err(Error::from)?;
         let tt = self
             .token_type_embeddings
             .forward(token_type_ids)
@@ -156,8 +159,12 @@ impl AlbertLayer {
             attention: AlbertAttention::load(cfg, vb.pp("attention"))?,
             ffn: candle_nn::linear(cfg.hidden_size, cfg.intermediate_size, vb.pp("ffn"))
                 .map_err(Error::from)?,
-            ffn_output: candle_nn::linear(cfg.intermediate_size, cfg.hidden_size, vb.pp("ffn_output"))
-                .map_err(Error::from)?,
+            ffn_output: candle_nn::linear(
+                cfg.intermediate_size,
+                cfg.hidden_size,
+                vb.pp("ffn_output"),
+            )
+            .map_err(Error::from)?,
             full_layer_norm: candle_nn::layer_norm(
                 cfg.hidden_size,
                 cfg.layer_norm_eps,
@@ -201,8 +208,12 @@ impl AlbertAttention {
                 .map_err(Error::from)?,
             dense: candle_nn::linear(cfg.hidden_size, cfg.hidden_size, vb.pp("dense"))
                 .map_err(Error::from)?,
-            layer_norm: candle_nn::layer_norm(cfg.hidden_size, cfg.layer_norm_eps, vb.pp("LayerNorm"))
-                .map_err(Error::from)?,
+            layer_norm: candle_nn::layer_norm(
+                cfg.hidden_size,
+                cfg.layer_norm_eps,
+                vb.pp("LayerNorm"),
+            )
+            .map_err(Error::from)?,
             num_heads,
             head_dim,
         })
@@ -258,7 +269,8 @@ impl AlbertAttention {
         if let Some(mask) = attention_mask {
             // mask expected [B, T] with 1 for valid, 0 for padded.
             let mask = mask.to_dtype(DType::F32).map_err(Error::from)?;
-            let inv = (Tensor::ones(mask.shape(), DType::F32, mask.device()).map_err(Error::from)?
+            let inv = (Tensor::ones(mask.shape(), DType::F32, mask.device())
+                .map_err(Error::from)?
                 - &mask)
                 .map_err(Error::from)?;
             let inv = inv
@@ -274,7 +286,9 @@ impl AlbertAttention {
         }
 
         let attn = ops::softmax(&scores, D::Minus1).map_err(Error::from)?;
-        let ctx = attn.matmul(&v.contiguous().map_err(Error::from)?).map_err(Error::from)?;
+        let ctx = attn
+            .matmul(&v.contiguous().map_err(Error::from)?)
+            .map_err(Error::from)?;
         let ctx = ctx
             .reshape((b, self.num_heads, t, self.head_dim))
             .map_err(Error::from)?

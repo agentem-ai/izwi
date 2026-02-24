@@ -35,7 +35,13 @@ use self::voice::VoiceLibrary;
 const CHECKPOINT_FILE: &str = "kokoro-v1_0.pth";
 const CONFIG_FILE: &str = "config.json";
 const VOICES_DIR: &str = "voices";
-const CHECKPOINT_SUBMODULE_KEYS: &[&str] = &["bert", "bert_encoder", "predictor", "text_encoder", "decoder"];
+const CHECKPOINT_SUBMODULE_KEYS: &[&str] = &[
+    "bert",
+    "bert_encoder",
+    "predictor",
+    "text_encoder",
+    "decoder",
+];
 
 #[derive(Debug, Clone)]
 pub struct KokoroPreparedRequest {
@@ -125,15 +131,19 @@ impl KokoroTtsModel {
         let phonemizer = EspeakPhonemizer::auto()?;
         let voices = VoiceLibrary::new(voices_dir, device.device.clone(), dtype)?;
         let bert = {
-            let vb = VarBuilder::from_pth_with_state(&checkpoint_path, dtype, "bert", &device.device)
-                .map_err(|e| {
-                    Error::ModelLoadError(format!(
-                        "Failed to create Kokoro BERT VarBuilder for {}: {}",
-                        checkpoint_path.display(),
-                        e
-                    ))
-                })?;
-            albert::CustomAlbert::load(&albert::AlbertModelConfig::from_kokoro(&config), vb.pp("module"))?
+            let vb =
+                VarBuilder::from_pth_with_state(&checkpoint_path, dtype, "bert", &device.device)
+                    .map_err(|e| {
+                        Error::ModelLoadError(format!(
+                            "Failed to create Kokoro BERT VarBuilder for {}: {}",
+                            checkpoint_path.display(),
+                            e
+                        ))
+                    })?;
+            albert::CustomAlbert::load(
+                &albert::AlbertModelConfig::from_kokoro(&config),
+                vb.pp("module"),
+            )?
         };
         let bert_encoder = {
             let vb = VarBuilder::from_pth_with_state(
@@ -189,19 +199,15 @@ impl KokoroTtsModel {
             KokoroTextEncoder::load(&config, vb)?
         };
         let decoder = {
-            let vb = VarBuilder::from_pth_with_state(
-                &checkpoint_path,
-                dtype,
-                "decoder",
-                &device.device,
-            )
-            .map_err(|e| {
-                Error::ModelLoadError(format!(
-                    "Failed to create Kokoro decoder VarBuilder for {}: {}",
-                    checkpoint_path.display(),
-                    e
-                ))
-            })?;
+            let vb =
+                VarBuilder::from_pth_with_state(&checkpoint_path, dtype, "decoder", &device.device)
+                    .map_err(|e| {
+                        Error::ModelLoadError(format!(
+                            "Failed to create Kokoro decoder VarBuilder for {}: {}",
+                            checkpoint_path.display(),
+                            e
+                        ))
+                    })?;
             decoder::KokoroDecoder::load(&config, vb)?
         };
 
@@ -302,6 +308,36 @@ impl KokoroTtsModel {
         })
     }
 
+    #[cfg(test)]
+    fn generate_with_seed_for_test(
+        &self,
+        text: &str,
+        speaker: Option<&str>,
+        language: Option<&str>,
+        speed: f32,
+        rng_seed: u64,
+    ) -> Result<KokoroSynthesisResult> {
+        let prepared = self.prepare_request(text, speaker, language, speed)?;
+        let predecoder = self.run_predecoder(&prepared)?;
+        let style = prepared
+            .ref_style
+            .i((.., 0..self.config.style_dim))
+            .map_err(Error::from)?;
+        let samples = self.decoder.forward_with_seed(
+            &predecoder.asr,
+            &predecoder.prosody.f0,
+            &predecoder.prosody.n,
+            &style,
+            Some(rng_seed),
+        )?;
+        Ok(KokoroSynthesisResult {
+            tokens_generated: prepared.token_ids.len(),
+            phonemes: prepared.phonemes,
+            sample_rate: KokoroConfig::TARGET_SAMPLE_RATE,
+            samples,
+        })
+    }
+
     pub fn config(&self) -> &KokoroConfig {
         &self.config
     }
@@ -336,10 +372,7 @@ impl KokoroTtsModel {
             .forward_debug(&d_en, &prepared.ref_style, prepared.speed)
     }
 
-    fn run_bert_prosody(
-        &self,
-        prepared: &KokoroPreparedRequest,
-    ) -> Result<KokoroProsodyOutput> {
+    fn run_bert_prosody(&self, prepared: &KokoroPreparedRequest) -> Result<KokoroProsodyOutput> {
         let input_ids = self.build_model_input_ids(prepared)?;
         let (_b, seq_len) = input_ids.dims2().map_err(Error::from)?;
         let attention_mask = Tensor::ones((1, seq_len), DType::U32, &self.device.device)?;
@@ -350,7 +383,8 @@ impl KokoroTtsModel {
             .map_err(Error::from)?
             .transpose(1, 2)
             .map_err(Error::from)?;
-        self.prosody.forward(&d_en, &prepared.ref_style, prepared.speed)
+        self.prosody
+            .forward(&d_en, &prepared.ref_style, prepared.speed)
     }
 
     pub fn run_predecoder_debug(
@@ -479,13 +513,14 @@ fn inspect_and_validate_checkpoint(
                 checkpoint_path.display()
             )));
         }
-        let _vb = VarBuilder::from_pth_with_state(checkpoint_path, dtype, key, device).map_err(|e| {
-            Error::ModelLoadError(format!(
-                "Failed to create Candle VarBuilder for Kokoro submodule '{key}' in {}: {}",
-                checkpoint_path.display(),
-                e
-            ))
-        })?;
+        let _vb =
+            VarBuilder::from_pth_with_state(checkpoint_path, dtype, key, device).map_err(|e| {
+                Error::ModelLoadError(format!(
+                    "Failed to create Candle VarBuilder for Kokoro submodule '{key}' in {}: {}",
+                    checkpoint_path.display(),
+                    e
+                ))
+            })?;
         counts.insert((*key).to_string(), infos.len());
     }
     Ok(counts)
@@ -495,6 +530,8 @@ fn inspect_and_validate_checkpoint(
 mod tests {
     use super::*;
     use crate::models::shared::device::{DeviceKind, DeviceSelector};
+    use rustfft::num_complex::Complex32;
+    use rustfft::FftPlanner;
     use std::path::Path;
 
     #[test]
@@ -542,8 +579,8 @@ mod tests {
 
         let device = DeviceSelector::detect_with_preference(Some("cpu"))
             .expect("detect cpu device for Kokoro smoke");
-        let model = KokoroTtsModel::load(Path::new(&model_dir), device)
-            .expect("load local Kokoro model");
+        let model =
+            KokoroTtsModel::load(Path::new(&model_dir), device).expect("load local Kokoro model");
         let prepared = model
             .prepare_request("Hello world.", Some("af_heart"), Some("en-US"), 1.0)
             .expect("prepare Kokoro request");
@@ -561,8 +598,8 @@ mod tests {
 
         let device = DeviceSelector::detect_with_preference(Some("cpu"))
             .expect("detect cpu device for Kokoro prosody smoke");
-        let model = KokoroTtsModel::load(Path::new(&model_dir), device)
-            .expect("load local Kokoro model");
+        let model =
+            KokoroTtsModel::load(Path::new(&model_dir), device).expect("load local Kokoro model");
         let prepared = model
             .prepare_request("Hello world.", Some("af_heart"), Some("en-US"), 1.0)
             .expect("prepare Kokoro request");
@@ -584,8 +621,8 @@ mod tests {
 
         let device = DeviceSelector::detect_with_preference(Some("cpu"))
             .expect("detect cpu device for Kokoro predecoder smoke");
-        let model = KokoroTtsModel::load(Path::new(&model_dir), device)
-            .expect("load local Kokoro model");
+        let model =
+            KokoroTtsModel::load(Path::new(&model_dir), device).expect("load local Kokoro model");
         let prepared = model
             .prepare_request("Hello world.", Some("af_heart"), Some("en-US"), 1.0)
             .expect("prepare Kokoro request");
@@ -606,8 +643,8 @@ mod tests {
 
         let device = DeviceSelector::detect_with_preference(Some("cpu"))
             .expect("detect cpu device for Kokoro generate smoke");
-        let model = KokoroTtsModel::load(Path::new(&model_dir), device)
-            .expect("load local Kokoro model");
+        let model =
+            KokoroTtsModel::load(Path::new(&model_dir), device).expect("load local Kokoro model");
         let result = model
             .generate("Hello world.", Some("af_heart"), Some("en-US"), 1.0)
             .expect("run Kokoro generate");
@@ -634,11 +671,127 @@ mod tests {
         let model = KokoroTtsModel::load(Path::new(&model_dir), device)
             .expect("load local Kokoro model on Metal");
         let result = model
-            .generate("Hello my name is Bella", Some("af_bella"), Some("en-US"), 1.0)
+            .generate(
+                "Hello my name is Bella",
+                Some("af_bella"),
+                Some("en-US"),
+                1.0,
+            )
             .expect("run Kokoro generate on Metal");
 
         assert_eq!(result.sample_rate, KokoroConfig::TARGET_SAMPLE_RATE);
         assert!(!result.samples.is_empty());
         assert!(result.samples.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn kokoro_local_audio_regression_cpu_if_env_set() {
+        let Some(model_dir) = std::env::var_os("IZWI_KOKORO_MODEL_DIR") else {
+            return;
+        };
+
+        let device = DeviceSelector::detect_with_preference(Some("cpu"))
+            .expect("detect cpu device for Kokoro regression");
+        let model =
+            KokoroTtsModel::load(Path::new(&model_dir), device).expect("load local Kokoro model");
+        let result = model
+            .generate_with_seed_for_test(
+                "Hello my name is Bella",
+                Some("af_bella"),
+                Some("en-US"),
+                1.0,
+                0xBEE1_A123_2026u64,
+            )
+            .expect("run seeded Kokoro regression synthesis");
+
+        let duration_s = result.samples.len() as f32 / result.sample_rate as f32;
+        let rms = rms(&result.samples);
+        let peak = peak_abs(&result.samples);
+        let zcr = zero_crossing_rate(&result.samples);
+        let centroid_hz = spectral_centroid_hz(&result.samples, result.sample_rate);
+
+        eprintln!(
+            "kokoro regression metrics: len={}, dur={:.3}s, rms={:.6}, peak={:.6}, zcr={:.6}, centroid={:.2}Hz",
+            result.samples.len(),
+            duration_s,
+            rms,
+            peak,
+            zcr,
+            centroid_hz
+        );
+
+        assert_eq!(result.sample_rate, KokoroConfig::TARGET_SAMPLE_RATE);
+        assert_eq!(result.samples.len(), 52_800, "unexpected sample length");
+        assert!((duration_s - 2.2).abs() < 0.02, "duration_s={duration_s}");
+        assert!((rms - 0.047_011).abs() < 0.015, "rms={rms}");
+        assert!((peak - 0.373_43).abs() < 0.15, "peak={peak}");
+        assert!((zcr - 0.222_845).abs() < 0.08, "zcr={zcr}");
+        assert!(
+            (centroid_hz - 5_955.96).abs() < 900.0,
+            "centroid_hz={centroid_hz}"
+        );
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+        let mean_sq = samples
+            .iter()
+            .map(|&x| (x as f64) * (x as f64))
+            .sum::<f64>()
+            / samples.len() as f64;
+        mean_sq.sqrt() as f32
+    }
+
+    fn peak_abs(samples: &[f32]) -> f32 {
+        samples
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0f32, |a, b| a.max(b))
+    }
+
+    fn zero_crossing_rate(samples: &[f32]) -> f32 {
+        if samples.len() < 2 {
+            return 0.0;
+        }
+        let mut crossings = 0usize;
+        for w in samples.windows(2) {
+            let a = w[0];
+            let b = w[1];
+            if (a >= 0.0 && b < 0.0) || (a < 0.0 && b >= 0.0) {
+                crossings += 1;
+            }
+        }
+        crossings as f32 / (samples.len() - 1) as f32
+    }
+
+    fn spectral_centroid_hz(samples: &[f32], sample_rate: u32) -> f32 {
+        let n = samples.len().clamp(256, 4096).next_power_of_two().min(4096);
+        if n < 2 {
+            return 0.0;
+        }
+        let mut frame = vec![Complex32::new(0.0, 0.0); n];
+        for i in 0..n {
+            let s = *samples.get(i).unwrap_or(&0.0);
+            let w = 0.5f32 - 0.5f32 * ((2.0 * std::f32::consts::PI * i as f32) / n as f32).cos();
+            frame[i] = Complex32::new(s * w, 0.0);
+        }
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(n);
+        fft.process(&mut frame);
+        let mut num = 0.0f64;
+        let mut den = 0.0f64;
+        for (k, c) in frame.iter().take(n / 2 + 1).enumerate() {
+            let mag = c.norm() as f64;
+            let hz = k as f64 * sample_rate as f64 / n as f64;
+            num += hz * mag;
+            den += mag;
+        }
+        if den <= 1e-12 {
+            0.0
+        } else {
+            (num / den) as f32
+        }
     }
 }

@@ -18,7 +18,8 @@ impl KokoroTextEncoder {
     pub fn load(cfg: &KokoroConfig, vb: VarBuilder) -> Result<Self> {
         let root = vb.pp("module");
         let channels = cfg.hidden_dim;
-        let embedding = embedding(cfg.n_token, channels, root.pp("embedding")).map_err(Error::from)?;
+        let embedding =
+            embedding(cfg.n_token, channels, root.pp("embedding")).map_err(Error::from)?;
         let mut cnn = Vec::with_capacity(cfg.n_layer);
         for i in 0..cfg.n_layer {
             cnn.push(TextEncoderConvBlock::load(
@@ -101,8 +102,12 @@ struct KokoroChannelLayerNorm {
 
 impl KokoroChannelLayerNorm {
     fn load(channels: usize, vb: VarBuilder) -> Result<Self> {
-        let gamma = vb.get_unchecked_dtype("gamma", DType::F32).map_err(Error::from)?;
-        let beta = vb.get_unchecked_dtype("beta", DType::F32).map_err(Error::from)?;
+        let gamma = vb
+            .get_unchecked_dtype("gamma", DType::F32)
+            .map_err(Error::from)?;
+        let beta = vb
+            .get_unchecked_dtype("beta", DType::F32)
+            .map_err(Error::from)?;
         Ok(Self {
             channels,
             eps: 1e-5,
@@ -122,7 +127,10 @@ impl KokoroChannelLayerNorm {
         let x_btc = x.transpose(1, 2).map_err(Error::from)?; // [B,T,C]
         let mean = x_btc.mean_keepdim(2).map_err(Error::from)?;
         let var = x_btc.var_keepdim(2).map_err(Error::from)?;
-        let denom = (var + self.eps).map_err(Error::from)?.sqrt().map_err(Error::from)?;
+        let denom = (var + self.eps)
+            .map_err(Error::from)?
+            .sqrt()
+            .map_err(Error::from)?;
         let xhat = x_btc
             .broadcast_sub(&mean)
             .map_err(Error::from)?
@@ -148,4 +156,3 @@ impl KokoroChannelLayerNorm {
         y.transpose(1, 2).map_err(Error::from)
     }
 }
-
