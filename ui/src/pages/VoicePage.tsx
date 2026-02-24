@@ -1707,6 +1707,12 @@ export function VoicePage({
         throw new Error("Selected models must be loaded. Open Config to manage models.");
       }
 
+      // Keep backend ASR input format consistent with the previous stable path.
+      const wavBlob = await transcodeToWav(audioBlob, 16000);
+      if (!isSessionActiveRef.current || currentTurnId !== turnIdRef.current) {
+        return;
+      }
+
       const socket = await ensureVoiceRealtimeSocket();
       if (!isSessionActiveRef.current || currentTurnId !== turnIdRef.current) {
         return;
@@ -1724,7 +1730,7 @@ export function VoicePage({
         type: "input_audio_commit",
         utterance_id: utterance.id,
         utterance_seq: utterance.seq,
-        mime_type: audioBlob.type || undefined,
+        mime_type: wavBlob.type || "audio/wav",
         asr_model_id: selectedAsrModel,
         text_model_id: selectedTextModel,
         tts_model_id: selectedTtsModel,
@@ -1733,7 +1739,7 @@ export function VoicePage({
         max_output_tokens: 1536,
       });
 
-      const bytes = await audioBlob.arrayBuffer();
+      const bytes = await wavBlob.arrayBuffer();
       if (!isSessionActiveRef.current || currentTurnId !== turnIdRef.current) {
         return;
       }
@@ -1947,10 +1953,6 @@ export function VoicePage({
 
     try {
       setError(null);
-      if (!lfm2DirectMode) {
-        await ensureVoiceRealtimeSocket();
-      }
-
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -2056,6 +2058,21 @@ export function VoicePage({
       silenceMsRef.current = 0;
       speechStartRef.current = null;
       setRuntimeStatus("listening");
+
+      if (!lfm2DirectMode) {
+        // Warm up the realtime websocket, but never block microphone startup on network I/O.
+        void ensureVoiceRealtimeSocket().catch((err) => {
+          const message =
+            err instanceof Error
+              ? err.message
+              : "Voice realtime connection failed";
+          if (!isSessionActiveRef.current) {
+            return;
+          }
+          setError(message);
+          onError?.(message);
+        });
+      }
 
       const VAD_INTERVAL = 80;
       vadTimerRef.current = window.setInterval(() => {
