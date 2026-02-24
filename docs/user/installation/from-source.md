@@ -11,6 +11,7 @@ Build Izwi from source for development or to customize your installation.
 - **Git** — Version control
 - **Rust** — 1.83 or later (stable)
 - **Node.js** — 18+ (for UI development)
+- **`espeak-ng`** (optional, required only for `Kokoro-82M` TTS)
 
 ### macOS
 
@@ -49,6 +50,12 @@ source "$HOME/.cargo/env"
 git clone https://github.com/agentem-ai/izwi.git
 cd izwi
 ```
+
+If you plan to use `Kokoro-82M`, install `espeak-ng` using your platform guide before running TTS:
+
+- [macOS `espeak-ng` install](./macos.md#optional-install-espeak-ng-for-kokoro-82m)
+- [Linux `espeak-ng` install](./linux.md#optional-install-espeak-ng-for-kokoro-82m)
+- [Windows `espeak-ng` install](./windows.md#optional-install-espeak-ng-for-kokoro-82m)
 
 ---
 

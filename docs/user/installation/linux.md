@@ -42,6 +42,37 @@ izwi status
 
 ---
 
+## Optional: Install `espeak-ng` for Kokoro-82M
+
+`Kokoro-82M` uses `espeak-ng` for phonemization. Install it before using Kokoro voices.
+
+### Ubuntu / Debian
+
+```bash
+sudo apt update
+sudo apt install -y espeak-ng
+```
+
+### Fedora
+
+```bash
+sudo dnf install -y espeak-ng
+```
+
+### Arch Linux
+
+```bash
+sudo pacman -S espeak-ng
+```
+
+### Verify
+
+```bash
+espeak-ng --version
+```
+
+---
+
 ## Install from Source
 
 ### Prerequisites
@@ -226,6 +257,14 @@ sudo apt install -y libasound2-dev
 
 # Fedora
 sudo dnf install -y alsa-lib-devel
+```
+
+### Kokoro error: `espeak-ng not found`
+
+Install `espeak-ng` with your distro package manager, then verify:
+
+```bash
+espeak-ng --version
 ```
 
 ---
