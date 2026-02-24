@@ -30,6 +30,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(crate::api::diarization::router())
         .merge(crate::api::speech_history::router())
         .merge(crate::api::saved_voices::router())
+        .merge(crate::api::voice_realtime::router())
         .merge(crate::api::openai::router())
         .merge(crate::api::admin::router());
 
