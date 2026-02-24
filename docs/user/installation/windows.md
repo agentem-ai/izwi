@@ -36,6 +36,27 @@ izwi --version
 
 ---
 
+## Optional: Install `espeak-ng` for Kokoro-82M
+
+`Kokoro-82M` uses `espeak-ng` for phonemization. Install it before using Kokoro voices.
+
+### Option 1: Install from eSpeak NG releases (Recommended)
+
+1. Download the latest Windows installer/zip for **eSpeak NG** from the official releases page:
+   [eSpeak NG Releases](https://github.com/espeak-ng/espeak-ng/releases)
+2. Install eSpeak NG (or extract it to a folder such as `C:\Program Files\eSpeak NG\`)
+3. Add the folder containing `espeak-ng.exe` to your **PATH** if the installer does not do this automatically
+
+### Verify
+
+Open a new PowerShell window and run:
+
+```powershell
+espeak-ng --version
+```
+
+---
+
 ## Install via winget (Coming Soon)
 
 ```powershell
@@ -146,6 +167,14 @@ The installer should add Izwi to your PATH. If not:
 2. Under **User variables**, edit **Path**
 3. Add `C:\Program Files\Izwi`
 4. Restart your terminal
+
+### Kokoro error: `espeak-ng not found`
+
+Install eSpeak NG and ensure the folder containing `espeak-ng.exe` is in your PATH, then verify:
+
+```powershell
+espeak-ng --version
+```
 
 ### Port 8080 already in use
 

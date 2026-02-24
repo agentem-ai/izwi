@@ -45,6 +45,24 @@ izwi --version
 
 ---
 
+## Optional: Install `espeak-ng` for Kokoro-82M
+
+`Kokoro-82M` uses `espeak-ng` for phonemization. Install it before using Kokoro voices.
+
+### Install with Homebrew
+
+```bash
+brew install espeak-ng
+```
+
+### Verify
+
+```bash
+espeak-ng --version
+```
+
+---
+
 ## Install via Homebrew (Coming Soon)
 
 ```bash
@@ -168,6 +186,15 @@ Then reload:
 
 ```bash
 source ~/.zshrc
+```
+
+### Kokoro error: `espeak-ng not found`
+
+Install `espeak-ng`:
+
+```bash
+brew install espeak-ng
+espeak-ng --version
 ```
 
 ### Metal acceleration not working

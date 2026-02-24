@@ -12,6 +12,7 @@ Izwi supports several model families optimized for different tasks:
 
 | Model | Size | Description |
 |-------|------|-------------|
+| `Kokoro-82M` | ~0.4 GB | Lightweight TTS (requires `espeak-ng`) |
 | `Qwen3-TTS-12Hz-0.6B-Base` | ~2.3 GB | Fast, general-purpose TTS |
 | `Qwen3-TTS-12Hz-0.6B-CustomVoice` | ~2.3 GB | TTS with voice cloning support |
 | `Qwen3-TTS-12Hz-1.7B-Base` | ~4.2 GB | Higher quality TTS |
@@ -19,6 +20,11 @@ Izwi supports several model families optimized for different tasks:
 | `Qwen3-TTS-12Hz-1.7B-VoiceDesign` | ~4.2 GB | Voice design from descriptions |
 | `LFM2-Audio-1.5B` | ~2.8 GB | Liquid AI audio model |
 | `LFM2.5-Audio-1.5B` | ~3.0 GB | Liquid AI audio model (v2.5) |
+
+> `Kokoro-82M` uses `espeak-ng` for phonemization. Install it separately before using Kokoro:
+> [macOS](../installation/macos.md#optional-install-espeak-ng-for-kokoro-82m),
+> [Linux](../installation/linux.md#optional-install-espeak-ng-for-kokoro-82m),
+> [Windows](../installation/windows.md#optional-install-espeak-ng-for-kokoro-82m)
 
 ### Speech Recognition (ASR)
 

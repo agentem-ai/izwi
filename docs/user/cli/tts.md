@@ -16,6 +16,15 @@ izwi tts <TEXT> [OPTIONS]
 
 Converts text to speech using a TTS model. Supports multiple output formats, voice selection, and real-time streaming.
 
+### Kokoro-82M Prerequisite (`espeak-ng`)
+
+`Kokoro-82M` requires `espeak-ng` to be installed on the host system (used for phonemization).
+
+- Install instructions:
+  - [macOS](../installation/macos.md#optional-install-espeak-ng-for-kokoro-82m)
+  - [Linux](../installation/linux.md#optional-install-espeak-ng-for-kokoro-82m)
+  - [Windows](../installation/windows.md#optional-install-espeak-ng-for-kokoro-82m)
+
 ---
 
 ## Arguments
@@ -47,6 +56,15 @@ Converts text to speech using a TTS model. Supports multiple output formats, voi
 
 ```bash
 izwi tts "Hello, world!" --output hello.wav
+```
+
+### Kokoro-82M
+
+```bash
+izwi tts "Hello my name is Bella" \
+  --model Kokoro-82M \
+  --speaker af_bella \
+  --output kokoro.wav
 ```
 
 ### Play immediately
@@ -120,6 +138,7 @@ izwi tts "Long text for streaming" --stream --play
 
 | Model | Type | Description |
 |-------|------|-------------|
+| `Kokoro-82M` | Standard | Lightweight TTS (requires `espeak-ng`) |
 | `qwen3-tts-0.6b-base` | Standard | General-purpose TTS |
 | `qwen3-tts-0.6b-customvoice` | Cloning | Voice cloning support |
 | `qwen3-tts-0.6b-voicedesign` | Design | Voice from descriptions |

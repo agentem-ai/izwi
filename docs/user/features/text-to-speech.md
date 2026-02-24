@@ -24,6 +24,15 @@ Izwi's text-to-speech converts written text into spoken audio. Features include:
 izwi pull qwen3-tts-0.6b-base
 ```
 
+### Kokoro-82M Prerequisite (`espeak-ng`)
+
+If you plan to use `Kokoro-82M`, install `espeak-ng` on your system first.
+Izwi uses it for Kokoro phonemization and will return an error if it is missing.
+
+- macOS: see [macOS Installation](../installation/macos.md#optional-install-espeak-ng-for-kokoro-82m)
+- Linux: see [Linux Installation](../installation/linux.md#optional-install-espeak-ng-for-kokoro-82m)
+- Windows: see [Windows Installation](../installation/windows.md#optional-install-espeak-ng-for-kokoro-82m)
+
 ### Generate Speech
 
 **Command line:**
@@ -150,10 +159,12 @@ curl -X POST http://localhost:8080/v1/audio/speech \
 
 | Model | Size | Quality | Speed |
 |-------|------|---------|-------|
+| `Kokoro-82M` | ~0.4 GB | Good | Fast |
 | `qwen3-tts-0.6b-base` | 1.2 GB | Good | Fast |
 | `qwen3-tts-1.7b-base` | 3.4 GB | Better | Medium |
 
 For voice cloning, use `customvoice` variants. For voice design, use `voicedesign` variants.
+`Kokoro-82M` requires `espeak-ng` to be installed separately.
 
 ---
 
