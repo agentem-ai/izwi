@@ -5,6 +5,7 @@ use crate::diarization_store::DiarizationStore;
 use crate::saved_voice_store::SavedVoiceStore;
 use crate::speech_history_store::SpeechHistoryStore;
 use crate::transcription_store::TranscriptionStore;
+use izwi_agent::planner::PlanningMode;
 use izwi_core::RuntimeService;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -30,6 +31,18 @@ pub struct StoredResponseRecord {
     pub metadata: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredAgentSessionRecord {
+    pub id: String,
+    pub agent_id: String,
+    pub thread_id: String,
+    pub model_id: String,
+    pub system_prompt: String,
+    pub planning_mode: PlanningMode,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
 /// Shared application state with fine-grained locking and backpressure
 #[derive(Clone)]
 pub struct AppState {
@@ -41,6 +54,8 @@ pub struct AppState {
     pub request_timeout_secs: u64,
     /// In-memory store for OpenAI-compatible `/v1/responses` objects.
     pub response_store: Arc<RwLock<HashMap<String, StoredResponseRecord>>>,
+    /// In-memory store for minimal agent sessions.
+    pub agent_session_store: Arc<RwLock<HashMap<String, StoredAgentSessionRecord>>>,
     /// SQLite-backed chat thread/message store.
     pub chat_store: Arc<ChatStore>,
     /// SQLite-backed transcription history store.
@@ -78,6 +93,7 @@ impl AppState {
             request_semaphore: Arc::new(Semaphore::new(max_concurrent)),
             request_timeout_secs: timeout,
             response_store: Arc::new(RwLock::new(HashMap::new())),
+            agent_session_store: Arc::new(RwLock::new(HashMap::new())),
             chat_store,
             transcription_store,
             diarization_store,

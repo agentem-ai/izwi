@@ -34,7 +34,10 @@ struct DesktopArgs {
 }
 
 #[tauri::command]
-async fn download_audio_file(url: String, suggested_filename: Option<String>) -> Result<String, String> {
+async fn download_audio_file(
+    url: String,
+    suggested_filename: Option<String>,
+) -> Result<String, String> {
     let task = tauri::async_runtime::spawn_blocking(move || {
         save_audio_from_url(url.as_str(), suggested_filename.as_deref())
     });
@@ -166,10 +169,7 @@ fn sanitize_download_filename(raw: &str) -> String {
         }
     }
 
-    let sanitized = sanitized
-        .trim()
-        .trim_matches('.')
-        .to_string();
+    let sanitized = sanitized.trim().trim_matches('.').to_string();
     if sanitized.is_empty() {
         "speech.wav".to_string()
     } else {
