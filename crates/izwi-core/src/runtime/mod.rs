@@ -8,6 +8,7 @@ mod asr;
 pub(crate) mod audio_io;
 mod chat;
 mod diarization;
+mod kokoro;
 mod lfm2;
 mod lifecycle;
 mod service;

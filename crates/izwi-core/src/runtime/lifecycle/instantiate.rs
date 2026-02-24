@@ -88,9 +88,8 @@ impl RuntimeService {
                 InstantiatedPayload::None
             }
             ModelFamily::KokoroTts => {
-                return Err(Error::InvalidInput(
-                    "Kokoro-82M catalog/download support is available, but native Rust runtime inference is not implemented yet.".to_string(),
-                ));
+                self.model_registry.load_kokoro(variant, &model_path).await?;
+                InstantiatedPayload::None
             }
             ModelFamily::Qwen3Tts => {
                 let registration = resolve_tts_loader_registration(family).ok_or_else(|| {

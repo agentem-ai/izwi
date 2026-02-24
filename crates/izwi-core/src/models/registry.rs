@@ -10,6 +10,7 @@ use crate::catalog::ModelFamily;
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::architectures::gemma3::chat::Gemma3ChatModel;
+use crate::models::architectures::kokoro::KokoroTtsModel;
 use crate::models::architectures::lfm2::audio::Lfm2AudioModel;
 use crate::models::architectures::parakeet::asr::ParakeetAsrModel;
 use crate::models::architectures::qwen3::asr::{
@@ -29,6 +30,7 @@ type ChatLoaderFn = fn(&Path, ModelVariant, DeviceProfile) -> Result<NativeChatM
 type DiarizationLoaderFn = fn(&Path, ModelVariant) -> Result<NativeDiarizationModel>;
 type VoxtralLoaderFn = fn(&Path, ModelVariant, DeviceProfile) -> Result<VoxtralRealtimeModel>;
 type Lfm2LoaderFn = fn(&Path, ModelVariant, DeviceProfile) -> Result<Lfm2AudioModel>;
+type KokoroLoaderFn = fn(&Path, ModelVariant, DeviceProfile) -> Result<KokoroTtsModel>;
 
 struct AsrLoaderRegistration {
     name: &'static str,
@@ -58,6 +60,12 @@ struct Lfm2LoaderRegistration {
     name: &'static str,
     family: ModelFamily,
     loader: Lfm2LoaderFn,
+}
+
+struct KokoroLoaderRegistration {
+    name: &'static str,
+    family: ModelFamily,
+    loader: KokoroLoaderFn,
 }
 
 fn load_qwen_asr_model(
@@ -125,6 +133,14 @@ fn load_lfm2_model(
     Lfm2AudioModel::load(model_dir, device)
 }
 
+fn load_kokoro_model(
+    model_dir: &Path,
+    _variant: ModelVariant,
+    device: DeviceProfile,
+) -> Result<KokoroTtsModel> {
+    KokoroTtsModel::load(model_dir, device)
+}
+
 const ASR_LOADER_REGISTRY: &[AsrLoaderRegistration] = &[
     AsrLoaderRegistration {
         name: "parakeet_asr",
@@ -168,6 +184,12 @@ const LFM2_LOADER_REGISTRY: &[Lfm2LoaderRegistration] = &[Lfm2LoaderRegistration
     name: "lfm2_audio",
     family: ModelFamily::Lfm2Audio,
     loader: load_lfm2_model,
+}];
+
+const KOKORO_LOADER_REGISTRY: &[KokoroLoaderRegistration] = &[KokoroLoaderRegistration {
+    name: "kokoro_tts",
+    family: ModelFamily::KokoroTts,
+    loader: load_kokoro_model,
 }];
 
 fn resolve_asr_loader_registration(
@@ -216,6 +238,15 @@ fn resolve_lfm2_loader_registration(
 ) -> Option<&'static Lfm2LoaderRegistration> {
     let family = variant.family();
     LFM2_LOADER_REGISTRY
+        .iter()
+        .find(|registration| registration.family == family)
+}
+
+fn resolve_kokoro_loader_registration(
+    variant: ModelVariant,
+) -> Option<&'static KokoroLoaderRegistration> {
+    let family = variant.family();
+    KOKORO_LOADER_REGISTRY
         .iter()
         .find(|registration| registration.family == family)
 }
@@ -438,6 +469,7 @@ pub struct ModelRegistry {
     chat_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<NativeChatModel>>>>>>,
     voxtral_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<VoxtralRealtimeModel>>>>>>,
     lfm2_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<Lfm2AudioModel>>>>>>,
+    kokoro_models: Arc<RwLock<HashMap<ModelVariant, Arc<OnceCell<Arc<KokoroTtsModel>>>>>>,
 }
 
 impl ModelRegistry {
@@ -450,6 +482,7 @@ impl ModelRegistry {
             chat_models: Arc::new(RwLock::new(HashMap::new())),
             voxtral_models: Arc::new(RwLock::new(HashMap::new())),
             lfm2_models: Arc::new(RwLock::new(HashMap::new())),
+            kokoro_models: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -666,6 +699,45 @@ impl ModelRegistry {
         Ok(model.clone())
     }
 
+    pub async fn load_kokoro(
+        &self,
+        variant: ModelVariant,
+        model_dir: &Path,
+    ) -> Result<Arc<KokoroTtsModel>> {
+        let registration = resolve_kokoro_loader_registration(variant).ok_or_else(|| {
+            Error::InvalidInput(format!("Unsupported Kokoro model variant: {variant}"))
+        })?;
+
+        let cell = {
+            let mut guard = self.kokoro_models.write().await;
+            guard
+                .entry(variant)
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
+        };
+
+        info!(
+            "Loading Kokoro model {variant} ({}) from {model_dir:?}",
+            registration.name
+        );
+
+        let model = cell
+            .get_or_try_init({
+                let model_dir = model_dir.to_path_buf();
+                let device = self.device.clone();
+                let loader = registration.loader;
+                move || async move {
+                    tokio::task::spawn_blocking(move || loader(&model_dir, variant, device))
+                        .await
+                        .map_err(|e| Error::ModelLoadError(e.to_string()))?
+                        .map(Arc::new)
+                }
+            })
+            .await?;
+
+        Ok(model.clone())
+    }
+
     pub async fn get_asr(&self, variant: ModelVariant) -> Option<Arc<NativeAsrModel>> {
         let guard = self.asr_models.read().await;
         guard.get(&variant).and_then(|cell| cell.get().cloned())
@@ -722,6 +794,16 @@ impl ModelRegistry {
         guard.get(&variant).and_then(|cell| cell.get().cloned())
     }
 
+    pub async fn get_kokoro(&self, variant: ModelVariant) -> Option<Arc<KokoroTtsModel>> {
+        let guard = self.kokoro_models.read().await;
+        guard.get(&variant).and_then(|cell| cell.get().cloned())
+    }
+
+    pub fn try_get_kokoro(&self, variant: ModelVariant) -> Option<Arc<KokoroTtsModel>> {
+        let guard = self.kokoro_models.try_read().ok()?;
+        guard.get(&variant).and_then(|cell| cell.get().cloned())
+    }
+
     pub async fn unload_asr(&self, variant: ModelVariant) {
         let mut guard = self.asr_models.write().await;
         guard.remove(&variant);
@@ -744,6 +826,11 @@ impl ModelRegistry {
 
     pub async fn unload_lfm2(&self, variant: ModelVariant) {
         let mut guard = self.lfm2_models.write().await;
+        guard.remove(&variant);
+    }
+
+    pub async fn unload_kokoro(&self, variant: ModelVariant) {
+        let mut guard = self.kokoro_models.write().await;
         guard.remove(&variant);
     }
 }
