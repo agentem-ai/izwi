@@ -17,7 +17,12 @@ import {
 import clsx from "clsx";
 
 import { api, ChatMessage, ModelInfo } from "../api";
-import { isLfmAudioVariant, SPEAKERS, VIEW_CONFIGS } from "../types";
+import {
+  getSpeakerProfilesForVariant,
+  isKokoroVariant,
+  isLfmAudioVariant,
+  VIEW_CONFIGS,
+} from "../types";
 import {
   Select,
   SelectContent,
@@ -119,11 +124,14 @@ function isTextVariant(variant: string): boolean {
 }
 
 function isTtsVariant(variant: string): boolean {
-  return variant.includes("Qwen3-TTS") && !variant.includes("Tokenizer");
+  return (
+    (variant.includes("Qwen3-TTS") && !variant.includes("Tokenizer")) ||
+    isKokoroVariant(variant)
+  );
 }
 
 function isCustomVoiceTtsVariant(variant: string): boolean {
-  return isTtsVariant(variant) && variant.includes("CustomVoice");
+  return (isTtsVariant(variant) && variant.includes("CustomVoice")) || isKokoroVariant(variant);
 }
 
 function formatModelVariantLabel(variant: string): string {
@@ -161,6 +169,10 @@ function formatModelVariantLabel(variant: string): string {
     return normalized
       .replace("LFM2.5-Audio-", "LFM2.5 Audio ")
       .replace("LFM2-Audio-", "LFM2 Audio ");
+  }
+
+  if (isKokoroVariant(normalized)) {
+    return "Kokoro 82M";
   }
 
   return normalized.replace(/-/g, " ");
@@ -424,6 +436,10 @@ export function VoicePage({
     () => ttsModels.filter((m) => isCustomVoiceTtsVariant(m.variant)),
     [ttsModels],
   );
+  const assistantSpeakers = useMemo(
+    () => getSpeakerProfilesForVariant(selectedTtsModel),
+    [selectedTtsModel],
+  );
   const voiceRouteModels = useMemo(
     () =>
       sortedModels.filter(
@@ -434,6 +450,12 @@ export function VoicePage({
       ),
     [sortedModels],
   );
+
+  useEffect(() => {
+    if (!assistantSpeakers.some((speaker) => speaker.id === selectedSpeaker)) {
+      setSelectedSpeaker(assistantSpeakers[0]?.id ?? "Serena");
+    }
+  }, [assistantSpeakers, selectedSpeaker]);
 
   useEffect(() => {
     runtimeStatusRef.current = runtimeStatus;
@@ -1968,7 +1990,7 @@ export function VoicePage({
                             <SelectValue placeholder="Select assistant voice" />
                           </SelectTrigger>
                           <SelectContent>
-                            {SPEAKERS.map((speaker) => (
+                            {assistantSpeakers.map((speaker) => (
                               <SelectItem key={speaker.id} value={speaker.id}>
                                 {speaker.name} ({speaker.language})
                               </SelectItem>

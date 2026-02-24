@@ -13,7 +13,7 @@ export function TTSPlaygroundWrapper({
     <div className="space-y-4">
       {/* Engine description */}
       <p className="text-xs text-gray-500">
-        Qwen3-TTS: 9 built-in voices with speaking style instructions
+        Built-in voice TTS with Qwen3-TTS, Kokoro-82M, and LFM2
       </p>
 
       {/* Qwen3-TTS Playground */}

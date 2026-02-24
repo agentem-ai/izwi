@@ -18,7 +18,7 @@ import {
   type SpeechHistoryRecord,
   type TTSGenerationStats,
 } from "../api";
-import { isLfmAudioVariant, LFM2_SPEAKERS, QWEN_SPEAKERS } from "../types";
+import { getSpeakerProfilesForVariant } from "../types";
 import { GenerationStats } from "./GenerationStats";
 import clsx from "clsx";
 import { SpeechHistoryPanel } from "./SpeechHistoryPanel";
@@ -187,12 +187,11 @@ export function CustomVoicePlayground({
   const mergeSuppressedRef = useRef(false);
   const generationSessionRef = useRef(0);
   const modelMenuRef = useRef<HTMLDivElement>(null);
-  const isLfm2Model = selectedModel ? isLfmAudioVariant(selectedModel) : false;
   const availableSpeakers = useMemo(
-    () => (isLfm2Model ? LFM2_SPEAKERS : QWEN_SPEAKERS),
-    [isLfm2Model],
+    () => getSpeakerProfilesForVariant(selectedModel),
+    [selectedModel],
   );
-  const defaultSpeaker = isLfm2Model ? "US Female" : "Vivian";
+  const defaultSpeaker = availableSpeakers[0]?.id ?? "Vivian";
 
   const selectedSpeaker = availableSpeakers.find((s) => s.id === speaker);
 
@@ -926,7 +925,7 @@ export function CustomVoicePlayground({
 
         {!selectedModelReady && (
           <p className="text-xs text-[var(--text-secondary)]">
-            Load a compatible Qwen3 CustomVoice or LFM2 model to generate speech
+            Load a compatible Qwen3 CustomVoice, Kokoro, or LFM2 model to generate speech
           </p>
         )}
       </div>
