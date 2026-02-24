@@ -1,6 +1,8 @@
 use std::f32::consts::PI;
 use std::fmt;
 use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use candle_core::{DType, Tensor};
 use candle_nn::{
@@ -21,6 +23,19 @@ use super::prosody::{
     load_plain_conv1d, load_weight_norm_conv1d, load_weight_norm_conv_transpose1d, AdaIN1d,
     AdainResBlk1d,
 };
+
+fn kokoro_profile_enabled() -> bool {
+    std::env::var_os("IZWI_KOKORO_PROFILE").is_some()
+}
+
+fn log_kokoro_profile(stage: &str, dur: Duration) {
+    if kokoro_profile_enabled() {
+        eprintln!(
+            "kokoro profile: {stage} = {:.2} ms",
+            dur.as_secs_f64() * 1_000.0
+        );
+    }
+}
 
 #[derive(Debug)]
 pub struct KokoroDecoder {
@@ -114,6 +129,8 @@ impl KokoroDecoder {
         style: &Tensor,    // [B, 128]
         rng_seed: Option<u64>,
     ) -> Result<Vec<f32>> {
+        let profile = kokoro_profile_enabled();
+        let t0 = Instant::now();
         let f0 = self
             .f0_conv
             .forward(&f0_curve.unsqueeze(1).map_err(Error::from)?)
@@ -122,7 +139,11 @@ impl KokoroDecoder {
             .n_conv
             .forward(&n_curve.unsqueeze(1).map_err(Error::from)?)
             .map_err(Error::from)?;
+        if profile {
+            log_kokoro_profile("decoder.f0n_conv", t0.elapsed());
+        }
 
+        let t1 = Instant::now();
         let x = Tensor::cat(&[asr.clone(), f0.clone(), n.clone()], 1).map_err(Error::from)?;
         let mut x = self.encode.forward(&x, style)?;
         let asr_res = self.asr_res.forward(asr).map_err(Error::from)?;
@@ -140,8 +161,17 @@ impl KokoroDecoder {
                 still_concat_res = false;
             }
         }
+        if profile {
+            log_kokoro_profile("decoder.encode_decode_blocks", t1.elapsed());
+        }
 
-        self.generator.forward(&x, style, f0_curve, rng_seed)
+        let t2 = Instant::now();
+        let out = self.generator.forward(&x, style, f0_curve, rng_seed)?;
+        if profile {
+            log_kokoro_profile("decoder.generator_total", t2.elapsed());
+            log_kokoro_profile("decoder.total", t0.elapsed());
+        }
+        Ok(out)
     }
 }
 
@@ -326,8 +356,14 @@ impl KokoroIstftGenerator {
         f0_curve: &Tensor,
         rng_seed: Option<u64>,
     ) -> Result<Vec<f32>> {
+        let profile = kokoro_profile_enabled();
+        let t0 = Instant::now();
         let har = self.harmonic_features(f0_curve, x.device(), rng_seed)?; // [B, n_fft+2, T_har]
+        if profile {
+            log_kokoro_profile("generator.harmonic_features", t0.elapsed());
+        }
 
+        let t1 = Instant::now();
         let mut x = x.clone();
         for i in 0..self.num_upsamples {
             x = ops::leaky_relu(&x, 0.1).map_err(Error::from)?;
@@ -340,14 +376,14 @@ impl KokoroIstftGenerator {
             x = match_time_add(&x, &x_source)?;
 
             let base = i * self.num_kernels;
-            let mut xs = self.resblocks[base].forward(&x, style)?;
-            for j in 1..self.num_kernels {
-                let y = self.resblocks[base + j].forward(&x, style)?;
-                xs = (xs + y).map_err(Error::from)?;
-            }
+            let xs = self.run_stage_resblocks(base, &x, style)?;
             x = (xs / self.num_kernels as f64).map_err(Error::from)?;
         }
+        if profile {
+            log_kokoro_profile("generator.neural_upsample", t1.elapsed());
+        }
 
+        let t2 = Instant::now();
         x = ops::leaky_relu(&x, 0.01).map_err(Error::from)?;
         x = self.conv_post.forward(&x).map_err(Error::from)?;
         let (_b, c, _t) = x.dims3().map_err(Error::from)?;
@@ -369,7 +405,16 @@ impl KokoroIstftGenerator {
             .map_err(Error::from)?
             .sin()
             .map_err(Error::from)?;
-        self.stft.inverse(&spec, &phase)
+        if profile {
+            log_kokoro_profile("generator.conv_post_spec_phase", t2.elapsed());
+        }
+        let t3 = Instant::now();
+        self.stft.inverse(&spec, &phase).inspect(|_| {
+            if profile {
+                log_kokoro_profile("generator.istft_inverse", t3.elapsed());
+                log_kokoro_profile("generator.total", t0.elapsed());
+            }
+        })
     }
 
     fn harmonic_features(
@@ -378,19 +423,25 @@ impl KokoroIstftGenerator {
         device: &candle_core::Device,
         rng_seed: Option<u64>,
     ) -> Result<Tensor> {
-        let f0_rows = f0_curve.to_vec2::<f32>().map_err(Error::from)?;
-        if f0_rows.len() != 1 {
+        let profile = kokoro_profile_enabled();
+        let t0 = Instant::now();
+        let f0_curve = f0_curve.squeeze(0).map_err(Error::from)?;
+        let f0 = f0_curve.to_vec1::<f32>().map_err(Error::from)?;
+        if profile {
+            log_kokoro_profile("generator.harmonic.f0_download", t0.elapsed());
+        }
+        if f0_curve.rank() != 1 {
             return Err(Error::InferenceError(
                 "Kokoro generator currently supports batch size 1 for harmonic source".to_string(),
             ));
         }
-        let f0 = &f0_rows[0];
         if f0.is_empty() {
             return Err(Error::InferenceError(
                 "Kokoro generator received empty F0 curve".to_string(),
             ));
         }
-        let upsampled_f0 = repeat_nearest(f0, self.total_scale);
+        let t1 = Instant::now();
+        let upsampled_f0 = repeat_nearest(&f0, self.total_scale);
         let seed = rng_seed.unwrap_or_else(rand::random::<u64>);
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let har_source = synth_harmonic_source_kokoro(
@@ -405,7 +456,14 @@ impl KokoroIstftGenerator {
             KokoroConfig::TARGET_SAMPLE_RATE as f32,
             &mut rng,
         );
+        if profile {
+            log_kokoro_profile("generator.harmonic.source", t1.elapsed());
+        }
+        let t2 = Instant::now();
         let (mag, phase) = self.stft.transform(&har_source)?;
+        if profile {
+            log_kokoro_profile("generator.harmonic.stft", t2.elapsed());
+        }
         let n_bins = self.cfg.gen_istft_n_fft / 2 + 1;
         let frames = if n_bins == 0 { 0 } else { mag.len() / n_bins };
         let mut har = vec![0.0f32; n_bins * 2 * frames];
@@ -415,7 +473,61 @@ impl KokoroIstftGenerator {
                 har[(n_bins + k) * frames + t] = phase[t * n_bins + k];
             }
         }
-        Tensor::from_vec(har, (1, n_bins * 2, frames), device).map_err(Error::from)
+        let t3 = Instant::now();
+        let har_t = Tensor::from_vec(har, (1, n_bins * 2, frames), device).map_err(Error::from)?;
+        if profile {
+            log_kokoro_profile("generator.harmonic.tensor_upload", t3.elapsed());
+            log_kokoro_profile("generator.harmonic.total", t0.elapsed());
+        }
+        Ok(har_t)
+    }
+
+    fn run_stage_resblocks(&self, base: usize, x: &Tensor, style: &Tensor) -> Result<Tensor> {
+        if x.device().is_cpu() && self.num_kernels > 1 {
+            return self.run_stage_resblocks_parallel_cpu(base, x, style);
+        }
+        let mut xs = self.resblocks[base].forward(x, style)?;
+        for j in 1..self.num_kernels {
+            let y = self.resblocks[base + j].forward(x, style)?;
+            xs = (xs + y).map_err(Error::from)?;
+        }
+        Ok(xs)
+    }
+
+    fn run_stage_resblocks_parallel_cpu(
+        &self,
+        base: usize,
+        x: &Tensor,
+        style: &Tensor,
+    ) -> Result<Tensor> {
+        let mut outputs = thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(self.num_kernels);
+            for j in 0..self.num_kernels {
+                let block = &self.resblocks[base + j];
+                let xj = x.clone();
+                let sj = style.clone();
+                handles
+                    .push(scope.spawn(move || block.forward(&xj, &sj).map_err(|e| e.to_string())));
+            }
+            let mut outs = Vec::with_capacity(handles.len());
+            for h in handles {
+                match h.join() {
+                    Ok(Ok(t)) => outs.push(t),
+                    Ok(Err(msg)) => return Err(Error::InferenceError(msg)),
+                    Err(_) => {
+                        return Err(Error::InferenceError(
+                            "Kokoro generator resblock worker thread panicked".to_string(),
+                        ))
+                    }
+                }
+            }
+            Ok::<Vec<Tensor>, Error>(outs)
+        })?;
+        let mut acc = outputs.remove(0);
+        for y in outputs {
+            acc = (acc + y).map_err(Error::from)?;
+        }
+        Ok(acc)
     }
 }
 
@@ -602,10 +714,16 @@ impl KokoroStft {
                 phase.shape().dims(),
             )));
         }
-        let mag_v = magnitude.to_vec3::<f32>().map_err(Error::from)?;
-        let phase_v = phase.to_vec3::<f32>().map_err(Error::from)?;
-        let mag = &mag_v[0];
-        let ph = &phase_v[0];
+        let mag = magnitude
+            .flatten_all()
+            .map_err(Error::from)?
+            .to_vec1::<f32>()
+            .map_err(Error::from)?;
+        let ph = phase
+            .flatten_all()
+            .map_err(Error::from)?
+            .to_vec1::<f32>()
+            .map_err(Error::from)?;
 
         if frames == 0 {
             return Ok(Vec::new());
@@ -618,8 +736,9 @@ impl KokoroStft {
         for frame_idx in 0..frames {
             spectrum.fill(Complex32::new(0.0, 0.0));
             for k in 0..n_bins {
-                let m = mag[k][frame_idx].max(0.0);
-                let p = ph[k][frame_idx];
+                let idx = k * frames + frame_idx;
+                let m = mag[idx].max(0.0);
+                let p = ph[idx];
                 spectrum[k] = Complex32::from_polar(m, p);
             }
             for k in 1..(n_bins.saturating_sub(1)) {
