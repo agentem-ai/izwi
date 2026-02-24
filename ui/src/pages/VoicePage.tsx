@@ -16,13 +16,12 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 
-import { api, ChatMessage, ModelInfo } from "../api";
+import { api, ModelInfo } from "../api";
 import {
   getSpeakerProfilesForVariant,
   isKokoroVariant,
   isLfmAudioVariant,
   VIEW_CONFIGS,
-  SPEAKERS,
 } from "../types";
 
 import {
