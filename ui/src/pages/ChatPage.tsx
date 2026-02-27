@@ -95,6 +95,8 @@ function getStatusLabel(status: ModelInfo["status"]): string {
   }
 }
 
+const DEFAULT_CHAT_MODEL_VARIANT = "Qwen3-8B-GGUF";
+
 export function ChatPage({
   models,
   selectedModel,
@@ -124,6 +126,12 @@ export function ChatPage({
   const resolvedSelectedModel = (() => {
     if (selectedModel && viewConfig.modelFilter(selectedModel)) {
       return selectedModel;
+    }
+    const preferredModel = chatModels.find(
+      (model) => model.variant === DEFAULT_CHAT_MODEL_VARIANT,
+    );
+    if (preferredModel) {
+      return preferredModel.variant;
     }
     const readyModel = chatModels.find((model) => model.status === "ready");
     if (readyModel) {
