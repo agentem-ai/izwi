@@ -383,6 +383,9 @@ export function VoiceClonePlayground({
                 <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">
                   Active Model
                 </div>
+                {modelOptions.length > 0 && (
+                  <div className="mt-2">{renderModelSelector()}</div>
+                )}
                 <div
                   className={clsx(
                     "mt-2 text-xs",
@@ -396,9 +399,8 @@ export function VoiceClonePlayground({
                     : "Open Models and load a Base model"}
                 </div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {modelOptions.length > 0 && renderModelSelector()}
-                {onOpenModelManager && (
+              {onOpenModelManager && (
+                <div className="shrink-0">
                   <button
                     onClick={handleOpenModels}
                     className="btn btn-secondary text-xs"
@@ -406,8 +408,8 @@ export function VoiceClonePlayground({
                     <Settings2 className="w-4 h-4" />
                     Models
                   </button>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </div>
 
