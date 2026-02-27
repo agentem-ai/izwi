@@ -561,7 +561,7 @@ export function DiarizationHistoryPanel({
 
   return (
     <>
-      <aside className="card p-4 sm:p-5 min-h-[560px] flex flex-col overflow-hidden">
+      <aside className="card border-[var(--border-muted)] p-4 sm:p-5 min-h-[560px] flex flex-col overflow-hidden">
         <div className="flex items-start justify-between gap-3 mb-3">
           <div>
             <div className="inline-flex items-center gap-2 text-xs text-[var(--text-muted)]">

@@ -1049,7 +1049,7 @@ export function TranscriptionPlayground({
 
   return (
     <div className="grid gap-4 lg:gap-6 xl:grid-cols-[340px,minmax(0,1fr),320px]">
-      <div className="rounded-xl border bg-card text-card-foreground shadow-sm p-4 sm:p-5 space-y-4">
+      <div className="rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm p-4 sm:p-5 space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="inline-flex items-center gap-2 text-xs text-muted-foreground font-medium uppercase tracking-wider">
@@ -1071,7 +1071,7 @@ export function TranscriptionPlayground({
           )}
         </div>
 
-        <div className="rounded-xl border bg-muted/30 p-4 space-y-3 shadow-inner">
+        <div className="rounded-xl border border-[var(--border-muted)] bg-muted/30 p-4 space-y-3 shadow-inner">
           <div>
             <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide mb-2">
               Active Model
@@ -1180,7 +1180,7 @@ export function TranscriptionPlayground({
                 </span>
               )}
               {detectedLanguage && !isStreaming && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium border shadow-sm">
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium border border-[var(--border-muted)] shadow-sm">
                   {detectedLanguage}
                 </span>
               )}
@@ -1210,7 +1210,7 @@ export function TranscriptionPlayground({
                 ))}
               </SelectContent>
             </Select>
-            <label className="flex items-center gap-2 rounded-md border bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground shadow-sm">
+            <label className="flex items-center gap-2 rounded-md border border-[var(--border-muted)] bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground shadow-sm">
               <Radio className="w-3.5 h-3.5" />
               <span className="font-medium">Stream</span>
               <input
@@ -1248,7 +1248,7 @@ export function TranscriptionPlayground({
           </div>
         </div>
 
-        <div className="flex-1 rounded-lg border bg-background/50 p-4 sm:p-5 overflow-y-auto shadow-inner">
+        <div className="flex-1 rounded-lg border border-[var(--border-muted)] bg-background/50 p-4 sm:p-5 overflow-y-auto shadow-inner">
           {showResult ? (
             <>
               {isProcessing && !transcription ? (
@@ -1281,7 +1281,7 @@ export function TranscriptionPlayground({
         </div>
 
         {processingStats && !isStreaming && (
-          <div className="mt-4 pt-3 border-t">
+          <div className="mt-4 pt-3 border-t border-[var(--border-muted)]">
             <GenerationStats stats={processingStats} type="asr" />
           </div>
         )}
@@ -1301,8 +1301,8 @@ export function TranscriptionPlayground({
         </AnimatePresence>
       </div>
 
-      <aside className="rounded-xl border bg-card text-card-foreground shadow-sm flex flex-col h-[440px] lg:h-[calc(100dvh-6.5rem)] overflow-hidden">
-        <div className="px-4 py-3 border-b flex items-center justify-between gap-3 bg-muted/30">
+      <aside className="rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm flex flex-col h-[440px] lg:h-[calc(100dvh-6.5rem)] overflow-hidden">
+        <div className="px-4 py-3 border-b border-[var(--border-muted)] flex items-center justify-between gap-3 bg-muted/30">
           <div>
             <div className="inline-flex items-center gap-2 text-xs text-muted-foreground font-medium uppercase tracking-wider">
               <History className="w-3.5 h-3.5" />
@@ -1364,7 +1364,7 @@ export function TranscriptionPlayground({
                           record.model_id ||
                           "Audio input"}
                       </span>
-                      <span className="text-[10px] text-muted-foreground bg-background px-1.5 py-0.5 rounded border shadow-sm whitespace-nowrap shrink-0">
+                      <span className="text-[10px] text-muted-foreground bg-background px-1.5 py-0.5 rounded border border-[var(--border-muted)] shadow-sm whitespace-nowrap shrink-0">
                         {formatCreatedAt(record.created_at)}
                       </span>
                     </div>
@@ -1421,9 +1421,9 @@ export function TranscriptionPlayground({
               exit={{ y: 18, opacity: 0, scale: 0.985 }}
               transition={{ duration: 0.18 }}
               onClick={(event) => event.stopPropagation()}
-              className="mx-auto flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border bg-card text-card-foreground shadow-2xl"
+              className="mx-auto flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-2xl"
             >
-              <div className="flex items-center justify-between gap-3 border-b px-4 py-3 sm:px-6 bg-muted/20">
+              <div className="flex items-center justify-between gap-3 border-b border-[var(--border-muted)] px-4 py-3 sm:px-6 bg-muted/20">
                 <div className="min-w-0">
                   <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                     Transcription Record
@@ -1487,7 +1487,7 @@ export function TranscriptionPlayground({
               </div>
 
               <div className="grid flex-1 overflow-hidden lg:grid-cols-[360px,minmax(0,1fr)]">
-                <div className="border-b p-4 sm:p-5 lg:border-b-0 lg:border-r bg-muted/10">
+                <div className="border-b border-[var(--border-muted)] p-4 sm:p-5 lg:border-b-0 lg:border-r bg-muted/10">
                   {selectedHistoryLoading ? (
                     <div className="h-full min-h-[220px] flex items-center justify-center gap-2 text-sm text-muted-foreground">
                       <Loader2 className="w-4 h-4 animate-spin" />
@@ -1500,13 +1500,13 @@ export function TranscriptionPlayground({
                   ) : activeHistoryRecord ? (
                     <>
                       <div className="flex flex-wrap gap-1.5 mb-5">
-                        <span className="rounded-md border bg-card px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
+                        <span className="rounded-md border border-[var(--border-muted)] bg-card px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
                           {activeHistoryRecord.model_id || "Unknown model"}
                         </span>
-                        <span className="rounded-md border bg-card px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
+                        <span className="rounded-md border border-[var(--border-muted)] bg-card px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
                           {activeHistoryRecord.language || "Unknown language"}
                         </span>
-                        <span className="rounded-md border bg-card px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
+                        <span className="rounded-md border border-[var(--border-muted)] bg-card px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
                           {formatAudioDuration(
                             activeHistoryRecord.duration_secs,
                           )}
@@ -1546,7 +1546,7 @@ export function TranscriptionPlayground({
                         className="hidden"
                       />
 
-                      <div className="rounded-xl border bg-card shadow-sm p-3">
+                      <div className="rounded-xl border border-[var(--border-muted)] bg-card shadow-sm p-3">
                         <div className="flex items-center gap-2">
                           <Button
                             onClick={() => void toggleHistoryPlayback()}
@@ -1620,7 +1620,7 @@ export function TranscriptionPlayground({
                                 Number(event.target.value),
                               )
                             }
-                            className="h-8 rounded-md border bg-background px-2 text-xs font-medium text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
+                            className="h-8 rounded-md border border-[var(--border-muted)] bg-background px-2 text-xs font-medium text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
                           >
                             <option value={0.75}>0.75x</option>
                             <option value={1}>1.0x</option>
@@ -1706,7 +1706,7 @@ export function TranscriptionPlayground({
                       </Button>
                     </div>
                   </div>
-                  <div className="flex-1 rounded-xl border bg-card p-4 sm:p-5 overflow-y-auto shadow-inner min-h-[320px]">
+                  <div className="flex-1 rounded-xl border border-[var(--border-muted)] bg-card p-4 sm:p-5 overflow-y-auto shadow-inner min-h-[320px]">
                     {selectedHistoryLoading ? (
                       <div className="h-full flex items-center justify-center gap-2 text-sm text-muted-foreground">
                         <Loader2 className="w-4 h-4 animate-spin" />
@@ -1743,7 +1743,7 @@ export function TranscriptionPlayground({
               animate={{ y: 0, opacity: 1, scale: 1 }}
               exit={{ y: 10, opacity: 0, scale: 0.98 }}
               transition={{ duration: 0.16 }}
-              className="w-full max-w-md rounded-xl border bg-card text-card-foreground p-5 shadow-2xl"
+              className="w-full max-w-md rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground p-5 shadow-2xl"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start gap-4">
@@ -1758,7 +1758,7 @@ export function TranscriptionPlayground({
                     This permanently removes the saved audio and transcript from
                     history.
                   </p>
-                  <div className="mt-3 rounded-md bg-muted/50 p-2.5 border">
+                  <div className="mt-3 rounded-md bg-muted/50 p-2.5 border border-[var(--border-muted)]">
                     <p className="truncate text-xs font-medium text-muted-foreground">
                       {deleteTargetRecord.audio_filename ||
                         deleteTargetRecord.model_id ||

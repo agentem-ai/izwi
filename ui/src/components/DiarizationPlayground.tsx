@@ -446,7 +446,7 @@ export function DiarizationPlayground({
           )}
         </div>
 
-        <div className="rounded-xl border bg-muted/30 p-4 space-y-3 shadow-inner">
+        <div className="rounded-xl border border-[var(--border-muted)] bg-muted/30 p-4 space-y-3 shadow-inner">
           <div className="text-[11px] text-muted-foreground uppercase tracking-wide">
             Active Model
           </div>
@@ -477,7 +477,7 @@ export function DiarizationPlayground({
           </div>
         </div>
 
-        <div className="rounded-xl border bg-card p-4 space-y-3 shadow-sm">
+        <div className="rounded-xl border border-[var(--border-muted)] bg-card p-4 space-y-3 shadow-sm">
           <div className="grid grid-cols-2 gap-3">
             <label className="text-xs font-medium space-y-1.5">
               <span className="text-muted-foreground">Min Speakers</span>
@@ -608,7 +608,7 @@ export function DiarizationPlayground({
         </div>
 
         {audioUrl && (
-          <div className="rounded-lg border bg-muted/30 p-3 shadow-inner">
+          <div className="rounded-lg border border-[var(--border-muted)] bg-muted/30 p-3 shadow-inner">
             <div className="text-xs text-muted-foreground mb-2">
               Latest input
             </div>
@@ -629,8 +629,8 @@ export function DiarizationPlayground({
         )}
       </div>
 
-      <div className="rounded-xl border bg-card text-card-foreground shadow-sm flex flex-col h-[560px] lg:h-[calc(100dvh-6.5rem)] overflow-hidden">
-        <div className="px-4 sm:px-6 py-4 border-b flex items-center justify-between gap-3 bg-muted/20">
+      <div className="rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm flex flex-col h-[560px] lg:h-[calc(100dvh-6.5rem)] overflow-hidden">
+        <div className="px-4 sm:px-6 py-4 border-b border-[var(--border-muted)] flex items-center justify-between gap-3 bg-muted/20">
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold tracking-tight">
               Diarized Transcript
@@ -677,13 +677,13 @@ export function DiarizationPlayground({
                   {transcriptEntries.map((entry, index) => (
                     <div
                       key={`${entry.speaker}-${entry.start}-${entry.end}-${index}`}
-                      className="rounded-lg border bg-card p-4 shadow-sm"
+                      className="rounded-lg border border-[var(--border-muted)] bg-card p-4 shadow-sm"
                     >
                       <div className="flex items-center justify-between gap-2 mb-2">
                         <span className="text-xs font-semibold text-foreground">
                           {entry.speaker}
                         </span>
-                        <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded border">
+                        <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded border border-[var(--border-muted)]">
                           {entry.start.toFixed(2)}s - {entry.end.toFixed(2)}s
                         </span>
                       </div>
@@ -694,7 +694,7 @@ export function DiarizationPlayground({
                   ))}
                 </div>
               ) : (
-                <div className="rounded-lg border bg-card p-4 shadow-sm">
+                <div className="rounded-lg border border-[var(--border-muted)] bg-card p-4 shadow-sm">
                   <pre className="text-sm text-foreground/90 whitespace-pre-wrap break-words leading-relaxed font-sans">
                     {speakerTranscript}
                   </pre>

@@ -9,8 +9,8 @@
   --bg-surface-2: #1d2025;
   --bg-surface-3: #262a31;
   --bg-surface-4: #30353e;
-  --border-muted: #2c3139;
-  --border-strong: #3b424d;
+  --border-muted: #24282e;
+  --border-strong: #2d323a;
   --text-primary: #f3f4f6;
   --text-secondary: #d4d7dd;
   --text-muted: #9ca3af;
@@ -1453,8 +1453,8 @@ html.theme-light .chat-markdown hr {
     --accent-foreground: 220 10% 96%;
     --destructive: 350 74% 53%;
     --destructive-foreground: 0 0% 100%;
-    --border: 220 6% 24%;
-    --input: 220 6% 24%;
+    --border: 0 0% 17%;
+    --input: 0 0% 17%;
     --ring: 220 5% 74%;
     --chart-1: 220 8% 72%;
     --chart-2: 160 84% 39%;
