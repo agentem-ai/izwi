@@ -11,7 +11,6 @@ import {
   Download,
   Play,
   Square,
-  Trash2,
   X,
 } from "lucide-react";
 import clsx from "clsx";
@@ -21,16 +20,8 @@ import {
   getSpeakerProfilesForVariant,
   isKokoroVariant,
   isLfmAudioVariant,
-  VIEW_CONFIGS,
 } from "../types";
 
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../components/ui/select";
 import { Slider } from "../components/ui/slider";
 import { Button } from "../components/ui/button";
 import { PageHeader, PageShell } from "../components/PageShell";
@@ -195,6 +186,12 @@ const PIPELINE_LABELS: Record<PipelineMode, string> = {
   stt_chat_tts: "Modular Voice Stack",
 };
 
+const MODULAR_STACK_VARIANTS = {
+  asr: "Parakeet-TDT-0.6B-v3",
+  text: "Qwen3-8B-GGUF",
+  tts: "Kokoro-82M",
+} as const;
+
 function parseFinalAnswer(content: string): string {
   const openTag = "<think>";
   const closeTag = "</think>";
@@ -233,24 +230,6 @@ function isAsrVariant(variant: string): boolean {
 
 function isLfm2Variant(variant: string): boolean {
   return isLfmAudioVariant(variant);
-}
-
-function isTextVariant(variant: string): boolean {
-  return VIEW_CONFIGS.chat.modelFilter(variant);
-}
-
-function isTtsVariant(variant: string): boolean {
-  return (
-    (variant.includes("Qwen3-TTS") && !variant.includes("Tokenizer")) ||
-    isKokoroVariant(variant)
-  );
-}
-
-function isCustomVoiceTtsVariant(variant: string): boolean {
-  return (
-    (isTtsVariant(variant) && variant.includes("CustomVoice")) ||
-    isKokoroVariant(variant)
-  );
 }
 
 function formatModelVariantLabel(variant: string): string {
@@ -299,10 +278,6 @@ function formatModelVariantLabel(variant: string): string {
 
 function isRunnableModelStatus(status: ModelInfo["status"]): boolean {
   return status === "ready";
-}
-
-function requiresManualDownload(variant: string): boolean {
-  return variant === "Gemma-3-1b-it";
 }
 
 function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
@@ -543,7 +518,6 @@ export function VoicePage({
   onCancelDownload,
   onLoad,
   onUnload,
-  onDelete,
   onError,
 }: VoicePageProps) {
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>("idle");
@@ -554,20 +528,13 @@ export function VoicePage({
   const [pipelineMode, setPipelineMode] =
     useState<PipelineMode>("stt_chat_tts");
   const [selectedS2sModel, setSelectedS2sModel] = useState<string | null>(null);
-  const [selectedAsrModel, setSelectedAsrModel] = useState<string | null>(null);
-  const [selectedTextModel, setSelectedTextModel] = useState<string | null>(
-    null,
-  );
-  const [selectedTtsModel, setSelectedTtsModel] = useState<string | null>(null);
   const [selectedSpeaker, setSelectedSpeaker] = useState("Serena");
 
   const [vadThreshold, setVadThreshold] = useState(0.02);
   const [silenceDurationMs, setSilenceDurationMs] = useState(900);
   const [minSpeechMs, setMinSpeechMs] = useState(300);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
-  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<
-    string | null
-  >(null);
+  const [isLoadAllRequested, setIsLoadAllRequested] = useState(false);
 
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -606,6 +573,8 @@ export function VoicePage({
   const voiceMinAcceptedAssistantSeqRef = useRef(0);
   const voiceUserEntryIdsRef = useRef<Map<string, string>>(new Map());
   const voiceAssistantEntryIdsRef = useRef<Map<string, string>>(new Map());
+  const loadAllDownloadRequestedRef = useRef<Set<string>>(new Set());
+  const loadAllLoadRequestedRef = useRef<Set<string>>(new Set());
   const voiceWsPlaybackRef = useRef<{
     utteranceId: string;
     utteranceSeq: number;
@@ -613,38 +582,6 @@ export function VoicePage({
     streamDone: boolean;
     playbackStarted: boolean;
   } | null>(null);
-
-  useEffect(() => {
-    if (!isConfigOpen) {
-      setPendingDeleteVariant(null);
-    }
-  }, [isConfigOpen]);
-
-  const handleConfigDelete = useCallback(
-    (variant: string) => {
-      setPendingDeleteVariant(null);
-      onDelete(variant);
-      if (selectedS2sModel === variant) {
-        setSelectedS2sModel(null);
-      }
-      if (selectedAsrModel === variant) {
-        setSelectedAsrModel(null);
-      }
-      if (selectedTextModel === variant) {
-        setSelectedTextModel(null);
-      }
-      if (selectedTtsModel === variant) {
-        setSelectedTtsModel(null);
-      }
-    },
-    [
-      onDelete,
-      selectedS2sModel,
-      selectedAsrModel,
-      selectedTextModel,
-      selectedTtsModel,
-    ],
-  );
 
   const sortedModels = useMemo(() => {
     return [...models]
@@ -660,36 +597,93 @@ export function VoicePage({
     () => asrModels.filter((m) => isLfm2Variant(m.variant)),
     [asrModels],
   );
-  const sttAsrModels = useMemo(
-    () => asrModels.filter((m) => !isLfm2Variant(m.variant)),
-    [asrModels],
+  const lfm2UnifiedInfo = useMemo(
+    () =>
+      s2sModels.find((m) => m.variant === "LFM2-Audio-1.5B") ??
+      s2sModels.find((m) => m.variant.startsWith("LFM2-Audio-")) ??
+      null,
+    [s2sModels],
   );
-  const textModels = useMemo(
-    () => sortedModels.filter((m) => isTextVariant(m.variant)),
+  const lfm25UnifiedInfo = useMemo(
+    () =>
+      s2sModels.find((m) => m.variant === "LFM2.5-Audio-1.5B") ??
+      s2sModels.find((m) => m.variant === "LFM2.5-Audio-1.5B-4bit") ??
+      s2sModels.find((m) => m.variant.startsWith("LFM2.5-Audio-")) ??
+      null,
+    [s2sModels],
+  );
+  const unifiedModelOptions = useMemo(
+    () => [
+      {
+        key: "lfm2",
+        label: "LFM2",
+        description: "Balanced local speech model for unified realtime voice.",
+        model: lfm2UnifiedInfo,
+      },
+      {
+        key: "lfm2_5",
+        label: "LFM2.5",
+        description:
+          "Improved speech quality with the same single-model runtime flow.",
+        model: lfm25UnifiedInfo,
+      },
+    ],
+    [lfm2UnifiedInfo, lfm25UnifiedInfo],
+  );
+  const selectedAsrInfo = useMemo(
+    () =>
+      sortedModels.find((m) => m.variant === MODULAR_STACK_VARIANTS.asr) ??
+      null,
     [sortedModels],
   );
-  const ttsModels = useMemo(
-    () => sortedModels.filter((m) => isTtsVariant(m.variant)),
+  const selectedTextInfo = useMemo(
+    () =>
+      sortedModels.find((m) => m.variant === MODULAR_STACK_VARIANTS.text) ??
+      null,
     [sortedModels],
   );
-  const ttsConfigModels = useMemo(
-    () => ttsModels.filter((m) => isCustomVoiceTtsVariant(m.variant)),
-    [ttsModels],
+  const selectedTtsInfo = useMemo(
+    () =>
+      sortedModels.find((m) => m.variant === MODULAR_STACK_VARIANTS.tts) ??
+      null,
+    [sortedModels],
+  );
+  const selectedAsrModel = selectedAsrInfo?.variant ?? null;
+  const selectedTextModel = selectedTextInfo?.variant ?? null;
+  const selectedTtsModel = selectedTtsInfo?.variant ?? null;
+  const modularStackModels = useMemo(
+    () => [
+      {
+        key: "asr",
+        role: "ASR",
+        model: selectedAsrInfo,
+        requiredVariant: MODULAR_STACK_VARIANTS.asr,
+      },
+      {
+        key: "text",
+        role: "Text",
+        model: selectedTextInfo,
+        requiredVariant: MODULAR_STACK_VARIANTS.text,
+      },
+      {
+        key: "tts",
+        role: "TTS",
+        model: selectedTtsInfo,
+        requiredVariant: MODULAR_STACK_VARIANTS.tts,
+      },
+    ],
+    [selectedAsrInfo, selectedTextInfo, selectedTtsInfo],
   );
   const assistantSpeakers = useMemo(
     () => getSpeakerProfilesForVariant(selectedTtsModel),
     [selectedTtsModel],
   );
-  const voiceRouteModels = useMemo(
-    () =>
-      sortedModels.filter(
-        (m) =>
-          isAsrVariant(m.variant) ||
-          isTextVariant(m.variant) ||
-          isCustomVoiceTtsVariant(m.variant),
-      ),
-    [sortedModels],
+  const selectedS2sInfo = useMemo(
+    () => s2sModels.find((m) => m.variant === selectedS2sModel) ?? null,
+    [s2sModels, selectedS2sModel],
   );
+  const lfm2DirectMode = pipelineMode === "s2s";
+  const currentPipelineLabel = PIPELINE_LABELS[pipelineMode];
 
   useEffect(() => {
     if (!assistantSpeakers.some((speaker) => speaker.id === selectedSpeaker)) {
@@ -706,131 +700,40 @@ export function VoicePage({
   }, [transcript, runtimeStatus]);
 
   useEffect(() => {
-    if (pipelineMode === "s2s" && s2sModels.length === 0) {
+    if (pipelineMode === "s2s" && unifiedModelOptions.every((option) => !option.model)) {
       setPipelineMode("stt_chat_tts");
     }
-  }, [pipelineMode, s2sModels.length]);
+  }, [pipelineMode, unifiedModelOptions]);
 
   useEffect(() => {
-    if (
-      !selectedS2sModel ||
-      !s2sModels.some((m) => m.variant === selectedS2sModel)
-    ) {
-      const preferredS2s =
-        s2sModels.find(
-          (m) => m.variant === "LFM2.5-Audio-1.5B-4bit" && m.status === "ready",
-        ) ||
-        s2sModels.find(
-          (m) => m.variant === "LFM2.5-Audio-1.5B" && m.status === "ready",
-        ) ||
-        s2sModels.find((m) => m.status === "ready") ||
-        s2sModels.find((m) => m.variant === "LFM2.5-Audio-1.5B-4bit") ||
-        s2sModels.find((m) => m.variant === "LFM2.5-Audio-1.5B") ||
-        s2sModels[0];
-      setSelectedS2sModel(preferredS2s?.variant ?? null);
+    const candidates = unifiedModelOptions
+      .map((option) => option.model)
+      .filter((model): model is ModelInfo => model !== null);
+    if (candidates.length === 0) {
+      setSelectedS2sModel(null);
+      return;
     }
-  }, [s2sModels, selectedS2sModel]);
-
-  useEffect(() => {
     if (
-      !selectedAsrModel ||
-      !sttAsrModels.some((m) => m.variant === selectedAsrModel)
+      selectedS2sModel &&
+      candidates.some((model) => model.variant === selectedS2sModel)
     ) {
-      const preferredAsr =
-        sttAsrModels.find(
-          (m) => m.variant === "Qwen3-ASR-0.6B" && m.status === "ready",
-        ) ||
-        sttAsrModels.find(
-          (m) => m.variant.includes("Qwen3-ASR-0.6B") && m.status === "ready",
-        ) ||
-        sttAsrModels.find((m) => m.status === "ready") ||
-        sttAsrModels.find((m) => m.variant === "Qwen3-ASR-0.6B") ||
-        sttAsrModels.find((m) => m.variant.includes("Qwen3-ASR-0.6B")) ||
-        sttAsrModels[0];
-      setSelectedAsrModel(preferredAsr?.variant ?? null);
+      return;
     }
-  }, [sttAsrModels, selectedAsrModel]);
+    const preferredS2s =
+      candidates.find(
+        (model) =>
+          model.variant.startsWith("LFM2.5-Audio-") && model.status === "ready",
+      ) ||
+      candidates.find(
+        (model) =>
+          model.variant.startsWith("LFM2-Audio-") && model.status === "ready",
+      ) ||
+      candidates.find((model) => model.variant.startsWith("LFM2.5-Audio-")) ||
+      candidates.find((model) => model.variant.startsWith("LFM2-Audio-")) ||
+      candidates[0];
 
-  useEffect(() => {
-    if (
-      !selectedTextModel ||
-      !textModels.some((m) => m.variant === selectedTextModel)
-    ) {
-      const preferredText =
-        textModels.find(
-          (m) => m.variant === "Qwen3-0.6B-4bit" && m.status === "ready",
-        ) ||
-        textModels.find(
-          (m) => m.variant === "Qwen3-0.6B" && m.status === "ready",
-        ) ||
-        textModels.find(
-          (m) => m.variant === "Qwen3-1.7B-4bit" && m.status === "ready",
-        ) ||
-        textModels.find((m) => m.status === "ready") ||
-        textModels.find((m) => m.variant === "Qwen3-1.7B-4bit") ||
-        textModels.find((m) => m.variant === "Qwen3-0.6B-4bit") ||
-        textModels.find((m) => m.variant === "Qwen3-0.6B") ||
-        textModels[0];
-      setSelectedTextModel(preferredText?.variant ?? null);
-    }
-  }, [textModels, selectedTextModel]);
-
-  useEffect(() => {
-    if (
-      !selectedTtsModel ||
-      !ttsConfigModels.some((m) => m.variant === selectedTtsModel)
-    ) {
-      const preferredTts =
-        ttsConfigModels.find(
-          (m) =>
-            m.variant === "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit" &&
-            m.status === "ready",
-        ) ||
-        ttsConfigModels.find(
-          (m) =>
-            m.variant === "Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit" &&
-            m.status === "ready",
-        ) ||
-        ttsConfigModels.find(
-          (m) =>
-            m.variant.includes("0.6B") &&
-            m.variant.includes("4bit") &&
-            m.status === "ready",
-        ) ||
-        ttsConfigModels.find((m) => m.status === "ready") ||
-        ttsConfigModels.find(
-          (m) => m.variant === "Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit",
-        ) ||
-        ttsConfigModels.find(
-          (m) => m.variant === "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
-        ) ||
-        ttsConfigModels.find(
-          (m) => m.variant.includes("0.6B") && m.variant.includes("4bit"),
-        ) ||
-        ttsConfigModels[0];
-      setSelectedTtsModel(preferredTts?.variant ?? null);
-    }
-  }, [ttsConfigModels, selectedTtsModel]);
-
-  const selectedS2sInfo = useMemo(
-    () => s2sModels.find((m) => m.variant === selectedS2sModel) ?? null,
-    [s2sModels, selectedS2sModel],
-  );
-  const selectedAsrInfo = useMemo(
-    () => sttAsrModels.find((m) => m.variant === selectedAsrModel) ?? null,
-    [sttAsrModels, selectedAsrModel],
-  );
-  const selectedTextInfo = useMemo(
-    () => textModels.find((m) => m.variant === selectedTextModel) ?? null,
-    [textModels, selectedTextModel],
-  );
-  const selectedTtsInfo = useMemo(
-    () => ttsConfigModels.find((m) => m.variant === selectedTtsModel) ?? null,
-    [ttsConfigModels, selectedTtsModel],
-  );
-
-  const lfm2DirectMode = pipelineMode === "s2s";
-  const currentPipelineLabel = PIPELINE_LABELS[pipelineMode];
+    setSelectedS2sModel(preferredS2s?.variant ?? null);
+  }, [selectedS2sModel, unifiedModelOptions]);
 
   const hasRunnableConfig = useMemo(() => {
     if (lfm2DirectMode) {
@@ -854,6 +757,154 @@ export function VoicePage({
     selectedTextInfo,
     selectedTtsInfo,
   ]);
+
+  const hasRequiredModularModels = useMemo(
+    () => modularStackModels.every((item) => item.model !== null),
+    [modularStackModels],
+  );
+
+  const hasLoadableModularModels = useMemo(
+    () =>
+      modularStackModels.some((item) => {
+        const model = item.model;
+        return (
+          !!model &&
+          (model.status === "downloaded" ||
+            model.status === "not_downloaded" ||
+            model.status === "error")
+        );
+      }),
+    [modularStackModels],
+  );
+
+  const isLoadAllBusy = useMemo(
+    () =>
+      modularStackModels.some((item) => {
+        const model = item.model;
+        return !!model && (model.status === "downloading" || model.status === "loading");
+      }),
+    [modularStackModels],
+  );
+
+  const getModelProgress = useCallback(
+    (model: ModelInfo | null) => {
+      if (!model) return null;
+      const progressValue = downloadProgress[model.variant];
+      const progress = progressValue?.percent ?? model.download_progress ?? 0;
+      return { progressValue, progress };
+    },
+    [downloadProgress],
+  );
+
+  const handleLoadAllModularStack = useCallback(() => {
+    loadAllDownloadRequestedRef.current.clear();
+    loadAllLoadRequestedRef.current.clear();
+    setIsLoadAllRequested(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isLoadAllRequested) return;
+
+    let allReady = true;
+    let encounteredError = false;
+    for (const item of modularStackModels) {
+      const model = item.model;
+      if (!model) {
+        allReady = false;
+        continue;
+      }
+      if (model.status === "ready") {
+        continue;
+      }
+      if (
+        model.status === "error" &&
+        loadAllDownloadRequestedRef.current.has(model.variant)
+      ) {
+        encounteredError = true;
+      }
+
+      allReady = false;
+      if (
+        (model.status === "not_downloaded" || model.status === "error") &&
+        !loadAllDownloadRequestedRef.current.has(model.variant)
+      ) {
+        loadAllDownloadRequestedRef.current.add(model.variant);
+        onDownload(model.variant);
+      }
+      if (
+        model.status === "downloaded" &&
+        !loadAllLoadRequestedRef.current.has(model.variant)
+      ) {
+        loadAllLoadRequestedRef.current.add(model.variant);
+        onLoad(model.variant);
+      }
+    }
+
+    if (allReady || encounteredError) {
+      setIsLoadAllRequested(false);
+      loadAllDownloadRequestedRef.current.clear();
+      loadAllLoadRequestedRef.current.clear();
+    }
+  }, [isLoadAllRequested, modularStackModels, onDownload, onLoad]);
+
+  const onModelAction = useCallback(
+    (model: ModelInfo) => {
+      if (model.status === "not_downloaded" || model.status === "error") {
+        onDownload(model.variant);
+        return;
+      }
+      if (model.status === "downloaded") {
+        onLoad(model.variant);
+        return;
+      }
+      if (model.status === "ready") {
+        onUnload(model.variant);
+      }
+    },
+    [onDownload, onLoad, onUnload],
+  );
+
+  const handleUseUnifiedModel = useCallback(
+    (model: ModelInfo) => {
+      setSelectedS2sModel(model.variant);
+      if (model.status === "downloaded") {
+        onLoad(model.variant);
+        return;
+      }
+      if (model.status === "not_downloaded" || model.status === "error") {
+        onDownload(model.variant);
+      }
+    },
+    [onDownload, onLoad],
+  );
+
+  const getUnifiedModelButtonLabel = useCallback(
+    (model: ModelInfo | null, isSelected: boolean) => {
+      if (!model) return "Unavailable";
+      if (model.status === "ready") {
+        return isSelected ? "Selected" : "Use model";
+      }
+      if (model.status === "downloaded") return "Load & use";
+      if (model.status === "not_downloaded" || model.status === "error") {
+        return "Download";
+      }
+      if (model.status === "downloading") return "Downloading";
+      if (model.status === "loading") return "Loading";
+      return "Unavailable";
+    },
+    [],
+  );
+
+  const isUnifiedModelButtonDisabled = useCallback(
+    (model: ModelInfo | null, isSelected: boolean) => {
+      if (!model) return true;
+      if (model.status === "downloading" || model.status === "loading") {
+        return true;
+      }
+      return model.status === "ready" && isSelected;
+    },
+    [],
+  );
 
   const stopTtsStreamingPlayback = useCallback(() => {
     ttsStreamSessionRef.current += 1;
@@ -1558,7 +1609,7 @@ export function VoicePage({
       }
       if (!selectedAsrModel || !selectedTextModel || !selectedTtsModel) {
         throw new Error(
-          "Select ASR, text, and TTS models before starting voice mode.",
+          "Required modular stack models are unavailable. Open Config.",
         );
       }
 
@@ -2017,7 +2068,7 @@ export function VoicePage({
         setError(
           lfm2DirectMode
             ? "Select a speech-to-speech model before starting voice mode."
-            : "Select ASR, text, and TTS models before starting voice mode.",
+            : "Required modular stack models are unavailable. Open Config.",
         );
         setIsConfigOpen(true);
         setRuntimeStatus("listening");
@@ -2027,7 +2078,7 @@ export function VoicePage({
 
       if (!hasRunnableConfig) {
         setError(
-          "Selected models must be loaded. Open Config to manage models.",
+          "Required models are not loaded. Open Config and load the stack.",
         );
         setIsConfigOpen(true);
         setRuntimeStatus("listening");
@@ -2182,7 +2233,7 @@ export function VoicePage({
     ) {
       const message = lfm2DirectMode
         ? "Select a speech-to-speech model before starting voice mode."
-        : "Select ASR, text, and TTS models before starting voice mode.";
+        : "Required modular stack models are unavailable. Open Config.";
       setError(message);
       onError?.(message);
       setIsConfigOpen(true);
@@ -2191,7 +2242,7 @@ export function VoicePage({
 
     if (!hasRunnableConfig) {
       const message =
-        "Selected models must be loaded. Open Config to manage models.";
+        "Required models are not loaded. Open Config and load the stack.";
       setError(message);
       onError?.(message);
       setIsConfigOpen(true);
@@ -2510,14 +2561,6 @@ export function VoicePage({
     }
   };
 
-  const getModelRoles = (variant: string): string[] => {
-    const roles: string[] = [];
-    if (isAsrVariant(variant)) roles.push("ASR");
-    if (isTextVariant(variant)) roles.push("TEXT");
-    if (isTtsVariant(variant)) roles.push("TTS");
-    return roles;
-  };
-
   const startDisabled =
     (lfm2DirectMode && !selectedS2sModel) ||
     (!lfm2DirectMode &&
@@ -2807,8 +2850,8 @@ export function VoicePage({
                     >
                       <div className="text-sm font-medium">Modular Voice Stack</div>
                       <p className="text-xs text-muted-foreground mt-1">
-                        Use separate ASR, language model, and TTS models for
-                        maximum control.
+                        Uses a fixed local stack: Parakeet ASR, Qwen3-8B-GGUF,
+                        and Kokoro-82M.
                       </p>
                     </button>
                   </div>
@@ -2818,182 +2861,277 @@ export function VoicePage({
                 </section>
 
                 <section className="space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <h3 className="text-sm font-medium text-white">
-                      Model Assignment
-                    </h3>
-                    <span className="text-[11px] text-gray-500">
-                      Assign one model to each active stage.
-                    </span>
-                  </div>
                   {lfm2DirectMode ? (
-                    <div className="grid md:grid-cols-2 gap-3">
-                      <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <label className="text-xs text-gray-400">
-                            Unified Model
-                          </label>
-                          {selectedS2sInfo && (
-                            <span
-                              className={clsx(
-                                "text-[10px] px-1.5 py-0.5 rounded border",
-                                getStatusClass(selectedS2sInfo.status),
-                              )}
+                    <>
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="text-sm font-medium text-white">
+                          Unified Models
+                        </h3>
+                        <span className="text-[11px] text-gray-500">
+                          Choose LFM2 or LFM2.5.
+                        </span>
+                      </div>
+                      <div className="grid md:grid-cols-2 gap-3">
+                        {unifiedModelOptions.map((option) => {
+                          const model = option.model;
+                          const isSelected =
+                            !!model && selectedS2sModel === model.variant;
+                          const progressMeta = getModelProgress(model);
+                          return (
+                            <div
+                              key={option.key}
+                              className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-3"
                             >
-                              {getStatusLabel(selectedS2sInfo.status)}
-                            </span>
-                          )}
-                        </div>
-                        <Select
-                          value={selectedS2sModel ?? undefined}
-                          onValueChange={setSelectedS2sModel}
-                        >
-                          <SelectTrigger className="w-full">
-                            <SelectValue placeholder="Select speech-to-speech model" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {s2sModels.map((m) => (
-                              <SelectItem key={m.variant} value={m.variant}>
-                                {formatModelVariantLabel(m.variant)} •{" "}
-                                {getStatusLabel(m.status)}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium text-white">
+                                    {option.label}
+                                  </div>
+                                  <div className="mt-0.5 text-xs text-gray-500 truncate">
+                                    {model
+                                      ? formatModelVariantLabel(model.variant)
+                                      : "Model not available in current catalog"}
+                                  </div>
+                                </div>
+                                <span
+                                  className={clsx(
+                                    "text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap",
+                                    model
+                                      ? getStatusClass(model.status)
+                                      : "bg-[#1c1c1c] border-[#2a2a2a] text-gray-500",
+                                  )}
+                                >
+                                  {model ? getStatusLabel(model.status) : "Unavailable"}
+                                </span>
+                              </div>
+                              <p className="text-xs text-gray-500">
+                                {option.description}
+                              </p>
+                              <div className="flex flex-wrap items-center gap-2">
+                                {model?.status === "downloading" &&
+                                  onCancelDownload && (
+                                    <Button
+                                      onClick={() => onCancelDownload(model.variant)}
+                                      variant="destructive"
+                                      size="sm"
+                                      className="text-xs h-8 gap-2"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                      Cancel
+                                    </Button>
+                                  )}
+                                <Button
+                                  onClick={() => model && handleUseUnifiedModel(model)}
+                                  size="sm"
+                                  variant={
+                                    model?.status === "ready" && isSelected
+                                      ? "outline"
+                                      : "default"
+                                  }
+                                  disabled={isUnifiedModelButtonDisabled(model, isSelected)}
+                                  className="text-xs h-8 gap-2"
+                                >
+                                  {(model?.status === "loading" ||
+                                    model?.status === "downloading") && (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  )}
+                                  {(model?.status === "not_downloaded" ||
+                                    model?.status === "error") && (
+                                    <Download className="w-3.5 h-3.5" />
+                                  )}
+                                  {(model?.status === "downloaded" ||
+                                    (model?.status === "ready" && !isSelected)) && (
+                                    <Play className="w-3.5 h-3.5" />
+                                  )}
+                                  {getUnifiedModelButtonLabel(model, isSelected)}
+                                </Button>
+                              </div>
+                              {model?.status === "downloading" && progressMeta && (
+                                <div>
+                                  <div className="h-1.5 rounded bg-[#1f1f1f] overflow-hidden">
+                                    <div
+                                      className="h-full rounded bg-white transition-all duration-300"
+                                      style={{ width: `${progressMeta.progress}%` }}
+                                    />
+                                  </div>
+                                  <div className="mt-1 text-[11px] text-gray-500">
+                                    Downloading {Math.round(progressMeta.progress)}%
+                                    {progressMeta.progressValue &&
+                                      progressMeta.progressValue.totalBytes > 0 && (
+                                        <>
+                                          {" "}
+                                          (
+                                          {formatBytes(
+                                            progressMeta.progressValue.downloadedBytes,
+                                          )}{" "}
+                                          /{" "}
+                                          {formatBytes(
+                                            progressMeta.progressValue.totalBytes,
+                                          )}
+                                          )
+                                        </>
+                                      )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
-                      <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3">
-                        <p className="text-xs text-gray-400">
-                          ASR, text, and voice-output selectors are disabled in
-                          unified mode because one LFM2 model handles the full
-                          realtime speech loop.
-                        </p>
-                      </div>
-                    </div>
+                    </>
                   ) : (
-                    <div className="grid md:grid-cols-2 gap-3">
-                      <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <label className="text-xs text-gray-400">
-                            ASR Model
-                          </label>
-                          {selectedAsrInfo && (
-                            <span
-                              className={clsx(
-                                "text-[10px] px-1.5 py-0.5 rounded border",
-                                getStatusClass(selectedAsrInfo.status),
-                              )}
-                            >
-                              {getStatusLabel(selectedAsrInfo.status)}
-                            </span>
-                          )}
+                    <>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-medium text-white">
+                            Modular Stack Models
+                          </h3>
+                          <p className="text-[11px] text-gray-500 mt-1">
+                            Fixed stack: Parakeet-TDT-0.6B-v3, Qwen3-8B-GGUF,
+                            Kokoro-82M.
+                          </p>
                         </div>
-                        <Select
-                          value={selectedAsrModel ?? undefined}
-                          onValueChange={setSelectedAsrModel}
+                        <Button
+                          onClick={handleLoadAllModularStack}
+                          size="sm"
+                          className="text-xs h-8 gap-2"
+                          disabled={
+                            !hasRequiredModularModels ||
+                            !hasLoadableModularModels ||
+                            isLoadAllRequested ||
+                            isLoadAllBusy
+                          }
                         >
-                          <SelectTrigger className="w-full">
-                            <SelectValue placeholder="Select ASR model" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {sttAsrModels.map((m) => (
-                              <SelectItem key={m.variant} value={m.variant}>
-                                {formatModelVariantLabel(m.variant)} •{" "}
-                                {getStatusLabel(m.status)}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <label className="text-xs text-gray-400">
-                            Text Model
-                          </label>
-                          {selectedTextInfo && (
-                            <span
-                              className={clsx(
-                                "text-[10px] px-1.5 py-0.5 rounded border",
-                                getStatusClass(selectedTextInfo.status),
-                              )}
-                            >
-                              {getStatusLabel(selectedTextInfo.status)}
-                            </span>
+                          {isLoadAllRequested ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Play className="w-3.5 h-3.5" />
                           )}
-                        </div>
-                        <Select
-                          value={selectedTextModel ?? undefined}
-                          onValueChange={setSelectedTextModel}
-                        >
-                          <SelectTrigger className="w-full">
-                            <SelectValue placeholder="Select text model" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {textModels.map((m) => (
-                              <SelectItem key={m.variant} value={m.variant}>
-                                {formatModelVariantLabel(m.variant)} •{" "}
-                                {getStatusLabel(m.status)}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                          {isLoadAllRequested ? "Loading all..." : "Load all"}
+                        </Button>
                       </div>
-
-                      <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <label className="text-xs text-gray-400">
-                            TTS Model
-                          </label>
-                          {selectedTtsInfo && (
-                            <span
-                              className={clsx(
-                                "text-[10px] px-1.5 py-0.5 rounded border",
-                                getStatusClass(selectedTtsInfo.status),
-                              )}
+                      <div className="space-y-3">
+                        {modularStackModels.map((item) => {
+                          const model = item.model;
+                          const progressMeta = getModelProgress(model);
+                          return (
+                            <div
+                              key={item.key}
+                              className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-2.5 space-y-2"
                             >
-                              {getStatusLabel(selectedTtsInfo.status)}
-                            </span>
-                          )}
-                        </div>
-                        <Select
-                          value={selectedTtsModel ?? undefined}
-                          onValueChange={setSelectedTtsModel}
-                        >
-                          <SelectTrigger className="w-full">
-                            <SelectValue placeholder="Select TTS model" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {ttsConfigModels.map((m) => (
-                              <SelectItem key={m.variant} value={m.variant}>
-                                {formatModelVariantLabel(m.variant)} •{" "}
-                                {getStatusLabel(m.status)}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium text-white">
+                                    {item.role}
+                                  </div>
+                                  <div className="mt-0.5 text-xs text-gray-500 truncate">
+                                    {model
+                                      ? formatModelVariantLabel(model.variant)
+                                      : item.requiredVariant}
+                                  </div>
+                                </div>
+                                <span
+                                  className={clsx(
+                                    "text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap",
+                                    model
+                                      ? getStatusClass(model.status)
+                                      : "bg-[#1c1c1c] border-[#2a2a2a] text-gray-500",
+                                  )}
+                                >
+                                  {model ? getStatusLabel(model.status) : "Unavailable"}
+                                </span>
+                              </div>
 
-                      <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
-                        <label className="text-xs text-gray-400">
-                          Assistant Voice
-                        </label>
-                        <Select
-                          value={selectedSpeaker}
-                          onValueChange={setSelectedSpeaker}
-                        >
-                          <SelectTrigger className="w-full">
-                            <SelectValue placeholder="Select assistant voice" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {assistantSpeakers.map((speaker) => (
-                              <SelectItem key={speaker.id} value={speaker.id}>
-                                {speaker.name} ({speaker.language})
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                              <div className="flex flex-wrap items-center justify-end gap-2">
+                                {model?.status === "downloading" &&
+                                  onCancelDownload && (
+                                    <Button
+                                      onClick={() => onCancelDownload(model.variant)}
+                                      variant="destructive"
+                                      size="sm"
+                                      className="text-xs h-7 gap-2"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                      Cancel
+                                    </Button>
+                                  )}
+                                {model?.status === "loading" && (
+                                  <Button
+                                    disabled
+                                    variant="outline"
+                                    size="sm"
+                                    className="text-xs h-7 gap-2"
+                                  >
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    Loading
+                                  </Button>
+                                )}
+                                {model &&
+                                  model.status !== "loading" &&
+                                  model.status !== "downloading" && (
+                                    <Button
+                                      onClick={() => onModelAction(model)}
+                                      variant={
+                                        model.status === "ready"
+                                          ? "outline"
+                                          : "default"
+                                      }
+                                      size="sm"
+                                      className="text-xs h-7 gap-2"
+                                    >
+                                      {(model.status === "not_downloaded" ||
+                                        model.status === "error") && (
+                                        <Download className="w-3.5 h-3.5" />
+                                      )}
+                                      {model.status === "downloaded" && (
+                                        <Play className="w-3.5 h-3.5" />
+                                      )}
+                                      {model.status === "ready" && (
+                                        <Square className="w-3.5 h-3.5" />
+                                      )}
+                                      {model.status === "not_downloaded" ||
+                                      model.status === "error"
+                                        ? "Download"
+                                        : model.status === "downloaded"
+                                          ? "Load"
+                                          : "Unload"}
+                                    </Button>
+                                  )}
+                              </div>
+
+                              {model?.status === "downloading" && progressMeta && (
+                                <div>
+                                  <div className="h-1.5 rounded bg-[#1f1f1f] overflow-hidden">
+                                    <div
+                                      className="h-full rounded bg-white transition-all duration-300"
+                                      style={{ width: `${progressMeta.progress}%` }}
+                                    />
+                                  </div>
+                                  <div className="mt-1 text-[11px] text-gray-500">
+                                    Downloading {Math.round(progressMeta.progress)}%
+                                    {progressMeta.progressValue &&
+                                      progressMeta.progressValue.totalBytes > 0 && (
+                                        <>
+                                          {" "}
+                                          (
+                                          {formatBytes(
+                                            progressMeta.progressValue.downloadedBytes,
+                                          )}{" "}
+                                          /{" "}
+                                          {formatBytes(
+                                            progressMeta.progressValue.totalBytes,
+                                          )}
+                                          )
+                                        </>
+                                      )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
-                    </div>
+                    </>
                   )}
                 </section>
 
@@ -3062,207 +3200,6 @@ export function VoicePage({
                       </div>
                     </div>
                   </details>
-                </section>
-
-                <section className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-medium text-white">
-                      Model Library
-                    </h3>
-                    <span className="text-[11px] text-gray-500">
-                      Download, load, unload, and delete
-                    </span>
-                  </div>
-
-                  {voiceRouteModels.map((model) => {
-                    const roles = getModelRoles(model.variant);
-                    const progressValue = downloadProgress[model.variant];
-                    const progress =
-                      progressValue?.percent ?? model.download_progress ?? 0;
-                    const isSelectedS2s = selectedS2sModel === model.variant;
-                    const isSelectedAsr = selectedAsrModel === model.variant;
-                    const isSelectedText = selectedTextModel === model.variant;
-                    const isSelectedTts = selectedTtsModel === model.variant;
-
-                    return (
-                      <div
-                        key={model.variant}
-                        className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-sm text-white font-medium truncate">
-                              {model.variant}
-                            </div>
-                            <div className="mt-1 flex flex-nowrap items-center gap-1.5 overflow-x-auto">
-                              {roles.map((role) => (
-                                <span
-                                  key={role}
-                                  className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap"
-                                >
-                                  {role}
-                                </span>
-                              ))}
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap">
-                                {getStatusLabel(model.status)}
-                              </span>
-                              {isSelectedS2s && (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap">
-                                  S2S selected
-                                </span>
-                              )}
-                              {isSelectedAsr && (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap">
-                                  ASR selected
-                                </span>
-                              )}
-                              {isSelectedText && (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap">
-                                  Text selected
-                                </span>
-                              )}
-                              {isSelectedTts && (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2f2f2f] text-gray-300 whitespace-nowrap">
-                                  TTS selected
-                                </span>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="flex flex-wrap items-center justify-end gap-2">
-                            {model.status === "downloading" &&
-                              onCancelDownload && (
-                                <Button
-                                  onClick={() =>
-                                    onCancelDownload(model.variant)
-                                  }
-                                  variant="destructive"
-                                  size="sm"
-                                  className="text-xs h-8 gap-2"
-                                >
-                                  <X className="w-3.5 h-3.5" />
-                                  Cancel
-                                </Button>
-                              )}
-                            {(model.status === "not_downloaded" ||
-                              model.status === "error") &&
-                              (requiresManualDownload(model.variant) ? (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="text-xs h-8 gap-2"
-                                  disabled
-                                  title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
-                                >
-                                  <Download className="w-3.5 h-3.5" />
-                                  Manual download
-                                </Button>
-                              ) : (
-                                <Button
-                                  onClick={() => onDownload(model.variant)}
-                                  size="sm"
-                                  className="text-xs h-8 gap-2"
-                                >
-                                  <Download className="w-3.5 h-3.5" />
-                                  Download
-                                </Button>
-                              ))}
-                            {model.status === "downloaded" && (
-                              <Button
-                                onClick={() => onLoad(model.variant)}
-                                size="sm"
-                                className="text-xs h-8 gap-2"
-                              >
-                                <Play className="w-3.5 h-3.5" />
-                                Load
-                              </Button>
-                            )}
-                            {model.status === "ready" && (
-                              <Button
-                                onClick={() => onUnload(model.variant)}
-                                variant="outline"
-                                size="sm"
-                                className="text-xs h-8 gap-2"
-                              >
-                                <Square className="w-3.5 h-3.5" />
-                                Unload
-                              </Button>
-                            )}
-                            {(model.status === "downloaded" ||
-                              model.status === "ready") &&
-                              (pendingDeleteVariant === model.variant ? (
-                                <div className="flex items-center gap-1">
-                                  <Button
-                                    onClick={() =>
-                                      setPendingDeleteVariant(null)
-                                    }
-                                    variant="outline"
-                                    size="sm"
-                                    className="text-xs h-8 gap-2"
-                                  >
-                                    <X className="w-3.5 h-3.5" />
-                                    Cancel
-                                  </Button>
-                                  <Button
-                                    onClick={() =>
-                                      handleConfigDelete(model.variant)
-                                    }
-                                    variant="destructive"
-                                    size="sm"
-                                    className="text-xs h-8 gap-2"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                    Confirm Delete
-                                  </Button>
-                                </div>
-                              ) : (
-                                <Button
-                                  onClick={() =>
-                                    setPendingDeleteVariant(model.variant)
-                                  }
-                                  variant="destructive"
-                                  size="sm"
-                                  className="text-xs h-8 gap-2 opacity-80 hover:opacity-100"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                  Delete
-                                </Button>
-                              ))}
-                          </div>
-                        </div>
-
-                        {model.status === "downloading" && (
-                          <div className="mt-2">
-                            <div className="h-1.5 rounded bg-[#1f1f1f] overflow-hidden">
-                              <div
-                                className="h-full rounded bg-white transition-all duration-300"
-                                style={{ width: `${progress}%` }}
-                              />
-                            </div>
-                            <div className="mt-1 text-[11px] text-gray-500">
-                              Downloading {Math.round(progress)}%
-                              {progressValue &&
-                                progressValue.totalBytes > 0 && (
-                                  <>
-                                    {" "}
-                                    (
-                                    {formatBytes(
-                                      progressValue.downloadedBytes,
-                                    )}{" "}
-                                    / {formatBytes(progressValue.totalBytes)})
-                                  </>
-                                )}
-                            </div>
-                            {progressValue?.currentFile && (
-                              <div className="mt-0.5 text-[11px] text-gray-600 truncate">
-                                {progressValue.currentFile}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
                 </section>
               </div>
             </motion.div>
