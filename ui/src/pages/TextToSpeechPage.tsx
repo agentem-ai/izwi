@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ModelInfo } from "../api";
 import { CustomVoicePlayground } from "../components/CustomVoicePlayground";
+import { PageHeader, PageShell } from "../components/PageShell";
 import { RouteModelModal } from "../components/RouteModelModal";
 import { VIEW_CONFIGS } from "../types";
 
@@ -97,7 +98,8 @@ export function TextToSpeechPage({
   })();
 
   const selectedModelInfo =
-    routeModels.find((model) => model.variant === resolvedSelectedModel) ?? null;
+    routeModels.find((model) => model.variant === resolvedSelectedModel) ??
+    null;
   const selectedModelReady = selectedModelInfo?.status === "ready";
 
   useEffect(() => {
@@ -166,12 +168,11 @@ export function TextToSpeechPage({
   };
 
   return (
-    <div className="max-w-7xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold text-[var(--text-primary)]">
-          Text to Speech
-        </h1>
-      </div>
+    <PageShell>
+      <PageHeader
+        title="Text to Speech"
+        description="Generate natural speech from text with local voice models and reusable presets."
+      />
 
       <CustomVoicePlayground
         selectedModel={resolvedSelectedModel}
@@ -208,6 +209,6 @@ export function TextToSpeechPage({
         onUseModel={onSelect}
         emptyMessage={viewConfig.emptyStateDescription}
       />
-    </div>
+    </PageShell>
   );
 }
