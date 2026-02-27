@@ -24,10 +24,6 @@ import {
 } from "./ui/select";
 import { DiarizationHistoryPanel } from "./DiarizationHistoryPanel";
 
-const PIPELINE_ASR_MODEL_ID = "Qwen3-ASR-0.6B";
-const PIPELINE_ALIGNER_MODEL_ID = "Qwen3-ForcedAligner-0.6B";
-const PIPELINE_LLM_MODEL_ID = "Gemma-3-1b-it";
-
 function revokeObjectUrlIfNeeded(url: string | null): void {
   if (url && url.startsWith("blob:")) {
     URL.revokeObjectURL(url);
@@ -47,7 +43,15 @@ interface DiarizationPlaygroundProps {
   modelOptions?: ModelOption[];
   onSelectModel?: (variant: string) => void;
   onOpenModelManager?: () => void;
+  onTogglePipelineLoadAll?: () => void;
+  pipelineAllLoaded?: boolean;
+  pipelineLoadAllBusy?: boolean;
   onModelRequired: () => void;
+  pipelineAsrModelId?: string | null;
+  pipelineAlignerModelId?: string | null;
+  pipelineLlmModelId?: string | null;
+  pipelineModelsReady?: boolean;
+  onPipelineModelsRequired?: () => void;
 }
 
 function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
@@ -231,7 +235,15 @@ export function DiarizationPlayground({
   modelOptions = [],
   onSelectModel,
   onOpenModelManager,
+  onTogglePipelineLoadAll,
+  pipelineAllLoaded = false,
+  pipelineLoadAllBusy = false,
   onModelRequired,
+  pipelineAsrModelId = null,
+  pipelineAlignerModelId = null,
+  pipelineLlmModelId = null,
+  pipelineModelsReady = true,
+  onPipelineModelsRequired,
 }: DiarizationPlaygroundProps) {
   const [speakerTranscript, setSpeakerTranscript] = useState("");
   const [isRecording, setIsRecording] = useState(false);
@@ -259,9 +271,36 @@ export function DiarizationPlayground({
     return true;
   }, [selectedModel, selectedModelReady, onModelRequired]);
 
+  const requireReadyPipelineModels = useCallback(() => {
+    if (
+      !pipelineAsrModelId ||
+      !pipelineAlignerModelId ||
+      !pipelineLlmModelId ||
+      !pipelineModelsReady
+    ) {
+      onPipelineModelsRequired?.();
+      if (!onPipelineModelsRequired) {
+        setError(
+          "Load ASR, forced aligner, and transcript refiner models before diarization.",
+        );
+      }
+      return false;
+    }
+    return true;
+  }, [
+    onPipelineModelsRequired,
+    pipelineAlignerModelId,
+    pipelineAsrModelId,
+    pipelineLlmModelId,
+    pipelineModelsReady,
+  ]);
+
   const processAudio = useCallback(
     async (audioBlob: Blob) => {
       if (!requireReadyModel()) {
+        return;
+      }
+      if (!requireReadyPipelineModels()) {
         return;
       }
 
@@ -289,9 +328,9 @@ export function DiarizationPlayground({
           audio_file: wavBlob,
           audio_filename: uploadFilename,
           model_id: selectedModel || undefined,
-          asr_model_id: PIPELINE_ASR_MODEL_ID,
-          aligner_model_id: PIPELINE_ALIGNER_MODEL_ID,
-          llm_model_id: PIPELINE_LLM_MODEL_ID,
+          asr_model_id: pipelineAsrModelId || undefined,
+          aligner_model_id: pipelineAlignerModelId || undefined,
+          llm_model_id: pipelineLlmModelId || undefined,
           enable_llm_refinement: true,
           min_speakers: minSpeakers,
           max_speakers: maxSpeakers,
@@ -320,7 +359,11 @@ export function DiarizationPlayground({
       minSilenceMs,
       minSpeakers,
       minSpeechMs,
+      pipelineAlignerModelId,
+      pipelineAsrModelId,
+      pipelineLlmModelId,
       requireReadyModel,
+      requireReadyPipelineModels,
       selectedModel,
     ],
   );
@@ -450,17 +493,39 @@ export function DiarizationPlayground({
             </div>
             <h2 className="text-sm font-semibold mt-1">Audio Input</h2>
           </div>
-          {onOpenModelManager && (
-            <Button
-              onClick={onOpenModelManager}
-              variant="outline"
-              size="sm"
-              className="h-8 gap-1.5 text-xs shadow-sm"
-            >
-              <Settings2 className="w-4 h-4" />
-              Models
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {onTogglePipelineLoadAll && (
+              <Button
+                onClick={onTogglePipelineLoadAll}
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs shadow-sm"
+                disabled={pipelineLoadAllBusy}
+              >
+                {pipelineLoadAllBusy ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Loading...
+                  </>
+                ) : pipelineAllLoaded ? (
+                  "Unload All"
+                ) : (
+                  "Load All"
+                )}
+              </Button>
+            )}
+            {onOpenModelManager && (
+              <Button
+                onClick={onOpenModelManager}
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs shadow-sm"
+              >
+                <Settings2 className="w-4 h-4" />
+                Models
+              </Button>
+            )}
+          </div>
         </div>
 
         <div className="rounded-xl border border-[var(--border-muted)] bg-muted/30 p-4 space-y-3 shadow-inner">
