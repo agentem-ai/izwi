@@ -15,7 +15,8 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import clsx from "clsx";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { api, ChatMessage, ChatThread, ChatThreadMessageRecord } from "../api";
 import { MarkdownContent } from "./ui/MarkdownContent";
 
@@ -95,22 +96,6 @@ function parseAssistantContent(content: string): ParsedAssistantContent {
     hasThink: thinkingParts.length > 0,
     hasIncompleteThink,
   };
-}
-
-function getStatusTone(option: ModelOption): string {
-  if (option.isReady) {
-    return "chat-model-status-ready";
-  }
-  if (
-    option.statusLabel.toLowerCase().includes("downloading") ||
-    option.statusLabel.toLowerCase().includes("loading")
-  ) {
-    return "chat-model-status-loading";
-  }
-  if (option.statusLabel.toLowerCase().includes("error")) {
-    return "chat-model-status-error";
-  }
-  return "chat-model-status-idle";
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -713,7 +698,10 @@ export function ChatPlayground({
               return message;
             });
 
-            if (replaced || updated.some((message) => message.id === userMessage.id)) {
+            if (
+              replaced ||
+              updated.some((message) => message.id === userMessage.id)
+            ) {
               return updated;
             }
 
@@ -736,7 +724,9 @@ export function ChatPlayground({
             }
 
             if (
-              updated.some((message) => message.id === optimisticAssistantMessage.id)
+              updated.some(
+                (message) => message.id === optimisticAssistantMessage.id,
+              )
             ) {
               return updated;
             }
@@ -819,23 +809,24 @@ export function ChatPlayground({
 
   const renderModelSelector = () => (
     <div
-      className="relative z-40 inline-block w-[240px] sm:w-[300px] max-w-[calc(100vw-9rem)]"
+      className={cn(
+        "relative z-40 inline-block w-[240px] sm:w-[300px] max-w-[calc(100vw-9rem)]",
+      )}
       ref={modelMenuRef}
     >
-      <button
+      <Button
+        variant="outline"
         onClick={() => setIsModelMenuOpen((previous) => !previous)}
-        className={clsx(
-          "chat-model-selector-btn h-9 w-full px-3 rounded-xl border inline-flex items-center justify-between gap-2 text-xs transition-colors",
-          selectedOption?.isReady
-            ? "chat-model-selector-btn-ready"
-            : "chat-model-selector-btn-idle",
+        className={cn(
+          "w-full justify-between font-normal h-9",
+          selectedOption?.isReady ? "border-primary/20 bg-primary/5" : "",
         )}
       >
         <span className="flex-1 min-w-0 truncate text-left">
           {selectedOption?.label || "Select model"}
         </span>
-        <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-80" />
-      </button>
+        <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-50" />
+      </Button>
 
       <AnimatePresence>
         {isModelMenuOpen && (
@@ -844,9 +835,9 @@ export function ChatPlayground({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 6, scale: 0.98 }}
             transition={{ duration: 0.16 }}
-            className="chat-model-menu absolute left-0 right-0 bottom-11 rounded-2xl border p-2 shadow-2xl z-[90]"
+            className="absolute left-0 right-0 bottom-11 rounded-md border bg-popover text-popover-foreground p-1 shadow-md z-[90]"
           >
-            <div className="max-h-64 overflow-y-auto pr-1 space-y-1">
+            <div className="max-h-64 overflow-y-auto">
               {modelOptions.map((option) => (
                 <button
                   key={option.value}
@@ -854,24 +845,27 @@ export function ChatPlayground({
                     onSelectModel(option.value);
                     setIsModelMenuOpen(false);
                   }}
-                  className={clsx(
-                    "chat-model-option w-full text-left rounded-xl px-2.5 py-2 transition-colors border",
-                    selectedOption?.value === option.value
-                      ? "chat-model-option-active"
-                      : "chat-model-option-idle",
+                  className={cn(
+                    "relative flex w-full cursor-default select-none items-center rounded-sm py-1.5 px-2 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+                    selectedOption?.value === option.value &&
+                      "bg-accent text-accent-foreground",
                   )}
                 >
-                  <div className="chat-model-option-label text-xs truncate">
-                    {option.label}
+                  <div className="flex flex-col items-start min-w-0">
+                    <span className="truncate w-full text-left font-medium">
+                      {option.label}
+                    </span>
+                    <span
+                      className={cn(
+                        "mt-1 text-[10px] uppercase tracking-wider font-semibold",
+                        option.isReady
+                          ? "text-green-500"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {option.statusLabel}
+                    </span>
                   </div>
-                  <span
-                    className={clsx(
-                      "chat-model-status mt-1 inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px]",
-                      getStatusTone(option),
-                    )}
-                  >
-                    {option.statusLabel}
-                  </span>
                 </button>
               ))}
             </div>
@@ -883,14 +877,12 @@ export function ChatPlayground({
 
   const renderComposer = (centered = false) => (
     <div
-      className={clsx(
-        "chat-composer-shell relative rounded-[32px] border shadow-[0_20px_60px_rgba(0,0,0,0.45)]",
-        centered
-          ? "chat-composer-shell-centered"
-          : "chat-composer-shell-docked",
+      className={cn(
+        "relative rounded-xl border bg-background shadow-sm overflow-hidden",
+        centered && "max-w-3xl mx-auto shadow-md",
       )}
     >
-      <div className="chat-composer-body rounded-[32px] overflow-visible">
+      <div className="bg-background">
         <textarea
           ref={textareaRef}
           value={input}
@@ -910,31 +902,34 @@ export function ChatPlayground({
                   ? "Model selected but not loaded. Open Models to load it."
                   : "Ask anything..."
           }
-          className={clsx(
-            "chat-composer-input w-full bg-transparent px-5 pt-5 pb-3 text-sm resize-none focus:outline-none",
+          className={cn(
+            "w-full bg-transparent px-4 pt-4 pb-3 text-sm resize-none focus:outline-none placeholder:text-muted-foreground",
             centered ? "min-h-[132px]" : "min-h-[96px]",
           )}
           disabled={isStreaming || isPreparingThread}
         />
 
-        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-3 pt-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={handleOpenModels}
-              className="chat-models-button inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs border transition-colors"
+              className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
             >
               <Settings2 className="w-3.5 h-3.5" />
               Models
-            </button>
+            </Button>
             {supportsThinking && (
-              <button
+              <Button
+                variant={thinkingEnabledForModel ? "secondary" : "ghost"}
+                size="sm"
                 onClick={() => setIsThinkingEnabled((previous) => !previous)}
                 disabled={isStreaming || isPreparingThread}
-                className={clsx(
-                  "chat-thinking-mode-btn inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs border transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
-                  thinkingEnabledForModel
-                    ? "chat-thinking-mode-btn-on"
-                    : "chat-thinking-mode-btn-off",
+                className={cn(
+                  "h-8 gap-1.5 text-xs",
+                  !thinkingEnabledForModel &&
+                    "text-muted-foreground hover:text-foreground",
                 )}
                 title={
                   thinkingEnabledForModel
@@ -944,17 +939,19 @@ export function ChatPlayground({
               >
                 <Brain className="w-3.5 h-3.5" />
                 Thinking {thinkingEnabledForModel ? "On" : "Off"}
-              </button>
+              </Button>
             )}
           </div>
 
           <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap sm:flex-nowrap">
             {renderModelSelector()}
 
-            <button
+            <Button
               onClick={isStreaming ? stopStreaming : () => void sendMessage()}
               disabled={isPreparingThread || (!isStreaming && !input.trim())}
-              className="chat-send-button h-9 px-3 rounded-xl text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+              variant={isStreaming ? "destructive" : "default"}
+              size="sm"
+              className="h-9 gap-1.5 font-medium px-4"
             >
               {isStreaming ? (
                 <Square className="w-3.5 h-3.5" />
@@ -968,7 +965,7 @@ export function ChatPlayground({
                 : isPreparingThread
                   ? "Starting..."
                   : "Send"}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -977,33 +974,34 @@ export function ChatPlayground({
 
   return (
     <div className="relative flex flex-col lg:flex-row gap-4 h-[calc(100dvh-9rem)] lg:h-[calc(100dvh-6.5rem)]">
-      <aside className="chat-thread-panel w-full lg:w-80 lg:min-w-80 max-h-[38dvh] lg:max-h-none shrink-0 rounded-2xl border flex flex-col overflow-hidden">
-        <div className="chat-thread-panel-header px-3 py-3 border-b flex items-center justify-between gap-3">
+      <aside className="w-full lg:w-80 lg:min-w-[20rem] max-h-[38dvh] lg:max-h-none shrink-0 rounded-xl border bg-card text-card-foreground flex flex-col overflow-hidden shadow-sm">
+        <div className="px-4 py-3 border-b flex items-center justify-between gap-3 bg-muted/30">
           <div>
-            <h2 className="chat-thread-panel-title text-sm font-semibold">
-              Chats
-            </h2>
-            <p className="chat-thread-panel-subtitle text-xs">
+            <h2 className="text-sm font-semibold tracking-tight">Chats</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
               {threads.length} {threads.length === 1 ? "thread" : "threads"}
             </p>
           </div>
-          <button
+          <Button
             onClick={handleCreateThread}
             disabled={isStreaming || isPreparingThread}
-            className="chat-thread-create-btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1.5 shadow-sm"
           >
             <Plus className="w-3.5 h-3.5" />
             New
-          </button>
+          </Button>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5">
+        <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1 scrollbar-thin">
           {threadsLoading ? (
-            <div className="chat-thread-empty p-3 rounded-lg text-xs">
+            <div className="p-4 text-center text-xs text-muted-foreground flex items-center justify-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
               Loading chats...
             </div>
           ) : threads.length === 0 ? (
-            <div className="chat-thread-empty p-3 rounded-lg text-xs">
+            <div className="p-4 text-center text-xs text-muted-foreground border border-dashed rounded-lg m-2 bg-muted/20">
               No chats yet. Create one to begin.
             </div>
           ) : (
@@ -1016,11 +1014,9 @@ export function ChatPlayground({
               return (
                 <div
                   key={thread.id}
-                  className={clsx(
-                    "chat-thread-row relative rounded-xl border",
-                    isActive
-                      ? "chat-thread-row-active"
-                      : "chat-thread-row-idle",
+                  className={cn(
+                    "group relative rounded-md border border-transparent transition-colors hover:bg-muted/50",
+                    isActive && "bg-accent/80 hover:bg-accent/80",
                   )}
                 >
                   <button
@@ -1032,31 +1028,39 @@ export function ChatPlayground({
                       setError(null);
                     }}
                     disabled={isStreaming || isPreparingThread}
-                    className="chat-thread-main block w-full text-left px-2.5 py-2.5 pr-10"
+                    className="block w-full text-left px-3 py-2.5 pr-10 outline-none"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <p className="chat-thread-title truncate text-xs font-medium">
+                      <p
+                        className={cn(
+                          "truncate text-sm font-medium leading-none",
+                          isActive ? "text-foreground" : "text-foreground/80",
+                        )}
+                      >
                         {displayThreadTitle(thread.title)}
                       </p>
-                      <span className="chat-thread-time shrink-0 text-[10px]">
+                      <span className="shrink-0 text-[10px] text-muted-foreground">
                         {formatThreadTimestamp(thread.updated_at)}
                       </span>
                     </div>
-                    <p className="chat-thread-preview mt-1 text-[11px]">
+                    <p className="mt-1.5 text-xs text-muted-foreground line-clamp-2 leading-snug">
                       {preview}
                     </p>
                   </button>
 
-                  <button
-                    onClick={() => {
+                  <Button
+                    onClick={(e) => {
+                      e.stopPropagation();
                       void handleDeleteThread(thread.id);
                     }}
                     disabled={isStreaming || isPreparingThread}
-                    className="chat-thread-delete-btn absolute right-1.5 top-1.5 h-7 w-7 rounded-md inline-flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-1 top-1.5 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive hover:text-destructive-foreground"
                     title="Delete chat"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  </Button>
                 </div>
               );
             })
@@ -1076,24 +1080,24 @@ export function ChatPlayground({
                 {renderComposer(true)}
               </motion.div>
 
-              <div className="mt-3 text-center text-xs min-h-[18px]">
+              <div className="mt-4 text-center text-xs text-muted-foreground min-h-[18px]">
                 {!activeThreadId ? (
-                  <span className="chat-meta-muted">
+                  <span>
                     No active chat selected. Start typing and send to create a
                     new chat.
                   </span>
                 ) : selectedModel ? (
                   selectedModelReady ? (
-                    <span className="chat-meta-ready">
+                    <span className="text-foreground/80 font-medium">
                       {modelLabel || selectedModel} is loaded and ready.
                     </span>
                   ) : (
-                    <span className="chat-meta-muted">
+                    <span>
                       {modelLabel || selectedModel} is selected but not loaded.
                     </span>
                   )
                 ) : (
-                  <span className="chat-meta-muted">No model selected.</span>
+                  <span>No model selected.</span>
                 )}
               </div>
 
@@ -1112,35 +1116,35 @@ export function ChatPlayground({
             </div>
           </div>
         ) : (
-          <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
-            <div className="chat-conversation-header px-4 sm:px-6 pb-3 border-b flex items-center justify-between gap-3">
+          <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden bg-card border rounded-xl shadow-sm">
+            <div className="px-4 sm:px-6 py-4 border-b flex items-center justify-between gap-3 bg-muted/20">
               <div>
-                <h2 className="chat-conversation-title text-sm font-medium">
+                <h2 className="text-sm font-semibold tracking-tight">
                   {activeThread
                     ? displayThreadTitle(activeThread.title)
                     : "Conversation"}
                 </h2>
-                <p className="chat-conversation-subtitle text-xs mt-1">
+                <p className="text-xs text-muted-foreground mt-0.5">
                   {selectedModelReady
                     ? `Using ${modelLabel || selectedModel}`
                     : "Model not loaded"}
                 </p>
               </div>
-              <div className="chat-conversation-subtitle text-xs inline-flex items-center gap-1.5">
+              <div className="text-xs text-muted-foreground inline-flex items-center gap-1.5 font-medium bg-muted px-2 py-1 rounded-md">
                 <MessageSquare className="w-3.5 h-3.5" />
                 {visibleMessages.length} messages
               </div>
             </div>
 
-            <div className="relative flex-1 min-h-0">
-              <div className="h-full overflow-y-auto px-4 sm:px-6 pb-64 pt-4">
+            <div className="relative flex-1 min-h-0 bg-background/50">
+              <div className="h-full overflow-y-auto px-4 sm:px-6 pb-64 pt-6 scrollbar-thin">
                 {messagesLoading ? (
-                  <div className="chat-thread-empty max-w-4xl mx-auto p-3 rounded-lg text-xs inline-flex items-center gap-2">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <div className="max-w-4xl mx-auto p-4 text-center text-xs text-muted-foreground flex items-center justify-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
                     Loading conversation...
                   </div>
                 ) : (
-                  <div className="max-w-4xl mx-auto space-y-3">
+                  <div className="max-w-4xl mx-auto space-y-6">
                     {visibleMessages.map((message, index) => {
                       const isUser = message.role === "user";
                       const isLastAssistant =
@@ -1179,108 +1183,119 @@ export function ChatPlayground({
                           key={messageKey}
                           initial={{ opacity: 0, y: 8 }}
                           animate={{ opacity: 1, y: 0 }}
-                          className={clsx(
-                            "flex gap-3",
-                            isUser && "justify-end",
+                          className={cn(
+                            "flex gap-4",
+                            isUser && "flex-row-reverse",
                           )}
                         >
-                          {!isUser && (
-                            <div className="chat-assistant-avatar w-7 h-7 rounded-lg border flex items-center justify-center flex-shrink-0">
-                              <Bot className="w-4 h-4" />
-                            </div>
-                          )}
-
                           <div
-                            className={clsx(
-                              "chat-message-bubble max-w-[85%] rounded-lg px-3 py-2.5 text-sm break-words",
+                            className={cn(
+                              "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 border shadow-sm",
                               isUser
-                                ? "chat-message-bubble-user"
-                                : "chat-message-bubble-assistant",
+                                ? "bg-primary text-primary-foreground border-primary/20"
+                                : "bg-muted text-muted-foreground border-border",
                             )}
                           >
                             {isUser ? (
-                              <MarkdownContent
-                                content={message.content}
-                                className="chat-markdown-user"
-                              />
+                              <User className="w-4 h-4" />
                             ) : (
-                              <>
-                                {showStreamingThinking && parsed && (
-                                  <div className="chat-thinking-panel mb-2 rounded border px-2.5 py-2 text-xs">
-                                    <div className="chat-thinking-title mb-1.5 flex items-center gap-1.5 uppercase tracking-wide text-[10px]">
-                                      <Loader2 className="w-3 h-3 animate-spin" />
-                                      Thinking
-                                    </div>
-                                    <div className="chat-thinking-body whitespace-pre-wrap">
-                                      {parsed.thinking}
-                                    </div>
-                                  </div>
-                                )}
-
-                                {parsed && parsed.answer.length > 0 ? (
-                                  <MarkdownContent content={parsed.answer} />
-                                ) : parsed && parsed.hasThink ? (
-                                  <div className="chat-thinking-placeholder italic">
-                                    {isLastAssistant
-                                      ? "Thinking..."
-                                      : "No final answer was generated."}
-                                  </div>
-                                ) : (
-                                  <MarkdownContent
-                                    content={assistantDisplayContent}
-                                  />
-                                )}
-
-                                {parsed &&
-                                  parsed.hasThink &&
-                                  !showStreamingThinking && (
-                                    <div className="mt-2">
-                                      <button
-                                        onClick={() =>
-                                          setExpandedThoughts((previous) => ({
-                                            ...previous,
-                                            [messageKey]: !previous[messageKey],
-                                          }))
-                                        }
-                                        className="chat-thinking-toggle inline-flex items-center gap-1 text-xs transition-colors"
-                                      >
-                                        {isThoughtExpanded ? (
-                                          <ChevronDown className="w-3 h-3" />
-                                        ) : (
-                                          <ChevronRight className="w-3 h-3" />
-                                        )}
-                                        {isThoughtExpanded
-                                          ? "Hide thinking"
-                                          : "Show thinking"}
-                                      </button>
-                                    </div>
-                                  )}
-
-                                {parsed &&
-                                  parsed.hasThink &&
-                                  !showStreamingThinking &&
-                                  isThoughtExpanded && (
-                                    <div className="chat-thinking-panel chat-thinking-body mt-2 rounded border px-2.5 py-2 text-xs whitespace-pre-wrap">
-                                      {parsed.thinking}
-                                    </div>
-                                  )}
-
-                                {isLastAssistant &&
-                                  ((parsed && parsed.answer.length > 0) ||
-                                    !showAnswerOnly) && (
-                                    <span className="inline-flex items-center ml-1">
-                                      <Loader2 className="chat-inline-spinner w-3 h-3 animate-spin" />
-                                    </span>
-                                  )}
-                              </>
+                              <Bot className="w-4 h-4" />
                             )}
                           </div>
 
-                          {isUser && (
-                            <div className="chat-user-avatar w-7 h-7 rounded-lg border flex items-center justify-center flex-shrink-0">
-                              <User className="w-4 h-4" />
+                          <div
+                            className={cn(
+                              "max-w-[85%] text-sm break-words flex flex-col",
+                              isUser ? "items-end" : "items-start",
+                            )}
+                          >
+                            <div
+                              className={cn(
+                                "rounded-2xl px-4 py-2.5 shadow-sm",
+                                isUser
+                                  ? "bg-primary text-primary-foreground rounded-tr-sm"
+                                  : "bg-card border text-card-foreground rounded-tl-sm",
+                              )}
+                            >
+                              {isUser ? (
+                                <MarkdownContent
+                                  content={message.content}
+                                  className="prose-p:leading-relaxed prose-pre:bg-black/10 dark:prose-pre:bg-white/10 prose-pre:border-none prose-a:text-primary-foreground underline"
+                                />
+                              ) : (
+                                <>
+                                  {showStreamingThinking && parsed && (
+                                    <div className="mb-3 rounded-lg bg-muted/50 border px-3 py-2 text-xs text-muted-foreground">
+                                      <div className="mb-2 flex items-center gap-1.5 uppercase tracking-wider text-[10px] font-semibold">
+                                        <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                                        Thinking
+                                      </div>
+                                      <div className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed">
+                                        {parsed.thinking}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {parsed && parsed.answer.length > 0 ? (
+                                    <MarkdownContent content={parsed.answer} />
+                                  ) : parsed && parsed.hasThink ? (
+                                    <div className="italic text-muted-foreground opacity-70">
+                                      {isLastAssistant
+                                        ? "Thinking..."
+                                        : "No final answer was generated."}
+                                    </div>
+                                  ) : (
+                                    <MarkdownContent
+                                      content={assistantDisplayContent}
+                                    />
+                                  )}
+
+                                  {parsed &&
+                                    parsed.hasThink &&
+                                    !showStreamingThinking && (
+                                      <div className="mt-3 border-t pt-2">
+                                        <button
+                                          onClick={() =>
+                                            setExpandedThoughts((previous) => ({
+                                              ...previous,
+                                              [messageKey]:
+                                                !previous[messageKey],
+                                            }))
+                                          }
+                                          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground font-medium transition-colors"
+                                        >
+                                          {isThoughtExpanded ? (
+                                            <ChevronDown className="w-3 h-3" />
+                                          ) : (
+                                            <ChevronRight className="w-3 h-3" />
+                                          )}
+                                          {isThoughtExpanded
+                                            ? "Hide thought process"
+                                            : "Show thought process"}
+                                        </button>
+                                      </div>
+                                    )}
+
+                                  {parsed &&
+                                    parsed.hasThink &&
+                                    !showStreamingThinking &&
+                                    isThoughtExpanded && (
+                                      <div className="mt-2 rounded-lg bg-muted/30 border px-3 py-2 text-xs whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted-foreground">
+                                        {parsed.thinking}
+                                      </div>
+                                    )}
+
+                                  {isLastAssistant &&
+                                    ((parsed && parsed.answer.length > 0) ||
+                                      !showAnswerOnly) && (
+                                      <span className="inline-flex items-center ml-2 align-middle">
+                                        <span className="w-1.5 h-4 bg-primary animate-pulse inline-block" />
+                                      </span>
+                                    )}
+                                </>
+                              )}
                             </div>
-                          )}
+                          </div>
                         </motion.div>
                       );
                     })}
@@ -1289,15 +1304,15 @@ export function ChatPlayground({
                 )}
               </div>
 
-              <div className="absolute z-30 bottom-0 left-0 right-0 px-4 sm:px-6 pb-4 pt-2 bg-gradient-to-t from-black/30 to-transparent pointer-events-none">
+              <div className="absolute z-30 bottom-0 left-0 right-0 px-4 sm:px-6 pb-6 pt-4 bg-gradient-to-t from-background via-background/95 to-transparent pointer-events-none">
                 <div className="max-w-4xl mx-auto pointer-events-auto">
                   <AnimatePresence>
                     {error && (
                       <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: "auto" }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="mb-3 p-2 rounded bg-red-950/50 border border-red-900/50 text-red-300 text-xs"
+                        initial={{ opacity: 0, height: 0, y: 10 }}
+                        animate={{ opacity: 1, height: "auto", y: 0 }}
+                        exit={{ opacity: 0, height: 0, y: 10 }}
+                        className="mb-4 p-3 rounded-lg bg-destructive text-destructive-foreground shadow-lg text-sm font-medium flex items-center gap-2"
                       >
                         {error}
                       </motion.div>
@@ -1305,9 +1320,20 @@ export function ChatPlayground({
                   </AnimatePresence>
 
                   {stats && !isStreaming && (
-                    <div className="chat-stats-line mb-2 text-xs text-center">
-                      {stats.tokens_generated} tokens in{" "}
-                      {Math.round(stats.generation_time_ms)} ms
+                    <div className="mb-3 text-[11px] font-medium text-muted-foreground flex items-center justify-center gap-3">
+                      <span className="bg-muted px-2 py-0.5 rounded-md border shadow-sm">
+                        {stats.tokens_generated} tokens
+                      </span>
+                      <span className="bg-muted px-2 py-0.5 rounded-md border shadow-sm">
+                        {Math.round(stats.generation_time_ms)} ms
+                      </span>
+                      <span className="bg-muted px-2 py-0.5 rounded-md border shadow-sm">
+                        {Math.round(
+                          stats.tokens_generated /
+                            (stats.generation_time_ms / 1000),
+                        )}{" "}
+                        t/s
+                      </span>
                     </div>
                   )}
 

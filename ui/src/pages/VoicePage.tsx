@@ -32,6 +32,8 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { Slider } from "../components/ui/slider";
+import { Button } from "../components/ui/button";
+import { cn } from "@/lib/utils";
 
 type RuntimeStatus =
   | "idle"
@@ -62,7 +64,11 @@ type VoiceRealtimeServerEvent =
       reason?: "silence" | "max_duration" | "stream_stopped";
     }
   | { type: "turn_processing"; utterance_id: string; utterance_seq: number }
-  | { type: "user_transcript_start"; utterance_id: string; utterance_seq: number }
+  | {
+      type: "user_transcript_start";
+      utterance_id: string;
+      utterance_seq: number;
+    }
   | {
       type: "user_transcript_delta";
       utterance_id: string;
@@ -77,7 +83,11 @@ type VoiceRealtimeServerEvent =
       language?: string | null;
       audio_duration_secs?: number;
     }
-  | { type: "assistant_text_start"; utterance_id: string; utterance_seq: number }
+  | {
+      type: "assistant_text_start";
+      utterance_id: string;
+      utterance_seq: number;
+    }
   | {
       type: "assistant_text_final";
       utterance_id: string;
@@ -378,7 +388,9 @@ function encodeVoiceRealtimeClientPcm16Frame(
   sampleRate: number,
   frameSeq: number,
 ): Uint8Array {
-  const frame = new Uint8Array(VOICE_WS_BIN_CLIENT_HEADER_LEN + pcm16Bytes.length);
+  const frame = new Uint8Array(
+    VOICE_WS_BIN_CLIENT_HEADER_LEN + pcm16Bytes.length,
+  );
   frame[0] = VOICE_WS_BIN_MAGIC.charCodeAt(0);
   frame[1] = VOICE_WS_BIN_MAGIC.charCodeAt(1);
   frame[2] = VOICE_WS_BIN_MAGIC.charCodeAt(2);
@@ -402,14 +414,18 @@ function parseVoiceRealtimeAssistantAudioBinaryChunk(
   }
   const bytes = new Uint8Array(data);
   if (
-    String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]) !== VOICE_WS_BIN_MAGIC
+    String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]) !==
+    VOICE_WS_BIN_MAGIC
   ) {
     return null;
   }
   const view = new DataView(data);
   const version = view.getUint8(4);
   const kind = view.getUint8(5);
-  if (version !== VOICE_WS_BIN_VERSION || kind !== VOICE_WS_BIN_KIND_ASSISTANT_PCM16) {
+  if (
+    version !== VOICE_WS_BIN_VERSION ||
+    kind !== VOICE_WS_BIN_KIND_ASSISTANT_PCM16
+  ) {
     return null;
   }
   const flags = view.getUint16(6, true);
@@ -918,10 +934,15 @@ export function VoicePage({
       vadTimerRef.current = null;
     }
 
-    if (voiceWsRef.current && voiceWsRef.current.readyState === WebSocket.OPEN) {
+    if (
+      voiceWsRef.current &&
+      voiceWsRef.current.readyState === WebSocket.OPEN
+    ) {
       try {
         voiceWsRef.current.send(
-          JSON.stringify({ type: "input_stream_stop" } satisfies VoiceRealtimeClientMessage),
+          JSON.stringify({
+            type: "input_stream_stop",
+          } satisfies VoiceRealtimeClientMessage),
         );
       } catch {
         // Best-effort during shutdown.
@@ -1012,13 +1033,16 @@ export function VoicePage({
     setTranscript((prev) => prev.filter((entry) => entry.id !== entryId));
   }, []);
 
-  const sendVoiceRealtimeJson = useCallback((message: VoiceRealtimeClientMessage) => {
-    const socket = voiceWsRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      throw new Error("Voice realtime websocket is not connected");
-    }
-    socket.send(JSON.stringify(message));
-  }, []);
+  const sendVoiceRealtimeJson = useCallback(
+    (message: VoiceRealtimeClientMessage) => {
+      const socket = voiceWsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        throw new Error("Voice realtime websocket is not connected");
+      }
+      socket.send(JSON.stringify(message));
+    },
+    [],
+  );
 
   const sendVoiceRealtimeBinary = useCallback((data: Uint8Array) => {
     const socket = voiceWsRef.current;
@@ -1068,7 +1092,10 @@ export function VoicePage({
       }
 
       processingRef.current = false;
-      if (isSessionActiveRef.current && runtimeStatusRef.current !== "user_speaking") {
+      if (
+        isSessionActiveRef.current &&
+        runtimeStatusRef.current !== "user_speaking"
+      ) {
         setRuntimeStatus("listening");
       }
     },
@@ -1086,7 +1113,10 @@ export function VoicePage({
       const context = ttsPlaybackContextRef.current;
       if (!context) return;
 
-      if (chunk.sampleRate > 0 && ttsSampleRateRef.current !== chunk.sampleRate) {
+      if (
+        chunk.sampleRate > 0 &&
+        ttsSampleRateRef.current !== chunk.sampleRate
+      ) {
         ttsSampleRateRef.current = chunk.sampleRate;
       }
 
@@ -1103,7 +1133,11 @@ export function VoicePage({
 
       ttsSamplesRef.current.push(samples);
 
-      const buffer = context.createBuffer(1, samples.length, ttsSampleRateRef.current);
+      const buffer = context.createBuffer(
+        1,
+        samples.length,
+        ttsSampleRateRef.current,
+      );
       const samplesForPlayback = new Float32Array(samples.length);
       samplesForPlayback.set(samples);
       buffer.copyToChannel(samplesForPlayback, 0);
@@ -1159,7 +1193,10 @@ export function VoicePage({
           return;
         case "session_ready":
           voiceWsSessionReadyRef.current = true;
-          if (isSessionActiveRef.current && runtimeStatusRef.current === "idle") {
+          if (
+            isSessionActiveRef.current &&
+            runtimeStatusRef.current === "idle"
+          ) {
             setRuntimeStatus("listening");
           }
           return;
@@ -1170,7 +1207,10 @@ export function VoicePage({
           voiceWsInputStreamStartedRef.current = false;
           return;
         case "listening":
-          if (isSessionActiveRef.current && runtimeStatusRef.current !== "user_speaking") {
+          if (
+            isSessionActiveRef.current &&
+            runtimeStatusRef.current !== "user_speaking"
+          ) {
             setRuntimeStatus("listening");
           }
           return;
@@ -1191,12 +1231,17 @@ export function VoicePage({
           return;
         case "turn_processing":
           processingRef.current = true;
-          if (isSessionActiveRef.current && runtimeStatusRef.current !== "user_speaking") {
+          if (
+            isSessionActiveRef.current &&
+            runtimeStatusRef.current !== "user_speaking"
+          ) {
             setRuntimeStatus("processing");
           }
           return;
         case "user_transcript_start": {
-          const existingId = voiceUserEntryIdsRef.current.get(event.utterance_id);
+          const existingId = voiceUserEntryIdsRef.current.get(
+            event.utterance_id,
+          );
           if (!existingId) {
             const entryId = makeTranscriptEntryId("user");
             voiceUserEntryIdsRef.current.set(event.utterance_id, entryId);
@@ -1237,7 +1282,9 @@ export function VoicePage({
           return;
         }
         case "assistant_text_start": {
-          const existingId = voiceAssistantEntryIdsRef.current.get(event.utterance_id);
+          const existingId = voiceAssistantEntryIdsRef.current.get(
+            event.utterance_id,
+          );
           if (!existingId) {
             const entryId = makeTranscriptEntryId("assistant");
             voiceAssistantEntryIdsRef.current.set(event.utterance_id, entryId);
@@ -1251,7 +1298,9 @@ export function VoicePage({
           return;
         }
         case "assistant_text_final": {
-          const entryId = voiceAssistantEntryIdsRef.current.get(event.utterance_id);
+          const entryId = voiceAssistantEntryIdsRef.current.get(
+            event.utterance_id,
+          );
           const finalText = parseFinalAnswer((event.text ?? "").trim());
           if (entryId) {
             if (finalText) {
@@ -1292,7 +1341,10 @@ export function VoicePage({
         case "assistant_audio_done": {
           const playback = voiceWsPlaybackRef.current;
           if (!playback) {
-            if (isSessionActiveRef.current && runtimeStatusRef.current !== "user_speaking") {
+            if (
+              isSessionActiveRef.current &&
+              runtimeStatusRef.current !== "user_speaking"
+            ) {
               setRuntimeStatus("listening");
             }
             processingRef.current = false;
@@ -1305,7 +1357,10 @@ export function VoicePage({
             return;
           }
           playback.streamDone = true;
-          finalizeVoiceWsPlaybackIfComplete(playback.utteranceSeq, playback.streamSession);
+          finalizeVoiceWsPlaybackIfComplete(
+            playback.utteranceSeq,
+            playback.streamSession,
+          );
           return;
         }
         case "turn_done": {
@@ -1314,7 +1369,9 @@ export function VoicePage({
           }
 
           if (event.status === "interrupted") {
-            if (voiceWsPlaybackRef.current?.utteranceSeq === event.utterance_seq) {
+            if (
+              voiceWsPlaybackRef.current?.utteranceSeq === event.utterance_seq
+            ) {
               voiceWsPlaybackRef.current = null;
             }
             return;
@@ -1356,134 +1413,139 @@ export function VoicePage({
     ],
   );
 
-  const ensureVoiceRealtimeSocket = useCallback(async (): Promise<WebSocket> => {
-    const existing = voiceWsRef.current;
-    if (existing && existing.readyState === WebSocket.OPEN) {
-      return existing;
-    }
-    if (voiceWsConnectingRef.current) {
-      return voiceWsConnectingRef.current;
-    }
+  const ensureVoiceRealtimeSocket =
+    useCallback(async (): Promise<WebSocket> => {
+      const existing = voiceWsRef.current;
+      if (existing && existing.readyState === WebSocket.OPEN) {
+        return existing;
+      }
+      if (voiceWsConnectingRef.current) {
+        return voiceWsConnectingRef.current;
+      }
 
-    const url = buildVoiceRealtimeWebSocketUrl(api.baseUrl);
-    const promise = new Promise<WebSocket>((resolve, reject) => {
-      let settled = false;
-      const ws = new WebSocket(url);
-      ws.binaryType = "arraybuffer";
+      const url = buildVoiceRealtimeWebSocketUrl(api.baseUrl);
+      const promise = new Promise<WebSocket>((resolve, reject) => {
+        let settled = false;
+        const ws = new WebSocket(url);
+        ws.binaryType = "arraybuffer";
 
-      const settle = (fn: () => void) => {
-        if (settled) return;
-        settled = true;
-        fn();
-      };
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          fn();
+        };
 
-      ws.onopen = () => {
-        voiceWsRef.current = ws;
-        voiceWsSessionReadyRef.current = false;
-        voiceWsInputStreamStartedRef.current = false;
-        voiceWsInputFrameSeqRef.current = 0;
-        try {
-          ws.send(
-            JSON.stringify({
-              type: "session_start",
-              system_prompt: VOICE_AGENT_SYSTEM_PROMPT,
-            } satisfies VoiceRealtimeClientMessage),
-          );
-        } catch (error) {
-          settle(() => {
-            voiceWsConnectingRef.current = null;
-            reject(
-              error instanceof Error
-                ? error
-                : new Error("Failed to initialize voice realtime websocket"),
+        ws.onopen = () => {
+          voiceWsRef.current = ws;
+          voiceWsSessionReadyRef.current = false;
+          voiceWsInputStreamStartedRef.current = false;
+          voiceWsInputFrameSeqRef.current = 0;
+          try {
+            ws.send(
+              JSON.stringify({
+                type: "session_start",
+                system_prompt: VOICE_AGENT_SYSTEM_PROMPT,
+              } satisfies VoiceRealtimeClientMessage),
             );
-          });
-          return;
-        }
-        settle(() => resolve(ws));
-      };
-
-      ws.onmessage = (messageEvent) => {
-        if (messageEvent.data instanceof ArrayBuffer) {
-          const chunk = parseVoiceRealtimeAssistantAudioBinaryChunk(messageEvent.data);
-          if (chunk) {
-            handleVoiceRealtimeAssistantAudioBinaryChunk(chunk);
+          } catch (error) {
+            settle(() => {
+              voiceWsConnectingRef.current = null;
+              reject(
+                error instanceof Error
+                  ? error
+                  : new Error("Failed to initialize voice realtime websocket"),
+              );
+            });
+            return;
           }
-          return;
-        }
-        if (messageEvent.data instanceof Blob) {
-          void messageEvent.data.arrayBuffer().then((buffer) => {
-            const chunk = parseVoiceRealtimeAssistantAudioBinaryChunk(buffer);
+          settle(() => resolve(ws));
+        };
+
+        ws.onmessage = (messageEvent) => {
+          if (messageEvent.data instanceof ArrayBuffer) {
+            const chunk = parseVoiceRealtimeAssistantAudioBinaryChunk(
+              messageEvent.data,
+            );
             if (chunk) {
               handleVoiceRealtimeAssistantAudioBinaryChunk(chunk);
             }
-          });
-          return;
-        }
-        if (typeof messageEvent.data !== "string") return;
-        try {
-          const parsed: unknown = JSON.parse(messageEvent.data);
-          if (!isVoiceRealtimeServerEvent(parsed)) {
             return;
           }
-          handleVoiceRealtimeServerEvent(parsed);
-        } catch {
-          // Ignore malformed events.
-        }
-      };
-
-      ws.onerror = () => {
-        const message = "Voice realtime websocket error";
-        if (!settled) {
-          settle(() => {
-            voiceWsConnectingRef.current = null;
-            reject(new Error(message));
-          });
-        }
-      };
-
-      ws.onclose = () => {
-        if (!settled) {
-          settle(() => {
-            voiceWsConnectingRef.current = null;
-            reject(new Error("Voice realtime connection closed during setup"));
-          });
-        }
-        const wasActive = isSessionActiveRef.current;
-        const wasCurrent = voiceWsRef.current === ws;
-        if (wasCurrent) {
-          voiceWsRef.current = null;
-        }
-        voiceWsSessionReadyRef.current = false;
-        voiceWsInputStreamStartedRef.current = false;
-        voiceWsInputFrameSeqRef.current = 0;
-        voiceWsInputStreamStartingRef.current = null;
-        voiceWsConnectingRef.current = null;
-        if (wasActive && wasCurrent) {
-          processingRef.current = false;
-          if (runtimeStatusRef.current !== "idle") {
-            setRuntimeStatus("idle");
+          if (messageEvent.data instanceof Blob) {
+            void messageEvent.data.arrayBuffer().then((buffer) => {
+              const chunk = parseVoiceRealtimeAssistantAudioBinaryChunk(buffer);
+              if (chunk) {
+                handleVoiceRealtimeAssistantAudioBinaryChunk(chunk);
+              }
+            });
+            return;
           }
-          const message = "Voice realtime connection closed";
-          setError(message);
-          onError?.(message);
-        }
-      };
-    });
+          if (typeof messageEvent.data !== "string") return;
+          try {
+            const parsed: unknown = JSON.parse(messageEvent.data);
+            if (!isVoiceRealtimeServerEvent(parsed)) {
+              return;
+            }
+            handleVoiceRealtimeServerEvent(parsed);
+          } catch {
+            // Ignore malformed events.
+          }
+        };
 
-    voiceWsConnectingRef.current = promise;
-    try {
-      return await promise;
-    } finally {
-      if (voiceWsConnectingRef.current === promise) {
-        voiceWsConnectingRef.current = null;
+        ws.onerror = () => {
+          const message = "Voice realtime websocket error";
+          if (!settled) {
+            settle(() => {
+              voiceWsConnectingRef.current = null;
+              reject(new Error(message));
+            });
+          }
+        };
+
+        ws.onclose = () => {
+          if (!settled) {
+            settle(() => {
+              voiceWsConnectingRef.current = null;
+              reject(
+                new Error("Voice realtime connection closed during setup"),
+              );
+            });
+          }
+          const wasActive = isSessionActiveRef.current;
+          const wasCurrent = voiceWsRef.current === ws;
+          if (wasCurrent) {
+            voiceWsRef.current = null;
+          }
+          voiceWsSessionReadyRef.current = false;
+          voiceWsInputStreamStartedRef.current = false;
+          voiceWsInputFrameSeqRef.current = 0;
+          voiceWsInputStreamStartingRef.current = null;
+          voiceWsConnectingRef.current = null;
+          if (wasActive && wasCurrent) {
+            processingRef.current = false;
+            if (runtimeStatusRef.current !== "idle") {
+              setRuntimeStatus("idle");
+            }
+            const message = "Voice realtime connection closed";
+            setError(message);
+            onError?.(message);
+          }
+        };
+      });
+
+      voiceWsConnectingRef.current = promise;
+      try {
+        return await promise;
+      } finally {
+        if (voiceWsConnectingRef.current === promise) {
+          voiceWsConnectingRef.current = null;
+        }
       }
-    }
-  }, [
-    handleVoiceRealtimeAssistantAudioBinaryChunk,
-    handleVoiceRealtimeServerEvent,
-    onError,
-  ]);
+    }, [
+      handleVoiceRealtimeAssistantAudioBinaryChunk,
+      handleVoiceRealtimeServerEvent,
+      onError,
+    ]);
 
   const ensureVoiceRealtimeInputStreamStarted = useCallback(
     async (inputSampleRate: number) => {
@@ -1494,7 +1556,9 @@ export function VoicePage({
         return voiceWsInputStreamStartingRef.current;
       }
       if (!selectedAsrModel || !selectedTextModel || !selectedTtsModel) {
-        throw new Error("Select ASR, text, and TTS models before starting voice mode.");
+        throw new Error(
+          "Select ASR, text, and TTS models before starting voice mode.",
+        );
       }
 
       const startPromise = (async () => {
@@ -2250,7 +2314,9 @@ export function VoicePage({
 
       if (!lfm2DirectMode) {
         // Warm up realtime websocket + server-side VAD stream without blocking mic startup.
-        void ensureVoiceRealtimeInputStreamStarted(audioContext.sampleRate).catch((err) => {
+        void ensureVoiceRealtimeInputStreamStarted(
+          audioContext.sampleRate,
+        ).catch((err) => {
           const message =
             err instanceof Error
               ? err.message
@@ -2506,12 +2572,10 @@ export function VoicePage({
               {currentPipelineLabel}
             </span>
 
-            <button
+            <Button
               onClick={toggleSession}
-              className={clsx(
-                "btn w-full mt-5 text-sm min-h-[46px]",
-                runtimeStatus === "idle" ? "btn-primary" : "btn-danger",
-              )}
+              variant={runtimeStatus === "idle" ? "default" : "destructive"}
+              className="w-full mt-5 text-sm min-h-[46px] gap-2"
               disabled={startDisabled}
             >
               {runtimeStatus === "idle" ? (
@@ -2525,7 +2589,7 @@ export function VoicePage({
                   Stop Session
                 </>
               )}
-            </button>
+            </Button>
           </div>
 
           <div className="mt-5 pt-4 border-t border-[#252525] space-y-3">
@@ -2669,13 +2733,15 @@ export function VoicePage({
                     Configure realtime model stack and manage model lifecycle.
                   </p>
                 </div>
-                <button
-                  className="btn btn-ghost text-xs"
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-2"
                   onClick={() => setIsConfigOpen(false)}
                 >
                   <X className="w-3.5 h-3.5" />
                   Close
-                </button>
+                </Button>
               </div>
 
               <div className="p-4 sm:p-5 overflow-y-auto max-h-[calc(90vh-88px)] space-y-5">
@@ -2690,35 +2756,35 @@ export function VoicePage({
                   </div>
                   <div className="grid md:grid-cols-2 gap-3">
                     <button
-                      className={clsx(
+                      className={cn(
                         "rounded-lg border p-3 text-left transition-colors",
                         lfm2DirectMode
-                          ? "border-[var(--border-strong)] bg-[var(--bg-surface-3)]"
-                          : "border-[#2a2a2a] bg-[#151515] hover:border-[var(--border-strong)]",
+                          ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                          : "border-border bg-card hover:bg-accent hover:text-accent-foreground",
                       )}
                       onClick={() => setPipelineMode("s2s")}
                     >
-                      <div className="text-sm text-white font-medium">
+                      <div className="text-sm font-medium">
                         Speech-to-Speech (S2S)
                       </div>
-                      <p className="text-xs text-gray-500 mt-1">
+                      <p className="text-xs text-muted-foreground mt-1">
                         One LFM2 model handles user speech understanding and
                         assistant speech output.
                       </p>
                     </button>
                     <button
-                      className={clsx(
+                      className={cn(
                         "rounded-lg border p-3 text-left transition-colors",
                         !lfm2DirectMode
-                          ? "border-[var(--border-strong)] bg-[var(--bg-surface-3)]"
-                          : "border-[#2a2a2a] bg-[#151515] hover:border-[var(--border-strong)]",
+                          ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                          : "border-border bg-card hover:bg-accent hover:text-accent-foreground",
                       )}
                       onClick={() => setPipelineMode("stt_chat_tts")}
                     >
-                      <div className="text-sm text-white font-medium">
+                      <div className="text-sm font-medium">
                         {"STT -> Chat -> TTS"}
                       </div>
-                      <p className="text-xs text-gray-500 mt-1">
+                      <p className="text-xs text-muted-foreground mt-1">
                         Use separate ASR, language model, and TTS models for
                         maximum control.
                       </p>
@@ -3044,87 +3110,101 @@ export function VoicePage({
                           <div className="flex flex-wrap items-center justify-end gap-2">
                             {model.status === "downloading" &&
                               onCancelDownload && (
-                                <button
+                                <Button
                                   onClick={() =>
                                     onCancelDownload(model.variant)
                                   }
-                                  className="btn btn-danger text-xs"
+                                  variant="destructive"
+                                  size="sm"
+                                  className="text-xs h-8 gap-2"
                                 >
                                   <X className="w-3.5 h-3.5" />
                                   Cancel
-                                </button>
+                                </Button>
                               )}
                             {(model.status === "not_downloaded" ||
                               model.status === "error") &&
                               (requiresManualDownload(model.variant) ? (
-                                <button
-                                  className="btn btn-secondary text-xs"
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="text-xs h-8 gap-2"
                                   disabled
                                   title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
                                 >
                                   <Download className="w-3.5 h-3.5" />
                                   Manual download
-                                </button>
+                                </Button>
                               ) : (
-                                <button
+                                <Button
                                   onClick={() => onDownload(model.variant)}
-                                  className="btn btn-primary text-xs"
+                                  size="sm"
+                                  className="text-xs h-8 gap-2"
                                 >
                                   <Download className="w-3.5 h-3.5" />
                                   Download
-                                </button>
+                                </Button>
                               ))}
                             {model.status === "downloaded" && (
-                              <button
+                              <Button
                                 onClick={() => onLoad(model.variant)}
-                                className="btn btn-primary text-xs"
+                                size="sm"
+                                className="text-xs h-8 gap-2"
                               >
                                 <Play className="w-3.5 h-3.5" />
                                 Load
-                              </button>
+                              </Button>
                             )}
                             {model.status === "ready" && (
-                              <button
+                              <Button
                                 onClick={() => onUnload(model.variant)}
-                                className="btn btn-secondary text-xs"
+                                variant="outline"
+                                size="sm"
+                                className="text-xs h-8 gap-2"
                               >
                                 <Square className="w-3.5 h-3.5" />
                                 Unload
-                              </button>
+                              </Button>
                             )}
                             {(model.status === "downloaded" ||
                               model.status === "ready") &&
                               (pendingDeleteVariant === model.variant ? (
                                 <div className="flex items-center gap-1">
-                                  <button
+                                  <Button
                                     onClick={() =>
                                       setPendingDeleteVariant(null)
                                     }
-                                    className="btn btn-secondary text-xs"
+                                    variant="outline"
+                                    size="sm"
+                                    className="text-xs h-8 gap-2"
                                   >
                                     <X className="w-3.5 h-3.5" />
                                     Cancel
-                                  </button>
-                                  <button
+                                  </Button>
+                                  <Button
                                     onClick={() =>
                                       handleConfigDelete(model.variant)
                                     }
-                                    className="btn text-xs border border-red-500/45 bg-red-500/15 text-red-300 hover:bg-red-500/25 hover:text-red-200"
+                                    variant="destructive"
+                                    size="sm"
+                                    className="text-xs h-8 gap-2"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
                                     Confirm Delete
-                                  </button>
+                                  </Button>
                                 </div>
                               ) : (
-                                <button
+                                <Button
                                   onClick={() =>
                                     setPendingDeleteVariant(model.variant)
                                   }
-                                  className="btn text-xs border border-red-500/45 bg-red-500/15 text-red-300 hover:bg-red-500/25 hover:text-red-200"
+                                  variant="destructive"
+                                  size="sm"
+                                  className="text-xs h-8 gap-2 opacity-80 hover:opacity-100"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                   Delete
-                                </button>
+                                </Button>
                               ))}
                           </div>
                         </div>
