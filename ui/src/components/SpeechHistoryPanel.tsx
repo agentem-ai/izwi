@@ -19,8 +19,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import clsx from "clsx";
-
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import {
   api,
   type SpeechHistoryRecord,
@@ -54,7 +54,11 @@ function formatCreatedAt(timestampMs: number): string {
 }
 
 function formatAudioDuration(durationSecs: number | null): string {
-  if (durationSecs === null || !Number.isFinite(durationSecs) || durationSecs < 0) {
+  if (
+    durationSecs === null ||
+    !Number.isFinite(durationSecs) ||
+    durationSecs < 0
+  ) {
     return "Unknown length";
   }
   if (durationSecs < 60) {
@@ -74,7 +78,9 @@ function formatClockTime(totalSeconds: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function routeKindFor(route: SpeechHistoryRoute): SpeechHistoryRecordSummary["route_kind"] {
+function routeKindFor(
+  route: SpeechHistoryRoute,
+): SpeechHistoryRecordSummary["route_kind"] {
   switch (route) {
     case "text-to-speech":
       return "text_to_speech";
@@ -130,7 +136,8 @@ export function SpeechHistoryPanel({
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
-  const [selectedRecord, setSelectedRecord] = useState<SpeechHistoryRecord | null>(null);
+  const [selectedRecord, setSelectedRecord] =
+    useState<SpeechHistoryRecord | null>(null);
   const [selectedLoading, setSelectedLoading] = useState(false);
   const [selectedError, setSelectedError] = useState<string | null>(null);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
@@ -138,13 +145,20 @@ export function SpeechHistoryPanel({
   const [historyDuration, setHistoryDuration] = useState(0);
   const [historyIsPlaying, setHistoryIsPlaying] = useState(false);
   const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1);
-  const [historyAudioError, setHistoryAudioError] = useState<string | null>(null);
+  const [historyAudioError, setHistoryAudioError] = useState<string | null>(
+    null,
+  );
   const [copiedInput, setCopiedInput] = useState(false);
-  const [deleteTargetRecordId, setDeleteTargetRecordId] = useState<string | null>(null);
+  const [deleteTargetRecordId, setDeleteTargetRecordId] = useState<
+    string | null
+  >(null);
   const [deleteRecordPending, setDeleteRecordPending] = useState(false);
-  const [deleteRecordError, setDeleteRecordError] = useState<string | null>(null);
+  const [deleteRecordError, setDeleteRecordError] = useState<string | null>(
+    null,
+  );
   const [historyVoiceName, setHistoryVoiceName] = useState("");
-  const [historyVoiceReferenceText, setHistoryVoiceReferenceText] = useState("");
+  const [historyVoiceReferenceText, setHistoryVoiceReferenceText] =
+    useState("");
   const [historyVoiceSaving, setHistoryVoiceSaving] = useState(false);
   const [historyVoiceStatus, setHistoryVoiceStatus] = useState<{
     tone: "success" | "error";
@@ -159,13 +173,19 @@ export function SpeechHistoryPanel({
     failDownload,
   } = useDownloadIndicator();
 
-  const mergeHistorySummary = useCallback((summary: SpeechHistoryRecordSummary) => {
-    setRecords((previous) => {
-      const next = [summary, ...previous.filter((item) => item.id !== summary.id)];
-      next.sort((a, b) => b.created_at - a.created_at);
-      return next;
-    });
-  }, []);
+  const mergeHistorySummary = useCallback(
+    (summary: SpeechHistoryRecordSummary) => {
+      setRecords((previous) => {
+        const next = [
+          summary,
+          ...previous.filter((item) => item.id !== summary.id),
+        ];
+        next.sort((a, b) => b.created_at - a.created_at);
+        return next;
+      });
+    },
+    [],
+  );
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -366,13 +386,15 @@ export function SpeechHistoryPanel({
   const selectedSummary = useMemo(
     () =>
       selectedRecordId
-        ? records.find((record) => record.id === selectedRecordId) ?? null
+        ? (records.find((record) => record.id === selectedRecordId) ?? null)
         : null,
     [records, selectedRecordId],
   );
 
   const activeRecord =
-    selectedRecord && selectedRecord.id === selectedRecordId ? selectedRecord : null;
+    selectedRecord && selectedRecord.id === selectedRecordId
+      ? selectedRecord
+      : null;
 
   useEffect(() => {
     if (route !== "voice-cloning" || !activeRecord) {
@@ -395,7 +417,9 @@ export function SpeechHistoryPanel({
     if (!deleteTargetRecordId) {
       return null;
     }
-    const fromSummary = records.find((record) => record.id === deleteTargetRecordId);
+    const fromSummary = records.find(
+      (record) => record.id === deleteTargetRecordId,
+    );
     if (fromSummary) {
       return fromSummary;
     }
@@ -424,7 +448,8 @@ export function SpeechHistoryPanel({
   const historyViewerDuration =
     historyDuration > 0
       ? historyDuration
-      : activeRecord?.audio_duration_secs && activeRecord.audio_duration_secs > 0
+      : activeRecord?.audio_duration_secs &&
+          activeRecord.audio_duration_secs > 0
         ? activeRecord.audio_duration_secs
         : 0;
 
@@ -438,7 +463,9 @@ export function SpeechHistoryPanel({
         return;
       }
       const targetIndex =
-        direction === "newer" ? selectedRecordIndex - 1 : selectedRecordIndex + 1;
+        direction === "newer"
+          ? selectedRecordIndex - 1
+          : selectedRecordIndex + 1;
       if (targetIndex < 0 || targetIndex >= records.length) {
         return;
       }
@@ -500,7 +527,10 @@ export function SpeechHistoryPanel({
       const duration = Number.isFinite(audio.duration)
         ? audio.duration
         : historyViewerDuration;
-      const next = Math.max(0, Math.min(audio.currentTime + deltaSeconds, duration || 0));
+      const next = Math.max(
+        0,
+        Math.min(audio.currentTime + deltaSeconds, duration || 0),
+      );
       audio.currentTime = next;
       setHistoryCurrentTime(next);
     },
@@ -549,9 +579,13 @@ export function SpeechHistoryPanel({
 
     beginDownload();
     try {
-      const downloadUrl = api.speechHistoryRecordAudioUrl(route, activeRecord.id, {
-        download: true,
-      });
+      const downloadUrl = api.speechHistoryRecordAudioUrl(
+        route,
+        activeRecord.id,
+        {
+          download: true,
+        },
+      );
       const filename = activeRecord.audio_filename || `${activeRecord.id}.wav`;
       await api.downloadAudioFile(downloadUrl, filename);
       completeDownload();
@@ -659,102 +693,91 @@ export function SpeechHistoryPanel({
 
   return (
     <>
-      <aside className="card p-4 sm:p-5 min-h-[460px] xl:min-h-[560px] flex flex-col overflow-hidden">
-        <div className="flex items-start justify-between gap-3 mb-3">
+      <aside className="rounded-xl border bg-card text-card-foreground shadow-sm flex flex-col min-h-[460px] xl:min-h-[560px] overflow-hidden">
+        <div className="flex items-center justify-between gap-3 mb-3 px-4 py-3 border-b bg-muted/30">
           <div>
-            <div className="inline-flex items-center gap-2 text-xs text-[var(--text-muted)]">
+            <div className="inline-flex items-center gap-2 text-xs text-muted-foreground font-medium uppercase tracking-wider">
               <Clock3 className="w-3.5 h-3.5" />
               History
             </div>
-            <h3 className="text-sm font-medium text-[var(--text-primary)] mt-1">
+            <h3 className="text-sm font-semibold tracking-tight mt-1">
               {title}
             </h3>
-            <p className="text-xs text-[var(--text-subtle)] mt-1">
+            <p className="text-xs text-muted-foreground mt-0.5">
               {records.length} {records.length === 1 ? "record" : "records"}
             </p>
           </div>
-          <button
+          <Button
             onClick={() => void loadHistory()}
-            className="btn btn-ghost px-2.5 py-1.5 text-xs"
+            variant="ghost"
+            size="sm"
+            className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
             disabled={historyLoading}
             title="Refresh history"
           >
             <RefreshCw
-              className={clsx("w-3.5 h-3.5", historyLoading && "animate-spin")}
+              className={cn("w-3.5 h-3.5", historyLoading && "animate-spin")}
             />
             Refresh
-          </button>
+          </Button>
         </div>
 
-        <div className="mt-1 flex-1 min-h-0 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-2 overflow-y-auto">
+        <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1 scrollbar-thin bg-background/50">
           {historyLoading ? (
-            <div className="h-full min-h-full flex items-center justify-center gap-2 text-xs text-[var(--text-muted)]">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            <div className="h-full min-h-[200px] flex items-center justify-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin" />
               Loading history...
             </div>
           ) : records.length === 0 ? (
-            <div className="h-full min-h-full flex items-center justify-center text-center px-3 text-xs text-[var(--text-subtle)]">
-              {emptyMessage}
+            <div className="h-full min-h-[200px] flex items-center justify-center text-center px-4">
+              <div className="text-xs text-muted-foreground border border-dashed rounded-lg p-6 bg-muted/20 w-full">
+                {emptyMessage}
+              </div>
             </div>
           ) : (
-            <div className="flex flex-col gap-2.5">
+            <div className="space-y-1">
               {records.map((record) => {
                 const isActive = record.id === selectedRecordId;
                 return (
-                  <div
+                  <button
                     key={record.id}
-                    role="button"
-                    tabIndex={0}
                     onClick={() => openHistoryRecord(record.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        openHistoryRecord(record.id);
-                      }
-                    }}
-                    className={clsx(
-                      "w-full h-[102px] rounded-lg border px-3 py-2.5 transition-colors overflow-hidden cursor-pointer",
+                    className={cn(
+                      "group w-full h-[102px] text-left rounded-md px-3 py-2.5 transition-colors overflow-hidden border border-transparent relative",
                       isActive
-                        ? "border-[var(--border-strong)] bg-[var(--bg-surface-3)]"
-                        : "border-[var(--border-muted)] bg-[var(--bg-surface-2)] hover:border-[var(--border-strong)]",
+                        ? "bg-accent/80 hover:bg-accent/80"
+                        : "hover:bg-muted/50",
                     )}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] text-[var(--text-secondary)] truncate">
+                    <div className="flex items-center justify-between gap-2 mb-1.5 pr-8">
+                      <span className="text-[11px] font-medium text-foreground/80 truncate">
                         {record.audio_filename ||
                           record.model_id ||
                           record.speaker ||
                           "Speech generation"}
                       </span>
-                      <div className="inline-flex items-center gap-1.5 shrink-0">
-                        <span className="text-[10px] text-[var(--text-subtle)]">
-                          {formatCreatedAt(record.created_at)}
-                        </span>
-                        <button
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            openDeleteRecordConfirm(record.id);
-                          }}
-                          className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] text-[var(--text-subtle)] transition-colors hover:border-[var(--danger-border)] hover:bg-[var(--danger-bg)] hover:text-[var(--danger-text)]"
-                          title="Delete record"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                      <span className="text-[10px] text-muted-foreground bg-background px-1.5 py-0.5 rounded border shadow-sm whitespace-nowrap shrink-0">
+                        {formatCreatedAt(record.created_at)}
+                      </span>
                     </div>
-                    <p
-                      className="text-xs text-[var(--text-primary)] mt-1.5 leading-[1.35]"
-                      style={{
-                        display: "-webkit-box",
-                        WebkitLineClamp: 3,
-                        WebkitBoxOrient: "vertical",
-                        overflow: "hidden",
-                      }}
-                    >
+                    <p className="text-xs text-muted-foreground line-clamp-3 leading-snug pr-2">
                       {record.input_preview}
                     </p>
-                  </div>
+
+                    <Button
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        openDeleteRecordConfirm(record.id);
+                      }}
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-2 top-2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive hover:text-destructive-foreground"
+                      title="Delete record"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </button>
                 );
               })}
             </div>
@@ -767,7 +790,7 @@ export function SpeechHistoryPanel({
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: "auto" }}
               exit={{ opacity: 0, height: 0 }}
-              className="p-2 rounded border text-xs mt-2 bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]"
+              className="m-3 p-3 rounded-lg border border-destructive/20 bg-destructive/10 text-destructive text-xs font-medium"
             >
               {historyError}
             </motion.div>
@@ -778,7 +801,7 @@ export function SpeechHistoryPanel({
       <AnimatePresence>
         {isHistoryModalOpen && (
           <motion.div
-            className="fixed inset-0 z-50 bg-black/70 p-3 backdrop-blur-sm sm:p-6"
+            className="fixed inset-0 z-50 bg-background/80 p-3 backdrop-blur-sm sm:p-6"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -790,19 +813,19 @@ export function SpeechHistoryPanel({
               exit={{ y: 18, opacity: 0, scale: 0.985 }}
               transition={{ duration: 0.18 }}
               onClick={(event) => event.stopPropagation()}
-              className="mx-auto flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] shadow-2xl"
+              className="mx-auto flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border bg-card text-card-foreground shadow-2xl"
             >
-              <div className="flex items-center justify-between gap-3 border-b border-[var(--border-muted)] px-4 py-3 sm:px-6">
+              <div className="flex items-center justify-between gap-3 border-b px-4 py-3 sm:px-6 bg-muted/20">
                 <div className="min-w-0">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--text-subtle)]">
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                     Saved Audio Record
                   </p>
-                  <h3 className="truncate text-sm font-medium text-[var(--text-primary)] mt-1">
+                  <h3 className="truncate text-sm font-semibold mt-1">
                     {selectedSummary?.audio_filename ||
                       selectedSummary?.model_id ||
                       "Speech generation"}
                   </h3>
-                  <p className="text-xs text-[var(--text-muted)] mt-1">
+                  <p className="text-xs text-muted-foreground mt-1">
                     {selectedSummary
                       ? formatCreatedAt(selectedSummary.created_at)
                       : "No record selected"}
@@ -810,38 +833,46 @@ export function SpeechHistoryPanel({
                 </div>
                 <div className="flex items-center gap-1.5">
                   {activeRecord && (
-                    <button
+                    <Button
                       onClick={() => openDeleteRecordConfirm(activeRecord.id)}
-                      className="inline-flex items-center gap-1 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-2.5 py-1.5 text-xs text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
+                      variant="destructive"
+                      size="sm"
+                      className="gap-1.5 h-8 text-xs shadow-sm"
                       title="Delete this record"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                       Delete
-                    </button>
+                    </Button>
                   )}
-                  <button
+                  <Button
                     onClick={() => openAdjacentRecord("newer")}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40"
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8 shadow-sm"
                     disabled={!canOpenNewerRecord}
                     title="Open newer record"
                   >
                     <ChevronLeft className="w-4 h-4" />
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     onClick={() => openAdjacentRecord("older")}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40"
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8 shadow-sm"
                     disabled={!canOpenOlderRecord}
                     title="Open older record"
                   >
                     <ChevronRight className="w-4 h-4" />
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     onClick={closeHistoryModal}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8 shadow-sm"
                     title="Close"
                   >
                     <X className="w-4 h-4" />
-                  </button>
+                  </Button>
                 </div>
               </div>
 
@@ -873,7 +904,9 @@ export function SpeechHistoryPanel({
                           </span>
                         )}
                         <span className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2 py-1 text-[11px] text-[var(--text-secondary)]">
-                          {formatAudioDuration(activeRecord.audio_duration_secs)}
+                          {formatAudioDuration(
+                            activeRecord.audio_duration_secs,
+                          )}
                         </span>
                       </div>
 
@@ -882,19 +915,25 @@ export function SpeechHistoryPanel({
                         src={selectedAudioUrl ?? undefined}
                         preload="metadata"
                         onLoadedMetadata={(event) => {
-                          const durationSeconds = Number.isFinite(event.currentTarget.duration)
+                          const durationSeconds = Number.isFinite(
+                            event.currentTarget.duration,
+                          )
                             ? event.currentTarget.duration
                             : 0;
                           setHistoryDuration(durationSeconds);
                           setHistoryAudioError(null);
                         }}
                         onTimeUpdate={(event) => {
-                          setHistoryCurrentTime(event.currentTarget.currentTime);
+                          setHistoryCurrentTime(
+                            event.currentTarget.currentTime,
+                          );
                         }}
                         onPlay={() => setHistoryIsPlaying(true)}
                         onPause={() => setHistoryIsPlaying(false)}
                         onRateChange={(event) =>
-                          setHistoryPlaybackRate(event.currentTarget.playbackRate)
+                          setHistoryPlaybackRate(
+                            event.currentTarget.playbackRate,
+                          )
                         }
                         onError={() =>
                           setHistoryAudioError(
@@ -946,12 +985,17 @@ export function SpeechHistoryPanel({
                             min={0}
                             max={historyViewerDuration || 0}
                             step={0.05}
-                            value={Math.min(historyCurrentTime, historyViewerDuration || 0)}
+                            value={Math.min(
+                              historyCurrentTime,
+                              historyViewerDuration || 0,
+                            )}
                             onChange={(event) =>
                               seekHistoryAudio(Number(event.target.value))
                             }
                             className="w-full accent-[var(--accent-solid)]"
-                            disabled={!selectedAudioUrl || historyViewerDuration <= 0}
+                            disabled={
+                              !selectedAudioUrl || historyViewerDuration <= 0
+                            }
                           />
                         </div>
 
@@ -962,7 +1006,9 @@ export function SpeechHistoryPanel({
                           <select
                             value={historyPlaybackRate}
                             onChange={(event) =>
-                              handleHistoryRateChange(Number(event.target.value))
+                              handleHistoryRateChange(
+                                Number(event.target.value),
+                              )
                             }
                             className="h-8 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2 text-xs text-[var(--text-secondary)] focus:outline-none focus:ring-1 focus:ring-[var(--border-strong)]"
                           >
@@ -994,14 +1040,14 @@ export function SpeechHistoryPanel({
                               initial={{ opacity: 0, height: 0 }}
                               animate={{ opacity: 1, height: "auto" }}
                               exit={{ opacity: 0, height: 0 }}
-                              className={clsx(
+                              className={cn(
                                 "mt-3 rounded-lg border px-3 py-2 text-xs flex items-center gap-2",
                                 downloadState === "downloading" &&
-                                  "border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] text-[var(--status-warning-text)]",
+                                  "border-amber-500/20 bg-amber-500/10 text-amber-500",
                                 downloadState === "success" &&
-                                  "border-[var(--status-positive-border)] bg-[var(--status-positive-bg)] text-[var(--status-positive-text)]",
+                                  "border-green-500/20 bg-green-500/10 text-green-500",
                                 downloadState === "error" &&
-                                  "border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)]",
+                                  "border-destructive/20 bg-destructive/10 text-destructive",
                               )}
                             >
                               {downloadState === "downloading" ? (
@@ -1031,7 +1077,11 @@ export function SpeechHistoryPanel({
                             Runtime
                           </div>
                           <div className="mt-1 text-[var(--text-secondary)]">
-                            {Math.max(0, Math.round(activeRecord.generation_time_ms))} ms
+                            {Math.max(
+                              0,
+                              Math.round(activeRecord.generation_time_ms),
+                            )}{" "}
+                            ms
                           </div>
                         </div>
                       </div>
@@ -1187,11 +1237,11 @@ export function SpeechHistoryPanel({
                               initial={{ opacity: 0, height: 0 }}
                               animate={{ opacity: 1, height: "auto" }}
                               exit={{ opacity: 0, height: 0 }}
-                              className={clsx(
+                              className={cn(
                                 "rounded-md border px-3 py-2 text-xs",
                                 historyVoiceStatus.tone === "success"
-                                  ? "border-[var(--status-positive-border)] bg-[var(--status-positive-bg)] text-[var(--status-positive-text)]"
-                                  : "border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)]",
+                                  ? "border-green-500/20 bg-green-500/10 text-green-500"
+                                  : "border-destructive/20 bg-destructive/10 text-destructive",
                               )}
                             >
                               {historyVoiceStatus.message}

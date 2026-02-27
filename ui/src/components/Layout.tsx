@@ -16,7 +16,8 @@ import {
   Sun,
   Moon,
 } from "lucide-react";
-import clsx from "clsx";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
 const appIconUrl = `/app-icon.png?v=${Date.now()}`;
 const APP_VERSION = `v${__APP_VERSION__}`;
@@ -147,27 +148,27 @@ export function Layout({
   };
 
   return (
-    <div className="min-h-screen flex bg-[#0d0d0d]">
+    <div className="min-h-screen flex bg-background text-foreground selection:bg-primary selection:text-primary-foreground">
       {/* Mobile header */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-[#0a0a0a] border-b border-[#262626]">
+      <div className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-background/80 backdrop-blur-xl border-b border-border">
         <div className="flex items-center justify-between p-4">
           <div className="flex items-center gap-3">
-            <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-white/20 bg-[#161616] shadow-[inset_0_1px_0_rgba(255,255,255,0.14),0_0_0_1px_rgba(255,255,255,0.05)]">
+            <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-border bg-card shadow-sm">
               <img
                 src={appIconUrl}
                 alt="Izwi logo"
                 className="w-full h-full object-cover p-0.5 brightness-125 contrast-125"
               />
-              <span className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.18),transparent_56%)]" />
             </div>
             <div>
-              <h1 className="text-sm font-semibold text-white">Izwi</h1>
+              <h1 className="text-sm font-semibold text-foreground">Izwi</h1>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button
+            <Button
+              variant="outline"
+              size="icon"
               onClick={switchTheme}
-              className="p-2 rounded-lg border border-[#2a2a2a] bg-[#141414] hover:bg-[#1a1a1a] transition-colors"
               title={
                 resolvedTheme === "dark"
                   ? "Switch to light mode"
@@ -175,17 +176,18 @@ export function Layout({
               }
             >
               {resolvedTheme === "dark" ? (
-                <Sun className="w-4 h-4 text-gray-200" />
+                <Sun className="w-4 h-4 text-foreground" />
               ) : (
-                <Moon className="w-4 h-4 text-gray-700" />
+                <Moon className="w-4 h-4 text-foreground" />
               )}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="p-2 rounded-lg hover:bg-[#1a1a1a] transition-colors"
             >
-              <Menu className="w-5 h-5 text-white" />
-            </button>
+              <Menu className="w-5 h-5 text-foreground" />
+            </Button>
           </div>
         </div>
       </div>
@@ -198,15 +200,15 @@ export function Layout({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setMobileMenuOpen(false)}
-            className="lg:hidden fixed inset-0 bg-black/50 z-40"
+            className="lg:hidden fixed inset-0 bg-background/80 backdrop-blur-sm z-40"
           />
         )}
       </AnimatePresence>
 
       {/* Sidebar */}
       <aside
-        className={clsx(
-          "w-64 border-r border-[#262626] flex flex-col fixed h-full z-50 bg-[#0a0a0a] transition-all duration-300",
+        className={cn(
+          "w-64 border-r border-border flex flex-col fixed h-full z-50 bg-card transition-all duration-300 shadow-sm",
           "lg:translate-x-0",
           isSidebarCollapsed ? "lg:w-[76px]" : "lg:w-64",
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full",
@@ -214,40 +216,43 @@ export function Layout({
       >
         {/* Logo - hidden on mobile since it's in the header */}
         <div
-          className={clsx(
-            "hidden lg:flex border-b border-[#262626]",
+          className={cn(
+            "hidden lg:flex border-b border-border",
             isSidebarCollapsed
               ? "flex-col items-center gap-2 px-2 py-3"
               : "items-center justify-between p-4",
           )}
-          >
+        >
           <div className="flex items-center gap-3">
-            <div className="relative w-9 h-9 rounded-lg overflow-hidden border border-white/20 bg-[#161616] shadow-[inset_0_1px_0_rgba(255,255,255,0.14),0_0_0_1px_rgba(255,255,255,0.05)] flex-shrink-0">
+            <div className="relative w-9 h-9 rounded-lg overflow-hidden border border-border shadow-sm flex-shrink-0 bg-background">
               <img
                 src={appIconUrl}
                 alt="Izwi logo"
                 className="w-full h-full object-cover p-0.5 brightness-125 contrast-125"
               />
-              <span className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.18),transparent_56%)]" />
             </div>
-            <div className={clsx(isSidebarCollapsed && "hidden")}>
-              <h1 className="text-base font-semibold text-white">Izwi</h1>
+            <div className={cn(isSidebarCollapsed && "hidden")}>
+              <h1 className="text-base font-semibold text-foreground tracking-tight">
+                Izwi
+              </h1>
             </div>
           </div>
-          <button
+          <Button
+            variant="ghost"
+            size="icon"
             onClick={() => setIsSidebarCollapsed((collapsed) => !collapsed)}
-            className={clsx(
-              "rounded-md border border-[#2f2f2f] bg-[#141414] hover:bg-[#1c1c1c] transition-colors text-gray-400 hover:text-white",
-              isSidebarCollapsed ? "p-1.5" : "p-1.5",
+            className={cn(
+              "text-muted-foreground hover:text-foreground",
+              isSidebarCollapsed ? "h-8 w-8" : "h-8 w-8",
             )}
             title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
-            <Menu className="w-3.5 h-3.5" />
-          </button>
+            <Menu className="w-4 h-4" />
+          </Button>
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 p-3 overflow-y-auto flex flex-col">
+        <nav className="flex-1 p-3 overflow-y-auto flex flex-col scrollbar-thin">
           <div className="space-y-1">
             {TOP_NAV_ITEMS.map((item) => (
               <NavLink
@@ -256,46 +261,39 @@ export function Layout({
                 title={isSidebarCollapsed ? item.label : undefined}
                 onClick={() => handleNavClick(item.path)}
                 className={({ isActive }) =>
-                  clsx(
-                    "sidebar-link flex items-center rounded-lg transition-all group",
+                  cn(
+                    "flex items-center rounded-md transition-all group",
                     isSidebarCollapsed
                       ? "justify-center px-2 py-2.5"
                       : "gap-3 px-3 py-2.5",
                     isActive
-                      ? "sidebar-link-active"
-                      : "sidebar-link-idle",
+                      ? "bg-secondary text-secondary-foreground font-medium shadow-sm"
+                      : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
                   )
                 }
               >
                 {({ isActive }) => (
                   <>
                     <div
-                      className={clsx(
-                        "sidebar-link-icon p-2 rounded-lg transition-all",
+                      className={cn(
+                        "p-1 rounded-md transition-all flex items-center justify-center",
                         isActive
-                          ? "sidebar-link-icon-active"
-                          : "sidebar-link-icon-idle",
+                          ? "text-secondary-foreground"
+                          : "text-muted-foreground group-hover:text-foreground",
                       )}
                     >
-                      <item.icon className="w-4 h-4" />
+                      <item.icon className="w-[18px] h-[18px]" />
                     </div>
                     <div
-                      className={clsx(
+                      className={cn(
                         "flex-1 min-w-0",
                         isSidebarCollapsed && "hidden",
                       )}
                     >
-                      <div
-                        className={clsx(
-                          "sidebar-link-title text-sm font-medium transition-colors truncate",
-                          isActive
-                            ? "sidebar-link-title-active"
-                            : "sidebar-link-title-idle",
-                        )}
-                      >
+                      <div className="text-sm truncate leading-none mb-1">
                         {item.label}
                       </div>
-                      <div className="sidebar-link-description text-xs truncate">
+                      <div className="text-[11px] text-muted-foreground truncate leading-none">
                         {item.description}
                       </div>
                     </div>
@@ -305,7 +303,15 @@ export function Layout({
             ))}
           </div>
 
-          <div className="mt-3 pt-3 border-t border-[#262626]/80 space-y-1">
+          <div className="mt-4 pt-4 border-t border-border space-y-1">
+            <h4
+              className={cn(
+                "px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2",
+                isSidebarCollapsed && "sr-only",
+              )}
+            >
+              Creation
+            </h4>
             {CREATION_NAV_ITEMS.map((item) => (
               <NavLink
                 key={item.id}
@@ -313,46 +319,39 @@ export function Layout({
                 title={isSidebarCollapsed ? item.label : undefined}
                 onClick={() => handleNavClick(item.path)}
                 className={({ isActive }) =>
-                  clsx(
-                    "sidebar-link flex items-center rounded-lg transition-all group",
+                  cn(
+                    "flex items-center rounded-md transition-all group",
                     isSidebarCollapsed
                       ? "justify-center px-2 py-2.5"
                       : "gap-3 px-3 py-2.5",
                     isActive
-                      ? "sidebar-link-active"
-                      : "sidebar-link-idle",
+                      ? "bg-secondary text-secondary-foreground font-medium shadow-sm"
+                      : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
                   )
                 }
               >
                 {({ isActive }) => (
                   <>
                     <div
-                      className={clsx(
-                        "sidebar-link-icon p-2 rounded-lg transition-all",
+                      className={cn(
+                        "p-1 rounded-md transition-all flex items-center justify-center",
                         isActive
-                          ? "sidebar-link-icon-active"
-                          : "sidebar-link-icon-idle",
+                          ? "text-secondary-foreground"
+                          : "text-muted-foreground group-hover:text-foreground",
                       )}
                     >
-                      <item.icon className="w-4 h-4" />
+                      <item.icon className="w-[18px] h-[18px]" />
                     </div>
                     <div
-                      className={clsx(
+                      className={cn(
                         "flex-1 min-w-0",
                         isSidebarCollapsed && "hidden",
                       )}
                     >
-                      <div
-                        className={clsx(
-                          "sidebar-link-title text-sm font-medium transition-colors truncate",
-                          isActive
-                            ? "sidebar-link-title-active"
-                            : "sidebar-link-title-idle",
-                        )}
-                      >
+                      <div className="text-sm truncate leading-none mb-1">
                         {item.label}
                       </div>
-                      <div className="sidebar-link-description text-xs truncate">
+                      <div className="text-[11px] text-muted-foreground truncate leading-none">
                         {item.description}
                       </div>
                     </div>
@@ -363,7 +362,7 @@ export function Layout({
           </div>
 
           {/* Bottom navigation section */}
-          <div className="mt-auto pt-3 space-y-1 border-t border-[#262626]">
+          <div className="mt-auto pt-4 space-y-1">
             {BOTTOM_NAV_ITEMS.map((item) => (
               <NavLink
                 key={item.id}
@@ -371,46 +370,39 @@ export function Layout({
                 title={isSidebarCollapsed ? item.label : undefined}
                 onClick={() => handleNavClick(item.path)}
                 className={({ isActive }) =>
-                  clsx(
-                    "sidebar-link flex items-center rounded-lg transition-all group",
+                  cn(
+                    "flex items-center rounded-md transition-all group",
                     isSidebarCollapsed
                       ? "justify-center px-2 py-2.5"
                       : "gap-3 px-3 py-2.5",
                     isActive
-                      ? "sidebar-link-active"
-                      : "sidebar-link-idle",
+                      ? "bg-secondary text-secondary-foreground font-medium shadow-sm"
+                      : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
                   )
                 }
               >
                 {({ isActive }) => (
                   <>
                     <div
-                      className={clsx(
-                        "sidebar-link-icon p-2 rounded-lg transition-all",
+                      className={cn(
+                        "p-1 rounded-md transition-all flex items-center justify-center",
                         isActive
-                          ? "sidebar-link-icon-active"
-                          : "sidebar-link-icon-idle",
+                          ? "text-secondary-foreground"
+                          : "text-muted-foreground group-hover:text-foreground",
                       )}
                     >
-                      <item.icon className="w-4 h-4" />
+                      <item.icon className="w-[18px] h-[18px]" />
                     </div>
                     <div
-                      className={clsx(
+                      className={cn(
                         "flex-1 min-w-0",
                         isSidebarCollapsed && "hidden",
                       )}
                     >
-                      <div
-                        className={clsx(
-                          "sidebar-link-title text-sm font-medium transition-colors truncate",
-                          isActive
-                            ? "sidebar-link-title-active"
-                            : "sidebar-link-title-idle",
-                        )}
-                      >
+                      <div className="text-sm truncate leading-none mb-1">
                         {item.label}
                       </div>
-                      <div className="sidebar-link-description text-xs truncate">
+                      <div className="text-[11px] text-muted-foreground truncate leading-none">
                         {item.description}
                       </div>
                     </div>
@@ -423,58 +415,69 @@ export function Layout({
 
         {/* Footer */}
         <div
-          className={clsx(
-            "border-t border-[#262626]",
-            isSidebarCollapsed ? "p-2.5" : "p-4",
+          className={cn(
+            "border-t border-border bg-card",
+            isSidebarCollapsed ? "p-3" : "p-4",
           )}
         >
           <div
-            className={clsx(
+            className={cn(
               "flex items-center",
               isSidebarCollapsed
-                ? "flex-col items-center gap-2"
+                ? "flex-col items-center gap-3"
                 : "justify-between",
             )}
           >
             <div
-              className={clsx(
+              className={cn(
                 "flex flex-col",
                 isSidebarCollapsed ? "items-center gap-1.5" : "min-w-0 gap-1",
               )}
             >
               <div
-                className={clsx(
-                  "text-xs text-gray-500",
+                className={cn(
+                  "text-xs font-medium",
+                  readyModelsCount > 0
+                    ? "text-foreground"
+                    : "text-muted-foreground",
                   isSidebarCollapsed && "text-center",
                 )}
                 title={loadedText}
               >
                 {isSidebarCollapsed ? (
                   <span
-                    className={clsx(
-                      "inline-flex w-2 h-2 rounded-full",
-                      readyModelsCount > 0 ? "bg-white" : "bg-gray-600",
+                    className={cn(
+                      "inline-flex w-2.5 h-2.5 rounded-full shadow-sm",
+                      readyModelsCount > 0
+                        ? "bg-green-500"
+                        : "bg-muted-foreground/30",
                     )}
                   />
                 ) : readyModelsCount > 0 ? (
-                  <span className="flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-white" />
+                  <span className="flex items-center gap-2">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                    </span>
                     {loadedText}
                   </span>
                 ) : (
-                  <span className="text-gray-600">{loadedText}</span>
+                  <span className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-muted-foreground/30" />
+                    {loadedText}
+                  </span>
                 )}
               </div>
             </div>
             <div
-              className={clsx(
+              className={cn(
                 "flex items-center",
-                isSidebarCollapsed ? "flex-col gap-1.5" : "gap-2",
+                isSidebarCollapsed ? "flex-col gap-2" : "gap-3",
               )}
             >
               <div
-                className={clsx(
-                  "text-[10px] leading-none text-gray-600",
+                className={cn(
+                  "text-[10px] font-medium text-muted-foreground tracking-wider",
                   isSidebarCollapsed && "text-center",
                 )}
                 title={`App version ${APP_VERSION}`}
@@ -485,10 +488,10 @@ export function Layout({
                 href="https://github.com/agentem-ai/izwi"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="p-1.5 rounded hover:bg-[#1a1a1a] transition-colors"
+                className="text-muted-foreground hover:text-foreground transition-colors"
                 title="Izwi on GitHub"
               >
-                <Github className="w-4 h-4 text-gray-500 hover:text-white" />
+                <Github className="w-4 h-4" />
               </a>
             </div>
           </div>
@@ -497,16 +500,18 @@ export function Layout({
 
       {/* Main content */}
       <div
-        className={clsx(
-          "flex-1 pt-16 lg:pt-0 transition-all duration-300",
+        className={cn(
+          "flex-1 pt-16 lg:pt-0 transition-all duration-300 min-w-0 bg-background",
           isSidebarCollapsed ? "lg:ml-[76px]" : "lg:ml-64",
         )}
       >
         <div className="hidden lg:flex justify-end px-6 lg:px-8 pt-4">
           <div className="flex flex-col items-end">
-            <button
+            <Button
+              variant="outline"
+              size="sm"
               onClick={switchTheme}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[#2a2a2a] bg-[#141414] hover:bg-[#1a1a1a] transition-colors"
+              className="gap-2 rounded-full px-4"
               title={
                 resolvedTheme === "dark"
                   ? "Switch to light mode"
@@ -515,18 +520,18 @@ export function Layout({
             >
               {resolvedTheme === "dark" ? (
                 <>
-                  <Sun className="w-4 h-4 text-gray-200" />
-                  <span className="text-xs text-gray-300">Light</span>
+                  <Sun className="w-4 h-4" />
+                  <span className="text-xs font-medium">Light</span>
                 </>
               ) : (
                 <>
-                  <Moon className="w-4 h-4 text-gray-700" />
-                  <span className="text-xs text-gray-700">Dark</span>
+                  <Moon className="w-4 h-4" />
+                  <span className="text-xs font-medium">Dark</span>
                 </>
               )}
-            </button>
+            </Button>
             {themePreference === "system" && (
-              <div className="mt-1 text-[10px] text-right text-gray-500">
+              <div className="mt-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider pr-2">
                 System
               </div>
             )}
@@ -537,19 +542,19 @@ export function Layout({
         <AnimatePresence>
           {error && (
             <motion.div
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
+              initial={{ opacity: 0, y: -10, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10, scale: 0.95 }}
               className="fixed top-4 left-1/2 -translate-x-1/2 z-50"
             >
-              <div className="flex items-center gap-3 px-4 py-2.5 rounded bg-[#1a1a1a] border border-[#333333]">
-                <AlertCircle className="w-4 h-4 text-gray-400" />
-                <span className="text-sm text-gray-300">{error}</span>
+              <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-destructive text-destructive-foreground shadow-lg font-medium text-sm">
+                <AlertCircle className="w-4 h-4" />
+                <span>{error}</span>
                 <button
                   onClick={onErrorDismiss}
-                  className="p-1 rounded hover:bg-[#262626] transition-colors"
+                  className="p-1 rounded-md hover:bg-white/20 transition-colors ml-2"
                 >
-                  <X className="w-3.5 h-3.5 text-gray-500" />
+                  <X className="w-3.5 h-3.5" />
                 </button>
               </div>
             </motion.div>
@@ -557,7 +562,7 @@ export function Layout({
         </AnimatePresence>
 
         {/* Page content */}
-        <main className="p-6 lg:px-8 lg:pb-8 lg:pt-4">
+        <main className="p-6 lg:px-10 lg:pb-10 lg:pt-6 max-w-7xl mx-auto">
           <Outlet />
         </main>
       </div>

@@ -7,12 +7,13 @@ import {
   FileAudio,
   Loader2,
   Mic,
-  MicOff,
   RotateCcw,
   Settings2,
   Upload,
+  Square,
 } from "lucide-react";
-import clsx from "clsx";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { api, type DiarizationRecord } from "../api";
 import {
   Select,
@@ -223,7 +224,9 @@ export function DiarizationPlayground({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [latestRecord, setLatestRecord] = useState<DiarizationRecord | null>(null);
+  const [latestRecord, setLatestRecord] = useState<DiarizationRecord | null>(
+    null,
+  );
   const [minSpeakers, setMinSpeakers] = useState(1);
   const [maxSpeakers, setMaxSpeakers] = useState(4);
   const [minSpeechMs, setMinSpeechMs] = useState(240);
@@ -237,7 +240,9 @@ export function DiarizationPlayground({
     if (!selectedModel) {
       return null;
     }
-    return modelOptions.find((option) => option.value === selectedModel) || null;
+    return (
+      modelOptions.find((option) => option.value === selectedModel) || null
+    );
   }, [selectedModel, modelOptions]);
 
   const requireReadyModel = useCallback(() => {
@@ -422,27 +427,27 @@ export function DiarizationPlayground({
       <div className="card p-4 sm:p-5 space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="inline-flex items-center gap-2 text-xs text-gray-400">
+            <div className="inline-flex items-center gap-2 text-xs text-muted-foreground font-medium uppercase tracking-wider">
               <FileAudio className="w-3.5 h-3.5" />
               Capture
             </div>
-            <h2 className="text-sm font-medium text-white mt-1">
-              Audio Input
-            </h2>
+            <h2 className="text-sm font-semibold mt-1">Audio Input</h2>
           </div>
           {onOpenModelManager && (
-            <button
+            <Button
               onClick={onOpenModelManager}
-              className="btn btn-secondary text-xs"
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-xs shadow-sm"
             >
               <Settings2 className="w-4 h-4" />
               Models
-            </button>
+            </Button>
           )}
         </div>
 
-        <div className="rounded-xl border border-[#2b2b2b] bg-[#171717] p-4 space-y-3">
-          <div className="text-[11px] text-gray-500 uppercase tracking-wide">
+        <div className="rounded-xl border bg-muted/30 p-4 space-y-3 shadow-inner">
+          <div className="text-[11px] text-muted-foreground uppercase tracking-wide">
             Active Model
           </div>
           <Select
@@ -450,7 +455,7 @@ export function DiarizationPlayground({
             onValueChange={onSelectModel}
             disabled={modelOptions.length === 0}
           >
-            <SelectTrigger className="h-[34px] border-[#2a2a2a] bg-[#171717] text-xs text-gray-300">
+            <SelectTrigger className="h-[34px] text-xs">
               <SelectValue placeholder="Select model" />
             </SelectTrigger>
             <SelectContent>
@@ -462,22 +467,20 @@ export function DiarizationPlayground({
             </SelectContent>
           </Select>
           <div
-            className={clsx(
+            className={cn(
               "text-xs",
-              selectedModelReady ? "text-gray-300" : "text-amber-400",
+              selectedModelReady ? "text-muted-foreground" : "text-amber-500",
             )}
           >
             {selectedOption?.label || modelLabel || "No model selected"}
-            {selectedModelReady
-              ? " is loaded and ready"
-              : " is not loaded yet"}
+            {selectedModelReady ? " is loaded and ready" : " is not loaded yet"}
           </div>
         </div>
 
-        <div className="rounded-xl border border-[#2b2b2b] bg-[#171717] p-4 space-y-3">
+        <div className="rounded-xl border bg-card p-4 space-y-3 shadow-sm">
           <div className="grid grid-cols-2 gap-3">
-            <label className="text-xs text-gray-400 space-y-1">
-              <span>Min Speakers</span>
+            <label className="text-xs font-medium space-y-1.5">
+              <span className="text-muted-foreground">Min Speakers</span>
               <input
                 type="number"
                 min={1}
@@ -488,11 +491,11 @@ export function DiarizationPlayground({
                     Math.max(1, Math.min(4, Number(event.target.value) || 1)),
                   )
                 }
-                className="input h-8 px-2 py-0 text-sm"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
               />
             </label>
-            <label className="text-xs text-gray-400 space-y-1">
-              <span>Max Speakers</span>
+            <label className="text-xs font-medium space-y-1.5">
+              <span className="text-muted-foreground">Max Speakers</span>
               <input
                 type="number"
                 min={1}
@@ -503,13 +506,13 @@ export function DiarizationPlayground({
                     Math.max(1, Math.min(4, Number(event.target.value) || 4)),
                   )
                 }
-                className="input h-8 px-2 py-0 text-sm"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
               />
             </label>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <label className="text-xs text-gray-400 space-y-1">
-              <span>Min Speech (ms)</span>
+            <label className="text-xs font-medium space-y-1.5">
+              <span className="text-muted-foreground">Min Speech (ms)</span>
               <input
                 type="number"
                 min={40}
@@ -517,14 +520,17 @@ export function DiarizationPlayground({
                 value={minSpeechMs}
                 onChange={(event) =>
                   setMinSpeechMs(
-                    Math.max(40, Math.min(5000, Number(event.target.value) || 240)),
+                    Math.max(
+                      40,
+                      Math.min(5000, Number(event.target.value) || 240),
+                    ),
                   )
                 }
-                className="input h-8 px-2 py-0 text-sm"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
               />
             </label>
-            <label className="text-xs text-gray-400 space-y-1">
-              <span>Min Silence (ms)</span>
+            <label className="text-xs font-medium space-y-1.5">
+              <span className="text-muted-foreground">Min Silence (ms)</span>
               <input
                 type="number"
                 min={40}
@@ -532,138 +538,164 @@ export function DiarizationPlayground({
                 value={minSilenceMs}
                 onChange={(event) =>
                   setMinSilenceMs(
-                    Math.max(40, Math.min(5000, Number(event.target.value) || 200)),
+                    Math.max(
+                      40,
+                      Math.min(5000, Number(event.target.value) || 200),
+                    ),
                   )
                 }
-                className="input h-8 px-2 py-0 text-sm"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
               />
             </label>
           </div>
         </div>
 
-        <div className="rounded-2xl border border-[#2b2b2b] bg-[#111214] p-5">
+        <div className="py-2 space-y-4">
           <div className="flex items-center justify-center">
-            <button
+            <Button
               onClick={isRecording ? stopRecording : startRecording}
-              className={clsx(
-                "h-24 w-24 rounded-full border transition-all duration-150 flex items-center justify-center",
+              variant={isRecording ? "destructive" : "outline"}
+              className={cn(
+                "h-24 w-24 rounded-full transition-all duration-300 flex items-center justify-center border-4",
                 isRecording
-                  ? "bg-white border-white text-black shadow-[0_0_0_8px_rgba(255,255,255,0.08)]"
-                  : "bg-[#181a1e] border-[#2f3239] text-gray-300 hover:text-white hover:border-[#4c5565]",
+                  ? "border-destructive/30 shadow-[0_0_0_8px_rgba(239,68,68,0.15)] animate-pulse"
+                  : "border-primary/10 hover:border-primary/30",
               )}
               disabled={!selectedModelReady || isProcessing}
             >
               {isRecording ? (
-                <MicOff className="w-8 h-8" />
+                <Square className="w-8 h-8 fill-current" />
               ) : (
                 <Mic className="w-8 h-8" />
               )}
-            </button>
+            </Button>
           </div>
-          <p className="text-center text-xs text-gray-500 mt-3">
+          <p className="text-center text-xs text-muted-foreground mt-3">
             {isRecording
               ? "Recording... click again to stop"
               : "Tap to record from microphone"}
           </p>
 
-          <div className="mt-4">
-            <button
+          <div className="relative border-t pt-4 mt-4">
+            <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-card px-2 text-xs text-muted-foreground font-medium uppercase tracking-widest">
+              Or upload
+            </div>
+            <Button
+              variant="secondary"
+              className="w-full relative overflow-hidden h-12"
               onClick={() => {
                 if (!requireReadyModel()) {
                   return;
                 }
                 fileInputRef.current?.click();
               }}
-              className="btn btn-secondary w-full text-sm"
               disabled={!canRunInput}
             >
-              <Upload className="w-4 h-4" />
-              Upload Audio File
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="audio/*"
-              onChange={handleFileUpload}
-              className="hidden"
-            />
+              <div className="absolute inset-0 flex items-center justify-center gap-2 pointer-events-none">
+                <Upload className="w-4 h-4" />
+                <span className="font-medium text-sm">Upload Audio File</span>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="audio/*"
+                onChange={handleFileUpload}
+                className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                disabled={!canRunInput}
+              />
+            </Button>
           </div>
         </div>
 
         {audioUrl && (
-          <div className="rounded-lg border border-[#2a2a2a] bg-[#171717] p-3">
-            <div className="text-xs text-gray-500 mb-2">Latest input</div>
+          <div className="rounded-lg border bg-muted/30 p-3 shadow-inner">
+            <div className="text-xs text-muted-foreground mb-2">
+              Latest input
+            </div>
             <audio src={audioUrl} controls className="w-full h-9" />
           </div>
         )}
 
         {(hasOutput || audioUrl || error) && (
-          <button onClick={handleReset} className="btn btn-ghost w-full text-xs">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleReset}
+            className="w-full gap-2 text-xs text-muted-foreground hover:text-foreground mt-2"
+          >
             <RotateCcw className="w-3.5 h-3.5" />
             Reset Session
-          </button>
+          </Button>
         )}
       </div>
 
-      <div className="card p-4 sm:p-5 min-h-[560px] flex flex-col">
-        <div className="flex items-center justify-between gap-2 mb-3">
+      <div className="rounded-xl border bg-card text-card-foreground shadow-sm flex flex-col h-[560px] lg:h-[calc(100dvh-6.5rem)] overflow-hidden">
+        <div className="px-4 sm:px-6 py-4 border-b flex items-center justify-between gap-3 bg-muted/20">
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-medium text-white">Diarized Transcript</h3>
+            <h3 className="text-sm font-semibold tracking-tight">
+              Diarized Transcript
+            </h3>
           </div>
           <div className="flex items-center gap-2">
-            <button
+            <Button
               onClick={handleCopy}
-              className="p-1.5 rounded hover:bg-white/5 text-gray-500 hover:text-gray-300 disabled:opacity-40"
+              variant="outline"
+              size="sm"
+              className="h-8 w-8 p-0 shadow-sm"
               disabled={!hasOutput || isProcessing}
+              title="Copy transcript"
             >
               {copied ? (
-                <Check className="w-3.5 h-3.5 text-gray-300" />
+                <Check className="w-4 h-4 text-green-500" />
               ) : (
-                <Copy className="w-3.5 h-3.5" />
+                <Copy className="w-4 h-4" />
               )}
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={handleDownload}
-              className="p-1.5 rounded hover:bg-white/5 text-gray-500 hover:text-gray-300 disabled:opacity-40"
+              variant="outline"
+              size="sm"
+              className="h-8 w-8 p-0 shadow-sm"
               disabled={!hasOutput || isProcessing}
+              title="Download transcript"
             >
-              <Download className="w-3.5 h-3.5" />
-            </button>
+              <Download className="w-4 h-4" />
+            </Button>
           </div>
         </div>
 
-        <div className="flex-1 rounded-xl border border-[#262626] bg-[#101114] p-4 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-5 bg-background/50">
           {isProcessing ? (
-            <div className="h-full flex items-center justify-center text-sm text-gray-400 gap-2">
-              <Loader2 className="w-4 h-4 animate-spin" />
+            <div className="h-full flex items-center justify-center text-sm text-muted-foreground gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-primary" />
               Running diarization and transcript pipeline...
             </div>
           ) : hasOutput ? (
-            <div className="space-y-3">
+            <div className="space-y-4">
               {transcriptEntries.length > 0 ? (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   {transcriptEntries.map((entry, index) => (
                     <div
                       key={`${entry.speaker}-${entry.start}-${entry.end}-${index}`}
-                      className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3"
+                      className="rounded-lg border bg-card p-4 shadow-sm"
                     >
-                      <div className="flex items-center justify-between gap-2 mb-1">
-                        <span className="text-xs font-medium text-gray-200">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <span className="text-xs font-semibold text-foreground">
                           {entry.speaker}
                         </span>
-                        <span className="text-[11px] text-gray-400">
+                        <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded border">
                           {entry.start.toFixed(2)}s - {entry.end.toFixed(2)}s
                         </span>
                       </div>
-                      <p className="text-sm text-gray-100 whitespace-pre-wrap break-words">
+                      <p className="text-sm text-foreground/90 whitespace-pre-wrap break-words leading-relaxed">
                         {entry.text}
                       </p>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3">
-                  <pre className="text-sm text-gray-200 whitespace-pre-wrap break-words">
+                <div className="rounded-lg border bg-card p-4 shadow-sm">
+                  <pre className="text-sm text-foreground/90 whitespace-pre-wrap break-words leading-relaxed font-sans">
                     {speakerTranscript}
                   </pre>
                 </div>
@@ -671,11 +703,11 @@ export function DiarizationPlayground({
             </div>
           ) : (
             <div className="h-full flex items-center justify-center text-center px-6">
-              <div>
-                <p className="text-sm text-gray-400">
+              <div className="max-w-xs">
+                <p className="text-sm font-medium text-muted-foreground">
                   Record audio or upload a file to start diarization.
                 </p>
-                <p className="text-xs text-gray-600 mt-1">
+                <p className="text-xs text-muted-foreground/70 mt-1">
                   Your diarized transcript will appear here.
                 </p>
               </div>
@@ -686,10 +718,10 @@ export function DiarizationPlayground({
         <AnimatePresence>
           {error && (
             <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className="p-2 rounded bg-red-950/50 border border-red-900/50 text-red-300 text-xs mt-3"
+              initial={{ opacity: 0, height: 0, y: 10 }}
+              animate={{ opacity: 1, height: "auto", y: 0 }}
+              exit={{ opacity: 0, height: 0, y: 10 }}
+              className="m-3 p-3 rounded-lg border border-destructive/20 bg-destructive/10 text-destructive text-xs font-medium"
             >
               {error}
             </motion.div>

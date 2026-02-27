@@ -8,6 +8,8 @@ import {
   Settings,
 } from "lucide-react";
 import { api } from "../api";
+import { Button } from "./ui/button";
+import { cn } from "@/lib/utils";
 
 interface TTSPanelProps {
   selectedModel: string | null;
@@ -87,29 +89,27 @@ export function TTSPanel({ selectedModel, onModelRequired }: TTSPanelProps) {
   };
 
   return (
-    <div className="card">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-          <Volume2 className="w-5 h-5" />
+    <div className="rounded-xl border bg-card text-card-foreground shadow-sm p-4 sm:p-5 flex flex-col h-full">
+      <div className="flex items-center justify-between mb-6 border-b pb-4">
+        <h2 className="text-lg font-semibold tracking-tight flex items-center gap-2">
+          <Volume2 className="w-5 h-5 text-muted-foreground" />
           Text to Speech
         </h2>
-        <button
+        <Button
+          variant={showSettings ? "secondary" : "ghost"}
+          size="icon"
           onClick={() => setShowSettings(!showSettings)}
-          className={`p-2 rounded-lg transition-colors ${
-            showSettings
-              ? "bg-[var(--accent-solid)] text-[var(--text-on-accent)]"
-              : "text-gray-400 hover:text-white hover:bg-gray-800"
-          }`}
+          className={cn("h-8 w-8", showSettings ? "bg-accent" : "")}
         >
-          <Settings className="w-5 h-5" />
-        </button>
+          <Settings className="w-4 h-4" />
+        </Button>
       </div>
 
       {/* Settings Panel */}
       {showSettings && (
-        <div className="mb-6 p-4 bg-gray-800/50 rounded-lg space-y-4">
+        <div className="mb-6 p-4 bg-muted/30 border rounded-lg space-y-4 shadow-inner">
           <div>
-            <label className="block text-sm text-gray-400 mb-1">
+            <label className="block text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1.5">
               Speaker ID
             </label>
             <input
@@ -117,12 +117,12 @@ export function TTSPanel({ selectedModel, onModelRequired }: TTSPanelProps) {
               value={speaker}
               onChange={(e) => setSpeaker(e.target.value)}
               placeholder="Optional speaker identifier"
-              className="input"
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
             />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-gray-400 mb-1">
+              <label className="block text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1.5">
                 Temperature: {temperature.toFixed(1)}
               </label>
               <input
@@ -132,11 +132,11 @@ export function TTSPanel({ selectedModel, onModelRequired }: TTSPanelProps) {
                 step="0.1"
                 value={temperature}
                 onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                className="w-full"
+                className="w-full accent-primary h-1.5 bg-muted rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
               />
             </div>
             <div>
-              <label className="block text-sm text-gray-400 mb-1">
+              <label className="block text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1.5">
                 Speed: {speed.toFixed(1)}x
               </label>
               <input
@@ -146,7 +146,7 @@ export function TTSPanel({ selectedModel, onModelRequired }: TTSPanelProps) {
                 step="0.1"
                 value={speed}
                 onChange={(e) => setSpeed(parseFloat(e.target.value))}
-                className="w-full"
+                className="w-full accent-primary h-1.5 bg-muted rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
               />
             </div>
           </div>
@@ -154,21 +154,20 @@ export function TTSPanel({ selectedModel, onModelRequired }: TTSPanelProps) {
       )}
 
       {/* Text Input */}
-      <div className="mb-4">
+      <div className="mb-4 flex-1 flex flex-col min-h-0">
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder="Enter text to synthesize..."
-          rows={6}
-          className="textarea"
+          className="flex min-h-[120px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 flex-1 resize-none"
           disabled={generating}
         />
         <div className="flex justify-between items-center mt-2">
-          <span className="text-sm text-gray-500">
+          <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
             {text.length} characters
           </span>
           {!selectedModel && (
-            <span className="text-sm text-yellow-500">
+            <span className="text-xs font-medium text-amber-500">
               Load a model to generate speech
             </span>
           )}
@@ -177,17 +176,17 @@ export function TTSPanel({ selectedModel, onModelRequired }: TTSPanelProps) {
 
       {/* Error */}
       {error && (
-        <div className="mb-4 p-3 bg-red-900/20 border border-red-800 rounded-lg text-red-200 text-sm">
+        <div className="mb-4 p-3 bg-destructive/10 border border-destructive/20 rounded-lg text-destructive text-xs font-medium">
           {error}
         </div>
       )}
 
       {/* Controls */}
-      <div className="flex items-center gap-3">
-        <button
+      <div className="flex flex-wrap items-center gap-3 pt-2">
+        <Button
           onClick={handleGenerate}
           disabled={generating || !selectedModel}
-          className="btn btn-primary flex items-center gap-2"
+          className="gap-2"
         >
           {generating ? (
             <>
@@ -200,24 +199,39 @@ export function TTSPanel({ selectedModel, onModelRequired }: TTSPanelProps) {
               Generate
             </>
           )}
-        </button>
+        </Button>
 
         {audioUrl && (
           <>
-            <button onClick={handleStop} className="btn btn-secondary">
+            <Button
+              onClick={handleStop}
+              variant="secondary"
+              size="icon"
+              title="Stop playback"
+            >
               <Square className="w-4 h-4" />
-            </button>
-            <button onClick={handleDownload} className="btn btn-secondary">
+            </Button>
+            <Button
+              onClick={handleDownload}
+              variant="secondary"
+              size="icon"
+              title="Download audio"
+            >
               <Download className="w-4 h-4" />
-            </button>
+            </Button>
           </>
         )}
       </div>
 
       {/* Audio Player */}
       {audioUrl && (
-        <div className="mt-6 p-4 bg-gray-800/50 rounded-lg">
-          <audio ref={audioRef} src={audioUrl} controls className="w-full" />
+        <div className="mt-4 p-3 bg-muted/30 border rounded-lg shadow-inner">
+          <audio
+            ref={audioRef}
+            src={audioUrl}
+            controls
+            className="w-full h-10"
+          />
         </div>
       )}
     </div>

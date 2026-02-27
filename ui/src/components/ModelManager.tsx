@@ -12,7 +12,8 @@ import {
 } from "lucide-react";
 import { ModelInfo } from "../api";
 import { withQwen3Prefix } from "../utils/modelDisplay";
-import clsx from "clsx";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
 function parseSize(sizeStr: string): number {
   const match = sizeStr.match(/^([\d.]+)\s*(GB|MB|KB|B)?$/i);
@@ -250,7 +251,12 @@ const MODEL_DETAILS: Record<
     fullName: "Kokoro-82M by hexgrad",
     description:
       "Lightweight multilingual TTS model with 54 built-in voices (Rust runtime integration pending)",
-    features: ["TTS", "54 built-in voices", "24 kHz output", "PyTorch checkpoint"],
+    features: [
+      "TTS",
+      "54 built-in voices",
+      "24 kHz output",
+      "PyTorch checkpoint",
+    ],
     size: "346 MB",
   },
   "Qwen3-0.6B": {
@@ -263,7 +269,8 @@ const MODEL_DETAILS: Record<
   "Qwen3-0.6B-4bit": {
     shortName: "Qwen3 Chat 0.6B",
     fullName: "Qwen3 0.6B (MLX 4-bit)",
-    description: "Compact text-to-text chat model optimized for local inference",
+    description:
+      "Compact text-to-text chat model optimized for local inference",
     features: ["Text chat", "4-bit quantized", "Fast response"],
     size: "0.9 GB",
     quantization: "4-bit",
@@ -322,7 +329,8 @@ const MODEL_DETAILS: Record<
   "Gemma-3-1b-it": {
     shortName: "Gemma 3 1B",
     fullName: "Gemma 3 1B Instruct",
-    description: "Lightweight Gemma 3 chat model for local instruction-following",
+    description:
+      "Lightweight Gemma 3 chat model for local instruction-following",
     features: ["Text chat", "Instruction tuned", "Fast responses"],
     size: "2.1 GB",
   },
@@ -432,7 +440,8 @@ const MODEL_DETAILS: Record<
   "Parakeet-TDT-0.6B-v3": {
     shortName: "Parakeet v3",
     fullName: "Parakeet-TDT 0.6B v3",
-    description: "Multilingual FastConformer-TDT ASR model distributed as .nemo",
+    description:
+      "Multilingual FastConformer-TDT ASR model distributed as .nemo",
     features: ["Multilingual ASR", "Word timestamps", ".nemo checkpoint"],
     size: "9.3 GB",
   },
@@ -447,7 +456,8 @@ const MODEL_DETAILS: Record<
   "diar_streaming_sortformer_4spk-v2.1": {
     shortName: "Sortformer 4spk",
     fullName: "Streaming Sortformer 4spk v2.1",
-    description: "Streaming speaker diarization model from NVIDIA in .nemo format",
+    description:
+      "Streaming speaker diarization model from NVIDIA in .nemo format",
     features: ["Diarization", "Up to 4 speakers", "Streaming"],
     size: "0.5 GB",
   },
@@ -483,9 +493,9 @@ export function ModelManager({
   emptyStateDescription,
 }: ModelManagerProps) {
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
-  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<string | null>(
-    null,
-  );
+  const [pendingDeleteVariant, setPendingDeleteVariant] = useState<
+    string | null
+  >(null);
   const ttsModels = models
     .filter((m) => !m.variant.includes("Tokenizer"))
     .filter((m) => (modelFilter ? modelFilter(m.variant) : true))
@@ -502,14 +512,14 @@ export function ModelManager({
 
   if (ttsModels.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-8 text-center">
-        <div className="w-12 h-12 rounded-full bg-[#1a1a1a] flex items-center justify-center mb-3">
-          <Download className="w-5 h-5 text-gray-500" />
+      <div className="flex flex-col items-center justify-center py-8 text-center bg-card rounded-lg border shadow-sm">
+        <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mb-3">
+          <Download className="w-5 h-5 text-muted-foreground" />
         </div>
-        <h3 className="text-sm font-medium text-gray-300 mb-1">
+        <h3 className="text-sm font-semibold text-foreground mb-1">
           {emptyStateTitle || "No Models Available"}
         </h3>
-        <p className="text-xs text-gray-600 max-w-[200px]">
+        <p className="text-xs text-muted-foreground max-w-[200px]">
           {emptyStateDescription || "Download models to get started"}
         </p>
       </div>
@@ -541,20 +551,20 @@ export function ModelManager({
         return (
           <div
             key={model.variant}
-            className={clsx(
-              "border rounded-lg transition-colors",
+            className={cn(
+              "border rounded-lg transition-colors shadow-sm",
               isDisabled && "opacity-50",
               isSelected
-                ? "border-white/20 bg-[#1a1a1a]"
-                : "border-[#2a2a2a] bg-[#161616]",
+                ? "border-primary/50 bg-primary/5 shadow-md"
+                : "border-border bg-card",
             )}
           >
             {/* Main card */}
             <div
-              className={clsx(
-                "p-3",
+              className={cn(
+                "p-3 rounded-lg",
                 isDisabled ? "cursor-not-allowed" : "cursor-pointer",
-                !isDisabled && !isExpanded && "hover:bg-[#1a1a1a]",
+                !isDisabled && !isExpanded && "hover:bg-muted/50",
               )}
               aria-disabled={isDisabled}
               onClick={() => {
@@ -578,7 +588,8 @@ export function ModelManager({
                           cy="16"
                           r="14"
                           fill="none"
-                          stroke="#2a2a2a"
+                          stroke="currentColor"
+                          className="text-muted"
                           strokeWidth="2"
                         />
                         <circle
@@ -586,27 +597,27 @@ export function ModelManager({
                           cy="16"
                           r="14"
                           fill="none"
-                          stroke="#ffffff"
+                          stroke="currentColor"
+                          className="text-primary"
                           strokeWidth="2"
                           strokeDasharray={`${2 * Math.PI * 14}`}
                           strokeDashoffset={`${2 * Math.PI * 14 * (1 - progress / 100)}`}
                           strokeLinecap="round"
-                          className="transition-all duration-300"
                         />
                       </svg>
-                      <div className="absolute inset-0 flex items-center justify-center text-[10px] text-white font-medium">
+                      <div className="absolute inset-0 flex items-center justify-center text-[10px] text-foreground font-medium">
                         {Math.round(progress)}
                       </div>
                     </div>
                   ) : isLoading ? (
-                    <Loader2 className="w-5 h-5 text-white animate-spin" />
+                    <Loader2 className="w-5 h-5 text-primary animate-spin" />
                   ) : (
                     <div
-                      className={clsx(
-                        "w-2 h-2 rounded-full",
-                        isReady && "bg-white",
-                        isDownloaded && "bg-gray-500",
-                        model.status === "not_downloaded" && "bg-gray-600",
+                      className={cn(
+                        "w-2.5 h-2.5 rounded-full shadow-sm",
+                        isReady && "bg-green-500",
+                        isDownloaded && "bg-muted-foreground",
+                        model.status === "not_downloaded" && "bg-muted",
                       )}
                     />
                   )}
@@ -615,21 +626,21 @@ export function ModelManager({
                 {/* Model info */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-white">
+                    <span className="text-sm font-semibold text-foreground tracking-tight">
                       {displayName}
                     </span>
                     {isDisabled && (
-                      <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/20 text-amber-300 rounded">
+                      <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-500 rounded font-medium border border-amber-500/20">
                         {disabledModelLabel || "DISABLED"}
                       </span>
                     )}
                     {isSelected && (
-                      <span className="text-[10px] px-1.5 py-0.5 bg-white/10 text-white rounded">
+                      <span className="text-[10px] px-1.5 py-0.5 bg-primary/10 text-primary rounded font-semibold border border-primary/20 tracking-wider">
                         ACTIVE
                       </span>
                     )}
                   </div>
-                  <div className="text-xs text-gray-500 mt-0.5">
+                  <div className="text-xs text-muted-foreground mt-0.5 font-medium">
                     {getModelSizeLabel(model)}
                     {isDownloading && progressValue && (
                       <>
@@ -645,8 +656,8 @@ export function ModelManager({
 
                 {/* Expand icon */}
                 <ChevronRight
-                  className={clsx(
-                    "w-4 h-4 text-gray-500 transition-transform flex-shrink-0",
+                  className={cn(
+                    "w-4 h-4 text-muted-foreground transition-transform flex-shrink-0",
                     isExpanded && "rotate-90",
                   )}
                 />
@@ -654,9 +665,9 @@ export function ModelManager({
 
               {/* Progress bar */}
               {isDownloading && (
-                <div className="mt-2 h-1 bg-[#1f1f1f] rounded-sm overflow-hidden">
+                <div className="mt-2 h-1.5 bg-muted rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-white rounded-sm transition-all duration-300"
+                    className="h-full bg-primary rounded-full transition-all duration-300"
                     style={{ width: `${progress}%` }}
                   />
                 </div>
@@ -671,23 +682,25 @@ export function ModelManager({
                   animate={{ height: "auto", opacity: 1 }}
                   exit={{ height: 0, opacity: 0 }}
                   transition={{ duration: 0.2 }}
-                  className="overflow-hidden border-t border-[#2a2a2a]"
+                  className="overflow-hidden border-t bg-muted/20 rounded-b-lg"
                 >
-                  <div className="p-3 space-y-3">
+                  <div className="p-4 space-y-4">
                     {/* Full name */}
                     <div>
-                      <div className="text-xs text-gray-500 mb-1">Model</div>
-                      <div className="text-sm text-white font-mono">
+                      <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
+                        Model
+                      </div>
+                      <div className="text-sm font-semibold tracking-tight">
                         {details.fullName}
                       </div>
                     </div>
 
                     {/* Description */}
                     <div>
-                      <div className="text-xs text-gray-500 mb-1">
+                      <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
                         Description
                       </div>
-                      <div className="text-sm text-gray-300">
+                      <div className="text-sm text-foreground/80 leading-relaxed">
                         {details.description}
                       </div>
                     </div>
@@ -695,14 +708,14 @@ export function ModelManager({
                     {/* Features */}
                     {details.features.length > 0 && (
                       <div>
-                        <div className="text-xs text-gray-500 mb-1">
+                        <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
                           Features
                         </div>
-                        <div className="flex flex-wrap gap-1.5">
+                        <div className="flex flex-wrap gap-1.5 mt-2">
                           {details.features.map((feature, i) => (
                             <span
                               key={i}
-                              className="text-xs px-2 py-1 bg-[#1f1f1f] text-gray-400 rounded"
+                              className="text-[11px] px-2 py-0.5 bg-background border text-muted-foreground font-medium rounded-md shadow-sm"
                             >
                               {feature}
                             </span>
@@ -712,152 +725,171 @@ export function ModelManager({
                     )}
 
                     {/* Actions */}
-                    <div className="flex items-center gap-2 pt-2">
+                    <div className="flex flex-wrap items-center gap-2 pt-3 border-t">
                       {isDisabled && (
-                        <div className="text-xs text-amber-300">
+                        <div className="text-xs font-medium text-amber-500 w-full mb-2">
                           This model is unavailable in this view.
                         </div>
                       )}
 
                       {isDownloading && onCancelDownload && (
-                        <button
+                        <Button
                           onClick={(e) => {
                             e.stopPropagation();
                             onCancelDownload(model.variant);
                           }}
-                          className="btn btn-danger text-sm flex-1"
+                          variant="destructive"
+                          size="sm"
+                          className="flex-1 gap-1.5 h-8 shadow-sm"
                           disabled={isDisabled}
                         >
-                          <X className="w-4 h-4" />
+                          <X className="w-3.5 h-3.5" />
                           Cancel Download
-                        </button>
+                        </Button>
                       )}
 
-                      {model.status === "not_downloaded" && (
-                        requiresManualDownload(model.variant) ? (
-                          <button
-                            className="btn btn-secondary text-sm flex-1"
+                      {model.status === "not_downloaded" &&
+                        (requiresManualDownload(model.variant) ? (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="flex-1 gap-1.5 h-8 shadow-sm"
                             disabled
                             title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
                           >
-                            <Download className="w-4 h-4" />
+                            <Download className="w-3.5 h-3.5" />
                             Manual download
-                          </button>
+                          </Button>
                         ) : (
-                          <button
+                          <Button
                             onClick={(e) => {
                               e.stopPropagation();
                               onDownload(model.variant);
                             }}
-                            className="btn btn-primary text-sm flex-1"
+                            size="sm"
+                            className="flex-1 gap-1.5 h-8 shadow-sm"
                             disabled={isDisabled}
                           >
-                            <Download className="w-4 h-4" />
+                            <Download className="w-3.5 h-3.5" />
                             Download
-                          </button>
-                        )
-                      )}
+                          </Button>
+                        ))}
 
                       {isDownloaded && (
                         <>
-                          <button
+                          <Button
                             onClick={(e) => {
                               e.stopPropagation();
                               onLoad(model.variant);
                             }}
-                            className="btn btn-primary text-sm flex-1"
+                            size="sm"
+                            className="flex-1 gap-1.5 h-8 shadow-sm"
                             disabled={isDisabled}
                           >
-                            <Play className="w-4 h-4" />
+                            <Play className="w-3.5 h-3.5" />
                             Load
-                          </button>
+                          </Button>
                           {pendingDeleteVariant === model.variant ? (
                             <div className="flex items-center gap-1">
-                              <button
+                              <Button
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setPendingDeleteVariant(null);
                                   onDelete(model.variant);
                                 }}
-                                className="btn btn-danger text-sm"
+                                variant="destructive"
+                                size="sm"
+                                className="h-8 px-2.5 shadow-sm"
                                 disabled={isDisabled}
                               >
                                 <Check className="w-4 h-4" />
-                              </button>
-                              <button
+                              </Button>
+                              <Button
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setPendingDeleteVariant(null);
                                 }}
-                                className="btn btn-secondary text-sm"
+                                variant="outline"
+                                size="sm"
+                                className="h-8 px-2.5 shadow-sm"
                                 disabled={isDisabled}
                               >
                                 <X className="w-4 h-4" />
-                              </button>
+                              </Button>
                             </div>
                           ) : (
-                            <button
+                            <Button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setPendingDeleteVariant(model.variant);
                               }}
-                              className="btn btn-danger text-sm"
+                              variant="destructive"
+                              size="sm"
+                              className="h-8 px-2.5 shadow-sm opacity-80 hover:opacity-100"
                               disabled={isDisabled}
                             >
                               <Trash2 className="w-4 h-4" />
-                            </button>
+                            </Button>
                           )}
                         </>
                       )}
 
                       {isReady && (
                         <>
-                          <button
+                          <Button
                             onClick={(e) => {
                               e.stopPropagation();
                               onUnload(model.variant);
                             }}
-                            className="btn btn-secondary text-sm flex-1"
+                            variant="secondary"
+                            size="sm"
+                            className="flex-1 gap-1.5 h-8 shadow-sm"
                             disabled={isDisabled}
                           >
-                            <Square className="w-4 h-4" />
+                            <Square className="w-3.5 h-3.5" />
                             Unload
-                          </button>
+                          </Button>
                           {pendingDeleteVariant === model.variant ? (
                             <div className="flex items-center gap-1">
-                              <button
+                              <Button
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setPendingDeleteVariant(null);
                                   onDelete(model.variant);
                                 }}
-                                className="btn btn-danger text-sm"
+                                variant="destructive"
+                                size="sm"
+                                className="h-8 px-2.5 shadow-sm"
                                 disabled={isDisabled}
                               >
                                 <Check className="w-4 h-4" />
-                              </button>
-                              <button
+                              </Button>
+                              <Button
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setPendingDeleteVariant(null);
                                 }}
-                                className="btn btn-secondary text-sm"
+                                variant="outline"
+                                size="sm"
+                                className="h-8 px-2.5 shadow-sm"
                                 disabled={isDisabled}
                               >
                                 <X className="w-4 h-4" />
-                              </button>
+                              </Button>
                             </div>
                           ) : (
-                            <button
+                            <Button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setPendingDeleteVariant(model.variant);
                               }}
-                              className="btn btn-danger text-sm"
+                              variant="destructive"
+                              size="sm"
+                              className="h-8 px-2.5 shadow-sm opacity-80 hover:opacity-100"
                               disabled={isDisabled}
                             >
                               <Trash2 className="w-4 h-4" />
-                            </button>
+                            </Button>
                           )}
                         </>
                       )}
