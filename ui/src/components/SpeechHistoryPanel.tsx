@@ -746,11 +746,19 @@ export function SpeechHistoryPanel({
               {records.map((record) => {
                 const isActive = record.id === selectedRecordId;
                 return (
-                  <button
+                  <div
                     key={record.id}
                     onClick={() => openHistoryRecord(record.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openHistoryRecord(record.id);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
                     className={cn(
-                      "group w-full h-[102px] text-left rounded-md px-3 py-2.5 transition-colors overflow-hidden border border-transparent relative",
+                      "group w-full h-[102px] cursor-pointer text-left rounded-md px-3 py-2.5 transition-colors overflow-hidden border border-transparent relative focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                       isActive
                         ? "bg-accent/80 hover:bg-accent/80"
                         : "hover:bg-muted/50",
@@ -784,7 +792,7 @@ export function SpeechHistoryPanel({
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
-                  </button>
+                  </div>
                 );
               })}
             </div>
