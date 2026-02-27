@@ -164,7 +164,12 @@ export function VoiceCloningPage({
   return (
     <div className="max-w-7xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-xl font-semibold text-white">Voice Cloning</h1>
+        <h1 className="text-xl font-semibold text-[var(--text-primary)]">
+          Voice Cloning
+        </h1>
+        <p className="text-sm text-[var(--text-muted)] mt-1">
+          Clone custom voices from reference audio with local model inference.
+        </p>
       </div>
 
       <VoiceClonePlayground
