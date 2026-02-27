@@ -52,7 +52,6 @@ interface ModelOption {
 interface TranscriptionPlaygroundProps {
   selectedModel: string | null;
   selectedModelReady?: boolean;
-  modelLabel?: string | null;
   modelOptions?: ModelOption[];
   onSelectModel?: (variant: string) => void;
   onOpenModelManager?: () => void;
@@ -267,7 +266,6 @@ function formatClockTime(totalSeconds: number): string {
 export function TranscriptionPlayground({
   selectedModel,
   selectedModelReady = false,
-  modelLabel,
   modelOptions = [],
   onSelectModel,
   onOpenModelManager,
@@ -1080,12 +1078,9 @@ export function TranscriptionPlayground({
           </div>
 
           <div className="pt-2 border-t border-[var(--border-muted)]">
-            <div className="text-sm text-[var(--text-primary)] truncate">
-              {modelLabel ?? "No model selected"}
-            </div>
             <div
               className={cn(
-                "mt-1 text-xs",
+                "text-xs",
                 selectedModelReady
                   ? "text-[var(--text-secondary)]"
                   : "text-amber-500",

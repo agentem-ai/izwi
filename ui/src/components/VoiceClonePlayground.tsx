@@ -30,7 +30,6 @@ interface ModelOption {
 interface VoiceClonePlaygroundProps {
   selectedModel: string | null;
   selectedModelReady?: boolean;
-  modelLabel?: string | null;
   modelOptions?: ModelOption[];
   onSelectModel?: (variant: string) => void;
   onOpenModelManager?: () => void;
@@ -55,7 +54,6 @@ function mapRecordToStats(record: SpeechHistoryRecord): TTSGenerationStats {
 export function VoiceClonePlayground({
   selectedModel,
   selectedModelReady = false,
-  modelLabel,
   modelOptions = [],
   onSelectModel,
   onOpenModelManager,
@@ -385,12 +383,9 @@ export function VoiceClonePlayground({
                 <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">
                   Active Model
                 </div>
-                <div className="mt-1 text-sm text-[var(--text-primary)] truncate">
-                  {modelLabel ?? "No model selected"}
-                </div>
                 <div
                   className={clsx(
-                    "mt-1 text-xs",
+                    "mt-2 text-xs",
                     selectedModelReady
                       ? "text-[var(--text-secondary)]"
                       : "text-amber-400",

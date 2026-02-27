@@ -44,7 +44,6 @@ interface ModelOption {
 interface DiarizationPlaygroundProps {
   selectedModel: string | null;
   selectedModelReady?: boolean;
-  modelLabel?: string | null;
   modelOptions?: ModelOption[];
   onSelectModel?: (variant: string) => void;
   onOpenModelManager?: () => void;
@@ -212,7 +211,6 @@ function parseTranscriptEntries(transcript: string): TranscriptEntry[] {
 export function DiarizationPlayground({
   selectedModel,
   selectedModelReady = false,
-  modelLabel,
   modelOptions = [],
   onSelectModel,
   onOpenModelManager,
@@ -235,15 +233,6 @@ export function DiarizationPlayground({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const selectedOption = useMemo(() => {
-    if (!selectedModel) {
-      return null;
-    }
-    return (
-      modelOptions.find((option) => option.value === selectedModel) || null
-    );
-  }, [selectedModel, modelOptions]);
 
   const requireReadyModel = useCallback(() => {
     if (!selectedModel || !selectedModelReady) {
@@ -472,8 +461,7 @@ export function DiarizationPlayground({
               selectedModelReady ? "text-muted-foreground" : "text-amber-500",
             )}
           >
-            {selectedOption?.label || modelLabel || "No model selected"}
-            {selectedModelReady ? " is loaded and ready" : " is not loaded yet"}
+            {selectedModelReady ? "Loaded and ready" : "Model not loaded yet"}
           </div>
         </div>
 
