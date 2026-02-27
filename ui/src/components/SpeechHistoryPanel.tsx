@@ -693,7 +693,7 @@ export function SpeechHistoryPanel({
 
   return (
     <>
-      <aside className="rounded-xl border bg-card text-card-foreground shadow-sm flex flex-col min-h-[460px] xl:min-h-[560px] overflow-hidden">
+      <aside className="rounded-xl border bg-card text-card-foreground shadow-sm flex flex-col h-[440px] lg:h-[calc(100dvh-6.5rem)] overflow-hidden">
         <div className="flex items-center justify-between gap-3 mb-3 px-4 py-3 border-b bg-muted/30">
           <div>
             <div className="inline-flex items-center gap-2 text-xs text-muted-foreground font-medium uppercase tracking-wider">
