@@ -475,25 +475,6 @@ function getModelSizeLabel(model: ModelInfo): string {
   return bytes > 0 ? formatBytes(bytes) : "Size unknown";
 }
 
-function getStatusLabel(status: ModelInfo["status"]): string {
-  switch (status) {
-    case "ready":
-      return "Loaded";
-    case "downloaded":
-      return "Downloaded";
-    case "downloading":
-      return "Downloading";
-    case "loading":
-      return "Loading";
-    case "not_downloaded":
-      return "Not Downloaded";
-    case "error":
-      return "Error";
-    default:
-      return status;
-  }
-}
-
 function getStatusDotClass(status: ModelInfo["status"]): string {
   switch (status) {
     case "ready":
@@ -508,42 +489,6 @@ function getStatusDotClass(status: ModelInfo["status"]): string {
     default:
       return "bg-[var(--text-subtle)]";
   }
-}
-
-function getStatusBadgeClass(status: ModelInfo["status"]): string {
-  switch (status) {
-    case "ready":
-      return "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]";
-    case "downloaded":
-      return "bg-[var(--bg-surface-2)] border-[var(--border-strong)] text-[var(--text-secondary)]";
-    case "downloading":
-    case "loading":
-      return "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]";
-    case "error":
-      return "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]";
-    default:
-      return "bg-[var(--bg-surface-2)] border-[var(--border-muted)] text-[var(--text-muted)]";
-  }
-}
-
-function getCategoryLabel(category: CategoryType): string {
-  switch (category) {
-    case "tts":
-      return "Text to Speech";
-    case "asr":
-      return "Transcription";
-    case "chat":
-      return "Chat";
-    default:
-      return "Unknown";
-  }
-}
-
-function getPrecisionLabel(capabilities: string[]): string | null {
-  if (capabilities.some((cap) => /4-bit/i.test(cap))) return "4-bit";
-  if (capabilities.some((cap) => /8-bit/i.test(cap))) return "8-bit";
-  if (capabilities.some((cap) => /bf16/i.test(cap))) return "BF16";
-  return null;
 }
 
 function getProviderLabel(variant: string): string {
@@ -861,7 +806,6 @@ export function MyModelsPage({
                     details.shortName,
                     model.variant,
                   );
-                  const precisionLabel = getPrecisionLabel(details.capabilities);
                   const isDownloading = model.status === "downloading";
                   const isLoading = model.status === "loading";
                   const isReady = model.status === "ready";
@@ -873,62 +817,34 @@ export function MyModelsPage({
                   return (
                     <div
                       key={model.variant}
-                      className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3 sm:p-4"
+                      className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2.5"
                     >
-                      <div className="flex flex-col gap-3 md:flex-row md:items-center">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            {isDownloading || isLoading ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--status-warning-text)]" />
-                            ) : (
-                              <span
-                                className={clsx(
-                                  "h-2 w-2 rounded-full",
-                                  getStatusDotClass(model.status),
-                                )}
-                              />
-                            )}
-                            <h3 className="truncate text-sm font-medium text-[var(--text-primary)]">
-                              {displayName}
-                            </h3>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0 flex items-center gap-2">
+                          {isDownloading || isLoading ? (
+                            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--status-warning-text)]" />
+                          ) : (
                             <span
                               className={clsx(
-                                "rounded border px-2 py-0.5 text-[11px] font-medium",
-                                getStatusBadgeClass(model.status),
+                                "h-2 w-2 shrink-0 rounded-full",
+                                getStatusDotClass(model.status),
                               )}
-                            >
-                              {getStatusLabel(model.status)}
-                            </span>
-                          </div>
-
-                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-subtle)]">
-                            <span>{getCategoryLabel(details.category)}</span>
-                            {precisionLabel && (
-                              <>
-                                <span aria-hidden>•</span>
-                                <span>{precisionLabel}</span>
-                              </>
-                            )}
-                            <span aria-hidden>•</span>
-                            <span>{getModelSizeLabel(model)}</span>
-                          </div>
-
-                          {isDownloading && (
-                            <div className="mt-2 flex items-center gap-2">
-                              <div className="h-1.5 w-full max-w-[220px] overflow-hidden rounded-full bg-[var(--bg-surface-3)]">
-                                <div
-                                  className="h-full rounded-full bg-[var(--accent-solid)] transition-all duration-300"
-                                  style={{ width: `${progress}%` }}
-                                />
-                              </div>
-                              <span className="text-xs text-[var(--text-muted)]">
-                                {Math.round(progress)}%
-                              </span>
-                            </div>
+                            />
                           )}
+                          <h3 className="truncate text-sm font-medium text-[var(--text-primary)]">
+                            {displayName}
+                          </h3>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-1.5">
+                        <div className="shrink-0 flex items-center gap-1.5">
+                          <span className="mr-1 text-xs text-[var(--text-subtle)] whitespace-nowrap">
+                            {getModelSizeLabel(model)}
+                          </span>
+                          {isDownloading && (
+                            <span className="text-xs text-[var(--status-warning-text)] whitespace-nowrap">
+                              {Math.round(progress)}%
+                            </span>
+                          )}
                           {model.status === "not_downloaded" &&
                             (requiresManualDownload(model.variant) ? (
                               <button
