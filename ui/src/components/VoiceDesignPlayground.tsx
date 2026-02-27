@@ -13,11 +13,7 @@ import {
   Globe,
   Settings2,
 } from "lucide-react";
-import {
-  api,
-  type SpeechHistoryRecord,
-  type TTSGenerationStats,
-} from "../api";
+import { api, type SpeechHistoryRecord, type TTSGenerationStats } from "../api";
 import { LANGUAGES, VOICE_DESIGN_PRESETS } from "../types";
 import clsx from "clsx";
 import { GenerationStats } from "./GenerationStats";
@@ -74,8 +70,11 @@ export function VoiceDesignPlayground({
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [generationStats, setGenerationStats] = useState<TTSGenerationStats | null>(null);
-  const [latestRecord, setLatestRecord] = useState<SpeechHistoryRecord | null>(null);
+  const [generationStats, setGenerationStats] =
+    useState<TTSGenerationStats | null>(null);
+  const [latestRecord, setLatestRecord] = useState<SpeechHistoryRecord | null>(
+    null,
+  );
   const [saveVoiceName, setSaveVoiceName] = useState("");
   const [saveReferenceText, setSaveReferenceText] = useState("");
   const [savingVoice, setSavingVoice] = useState(false);
@@ -101,7 +100,9 @@ export function VoiceDesignPlayground({
     if (!selectedModel) {
       return null;
     }
-    return modelOptions.find((option) => option.value === selectedModel) || null;
+    return (
+      modelOptions.find((option) => option.value === selectedModel) || null
+    );
   }, [selectedModel, modelOptions]);
 
   useEffect(() => {
@@ -194,7 +195,8 @@ export function VoiceDesignPlayground({
         const downloadUrl = api.voiceDesignRecordAudioUrl(record.id, {
           download: true,
         });
-        const filename = record.audio_filename || `izwi-voice-design-${Date.now()}.wav`;
+        const filename =
+          record.audio_filename || `izwi-voice-design-${Date.now()}.wav`;
         await api.downloadAudioFile(downloadUrl, filename);
         completeDownload();
         return;
@@ -203,7 +205,10 @@ export function VoiceDesignPlayground({
       if (!localAudioUrl) {
         return;
       }
-      await api.downloadAudioFile(localAudioUrl, `izwi-voice-design-${Date.now()}.wav`);
+      await api.downloadAudioFile(
+        localAudioUrl,
+        `izwi-voice-design-${Date.now()}.wav`,
+      );
       completeDownload();
     } catch (error) {
       failDownload(error);
@@ -252,7 +257,9 @@ export function VoiceDesignPlayground({
     setSaveVoiceStatus(null);
 
     try {
-      const response = await fetch(api.voiceDesignRecordAudioUrl(latestRecord.id));
+      const response = await fetch(
+        api.voiceDesignRecordAudioUrl(latestRecord.id),
+      );
       if (!response.ok) {
         throw new Error(`Failed to load generated audio (${response.status})`);
       }
@@ -264,7 +271,8 @@ export function VoiceDesignPlayground({
         name: trimmedName,
         reference_text: trimmedReferenceText,
         audio_base64: audioBase64,
-        audio_mime_type: latestRecord.audio_mime_type || audioBlob.type || "audio/wav",
+        audio_mime_type:
+          latestRecord.audio_mime_type || audioBlob.type || "audio/wav",
         audio_filename:
           latestRecord.audio_filename || `voice-design-saved-${Date.now()}.wav`,
         source_route_kind: "voice_design",
@@ -279,7 +287,8 @@ export function VoiceDesignPlayground({
     } catch (err) {
       setSaveVoiceStatus({
         tone: "error",
-        message: err instanceof Error ? err.message : "Failed to save voice profile.",
+        message:
+          err instanceof Error ? err.message : "Failed to save voice profile.",
       });
     } finally {
       setSavingVoice(false);
@@ -288,7 +297,7 @@ export function VoiceDesignPlayground({
 
   const getStatusTone = (option: ModelOption): string => {
     if (option.isReady) {
-      return "text-gray-300 bg-white/10";
+      return "text-[var(--text-secondary)] bg-[var(--bg-surface-3)] border border-[var(--border-muted)]";
     }
     if (
       option.statusLabel.toLowerCase().includes("downloading") ||
@@ -299,7 +308,7 @@ export function VoiceDesignPlayground({
     if (option.statusLabel.toLowerCase().includes("error")) {
       return "text-red-400 bg-red-500/10";
     }
-    return "text-gray-400 bg-white/5";
+    return "text-[var(--text-muted)] bg-[var(--bg-surface-2)] border border-[var(--border-muted)]";
   };
 
   const handleOpenModels = () => {
@@ -308,20 +317,28 @@ export function VoiceDesignPlayground({
   };
 
   const renderModelSelector = () => (
-    <div className="relative inline-block w-[280px] max-w-[85vw]" ref={modelMenuRef}>
+    <div
+      className="relative inline-block w-[280px] max-w-[85vw]"
+      ref={modelMenuRef}
+    >
       <button
         onClick={() => setIsModelMenuOpen((prev) => !prev)}
         className={clsx(
           "h-9 w-full px-3 rounded-lg border inline-flex items-center justify-between gap-2 text-xs transition-colors",
           selectedOption?.isReady
-            ? "border-white/20 bg-white/10 text-gray-300"
-            : "border-white/20 bg-[#1a1a1a] text-gray-300 hover:border-white/30",
+            ? "border-[var(--border-strong)] bg-[var(--bg-surface-3)] text-[var(--text-primary)]"
+            : "border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]",
         )}
       >
         <span className="flex-1 min-w-0 truncate text-left">
           {selectedOption?.label || "Select model"}
         </span>
-        <ChevronDown className={clsx("w-3.5 h-3.5 shrink-0 transition-transform", isModelMenuOpen && "rotate-180")} />
+        <ChevronDown
+          className={clsx(
+            "w-3.5 h-3.5 shrink-0 transition-transform",
+            isModelMenuOpen && "rotate-180",
+          )}
+        />
       </button>
 
       <AnimatePresence>
@@ -331,7 +348,7 @@ export function VoiceDesignPlayground({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.15 }}
-            className="absolute left-0 right-0 top-full mt-2 rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] p-1.5 shadow-2xl z-50"
+            className="absolute left-0 right-0 top-full mt-2 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-2)] p-1.5 shadow-2xl z-50"
           >
             <div className="max-h-64 overflow-y-auto pr-1 space-y-0.5">
               {modelOptions.map((option) => (
@@ -344,11 +361,11 @@ export function VoiceDesignPlayground({
                   className={clsx(
                     "w-full text-left rounded-lg px-3 py-2 transition-colors",
                     selectedOption?.value === option.value
-                      ? "bg-white/10"
-                      : "hover:bg-white/5",
+                      ? "bg-[var(--bg-surface-3)]"
+                      : "hover:bg-[var(--bg-surface-3)]",
                   )}
                 >
-                  <div className="text-xs text-gray-200 truncate">
+                  <div className="text-xs text-[var(--text-primary)] truncate">
                     {option.label}
                   </div>
                   <span
@@ -369,366 +386,384 @@ export function VoiceDesignPlayground({
   );
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr),320px] items-stretch">
-      <div className="card p-4">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded bg-[#1a1a1a] border border-[#2a2a2a]">
-            <Wand2 className="w-5 h-5 text-gray-400" />
-          </div>
-          <div>
-            <h2 className="text-sm font-medium text-white">Voice Design</h2>
-          </div>
-        </div>
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr),320px] items-stretch xl:h-[calc(100dvh-11.75rem)]">
+      <div className="card p-4 flex min-h-0 flex-col">
+        <div className="flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-thin">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)]">
+                <Wand2 className="w-5 h-5 text-[var(--text-muted)]" />
+              </div>
+              <div>
+                <h2 className="text-sm font-medium text-[var(--text-primary)]">
+                  Voice Design
+                </h2>
+              </div>
+            </div>
 
-        <div className="flex items-center gap-2">
-          <div className="relative">
-            <button
-              onClick={() => setShowLanguageSelect(!showLanguageSelect)}
-              className="flex w-52 sm:w-56 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
-            >
-              <Globe className="w-3.5 h-3.5 text-gray-500" />
-              <span className="text-white flex-1 min-w-0 truncate text-left">
-                {LANGUAGES.find((l) => l.id === language)?.name || language}
-              </span>
-              <ChevronDown
-                className={clsx(
-                  "w-3.5 h-3.5 text-gray-500 transition-transform",
-                  showLanguageSelect && "rotate-180",
-                )}
-              />
-            </button>
-
-            <AnimatePresence>
-              {showLanguageSelect && (
-                <motion.div
-                  initial={{ opacity: 0, y: -5 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -5 }}
-                  className="absolute left-0 right-0 top-full mt-1 max-h-64 overflow-y-auto p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <button
+                  onClick={() => setShowLanguageSelect(!showLanguageSelect)}
+                  className="flex w-52 sm:w-56 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)] hover:bg-[var(--bg-surface-3)] text-sm"
                 >
-                  {LANGUAGES.map((lang) => (
-                    <button
-                      key={lang.id}
-                      onClick={() => {
-                        setLanguage(lang.id);
-                        setShowLanguageSelect(false);
-                      }}
-                      className={clsx(
-                        "w-full px-2 py-1.5 rounded text-left text-sm transition-colors",
-                        language === lang.id
-                          ? "bg-white/10 text-white"
-                          : "hover:bg-[#2a2a2a] text-gray-400",
-                      )}
-                    >
-                      {lang.name}
-                    </button>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
-      </div>
-
-      <div className="mb-4 rounded-xl border border-[#2b2b2b] bg-[#171717] p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] text-gray-500 uppercase tracking-wide">
-              Active Model
-            </div>
-            <div className="mt-1 text-sm text-white truncate">
-              {modelLabel ?? "No model selected"}
-            </div>
-            <div
-              className={clsx(
-                "mt-1 text-xs",
-                selectedModelReady ? "text-gray-300" : "text-amber-400",
-              )}
-            >
-              {selectedModelReady
-                ? "Loaded and ready"
-                : "Open Models and load a VoiceDesign model"}
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {modelOptions.length > 0 && renderModelSelector()}
-            {onOpenModelManager && (
-              <button
-                onClick={handleOpenModels}
-                className="btn btn-secondary text-xs"
-              >
-                <Settings2 className="w-4 h-4" />
-                Models
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="space-y-4">
-        {/* Voice Description */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-xs text-gray-500 font-medium">
-              Voice Description
-            </label>
-            <button
-              onClick={() => setShowPresets(!showPresets)}
-              className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-            >
-              {showPresets ? "Hide" : "Show"} presets
-            </button>
-          </div>
-
-          <AnimatePresence>
-            {showPresets && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                className="mb-3 overflow-hidden"
-              >
-                <div className="grid grid-cols-2 gap-2 p-3 rounded-lg bg-[#161616] border border-[#2a2a2a]">
-                  {VOICE_DESIGN_PRESETS.map((preset) => (
-                    <button
-                      key={preset.name}
-                      onClick={() => handlePresetSelect(preset.description)}
-                      className="p-2 rounded bg-[#1a1a1a] hover:bg-[#1f1f1f] border border-[#2a2a2a] text-left transition-colors"
-                    >
-                      <div className="text-xs font-medium text-white mb-1">
-                        {preset.name}
-                      </div>
-                      <div className="text-[10px] text-gray-500 line-clamp-2">
-                        {preset.description}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <textarea
-            value={voiceDescription}
-            onChange={(e) => setVoiceDescription(e.target.value)}
-            placeholder="Describe the voice you want to create... (e.g., 'A warm, friendly female voice with a slight British accent, speaking in a calm and reassuring tone')"
-            rows={3}
-            className="textarea text-sm"
-          />
-          <p className="text-[10px] text-gray-400 mt-1.5">
-            Describe voice characteristics like gender, age, tone, emotion,
-            accent, and speaking style
-          </p>
-        </div>
-
-        {/* Text to speak */}
-        <div>
-          <label className="block text-xs text-gray-500 font-medium mb-2">
-            Text to Speak
-          </label>
-          <div className="relative">
-            <textarea
-              ref={textareaRef}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Enter the text you want to synthesize..."
-              rows={4}
-              disabled={generating}
-              className="textarea text-sm"
-            />
-            <div className="absolute bottom-2 right-2">
-              <span className="text-xs text-gray-600">{text.length}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Error */}
-        <AnimatePresence>
-          {error && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className="p-2 rounded bg-red-950/50 border border-red-900/50 text-red-400 text-xs"
-            >
-              {error}
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Actions */}
-        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-          <button
-            onClick={handleGenerate}
-            disabled={generating || !selectedModelReady}
-            className="btn btn-primary flex-1 min-h-[44px]"
-          >
-            {generating ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Designing Voice...
-              </>
-            ) : (
-              <>
-                <Wand2 className="w-4 h-4" />
-                Generate
-              </>
-            )}
-          </button>
-
-          {audioUrl && (
-            <>
-              <button
-                onClick={handleStop}
-                className="btn btn-secondary min-h-[44px] min-w-[44px]"
-              >
-                <Square className="w-4 h-4" />
-              </button>
-              <button
-                onClick={handleDownload}
-                disabled={isDownloading}
-                className={clsx(
-                  "btn btn-secondary min-h-[44px] min-w-[44px]",
-                  isDownloading && "opacity-75",
-                )}
-              >
-                {isDownloading ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Download className="w-4 h-4" />
-                )}
-              </button>
-              <button
-                onClick={handleReset}
-                className="btn btn-ghost min-h-[44px] min-w-[44px]"
-              >
-                <RotateCcw className="w-4 h-4" />
-              </button>
-            </>
-          )}
-        </div>
-
-        <AnimatePresence>
-          {downloadState !== "idle" && downloadMessage && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className={clsx(
-                "p-2 rounded border text-xs flex items-center gap-2",
-                downloadState === "downloading" &&
-                  "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]",
-                downloadState === "success" &&
-                  "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]",
-                downloadState === "error" &&
-                  "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
-              )}
-            >
-              {downloadState === "downloading" ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : downloadState === "success" ? (
-                <CheckCircle2 className="w-3.5 h-3.5" />
-              ) : (
-                <AlertCircle className="w-3.5 h-3.5" />
-              )}
-              {downloadMessage}
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {!selectedModelReady && (
-          <p className="text-xs text-gray-400">
-            Load a VoiceDesign model to create unique voices
-          </p>
-        )}
-      </div>
-
-      {/* Audio player */}
-      <AnimatePresence>
-        {audioUrl && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 10 }}
-            className="mt-4 space-y-3"
-          >
-            <div className="p-3 rounded bg-[#1a1a1a] border border-[#2a2a2a]">
-              <audio ref={audioRef} src={audioUrl} className="w-full" controls />
-            </div>
-            {generationStats && (
-              <GenerationStats stats={generationStats} type="tts" />
-            )}
-            {latestRecord && (
-              <div className="p-3 rounded bg-[#161616] border border-[#2a2a2a] space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-medium text-white">
-                    Save for Voice Cloning
-                  </div>
-                  <span className="text-[10px] text-gray-500">
-                    Reuse this voice on /voice-clone
+                  <Globe className="w-3.5 h-3.5 text-[var(--text-subtle)]" />
+                  <span className="text-[var(--text-primary)] flex-1 min-w-0 truncate text-left">
+                    {LANGUAGES.find((l) => l.id === language)?.name || language}
                   </span>
-                </div>
-                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr),auto]">
-                  <input
-                    value={saveVoiceName}
-                    onChange={(event) => setSaveVoiceName(event.target.value)}
-                    placeholder="Voice name (e.g., Support Voice)"
-                    className="input text-sm"
-                    disabled={savingVoice}
-                  />
-                  <button
-                    onClick={handleSaveVoice}
-                    disabled={savingVoice}
-                    className="btn btn-secondary min-h-[40px] sm:min-w-[140px]"
-                  >
-                    {savingVoice ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Saving...
-                      </>
-                    ) : (
-                      <>
-                        <BookmarkPlus className="w-4 h-4" />
-                        Save Voice
-                      </>
+                  <ChevronDown
+                    className={clsx(
+                      "w-3.5 h-3.5 text-[var(--text-subtle)] transition-transform",
+                      showLanguageSelect && "rotate-180",
                     )}
-                  </button>
-                </div>
-                <textarea
-                  value={saveReferenceText}
-                  onChange={(event) => setSaveReferenceText(event.target.value)}
-                  rows={2}
-                  className="textarea text-sm"
-                  disabled={savingVoice}
-                  placeholder="Reference transcript for cloning"
-                />
-                <p className="text-[10px] text-gray-500">
-                  Keep this transcript aligned with the generated audio sample.
-                </p>
+                  />
+                </button>
+
                 <AnimatePresence>
-                  {saveVoiceStatus && (
+                  {showLanguageSelect && (
                     <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className={clsx(
-                        "p-2 rounded border text-xs",
-                        saveVoiceStatus.tone === "success"
-                          ? "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]"
-                          : "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
-                      )}
+                      initial={{ opacity: 0, y: -5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="absolute left-0 right-0 top-full mt-1 max-h-64 overflow-y-auto p-1 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)] shadow-xl z-50"
                     >
-                      {saveVoiceStatus.message}
+                      {LANGUAGES.map((lang) => (
+                        <button
+                          key={lang.id}
+                          onClick={() => {
+                            setLanguage(lang.id);
+                            setShowLanguageSelect(false);
+                          }}
+                          className={clsx(
+                            "w-full px-2 py-1.5 rounded text-left text-sm transition-colors",
+                            language === lang.id
+                              ? "bg-[var(--bg-surface-3)] text-[var(--text-primary)]"
+                              : "hover:bg-[var(--bg-surface-3)] text-[var(--text-secondary)]",
+                          )}
+                        >
+                          {lang.name}
+                        </button>
+                      ))}
                     </motion.div>
                   )}
                 </AnimatePresence>
               </div>
+            </div>
+          </div>
+
+          <div className="mb-4 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">
+                  Active Model
+                </div>
+                <div className="mt-1 text-sm text-[var(--text-primary)] truncate">
+                  {modelLabel ?? "No model selected"}
+                </div>
+                <div
+                  className={clsx(
+                    "mt-1 text-xs",
+                    selectedModelReady
+                      ? "text-[var(--text-secondary)]"
+                      : "text-amber-400",
+                  )}
+                >
+                  {selectedModelReady
+                    ? "Loaded and ready"
+                    : "Open Models and load a VoiceDesign model"}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {modelOptions.length > 0 && renderModelSelector()}
+                {onOpenModelManager && (
+                  <button
+                    onClick={handleOpenModels}
+                    className="btn btn-secondary text-xs"
+                  >
+                    <Settings2 className="w-4 h-4" />
+                    Models
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {/* Voice Description */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs text-[var(--text-muted)] font-medium">
+                  Voice Description
+                </label>
+                <button
+                  onClick={() => setShowPresets(!showPresets)}
+                  className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                >
+                  {showPresets ? "Hide" : "Show"} presets
+                </button>
+              </div>
+
+              <AnimatePresence>
+                {showPresets && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="mb-3 overflow-hidden"
+                  >
+                    <div className="grid grid-cols-2 gap-2 p-3 rounded-lg bg-[var(--bg-surface-1)] border border-[var(--border-muted)]">
+                      {VOICE_DESIGN_PRESETS.map((preset) => (
+                        <button
+                          key={preset.name}
+                          onClick={() => handlePresetSelect(preset.description)}
+                          className="p-2 rounded bg-[var(--bg-surface-2)] hover:bg-[var(--bg-surface-3)] border border-[var(--border-muted)] text-left transition-colors"
+                        >
+                          <div className="text-xs font-medium text-[var(--text-primary)] mb-1">
+                            {preset.name}
+                          </div>
+                          <div className="text-[10px] text-[var(--text-subtle)] line-clamp-2">
+                            {preset.description}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <textarea
+                value={voiceDescription}
+                onChange={(e) => setVoiceDescription(e.target.value)}
+                placeholder="Describe the voice you want to create... (e.g., 'A warm, friendly female voice with a slight British accent, speaking in a calm and reassuring tone')"
+                rows={3}
+                className="textarea text-sm"
+              />
+              <p className="text-[10px] text-[var(--text-secondary)] mt-1.5">
+                Describe voice characteristics like gender, age, tone, emotion,
+                accent, and speaking style
+              </p>
+            </div>
+
+            {/* Text to speak */}
+            <div>
+              <label className="block text-xs text-[var(--text-muted)] font-medium mb-2">
+                Text to Speak
+              </label>
+              <div className="relative">
+                <textarea
+                  ref={textareaRef}
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder="Enter the text you want to synthesize..."
+                  rows={4}
+                  disabled={generating}
+                  className="textarea text-sm"
+                />
+                <div className="absolute bottom-2 right-2">
+                  <span className="text-xs text-[var(--text-subtle)]">
+                    {text.length}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Error */}
+            <AnimatePresence>
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="p-2 rounded bg-red-950/50 border border-red-900/50 text-red-400 text-xs"
+                >
+                  {error}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Actions */}
+            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+              <button
+                onClick={handleGenerate}
+                disabled={generating || !selectedModelReady}
+                className="btn btn-primary flex-1 min-h-[44px]"
+              >
+                {generating ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Designing Voice...
+                  </>
+                ) : (
+                  <>
+                    <Wand2 className="w-4 h-4" />
+                    Generate
+                  </>
+                )}
+              </button>
+
+              {audioUrl && (
+                <>
+                  <button
+                    onClick={handleStop}
+                    className="btn btn-secondary min-h-[44px] min-w-[44px]"
+                  >
+                    <Square className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={handleDownload}
+                    disabled={isDownloading}
+                    className={clsx(
+                      "btn btn-secondary min-h-[44px] min-w-[44px]",
+                      isDownloading && "opacity-75",
+                    )}
+                  >
+                    {isDownloading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4" />
+                    )}
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    className="btn btn-ghost min-h-[44px] min-w-[44px]"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                  </button>
+                </>
+              )}
+            </div>
+
+            <AnimatePresence>
+              {downloadState !== "idle" && downloadMessage && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className={clsx(
+                    "p-2 rounded border text-xs flex items-center gap-2",
+                    downloadState === "downloading" &&
+                      "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]",
+                    downloadState === "success" &&
+                      "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]",
+                    downloadState === "error" &&
+                      "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
+                  )}
+                >
+                  {downloadState === "downloading" ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : downloadState === "success" ? (
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  ) : (
+                    <AlertCircle className="w-3.5 h-3.5" />
+                  )}
+                  {downloadMessage}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {!selectedModelReady && (
+              <p className="text-xs text-[var(--text-secondary)]">
+                Load a VoiceDesign model to create unique voices
+              </p>
             )}
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </div>
+
+          {/* Audio player */}
+          <AnimatePresence>
+            {audioUrl && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 10 }}
+                className="mt-4 space-y-3"
+              >
+                <div className="p-3 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)]">
+                  <audio
+                    ref={audioRef}
+                    src={audioUrl}
+                    className="w-full"
+                    controls
+                  />
+                </div>
+                {generationStats && (
+                  <GenerationStats stats={generationStats} type="tts" />
+                )}
+                {latestRecord && (
+                  <div className="p-3 rounded bg-[var(--bg-surface-1)] border border-[var(--border-muted)] space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-medium text-[var(--text-primary)]">
+                        Save for Voice Cloning
+                      </div>
+                      <span className="text-[10px] text-[var(--text-subtle)]">
+                        Reuse this voice on /voice-clone
+                      </span>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr),auto]">
+                      <input
+                        value={saveVoiceName}
+                        onChange={(event) =>
+                          setSaveVoiceName(event.target.value)
+                        }
+                        placeholder="Voice name (e.g., Support Voice)"
+                        className="input text-sm"
+                        disabled={savingVoice}
+                      />
+                      <button
+                        onClick={handleSaveVoice}
+                        disabled={savingVoice}
+                        className="btn btn-secondary min-h-[40px] sm:min-w-[140px]"
+                      >
+                        {savingVoice ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Saving...
+                          </>
+                        ) : (
+                          <>
+                            <BookmarkPlus className="w-4 h-4" />
+                            Save Voice
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <textarea
+                      value={saveReferenceText}
+                      onChange={(event) =>
+                        setSaveReferenceText(event.target.value)
+                      }
+                      rows={2}
+                      className="textarea text-sm"
+                      disabled={savingVoice}
+                      placeholder="Reference transcript for cloning"
+                    />
+                    <p className="text-[10px] text-[var(--text-subtle)]">
+                      Keep this transcript aligned with the generated audio
+                      sample.
+                    </p>
+                    <AnimatePresence>
+                      {saveVoiceStatus && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: "auto" }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className={clsx(
+                            "p-2 rounded border text-xs",
+                            saveVoiceStatus.tone === "success"
+                              ? "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]"
+                              : "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
+                          )}
+                        >
+                          {saveVoiceStatus.message}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
 
       <SpeechHistoryPanel
@@ -736,6 +771,7 @@ export function VoiceDesignPlayground({
         title="Voice Design History"
         emptyMessage="No saved voice design generations yet."
         latestRecord={latestRecord}
+        desktopHeightClassName="xl:h-[calc(100dvh-11.75rem)]"
       />
     </div>
   );

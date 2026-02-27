@@ -638,338 +638,340 @@ export function CustomVoicePlayground({
   );
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr),320px] items-stretch">
-      <div className="card p-4">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)]">
-              <Volume2 className="w-5 h-5 text-[var(--text-muted)]" />
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr),320px] items-stretch xl:h-[calc(100dvh-11.75rem)]">
+      <div className="card p-4 flex min-h-0 flex-col">
+        <div className="flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-thin">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)]">
+                <Volume2 className="w-5 h-5 text-[var(--text-muted)]" />
+              </div>
+              <div>
+                <h2 className="text-sm font-medium text-[var(--text-primary)]">
+                  Text to Speech
+                </h2>
+              </div>
             </div>
-            <div>
-              <h2 className="text-sm font-medium text-[var(--text-primary)]">
-                Text to Speech
-              </h2>
+
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <button
+                  onClick={() => setShowSpeakerSelect(!showSpeakerSelect)}
+                  className="flex w-56 sm:w-64 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)] hover:bg-[var(--bg-surface-3)] text-sm"
+                >
+                  <div className="speaker-avatar w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium">
+                    {speaker.charAt(0)}
+                  </div>
+                  <span className="text-[var(--text-primary)] flex-1 min-w-0 truncate text-left">
+                    {selectedSpeaker?.name || speaker}
+                  </span>
+                  <ChevronDown
+                    className={cn(
+                      "w-3.5 h-3.5 text-[var(--text-subtle)] transition-transform",
+                      showSpeakerSelect && "rotate-180",
+                    )}
+                  />
+                </button>
+
+                <AnimatePresence>
+                  {showSpeakerSelect && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="absolute left-0 right-0 top-full mt-1 max-h-80 overflow-y-auto p-1 rounded bg-[var(--bg-surface-1)] border border-[var(--border-strong)] shadow-xl z-50"
+                    >
+                      {availableSpeakers.map((s) => (
+                        <button
+                          key={s.id}
+                          onClick={() => {
+                            setSpeaker(s.id);
+                            setShowSpeakerSelect(false);
+                          }}
+                          className={cn(
+                            "w-full px-3 py-2 rounded text-left transition-colors flex items-center gap-3",
+                            speaker === s.id
+                              ? "bg-[var(--bg-surface-3)]"
+                              : "hover:bg-[var(--bg-surface-2)]",
+                          )}
+                        >
+                          <div className="speaker-avatar w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium flex-shrink-0">
+                            {s.name.charAt(0)}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div
+                              className={cn(
+                                "text-sm font-medium",
+                                speaker === s.id
+                                  ? "text-[var(--text-primary)]"
+                                  : "text-[var(--text-secondary)]",
+                              )}
+                            >
+                              {s.name}
+                            </div>
+                            <div className="text-[10px] text-[var(--text-subtle)] truncate">
+                              {s.description}
+                            </div>
+                          </div>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface-3)] text-[var(--text-subtle)]">
+                            {s.language}
+                          </span>
+                        </button>
+                      ))}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <button
-                onClick={() => setShowSpeakerSelect(!showSpeakerSelect)}
-                className="flex w-56 sm:w-64 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)] hover:bg-[var(--bg-surface-3)] text-sm"
-              >
-                <div className="speaker-avatar w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium">
-                  {speaker.charAt(0)}
+          <div className="mb-4 rounded-xl border border-[var(--border-strong)] bg-[var(--bg-surface-2)] p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">
+                  Active Model
                 </div>
-                <span className="text-[var(--text-primary)] flex-1 min-w-0 truncate text-left">
-                  {selectedSpeaker?.name || speaker}
+                <div className="mt-1 text-sm text-[var(--text-primary)] truncate">
+                  {modelLabel ?? "No model selected"}
+                </div>
+                <div
+                  className={cn(
+                    "mt-1 text-xs",
+                    selectedModelReady
+                      ? "text-[var(--text-primary)]"
+                      : "text-[var(--text-secondary)]",
+                  )}
+                >
+                  {selectedModelReady
+                    ? "Loaded and ready"
+                    : "Open Models and load the selected TTS model"}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {modelOptions.length > 0 && renderModelSelector()}
+                {onOpenModelManager && (
+                  <button
+                    onClick={handleOpenModels}
+                    className="btn btn-secondary text-xs"
+                  >
+                    <Settings2 className="w-4 h-4" />
+                    Models
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Text input */}
+          <div className="space-y-3">
+            <div className="relative">
+              <textarea
+                ref={textareaRef}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Enter text to synthesize..."
+                rows={6}
+                disabled={generating}
+                className="textarea text-sm"
+              />
+              <div className="absolute bottom-2 right-2">
+                <span className="text-xs text-[var(--text-subtle)]">
+                  {text.length}
                 </span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-2">
+              {/* Instruct toggle */}
+              <button
+                onClick={() => setShowInstruct(!showInstruct)}
+                className="flex items-center gap-2 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                {showInstruct ? "Hide" : "Add"} speaking instructions
                 <ChevronDown
                   className={cn(
-                    "w-3.5 h-3.5 text-[var(--text-subtle)] transition-transform",
-                    showSpeakerSelect && "rotate-180",
+                    "w-3 h-3 transition-transform",
+                    showInstruct && "rotate-180",
                   )}
                 />
               </button>
 
-              <AnimatePresence>
-                {showSpeakerSelect && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -5 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -5 }}
-                    className="absolute left-0 right-0 top-full mt-1 max-h-80 overflow-y-auto p-1 rounded bg-[var(--bg-surface-1)] border border-[var(--border-strong)] shadow-xl z-50"
-                  >
-                    {availableSpeakers.map((s) => (
-                      <button
-                        key={s.id}
-                        onClick={() => {
-                          setSpeaker(s.id);
-                          setShowSpeakerSelect(false);
-                        }}
-                        className={cn(
-                          "w-full px-3 py-2 rounded text-left transition-colors flex items-center gap-3",
-                          speaker === s.id
-                            ? "bg-[var(--bg-surface-3)]"
-                            : "hover:bg-[var(--bg-surface-2)]",
-                        )}
-                      >
-                        <div className="speaker-avatar w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium flex-shrink-0">
-                          {s.name.charAt(0)}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div
-                            className={cn(
-                              "text-sm font-medium",
-                              speaker === s.id
-                                ? "text-[var(--text-primary)]"
-                                : "text-[var(--text-secondary)]",
-                            )}
-                          >
-                            {s.name}
-                          </div>
-                          <div className="text-[10px] text-[var(--text-subtle)] truncate">
-                            {s.description}
-                          </div>
-                        </div>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface-3)] text-[var(--text-subtle)]">
-                          {s.language}
-                        </span>
-                      </button>
-                    ))}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          </div>
-        </div>
-
-        <div className="mb-4 rounded-xl border border-[var(--border-strong)] bg-[var(--bg-surface-2)] p-4">
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0 flex-1">
-              <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">
-                Active Model
-              </div>
-              <div className="mt-1 text-sm text-[var(--text-primary)] truncate">
-                {modelLabel ?? "No model selected"}
-              </div>
-              <div
-                className={cn(
-                  "mt-1 text-xs",
-                  selectedModelReady
-                    ? "text-[var(--text-primary)]"
-                    : "text-[var(--text-secondary)]",
-                )}
-              >
-                {selectedModelReady
-                  ? "Loaded and ready"
-                  : "Open Models and load the selected TTS model"}
-              </div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {modelOptions.length > 0 && renderModelSelector()}
-              {onOpenModelManager && (
-                <button
-                  onClick={handleOpenModels}
-                  className="btn btn-secondary text-xs"
-                >
-                  <Settings2 className="w-4 h-4" />
-                  Models
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Text input */}
-        <div className="space-y-3">
-          <div className="relative">
-            <textarea
-              ref={textareaRef}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Enter text to synthesize..."
-              rows={6}
-              disabled={generating}
-              className="textarea text-sm"
-            />
-            <div className="absolute bottom-2 right-2">
-              <span className="text-xs text-[var(--text-subtle)]">
-                {text.length}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-2">
-            {/* Instruct toggle */}
-            <button
-              onClick={() => setShowInstruct(!showInstruct)}
-              className="flex items-center gap-2 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-            >
-              <MessageSquare className="w-3.5 h-3.5" />
-              {showInstruct ? "Hide" : "Add"} speaking instructions
-              <ChevronDown
-                className={cn(
-                  "w-3 h-3 transition-transform",
-                  showInstruct && "rotate-180",
-                )}
-              />
-            </button>
-
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={streamingEnabled}
-                onChange={(e) => setStreamingEnabled(e.target.checked)}
-                className="app-checkbox w-4 h-4"
-                disabled={generating}
-              />
-              <span className="text-xs text-[var(--text-secondary)] flex items-center gap-1">
-                <Radio className="w-3 h-3" />
-                Stream
-              </span>
-            </label>
-          </div>
-
-          <AnimatePresence>
-            {showInstruct && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                className="overflow-hidden"
-              >
-                <div className="p-3 rounded-lg bg-[var(--bg-surface-2)] border border-[var(--border-strong)]">
-                  <label className="block text-xs text-[var(--text-muted)] mb-1.5">
-                    Speaking Style Instructions
-                  </label>
-                  <input
-                    type="text"
-                    value={instruct}
-                    onChange={(e) => setInstruct(e.target.value)}
-                    placeholder="e.g., 'Speak with excitement' or 'Very calm and soothing'"
-                    className="input text-sm"
-                  />
-                  <p className="text-[10px] text-[var(--text-secondary)] mt-1.5">
-                    Optional: Guide the emotional tone and speaking style
-                  </p>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Error */}
-          <AnimatePresence>
-            {error && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                className="p-2 rounded bg-red-950/50 border border-red-900/50 text-red-400 text-xs"
-              >
-                {error}
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {isStreaming && (
-            <div className="p-2 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)] text-[var(--text-secondary)] text-xs flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-secondary)] animate-pulse" />
-              Streaming audio chunks...
-            </div>
-          )}
-
-          {/* Actions */}
-          <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-            <button
-              onClick={handleGenerate}
-              disabled={generating || !selectedModelReady}
-              className="btn btn-primary flex-1 min-h-[44px]"
-            >
-              {generating ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  {isStreaming ? "Streaming..." : "Generating..."}
-                </>
-              ) : (
-                "Generate"
-              )}
-            </button>
-
-            {(audioUrl || isStreaming) && (
-              <>
-                <button
-                  onClick={handleStop}
-                  className="btn btn-secondary min-h-[44px] min-w-[44px]"
-                >
-                  <Square className="w-4 h-4" />
-                </button>
-                {audioUrl && (
-                  <button
-                    onClick={handleDownload}
-                    disabled={isDownloading}
-                    className={cn(
-                      "btn btn-secondary min-h-[44px] min-w-[44px]",
-                      isDownloading && "opacity-75",
-                    )}
-                  >
-                    {isDownloading ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Download className="w-4 h-4" />
-                    )}
-                  </button>
-                )}
-                <button
-                  onClick={handleReset}
-                  className="btn btn-ghost min-h-[44px] min-w-[44px]"
-                >
-                  <RotateCcw className="w-4 h-4" />
-                </button>
-              </>
-            )}
-          </div>
-
-          <AnimatePresence>
-            {downloadState !== "idle" && downloadMessage && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                className={cn(
-                  "p-2 rounded border text-xs flex items-center gap-2",
-                  downloadState === "downloading" &&
-                    "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]",
-                  downloadState === "success" &&
-                    "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]",
-                  downloadState === "error" &&
-                    "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
-                )}
-              >
-                {downloadState === "downloading" ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : downloadState === "success" ? (
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                ) : (
-                  <AlertCircle className="w-3.5 h-3.5" />
-                )}
-                {downloadMessage}
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {!selectedModelReady && (
-            <p className="text-xs text-[var(--text-secondary)]">
-              Load a compatible Qwen3 CustomVoice, Kokoro, or LFM2 model to
-              generate speech
-            </p>
-          )}
-        </div>
-
-        {/* Audio player */}
-        <AnimatePresence>
-          {audioUrl && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 10 }}
-              className="mt-4 space-y-3"
-            >
-              <div className="p-3 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)]">
-                <audio
-                  ref={audioRef}
-                  src={audioUrl}
-                  className="w-full"
-                  controls
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={streamingEnabled}
+                  onChange={(e) => setStreamingEnabled(e.target.checked)}
+                  className="app-checkbox w-4 h-4"
+                  disabled={generating}
                 />
-              </div>
-              {generationStats && (
-                <GenerationStats stats={generationStats} type="tts" />
+                <span className="text-xs text-[var(--text-secondary)] flex items-center gap-1">
+                  <Radio className="w-3 h-3" />
+                  Stream
+                </span>
+              </label>
+            </div>
+
+            <AnimatePresence>
+              {showInstruct && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="p-3 rounded-lg bg-[var(--bg-surface-2)] border border-[var(--border-strong)]">
+                    <label className="block text-xs text-[var(--text-muted)] mb-1.5">
+                      Speaking Style Instructions
+                    </label>
+                    <input
+                      type="text"
+                      value={instruct}
+                      onChange={(e) => setInstruct(e.target.value)}
+                      placeholder="e.g., 'Speak with excitement' or 'Very calm and soothing'"
+                      className="input text-sm"
+                    />
+                    <p className="text-[10px] text-[var(--text-secondary)] mt-1.5">
+                      Optional: Guide the emotional tone and speaking style
+                    </p>
+                  </div>
+                </motion.div>
               )}
-            </motion.div>
-          )}
-        </AnimatePresence>
+            </AnimatePresence>
+
+            {/* Error */}
+            <AnimatePresence>
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="p-2 rounded bg-red-950/50 border border-red-900/50 text-red-400 text-xs"
+                >
+                  {error}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {isStreaming && (
+              <div className="p-2 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)] text-[var(--text-secondary)] text-xs flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-secondary)] animate-pulse" />
+                Streaming audio chunks...
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+              <button
+                onClick={handleGenerate}
+                disabled={generating || !selectedModelReady}
+                className="btn btn-primary flex-1 min-h-[44px]"
+              >
+                {generating ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    {isStreaming ? "Streaming..." : "Generating..."}
+                  </>
+                ) : (
+                  "Generate"
+                )}
+              </button>
+
+              {(audioUrl || isStreaming) && (
+                <>
+                  <button
+                    onClick={handleStop}
+                    className="btn btn-secondary min-h-[44px] min-w-[44px]"
+                  >
+                    <Square className="w-4 h-4" />
+                  </button>
+                  {audioUrl && (
+                    <button
+                      onClick={handleDownload}
+                      disabled={isDownloading}
+                      className={cn(
+                        "btn btn-secondary min-h-[44px] min-w-[44px]",
+                        isDownloading && "opacity-75",
+                      )}
+                    >
+                      {isDownloading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Download className="w-4 h-4" />
+                      )}
+                    </button>
+                  )}
+                  <button
+                    onClick={handleReset}
+                    className="btn btn-ghost min-h-[44px] min-w-[44px]"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                  </button>
+                </>
+              )}
+            </div>
+
+            <AnimatePresence>
+              {downloadState !== "idle" && downloadMessage && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className={cn(
+                    "p-2 rounded border text-xs flex items-center gap-2",
+                    downloadState === "downloading" &&
+                      "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]",
+                    downloadState === "success" &&
+                      "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]",
+                    downloadState === "error" &&
+                      "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
+                  )}
+                >
+                  {downloadState === "downloading" ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : downloadState === "success" ? (
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  ) : (
+                    <AlertCircle className="w-3.5 h-3.5" />
+                  )}
+                  {downloadMessage}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {!selectedModelReady && (
+              <p className="text-xs text-[var(--text-secondary)]">
+                Load a compatible Qwen3 CustomVoice, Kokoro, or LFM2 model to
+                generate speech
+              </p>
+            )}
+          </div>
+
+          {/* Audio player */}
+          <AnimatePresence>
+            {audioUrl && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 10 }}
+                className="mt-4 space-y-3"
+              >
+                <div className="p-3 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)]">
+                  <audio
+                    ref={audioRef}
+                    src={audioUrl}
+                    className="w-full"
+                    controls
+                  />
+                </div>
+                {generationStats && (
+                  <GenerationStats stats={generationStats} type="tts" />
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
 
       <SpeechHistoryPanel
@@ -977,6 +979,7 @@ export function CustomVoicePlayground({
         title="Speech History"
         emptyMessage="No saved text-to-speech generations yet."
         latestRecord={latestRecord}
+        desktopHeightClassName="xl:h-[calc(100dvh-11.75rem)]"
       />
     </div>
   );

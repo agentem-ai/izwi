@@ -423,8 +423,8 @@ export function DiarizationPlayground({
   const hasOutput = speakerTranscript.trim().length > 0;
 
   return (
-    <div className="grid xl:grid-cols-[360px,minmax(0,1fr),320px] gap-4 lg:gap-6">
-      <div className="card p-4 sm:p-5 space-y-4">
+    <div className="grid xl:grid-cols-[360px,minmax(0,1fr),320px] gap-4 lg:gap-6 xl:h-[calc(100dvh-11.75rem)]">
+      <div className="card p-4 sm:p-5 space-y-4 xl:h-full xl:min-h-0 xl:overflow-y-auto">
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="inline-flex items-center gap-2 text-xs text-muted-foreground font-medium uppercase tracking-wider">
@@ -629,7 +629,7 @@ export function DiarizationPlayground({
         )}
       </div>
 
-      <div className="rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm flex flex-col h-[560px] lg:h-[calc(100dvh-6.5rem)] overflow-hidden">
+      <div className="rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm flex flex-col h-[560px] xl:h-full overflow-hidden">
         <div className="px-4 sm:px-6 py-4 border-b border-[var(--border-muted)] flex items-center justify-between gap-3 bg-muted/20">
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold tracking-tight">
@@ -729,7 +729,10 @@ export function DiarizationPlayground({
         </AnimatePresence>
       </div>
 
-      <DiarizationHistoryPanel latestRecord={latestRecord} />
+      <DiarizationHistoryPanel
+        latestRecord={latestRecord}
+        desktopHeightClassName="xl:h-full"
+      />
     </div>
   );
 }

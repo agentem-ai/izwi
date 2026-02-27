@@ -12,11 +12,7 @@ import {
   ChevronDown,
   Settings2,
 } from "lucide-react";
-import {
-  api,
-  type SpeechHistoryRecord,
-  type TTSGenerationStats,
-} from "../api";
+import { api, type SpeechHistoryRecord, type TTSGenerationStats } from "../api";
 import { VoiceClone } from "./VoiceClone";
 import { LANGUAGES } from "../types";
 import clsx from "clsx";
@@ -71,8 +67,11 @@ export function VoiceClonePlayground({
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [generationStats, setGenerationStats] = useState<TTSGenerationStats | null>(null);
-  const [latestRecord, setLatestRecord] = useState<SpeechHistoryRecord | null>(null);
+  const [generationStats, setGenerationStats] =
+    useState<TTSGenerationStats | null>(null);
+  const [latestRecord, setLatestRecord] = useState<SpeechHistoryRecord | null>(
+    null,
+  );
   const [voiceCloneAudio, setVoiceCloneAudio] = useState<string | null>(null);
   const [voiceCloneTranscript, setVoiceCloneTranscript] = useState<
     string | null
@@ -96,7 +95,9 @@ export function VoiceClonePlayground({
     if (!selectedModel) {
       return null;
     }
-    return modelOptions.find((option) => option.value === selectedModel) || null;
+    return (
+      modelOptions.find((option) => option.value === selectedModel) || null
+    );
   }, [selectedModel, modelOptions]);
 
   useEffect(() => {
@@ -180,7 +181,8 @@ export function VoiceClonePlayground({
         const downloadUrl = api.voiceCloningRecordAudioUrl(record.id, {
           download: true,
         });
-        const filename = record.audio_filename || `izwi-voice-clone-${Date.now()}.wav`;
+        const filename =
+          record.audio_filename || `izwi-voice-clone-${Date.now()}.wav`;
         await api.downloadAudioFile(downloadUrl, filename);
         completeDownload();
         return;
@@ -189,7 +191,10 @@ export function VoiceClonePlayground({
       if (!localAudioUrl) {
         return;
       }
-      await api.downloadAudioFile(localAudioUrl, `izwi-voice-clone-${Date.now()}.wav`);
+      await api.downloadAudioFile(
+        localAudioUrl,
+        `izwi-voice-clone-${Date.now()}.wav`,
+      );
       completeDownload();
     } catch (error) {
       failDownload(error);
@@ -219,7 +224,7 @@ export function VoiceClonePlayground({
 
   const getStatusTone = (option: ModelOption): string => {
     if (option.isReady) {
-      return "text-gray-300 bg-white/10";
+      return "text-[var(--text-secondary)] bg-[var(--bg-surface-3)] border border-[var(--border-muted)]";
     }
     if (
       option.statusLabel.toLowerCase().includes("downloading") ||
@@ -230,7 +235,7 @@ export function VoiceClonePlayground({
     if (option.statusLabel.toLowerCase().includes("error")) {
       return "text-red-400 bg-red-500/10";
     }
-    return "text-gray-400 bg-white/5";
+    return "text-[var(--text-muted)] bg-[var(--bg-surface-2)] border border-[var(--border-muted)]";
   };
 
   const handleOpenModels = () => {
@@ -239,20 +244,28 @@ export function VoiceClonePlayground({
   };
 
   const renderModelSelector = () => (
-    <div className="relative inline-block w-[280px] max-w-[85vw]" ref={modelMenuRef}>
+    <div
+      className="relative inline-block w-[280px] max-w-[85vw]"
+      ref={modelMenuRef}
+    >
       <button
         onClick={() => setIsModelMenuOpen((prev) => !prev)}
         className={clsx(
           "h-9 w-full px-3 rounded-lg border inline-flex items-center justify-between gap-2 text-xs transition-colors",
           selectedOption?.isReady
-            ? "border-white/20 bg-white/10 text-gray-300"
-            : "border-white/20 bg-[#1a1a1a] text-gray-300 hover:border-white/30",
+            ? "border-[var(--border-strong)] bg-[var(--bg-surface-3)] text-[var(--text-primary)]"
+            : "border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]",
         )}
       >
         <span className="flex-1 min-w-0 truncate text-left">
           {selectedOption?.label || "Select model"}
         </span>
-        <ChevronDown className={clsx("w-3.5 h-3.5 shrink-0 transition-transform", isModelMenuOpen && "rotate-180")} />
+        <ChevronDown
+          className={clsx(
+            "w-3.5 h-3.5 shrink-0 transition-transform",
+            isModelMenuOpen && "rotate-180",
+          )}
+        />
       </button>
 
       <AnimatePresence>
@@ -262,7 +275,7 @@ export function VoiceClonePlayground({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.15 }}
-            className="absolute left-0 right-0 top-full mt-2 rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] p-1.5 shadow-2xl z-50"
+            className="absolute left-0 right-0 top-full mt-2 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-2)] p-1.5 shadow-2xl z-50"
           >
             <div className="max-h-64 overflow-y-auto pr-1 space-y-0.5">
               {modelOptions.map((option) => (
@@ -275,11 +288,11 @@ export function VoiceClonePlayground({
                   className={clsx(
                     "w-full text-left rounded-lg px-3 py-2 transition-colors",
                     selectedOption?.value === option.value
-                      ? "bg-white/10"
-                      : "hover:bg-white/5",
+                      ? "bg-[var(--bg-surface-3)]"
+                      : "hover:bg-[var(--bg-surface-3)]",
                   )}
                 >
-                  <div className="text-xs text-gray-200 truncate">
+                  <div className="text-xs text-[var(--text-primary)] truncate">
                     {option.label}
                   </div>
                   <span
@@ -300,270 +313,283 @@ export function VoiceClonePlayground({
   );
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr),320px] items-stretch">
-      <div className="card p-4">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded bg-[#1a1a1a] border border-[#2a2a2a]">
-            <Users className="w-5 h-5 text-gray-400" />
-          </div>
-          <div>
-            <h2 className="text-sm font-medium text-white">Voice Cloning</h2>
-          </div>
-        </div>
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr),320px] items-stretch xl:h-[calc(100dvh-11.75rem)]">
+      <div className="card p-4 flex min-h-0 flex-col">
+        <div className="flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-thin">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)]">
+                <Users className="w-5 h-5 text-[var(--text-muted)]" />
+              </div>
+              <div>
+                <h2 className="text-sm font-medium text-[var(--text-primary)]">
+                  Voice Cloning
+                </h2>
+              </div>
+            </div>
 
-        <div className="flex items-center gap-2">
-          <div className="relative">
-            <button
-              onClick={() => setShowLanguageSelect(!showLanguageSelect)}
-              className="flex w-52 sm:w-56 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
-            >
-              <Globe className="w-3.5 h-3.5 text-gray-500" />
-              <span className="text-white flex-1 min-w-0 truncate text-left">
-                {LANGUAGES.find((l) => l.id === language)?.name || language}
-              </span>
-              <ChevronDown
-                className={clsx(
-                  "w-3.5 h-3.5 text-gray-500 transition-transform",
-                  showLanguageSelect && "rotate-180",
-                )}
-              />
-            </button>
-
-            <AnimatePresence>
-              {showLanguageSelect && (
-                <motion.div
-                  initial={{ opacity: 0, y: -5 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -5 }}
-                  className="absolute left-0 right-0 top-full mt-1 max-h-64 overflow-y-auto p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <button
+                  onClick={() => setShowLanguageSelect(!showLanguageSelect)}
+                  className="flex w-52 sm:w-56 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)] hover:bg-[var(--bg-surface-3)] text-sm"
                 >
-                  {LANGUAGES.map((lang) => (
-                    <button
-                      key={lang.id}
-                      onClick={() => {
-                        setLanguage(lang.id);
-                        setShowLanguageSelect(false);
-                      }}
-                      className={clsx(
-                        "w-full px-2 py-1.5 rounded text-left text-sm transition-colors",
-                        language === lang.id
-                          ? "bg-white/10 text-white"
-                          : "hover:bg-[#2a2a2a] text-gray-400",
-                      )}
+                  <Globe className="w-3.5 h-3.5 text-[var(--text-subtle)]" />
+                  <span className="text-[var(--text-primary)] flex-1 min-w-0 truncate text-left">
+                    {LANGUAGES.find((l) => l.id === language)?.name || language}
+                  </span>
+                  <ChevronDown
+                    className={clsx(
+                      "w-3.5 h-3.5 text-[var(--text-subtle)] transition-transform",
+                      showLanguageSelect && "rotate-180",
+                    )}
+                  />
+                </button>
+
+                <AnimatePresence>
+                  {showLanguageSelect && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="absolute left-0 right-0 top-full mt-1 max-h-64 overflow-y-auto p-1 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)] shadow-xl z-50"
                     >
-                      {lang.name}
-                    </button>
-                  ))}
+                      {LANGUAGES.map((lang) => (
+                        <button
+                          key={lang.id}
+                          onClick={() => {
+                            setLanguage(lang.id);
+                            setShowLanguageSelect(false);
+                          }}
+                          className={clsx(
+                            "w-full px-2 py-1.5 rounded text-left text-sm transition-colors",
+                            language === lang.id
+                              ? "bg-[var(--bg-surface-3)] text-[var(--text-primary)]"
+                              : "hover:bg-[var(--bg-surface-3)] text-[var(--text-secondary)]",
+                          )}
+                        >
+                          {lang.name}
+                        </button>
+                      ))}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </div>
+          </div>
+
+          <div className="mb-4 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">
+                  Active Model
+                </div>
+                <div className="mt-1 text-sm text-[var(--text-primary)] truncate">
+                  {modelLabel ?? "No model selected"}
+                </div>
+                <div
+                  className={clsx(
+                    "mt-1 text-xs",
+                    selectedModelReady
+                      ? "text-[var(--text-secondary)]"
+                      : "text-amber-400",
+                  )}
+                >
+                  {selectedModelReady
+                    ? "Loaded and ready"
+                    : "Open Models and load a Base model"}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {modelOptions.length > 0 && renderModelSelector()}
+                {onOpenModelManager && (
+                  <button
+                    onClick={handleOpenModels}
+                    className="btn btn-secondary text-xs"
+                  >
+                    <Settings2 className="w-4 h-4" />
+                    Models
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {/* Voice Reference Section */}
+            <div className="p-3 rounded-lg bg-[var(--bg-surface-1)] border border-[var(--border-muted)]">
+              <div className="flex items-center gap-2 mb-3">
+                <Users className="w-4 h-4 text-[var(--text-muted)]" />
+                <span className="text-xs font-medium text-[var(--text-primary)]">
+                  Voice Reference
+                </span>
+                {isVoiceReady && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface-3)] text-[var(--text-secondary)] border border-[var(--border-muted)]">
+                    Ready
+                  </span>
+                )}
+              </div>
+              <VoiceClone
+                onVoiceCloneReady={handleVoiceCloneReady}
+                onClear={handleVoiceCloneClear}
+              />
+            </div>
+
+            {/* Text to speak */}
+            <div>
+              <label className="block text-xs text-[var(--text-muted)] font-medium mb-2">
+                Text to Speak
+              </label>
+              <div className="relative">
+                <textarea
+                  ref={textareaRef}
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder="Enter the text you want to synthesize with the cloned voice..."
+                  rows={5}
+                  disabled={generating}
+                  className="textarea text-sm"
+                />
+                <div className="absolute bottom-2 right-2">
+                  <span className="text-xs text-[var(--text-subtle)]">
+                    {text.length}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Error */}
+            <AnimatePresence>
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="p-2 rounded bg-red-950/50 border border-red-900/50 text-red-400 text-xs"
+                >
+                  {error}
                 </motion.div>
               )}
             </AnimatePresence>
-          </div>
-        </div>
-      </div>
 
-      <div className="mb-4 rounded-xl border border-[#2b2b2b] bg-[#171717] p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] text-gray-500 uppercase tracking-wide">
-              Active Model
-            </div>
-            <div className="mt-1 text-sm text-white truncate">
-              {modelLabel ?? "No model selected"}
-            </div>
-            <div
-              className={clsx(
-                "mt-1 text-xs",
-                selectedModelReady ? "text-gray-300" : "text-amber-400",
-              )}
-            >
-              {selectedModelReady
-                ? "Loaded and ready"
-                : "Open Models and load a Base model"}
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {modelOptions.length > 0 && renderModelSelector()}
-            {onOpenModelManager && (
+            {/* Actions */}
+            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
               <button
-                onClick={handleOpenModels}
-                className="btn btn-secondary text-xs"
+                onClick={handleGenerate}
+                disabled={generating || !selectedModelReady || !isVoiceReady}
+                className="btn btn-primary flex-1 min-h-[44px]"
               >
-                <Settings2 className="w-4 h-4" />
-                Models
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="space-y-4">
-        {/* Voice Reference Section */}
-        <div className="p-3 rounded-lg bg-[#161616] border border-[#2a2a2a]">
-          <div className="flex items-center gap-2 mb-3">
-            <Users className="w-4 h-4 text-gray-400" />
-            <span className="text-xs font-medium text-white">
-              Voice Reference
-            </span>
-            {isVoiceReady && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-gray-300 border border-white/20">
-                Ready
-              </span>
-            )}
-          </div>
-          <VoiceClone
-            onVoiceCloneReady={handleVoiceCloneReady}
-            onClear={handleVoiceCloneClear}
-          />
-        </div>
-
-        {/* Text to speak */}
-        <div>
-          <label className="block text-xs text-gray-500 font-medium mb-2">
-            Text to Speak
-          </label>
-          <div className="relative">
-            <textarea
-              ref={textareaRef}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Enter the text you want to synthesize with the cloned voice..."
-              rows={5}
-              disabled={generating}
-              className="textarea text-sm"
-            />
-            <div className="absolute bottom-2 right-2">
-              <span className="text-xs text-gray-600">{text.length}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Error */}
-        <AnimatePresence>
-          {error && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className="p-2 rounded bg-red-950/50 border border-red-900/50 text-red-400 text-xs"
-            >
-              {error}
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Actions */}
-        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-          <button
-            onClick={handleGenerate}
-            disabled={generating || !selectedModelReady || !isVoiceReady}
-            className="btn btn-primary flex-1 min-h-[44px]"
-          >
-            {generating ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Cloning Voice...
-              </>
-            ) : (
-              <>
-                <Users className="w-4 h-4" />
-                Generate
-              </>
-            )}
-          </button>
-
-          {audioUrl && (
-            <>
-              <button
-                onClick={handleStop}
-                className="btn btn-secondary min-h-[44px] min-w-[44px]"
-              >
-                <Square className="w-4 h-4" />
-              </button>
-              <button
-                onClick={handleDownload}
-                disabled={isDownloading}
-                className={clsx(
-                  "btn btn-secondary min-h-[44px] min-w-[44px]",
-                  isDownloading && "opacity-75",
-                )}
-              >
-                {isDownloading ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                {generating ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Cloning Voice...
+                  </>
                 ) : (
-                  <Download className="w-4 h-4" />
+                  <>
+                    <Users className="w-4 h-4" />
+                    Generate
+                  </>
                 )}
               </button>
-              <button
-                onClick={handleReset}
-                className="btn btn-ghost min-h-[44px] min-w-[44px]"
-              >
-                <RotateCcw className="w-4 h-4" />
-              </button>
-            </>
-          )}
-        </div>
 
-        <AnimatePresence>
-          {downloadState !== "idle" && downloadMessage && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className={clsx(
-                "p-2 rounded border text-xs flex items-center gap-2",
-                downloadState === "downloading" &&
-                  "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]",
-                downloadState === "success" &&
-                  "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]",
-                downloadState === "error" &&
-                  "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
+              {audioUrl && (
+                <>
+                  <button
+                    onClick={handleStop}
+                    className="btn btn-secondary min-h-[44px] min-w-[44px]"
+                  >
+                    <Square className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={handleDownload}
+                    disabled={isDownloading}
+                    className={clsx(
+                      "btn btn-secondary min-h-[44px] min-w-[44px]",
+                      isDownloading && "opacity-75",
+                    )}
+                  >
+                    {isDownloading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4" />
+                    )}
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    className="btn btn-ghost min-h-[44px] min-w-[44px]"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                  </button>
+                </>
               )}
-            >
-              {downloadState === "downloading" ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : downloadState === "success" ? (
-                <CheckCircle2 className="w-3.5 h-3.5" />
-              ) : (
-                <AlertCircle className="w-3.5 h-3.5" />
-              )}
-              {downloadMessage}
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {!selectedModelReady && (
-          <p className="text-xs text-gray-400">
-            Load a Base model to clone voices
-          </p>
-        )}
-
-        {selectedModelReady && !isVoiceReady && (
-          <p className="text-xs text-gray-400">
-            Upload, record, or select a saved voice sample to get started
-          </p>
-        )}
-      </div>
-
-      {/* Audio player */}
-      <AnimatePresence>
-        {audioUrl && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 10 }}
-            className="mt-4 space-y-3"
-          >
-            <div className="p-3 rounded bg-[#1a1a1a] border border-[#2a2a2a]">
-              <audio ref={audioRef} src={audioUrl} className="w-full" controls />
             </div>
-            {generationStats && (
-              <GenerationStats stats={generationStats} type="tts" />
+
+            <AnimatePresence>
+              {downloadState !== "idle" && downloadMessage && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className={clsx(
+                    "p-2 rounded border text-xs flex items-center gap-2",
+                    downloadState === "downloading" &&
+                      "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]",
+                    downloadState === "success" &&
+                      "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]",
+                    downloadState === "error" &&
+                      "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
+                  )}
+                >
+                  {downloadState === "downloading" ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : downloadState === "success" ? (
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  ) : (
+                    <AlertCircle className="w-3.5 h-3.5" />
+                  )}
+                  {downloadMessage}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {!selectedModelReady && (
+              <p className="text-xs text-[var(--text-secondary)]">
+                Load a Base model to clone voices
+              </p>
             )}
-          </motion.div>
-        )}
-      </AnimatePresence>
+
+            {selectedModelReady && !isVoiceReady && (
+              <p className="text-xs text-[var(--text-secondary)]">
+                Upload, record, or select a saved voice sample to get started
+              </p>
+            )}
+          </div>
+
+          {/* Audio player */}
+          <AnimatePresence>
+            {audioUrl && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 10 }}
+                className="mt-4 space-y-3"
+              >
+                <div className="p-3 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)]">
+                  <audio
+                    ref={audioRef}
+                    src={audioUrl}
+                    className="w-full"
+                    controls
+                  />
+                </div>
+                {generationStats && (
+                  <GenerationStats stats={generationStats} type="tts" />
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
 
       <SpeechHistoryPanel
@@ -571,6 +597,7 @@ export function VoiceClonePlayground({
         title="Voice Cloning History"
         emptyMessage="No saved voice-cloning generations yet."
         latestRecord={latestRecord}
+        desktopHeightClassName="xl:h-[calc(100dvh-11.75rem)]"
       />
     </div>
   );

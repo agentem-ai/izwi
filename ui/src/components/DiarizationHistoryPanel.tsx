@@ -34,6 +34,7 @@ interface TranscriptEntry {
 
 interface DiarizationHistoryPanelProps {
   latestRecord?: DiarizationRecord | null;
+  desktopHeightClassName?: string;
 }
 
 function formatCreatedAt(timestampMs: number): string {
@@ -53,7 +54,11 @@ function formatCreatedAt(timestampMs: number): string {
 }
 
 function formatAudioDuration(durationSecs: number | null): string {
-  if (durationSecs === null || !Number.isFinite(durationSecs) || durationSecs < 0) {
+  if (
+    durationSecs === null ||
+    !Number.isFinite(durationSecs) ||
+    durationSecs < 0
+  ) {
     return "Unknown length";
   }
   if (durationSecs < 60) {
@@ -156,35 +161,54 @@ function summarizeRecord(record: DiarizationRecord): DiarizationRecordSummary {
 
 export function DiarizationHistoryPanel({
   latestRecord = null,
+  desktopHeightClassName = "xl:h-full",
 }: DiarizationHistoryPanelProps) {
-  const [historyRecords, setHistoryRecords] = useState<DiarizationRecordSummary[]>([]);
+  const [historyRecords, setHistoryRecords] = useState<
+    DiarizationRecordSummary[]
+  >([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const [selectedHistoryRecordId, setSelectedHistoryRecordId] = useState<string | null>(null);
+  const [selectedHistoryRecordId, setSelectedHistoryRecordId] = useState<
+    string | null
+  >(null);
   const [selectedHistoryRecord, setSelectedHistoryRecord] =
     useState<DiarizationRecord | null>(null);
   const [selectedHistoryLoading, setSelectedHistoryLoading] = useState(false);
-  const [selectedHistoryError, setSelectedHistoryError] = useState<string | null>(null);
+  const [selectedHistoryError, setSelectedHistoryError] = useState<
+    string | null
+  >(null);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [historyCurrentTime, setHistoryCurrentTime] = useState(0);
   const [historyDuration, setHistoryDuration] = useState(0);
   const [historyIsPlaying, setHistoryIsPlaying] = useState(false);
   const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1);
-  const [historyAudioError, setHistoryAudioError] = useState<string | null>(null);
+  const [historyAudioError, setHistoryAudioError] = useState<string | null>(
+    null,
+  );
   const [historyTranscriptCopied, setHistoryTranscriptCopied] = useState(false);
-  const [deleteTargetRecordId, setDeleteTargetRecordId] = useState<string | null>(null);
+  const [deleteTargetRecordId, setDeleteTargetRecordId] = useState<
+    string | null
+  >(null);
   const [deleteRecordPending, setDeleteRecordPending] = useState(false);
-  const [deleteRecordError, setDeleteRecordError] = useState<string | null>(null);
+  const [deleteRecordError, setDeleteRecordError] = useState<string | null>(
+    null,
+  );
 
   const historyAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  const mergeHistorySummary = useCallback((summary: DiarizationRecordSummary) => {
-    setHistoryRecords((previous) => {
-      const next = [summary, ...previous.filter((item) => item.id !== summary.id)];
-      next.sort((a, b) => b.created_at - a.created_at);
-      return next;
-    });
-  }, []);
+  const mergeHistorySummary = useCallback(
+    (summary: DiarizationRecordSummary) => {
+      setHistoryRecords((previous) => {
+        const next = [
+          summary,
+          ...previous.filter((item) => item.id !== summary.id),
+        ];
+        next.sort((a, b) => b.created_at - a.created_at);
+        return next;
+      });
+    },
+    [],
+  );
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -200,7 +224,9 @@ export function DiarizationHistoryPanel({
       });
     } catch (err) {
       setHistoryError(
-        err instanceof Error ? err.message : "Failed to load diarization history.",
+        err instanceof Error
+          ? err.message
+          : "Failed to load diarization history.",
       );
     } finally {
       setHistoryLoading(false);
@@ -329,7 +355,9 @@ export function DiarizationHistoryPanel({
       setDeleteRecordError(null);
     } catch (err) {
       setDeleteRecordError(
-        err instanceof Error ? err.message : "Failed to delete diarization record.",
+        err instanceof Error
+          ? err.message
+          : "Failed to delete diarization record.",
       );
     } finally {
       setDeleteRecordPending(false);
@@ -382,13 +410,15 @@ export function DiarizationHistoryPanel({
   const selectedHistorySummary = useMemo(
     () =>
       selectedHistoryRecordId
-        ? historyRecords.find((record) => record.id === selectedHistoryRecordId) ??
-          null
+        ? (historyRecords.find(
+            (record) => record.id === selectedHistoryRecordId,
+          ) ?? null)
         : null,
     [historyRecords, selectedHistoryRecordId],
   );
   const activeHistoryRecord =
-    selectedHistoryRecord && selectedHistoryRecord.id === selectedHistoryRecordId
+    selectedHistoryRecord &&
+    selectedHistoryRecord.id === selectedHistoryRecordId
       ? selectedHistoryRecord
       : null;
   const deleteTargetRecord = useMemo(() => {
@@ -419,19 +449,23 @@ export function DiarizationHistoryPanel({
   const selectedHistoryIndex = useMemo(
     () =>
       selectedHistoryRecordId
-        ? historyRecords.findIndex((record) => record.id === selectedHistoryRecordId)
+        ? historyRecords.findIndex(
+            (record) => record.id === selectedHistoryRecordId,
+          )
         : -1,
     [historyRecords, selectedHistoryRecordId],
   );
   const historyViewerDuration =
     historyDuration > 0
       ? historyDuration
-      : activeHistoryRecord?.duration_secs && activeHistoryRecord.duration_secs > 0
+      : activeHistoryRecord?.duration_secs &&
+          activeHistoryRecord.duration_secs > 0
         ? activeHistoryRecord.duration_secs
         : 0;
   const canOpenNewerHistory = selectedHistoryIndex > 0;
   const canOpenOlderHistory =
-    selectedHistoryIndex >= 0 && selectedHistoryIndex < historyRecords.length - 1;
+    selectedHistoryIndex >= 0 &&
+    selectedHistoryIndex < historyRecords.length - 1;
 
   const openAdjacentHistoryRecord = useCallback(
     (direction: "newer" | "older") => {
@@ -439,7 +473,9 @@ export function DiarizationHistoryPanel({
         return;
       }
       const targetIndex =
-        direction === "newer" ? selectedHistoryIndex - 1 : selectedHistoryIndex + 1;
+        direction === "newer"
+          ? selectedHistoryIndex - 1
+          : selectedHistoryIndex + 1;
       if (targetIndex < 0 || targetIndex >= historyRecords.length) {
         return;
       }
@@ -470,27 +506,40 @@ export function DiarizationHistoryPanel({
     }
   }, []);
 
-  const seekHistoryAudio = useCallback((nextTime: number) => {
-    const audio = historyAudioRef.current;
-    if (!audio) {
-      return;
-    }
-    const duration = Number.isFinite(audio.duration) ? audio.duration : historyViewerDuration;
-    const clamped = Math.max(0, Math.min(nextTime, duration || 0));
-    audio.currentTime = clamped;
-    setHistoryCurrentTime(clamped);
-  }, [historyViewerDuration]);
+  const seekHistoryAudio = useCallback(
+    (nextTime: number) => {
+      const audio = historyAudioRef.current;
+      if (!audio) {
+        return;
+      }
+      const duration = Number.isFinite(audio.duration)
+        ? audio.duration
+        : historyViewerDuration;
+      const clamped = Math.max(0, Math.min(nextTime, duration || 0));
+      audio.currentTime = clamped;
+      setHistoryCurrentTime(clamped);
+    },
+    [historyViewerDuration],
+  );
 
-  const skipHistoryAudio = useCallback((deltaSeconds: number) => {
-    const audio = historyAudioRef.current;
-    if (!audio) {
-      return;
-    }
-    const duration = Number.isFinite(audio.duration) ? audio.duration : historyViewerDuration;
-    const next = Math.max(0, Math.min(audio.currentTime + deltaSeconds, duration || 0));
-    audio.currentTime = next;
-    setHistoryCurrentTime(next);
-  }, [historyViewerDuration]);
+  const skipHistoryAudio = useCallback(
+    (deltaSeconds: number) => {
+      const audio = historyAudioRef.current;
+      if (!audio) {
+        return;
+      }
+      const duration = Number.isFinite(audio.duration)
+        ? audio.duration
+        : historyViewerDuration;
+      const next = Math.max(
+        0,
+        Math.min(audio.currentTime + deltaSeconds, duration || 0),
+      );
+      audio.currentTime = next;
+      setHistoryCurrentTime(next);
+    },
+    [historyViewerDuration],
+  );
 
   const handleHistoryRateChange = useCallback((rate: number) => {
     const audio = historyAudioRef.current;
@@ -561,7 +610,12 @@ export function DiarizationHistoryPanel({
 
   return (
     <>
-      <aside className="card border-[var(--border-muted)] p-4 sm:p-5 min-h-[560px] flex flex-col overflow-hidden">
+      <aside
+        className={clsx(
+          "card border-[var(--border-muted)] p-4 sm:p-5 h-[560px] flex flex-col overflow-hidden",
+          desktopHeightClassName,
+        )}
+      >
         <div className="flex items-start justify-between gap-3 mb-3">
           <div>
             <div className="inline-flex items-center gap-2 text-xs text-[var(--text-muted)]">
@@ -713,7 +767,9 @@ export function DiarizationHistoryPanel({
                 <div className="flex items-center gap-1.5">
                   {activeHistoryRecord && (
                     <button
-                      onClick={() => openDeleteRecordConfirm(activeHistoryRecord.id)}
+                      onClick={() =>
+                        openDeleteRecordConfirm(activeHistoryRecord.id)
+                      }
                       className="inline-flex items-center gap-1 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-2.5 py-1.5 text-xs text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
                       title="Delete this record"
                     >
@@ -768,7 +824,9 @@ export function DiarizationHistoryPanel({
                           {activeHistoryRecord.speaker_count} speakers
                         </span>
                         <span className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2 py-1 text-[11px] text-[var(--text-secondary)]">
-                          {formatAudioDuration(activeHistoryRecord.duration_secs)}
+                          {formatAudioDuration(
+                            activeHistoryRecord.duration_secs,
+                          )}
                         </span>
                       </div>
 
@@ -777,19 +835,25 @@ export function DiarizationHistoryPanel({
                         src={selectedHistoryAudioUrl ?? undefined}
                         preload="metadata"
                         onLoadedMetadata={(event) => {
-                          const durationSeconds = Number.isFinite(event.currentTarget.duration)
+                          const durationSeconds = Number.isFinite(
+                            event.currentTarget.duration,
+                          )
                             ? event.currentTarget.duration
                             : 0;
                           setHistoryDuration(durationSeconds);
                           setHistoryAudioError(null);
                         }}
                         onTimeUpdate={(event) => {
-                          setHistoryCurrentTime(event.currentTarget.currentTime);
+                          setHistoryCurrentTime(
+                            event.currentTarget.currentTime,
+                          );
                         }}
                         onPlay={() => setHistoryIsPlaying(true)}
                         onPause={() => setHistoryIsPlaying(false)}
                         onRateChange={(event) =>
-                          setHistoryPlaybackRate(event.currentTarget.playbackRate)
+                          setHistoryPlaybackRate(
+                            event.currentTarget.playbackRate,
+                          )
                         }
                         onError={() =>
                           setHistoryAudioError(
@@ -841,12 +905,18 @@ export function DiarizationHistoryPanel({
                             min={0}
                             max={historyViewerDuration || 0}
                             step={0.05}
-                            value={Math.min(historyCurrentTime, historyViewerDuration || 0)}
+                            value={Math.min(
+                              historyCurrentTime,
+                              historyViewerDuration || 0,
+                            )}
                             onChange={(event) =>
                               seekHistoryAudio(Number(event.target.value))
                             }
                             className="w-full accent-[var(--accent-solid)]"
-                            disabled={!selectedHistoryAudioUrl || historyViewerDuration <= 0}
+                            disabled={
+                              !selectedHistoryAudioUrl ||
+                              historyViewerDuration <= 0
+                            }
                           />
                         </div>
 
@@ -857,7 +927,9 @@ export function DiarizationHistoryPanel({
                           <select
                             value={historyPlaybackRate}
                             onChange={(event) =>
-                              handleHistoryRateChange(Number(event.target.value))
+                              handleHistoryRateChange(
+                                Number(event.target.value),
+                              )
                             }
                             className="h-8 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2 text-xs text-[var(--text-secondary)] focus:outline-none focus:ring-1 focus:ring-[var(--border-strong)]"
                           >
@@ -898,7 +970,8 @@ export function DiarizationHistoryPanel({
                     </>
                   ) : (
                     <div className="h-full min-h-[220px] flex items-center justify-center text-sm text-[var(--text-subtle)] text-center">
-                      Select a history record to inspect playback and transcript.
+                      Select a history record to inspect playback and
+                      transcript.
                     </div>
                   )}
                 </div>
@@ -955,7 +1028,8 @@ export function DiarizationHistoryPanel({
                                 {entry.speaker}
                               </span>
                               <span className="text-[11px] text-[var(--text-subtle)]">
-                                {entry.start.toFixed(2)}s - {entry.end.toFixed(2)}s
+                                {entry.start.toFixed(2)}s -{" "}
+                                {entry.end.toFixed(2)}s
                               </span>
                             </div>
                             <p className="text-sm text-[var(--text-secondary)] whitespace-pre-wrap break-words">
