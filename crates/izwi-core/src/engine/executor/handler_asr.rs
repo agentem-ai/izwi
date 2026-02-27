@@ -7,6 +7,8 @@ use super::super::types::AudioOutput;
 use super::state::ActiveAsrDecode;
 use super::{decode_audio_base64_with_rate, ExecutorOutput, NativeExecutor};
 
+const MAX_ASR_NEW_TOKENS: usize = 512;
+
 impl NativeExecutor {
     pub(super) fn transcribe_request(
         &self,
@@ -98,7 +100,9 @@ impl NativeExecutor {
                             });
                         }
 
-                        let max_new_tokens = request.params.max_tokens.clamp(1, 4096);
+                        // Keep ASR decode bounded. If EOS is missed, very high caps
+                        // produce runaway gibberish and extreme latency.
+                        let max_new_tokens = request.params.max_tokens.clamp(1, MAX_ASR_NEW_TOKENS);
                         let decode_state = Self::run_blocking(|| {
                             model.start_decode_state(
                                 &samples,

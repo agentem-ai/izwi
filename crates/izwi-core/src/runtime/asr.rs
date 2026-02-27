@@ -9,6 +9,30 @@ use crate::runtime::service::RuntimeService;
 use crate::runtime::types::AsrTranscription;
 
 impl RuntimeService {
+    pub(crate) async fn asr_transcribe_with_variant(
+        &self,
+        variant: ModelVariant,
+        audio_base64: &str,
+        language: Option<&str>,
+        correlation_id: Option<&str>,
+    ) -> Result<AsrTranscription> {
+        self.load_model(variant).await?;
+
+        let mut request = EngineCoreRequest::asr(audio_base64.to_string());
+        request.model_variant = Some(variant);
+        request.language = language.map(|s| s.to_string());
+        request.correlation_id = correlation_id.map(|s| s.to_string());
+
+        let output = self.run_request(request).await?;
+        let text = output.text.unwrap_or_default();
+
+        Ok(AsrTranscription {
+            text,
+            language: language.map(|s| s.to_string()),
+            duration_secs: output.audio.duration_secs,
+        })
+    }
+
     pub(crate) async fn asr_transcribe_with_variant_streaming<F>(
         &self,
         variant: ModelVariant,
@@ -85,14 +109,9 @@ impl RuntimeService {
         model_id: Option<&str>,
         language: Option<&str>,
     ) -> Result<AsrTranscription> {
-        self.asr_transcribe_streaming_with_correlation(
-            audio_base64,
-            model_id,
-            language,
-            None,
-            |_delta| {},
-        )
-        .await
+        let variant = resolve_asr_model_variant(model_id);
+        self.asr_transcribe_with_variant(variant, audio_base64, language, None)
+            .await
     }
 
     /// Transcribe audio and emit deltas.

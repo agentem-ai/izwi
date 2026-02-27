@@ -69,6 +69,8 @@ pub struct AsrDecodeStep {
     pub finished: bool,
 }
 
+const DEFAULT_TRANSCRIBE_MAX_NEW_TOKENS: usize = 512;
+
 impl Qwen3AsrModel {
     pub fn load(model_dir: &Path, device: DeviceProfile) -> Result<Self> {
         let config_path = model_dir.join("config.json");
@@ -165,7 +167,9 @@ impl Qwen3AsrModel {
             );
             selected
         } else if device.kind.is_metal() {
-            DType::F16
+            // Qwen3-ASR text decode on Metal can drift badly in fp16 on longer
+            // utterances. Prefer f32 unless the user explicitly overrides it.
+            DType::F32
         } else {
             device.select_dtype(None)
         };
@@ -311,7 +315,12 @@ impl Qwen3AsrModel {
                     .to_string(),
             ));
         }
-        let mut state = self.start_decode(audio, sample_rate, language, 1024)?;
+        let mut state = self.start_decode(
+            audio,
+            sample_rate,
+            language,
+            DEFAULT_TRANSCRIBE_MAX_NEW_TOKENS,
+        )?;
         loop {
             let step = self.decode_step(&mut state)?;
             if !step.delta.is_empty() {
