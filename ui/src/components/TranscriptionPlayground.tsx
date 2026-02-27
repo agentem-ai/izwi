@@ -1048,8 +1048,8 @@ export function TranscriptionPlayground({
   );
 
   return (
-    <div className="grid gap-4 lg:gap-6 xl:grid-cols-[340px,minmax(0,1fr),320px]">
-      <div className="rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm p-4 sm:p-5 space-y-4">
+    <div className="grid gap-4 lg:gap-6 xl:grid-cols-[340px,minmax(0,1fr),320px] xl:h-[calc(100dvh-11.75rem)]">
+      <div className="rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm p-4 sm:p-5 space-y-4 xl:h-full xl:min-h-0 xl:overflow-y-auto">
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="inline-flex items-center gap-2 text-xs text-muted-foreground font-medium uppercase tracking-wider">
@@ -1167,7 +1167,7 @@ export function TranscriptionPlayground({
         )}
       </div>
 
-      <div className="card p-4 sm:p-5 min-h-[460px] lg:min-h-[560px] flex flex-col">
+      <div className="card p-4 sm:p-5 min-h-[460px] lg:min-h-[560px] xl:min-h-0 flex flex-col xl:h-full">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2 min-w-0">
@@ -1301,7 +1301,7 @@ export function TranscriptionPlayground({
         </AnimatePresence>
       </div>
 
-      <aside className="rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm flex flex-col h-[440px] lg:h-[calc(100dvh-6.5rem)] overflow-hidden">
+      <aside className="rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm flex flex-col h-[440px] xl:h-full overflow-hidden">
         <div className="px-4 py-3 border-b border-[var(--border-muted)] flex items-center justify-between gap-3 bg-muted/30">
           <div>
             <div className="inline-flex items-center gap-2 text-xs text-muted-foreground font-medium uppercase tracking-wider">
