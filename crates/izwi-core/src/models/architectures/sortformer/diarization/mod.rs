@@ -1,38 +1,61 @@
 mod nemo;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use candle_core::pickle::read_pth_tensor_info;
-use rustfft::num_complex::Complex32;
+use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_nn::ops;
+use candle_nn::{
+    batch_norm, layer_norm, Conv1d, Conv1dConfig, Conv2d, Conv2dConfig, LayerNorm, Linear, Module,
+    ModuleT, VarBuilder,
+};
+use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
 
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
+use crate::models::shared::weights::mlx;
 use crate::runtime::{DiarizationConfig, DiarizationResult, DiarizationSegment};
 
 use nemo::{ensure_sortformer_artifacts, SortformerArtifacts};
 
 const TARGET_SAMPLE_RATE: u32 = 16_000;
 const MAX_SUPPORTED_SPEAKERS: usize = 4;
-const FRAME_MS: f32 = 80.0;
-const HOP_MS: f32 = 40.0;
 const DEFAULT_MIN_SPEECH_MS: f32 = 240.0;
 const DEFAULT_MIN_SILENCE_MS: f32 = 200.0;
-const FFT_SIZE: usize = 512;
+const PREEMPH: f32 = 0.97;
+const LOG_GUARD: f32 = 5.960_464_5e-8;
+const NORMALIZE_EPS: f32 = 1e-5;
+const REALTIME_VAD_THRESHOLD: f32 = 0.02;
 
-#[derive(Debug, Clone)]
-struct FrameFeatures {
-    start_sample: usize,
-    end_sample: usize,
-    rms_db: f32,
-    vector: Vec<f32>,
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SortformerModelConfig {
+    sample_rate: Option<u32>,
+    max_num_of_spks: Option<usize>,
+    preprocessor: Option<SortformerPreprocessorConfig>,
+    sortformer_modules: Option<SortformerModulesConfig>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SortformerPreprocessorConfig {
+    sample_rate: Option<u32>,
+    window_size: Option<f32>,
+    window_stride: Option<f32>,
+    features: Option<usize>,
+    n_fft: Option<usize>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SortformerModulesConfig {
+    pred_score_threshold: Option<f32>,
 }
 
 pub struct SortformerDiarizerModel {
     variant: ModelVariant,
     _artifacts: SortformerArtifacts,
     _checkpoint_tensor_count: usize,
+    model: SortformerInferenceModel,
+    pred_threshold: f32,
 }
 
 impl SortformerDiarizerModel {
@@ -46,17 +69,83 @@ impl SortformerDiarizerModel {
 
         let artifacts = ensure_sortformer_artifacts(model_dir, variant)?;
         let tensor_info =
-            read_pth_tensor_info(&artifacts.checkpoint_path, false, None).map_err(|e| {
+            candle_core::pickle::read_pth_tensor_info(&artifacts.checkpoint_path, false, None)
+                .map_err(|e| {
+                    Error::ModelLoadError(format!(
+                        "Failed to inspect Sortformer checkpoint {}: {}",
+                        artifacts.checkpoint_path.display(),
+                        e
+                    ))
+                })?;
+
+        let config: SortformerModelConfig = serde_yaml::from_str(
+            &std::fs::read_to_string(&artifacts.model_config_path).map_err(|e| {
                 Error::ModelLoadError(format!(
-                    "Failed to inspect Sortformer checkpoint {}: {}",
+                    "Failed reading Sortformer config {}: {}",
+                    artifacts.model_config_path.display(),
+                    e
+                ))
+            })?,
+        )
+        .map_err(|e| {
+            Error::ModelLoadError(format!(
+                "Failed parsing Sortformer config {}: {}",
+                artifacts.model_config_path.display(),
+                e
+            ))
+        })?;
+
+        let sample_rate = config.sample_rate.unwrap_or(TARGET_SAMPLE_RATE);
+        if sample_rate != TARGET_SAMPLE_RATE {
+            return Err(Error::ModelLoadError(format!(
+                "Unsupported Sortformer sample rate {sample_rate}; expected {TARGET_SAMPLE_RATE}"
+            )));
+        }
+
+        let num_spks = config.max_num_of_spks.unwrap_or(MAX_SUPPORTED_SPEAKERS);
+        if num_spks != MAX_SUPPORTED_SPEAKERS {
+            return Err(Error::ModelLoadError(format!(
+                "Unsupported Sortformer speaker count {num_spks}; expected {MAX_SUPPORTED_SPEAKERS}"
+            )));
+        }
+
+        let device = Device::Cpu;
+        let vb =
+            VarBuilder::from_pth(&artifacts.checkpoint_path, DType::F32, &device).map_err(|e| {
+                Error::ModelLoadError(format!(
+                    "Failed to load Sortformer checkpoint {}: {}",
                     artifacts.checkpoint_path.display(),
                     e
                 ))
             })?;
+
+        let preprocessor_cfg =
+            config
+                .preprocessor
+                .clone()
+                .unwrap_or(SortformerPreprocessorConfig {
+                    sample_rate: Some(TARGET_SAMPLE_RATE),
+                    window_size: Some(0.025),
+                    window_stride: Some(0.01),
+                    features: Some(128),
+                    n_fft: Some(512),
+                });
+
+        let model = SortformerInferenceModel::load(&vb, preprocessor_cfg)?;
+
+        let pred_threshold = config
+            .sortformer_modules
+            .as_ref()
+            .and_then(|m| m.pred_score_threshold)
+            .unwrap_or(0.25)
+            .clamp(0.05, 0.95);
+
         Ok(Self {
             variant,
             _artifacts: artifacts,
             _checkpoint_tensor_count: tensor_info.len(),
+            model,
+            pred_threshold,
         })
     }
 
@@ -88,62 +177,51 @@ impl SortformerDiarizerModel {
             });
         }
 
-        let frame_len = ((TARGET_SAMPLE_RATE as f32 * FRAME_MS) / 1000.0).round() as usize;
-        let hop_len = ((TARGET_SAMPLE_RATE as f32 * HOP_MS) / 1000.0).round() as usize;
-        let frame_len = frame_len.max(1);
-        let hop_len = hop_len.max(1);
-
-        let frames = extract_frame_features(&samples, frame_len, hop_len)?;
-        if frames.is_empty() {
+        let (speaker_probs, frame_stride_samples) =
+            self.model.infer_speaker_probabilities(&samples)?;
+        if speaker_probs.is_empty() {
             return Ok(DiarizationResult {
                 segments: Vec::new(),
                 duration_secs,
                 speaker_count: 0,
             });
         }
-
-        let rms_values: Vec<f32> = frames.iter().map(|f| f.rms_db).collect();
-        let vad_threshold_db = adaptive_vad_threshold_db(&rms_values);
-        let mut active: Vec<bool> = rms_values.iter().map(|db| *db > vad_threshold_db).collect();
 
         let min_speech_ms = config
             .min_speech_duration_ms
             .unwrap_or(DEFAULT_MIN_SPEECH_MS)
-            .clamp(HOP_MS, 5000.0);
+            .clamp(
+                frame_stride_samples as f32 * 1000.0 / TARGET_SAMPLE_RATE as f32,
+                5000.0,
+            );
         let min_silence_ms = config
             .min_silence_duration_ms
             .unwrap_or(DEFAULT_MIN_SILENCE_MS)
-            .clamp(HOP_MS, 5000.0);
+            .clamp(
+                frame_stride_samples as f32 * 1000.0 / TARGET_SAMPLE_RATE as f32,
+                5000.0,
+            );
 
-        let min_speech_frames = ((min_speech_ms / HOP_MS).round() as usize).max(1);
-        let min_silence_frames = ((min_silence_ms / HOP_MS).round() as usize).max(1);
-        smooth_activity_mask(&mut active, min_speech_frames, min_silence_frames);
+        let frame_ms = frame_stride_samples as f32 * 1000.0 / TARGET_SAMPLE_RATE as f32;
+        let min_speech_frames = ((min_speech_ms / frame_ms).round() as usize).max(1);
+        let min_silence_frames = ((min_silence_ms / frame_ms).round() as usize).max(1);
 
-        let regions = collect_active_regions(&active);
-        if regions.is_empty() {
-            return Ok(DiarizationResult {
-                segments: Vec::new(),
-                duration_secs,
-                speaker_count: 0,
-            });
-        }
+        let frame_count = speaker_probs.len();
+        let mut vad_mask = realtime_voice_vad_frame_mask(
+            &samples,
+            frame_count,
+            frame_stride_samples,
+            REALTIME_VAD_THRESHOLD,
+        );
+        smooth_activity_mask(&mut vad_mask, min_speech_frames, min_silence_frames);
 
-        let mut embeddings = Vec::with_capacity(regions.len());
-        for (start_idx, end_idx) in &regions {
-            let mut count = 0usize;
-            let mut acc = vec![0.0f32; frames[*start_idx].vector.len()];
-            for frame in &frames[*start_idx..=*end_idx] {
-                for (idx, value) in frame.vector.iter().enumerate() {
-                    acc[idx] += *value;
-                }
-                count += 1;
-            }
-            if count > 0 {
-                for value in &mut acc {
-                    *value /= count as f32;
+        let mut gated_probs = speaker_probs;
+        for (frame_idx, active) in vad_mask.iter().copied().enumerate() {
+            if !active {
+                for spk in 0..MAX_SUPPORTED_SPEAKERS {
+                    gated_probs[frame_idx][spk] = 0.0;
                 }
             }
-            embeddings.push(acc);
         }
 
         let requested_max = config.max_speakers.unwrap_or(MAX_SUPPORTED_SPEAKERS);
@@ -151,59 +229,109 @@ impl SortformerDiarizerModel {
         let requested_min = config.min_speakers.unwrap_or(1);
         let min_speakers = requested_min.clamp(1, max_speakers);
 
-        let clustering = cluster_embeddings(&embeddings, min_speakers, max_speakers);
-        let labels = clustering.labels;
-        let confidences = clustering.confidences;
+        let selected_speakers =
+            select_speaker_channels(&gated_probs, &vad_mask, min_speakers, max_speakers);
 
-        let mut cluster_first_start: HashMap<usize, f32> = HashMap::new();
-        for (region_idx, (start_idx, _)) in regions.iter().enumerate() {
-            let label = labels[region_idx];
-            let start_secs = frames[*start_idx].start_sample as f32 / TARGET_SAMPLE_RATE as f32;
-            cluster_first_start
-                .entry(label)
-                .and_modify(|existing| {
-                    if start_secs < *existing {
-                        *existing = start_secs;
-                    }
-                })
-                .or_insert(start_secs);
+        let mut raw_segments = Vec::<RawSegment>::new();
+        for &speaker_idx in &selected_speakers {
+            let mut mask = gated_probs
+                .iter()
+                .map(|row| row[speaker_idx] >= self.pred_threshold)
+                .collect::<Vec<_>>();
+            smooth_activity_mask(&mut mask, min_speech_frames, min_silence_frames);
+            for (start_frame, end_frame) in collect_active_regions(&mask) {
+                let start_sample = start_frame * frame_stride_samples;
+                let end_sample = (end_frame + 1) * frame_stride_samples;
+                let start_secs = start_sample as f32 / TARGET_SAMPLE_RATE as f32;
+                let end_secs = (end_sample as f32 / TARGET_SAMPLE_RATE as f32).min(duration_secs);
+                if end_secs <= start_secs {
+                    continue;
+                }
+
+                let mut sum = 0.0f32;
+                let mut count = 0usize;
+                for row in gated_probs.iter().take(end_frame + 1).skip(start_frame) {
+                    sum += row[speaker_idx];
+                    count += 1;
+                }
+                let confidence = if count > 0 {
+                    Some((sum / count as f32).clamp(0.0, 1.0))
+                } else {
+                    None
+                };
+
+                raw_segments.push(RawSegment {
+                    speaker_idx,
+                    start_secs,
+                    end_secs,
+                    confidence,
+                });
+            }
         }
 
-        let mut cluster_order: Vec<(usize, f32)> = cluster_first_start.into_iter().collect();
-        cluster_order.sort_by(|a, b| a.1.total_cmp(&b.1));
-        let cluster_to_speaker_index: HashMap<usize, usize> = cluster_order
-            .iter()
-            .enumerate()
-            .map(|(speaker_idx, (cluster, _))| (*cluster, speaker_idx))
-            .collect();
-
-        let mut segments = Vec::with_capacity(regions.len());
-        for (region_idx, (start_idx, end_idx)) in regions.iter().enumerate() {
-            let label = labels[region_idx];
-            let speaker_idx = cluster_to_speaker_index.get(&label).copied().unwrap_or(0);
-            let start_secs = frames[*start_idx].start_sample as f32 / TARGET_SAMPLE_RATE as f32;
-            let mut end_secs = frames[*end_idx].end_sample as f32 / TARGET_SAMPLE_RATE as f32;
-            end_secs = end_secs.min(duration_secs);
-            if end_secs <= start_secs {
-                continue;
-            }
-
-            segments.push(DiarizationSegment {
-                speaker: format!("SPEAKER_{speaker_idx:02}"),
-                start_secs,
-                end_secs,
-                confidence: confidences.get(region_idx).copied().flatten(),
+        if raw_segments.is_empty() {
+            return Ok(DiarizationResult {
+                segments: Vec::new(),
+                duration_secs,
+                speaker_count: 0,
             });
         }
 
-        merge_adjacent_segments(&mut segments, (min_silence_frames as f32 * HOP_MS) / 1000.0);
+        raw_segments.sort_by(|a, b| {
+            a.start_secs
+                .total_cmp(&b.start_secs)
+                .then(a.speaker_idx.cmp(&b.speaker_idx))
+        });
 
-        let mut distinct_speakers: HashMap<String, ()> = HashMap::new();
-        for segment in &segments {
-            distinct_speakers.insert(segment.speaker.clone(), ());
+        let mut speaker_first_start = BTreeMap::<usize, f32>::new();
+        for segment in &raw_segments {
+            speaker_first_start
+                .entry(segment.speaker_idx)
+                .and_modify(|cur| {
+                    if segment.start_secs < *cur {
+                        *cur = segment.start_secs;
+                    }
+                })
+                .or_insert(segment.start_secs);
         }
 
-        let speaker_count = distinct_speakers.len();
+        let mut ordered = speaker_first_start.into_iter().collect::<Vec<_>>();
+        ordered.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let speaker_remap = ordered
+            .iter()
+            .enumerate()
+            .map(|(i, (speaker_idx, _))| (*speaker_idx, i))
+            .collect::<HashMap<_, _>>();
+
+        let mut segments = raw_segments
+            .into_iter()
+            .map(|segment| {
+                let remapped = speaker_remap
+                    .get(&segment.speaker_idx)
+                    .copied()
+                    .unwrap_or(0);
+                DiarizationSegment {
+                    speaker: format!("SPEAKER_{remapped:02}"),
+                    start_secs: segment.start_secs,
+                    end_secs: segment.end_secs,
+                    confidence: segment.confidence,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        merge_adjacent_segments(&mut segments, min_silence_ms / 1000.0);
+        segments.sort_by(|a, b| {
+            a.start_secs
+                .total_cmp(&b.start_secs)
+                .then(a.speaker.cmp(&b.speaker))
+        });
+
+        let speaker_count = segments
+            .iter()
+            .map(|segment| segment.speaker.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+
         Ok(DiarizationResult {
             segments,
             duration_secs,
@@ -216,124 +344,907 @@ impl SortformerDiarizerModel {
     }
 }
 
-fn extract_frame_features(
-    samples: &[f32],
-    frame_len: usize,
-    hop_len: usize,
-) -> Result<Vec<FrameFeatures>> {
-    if samples.is_empty() {
-        return Ok(Vec::new());
-    }
+#[derive(Debug, Clone)]
+struct RawSegment {
+    speaker_idx: usize,
+    start_secs: f32,
+    end_secs: f32,
+    confidence: Option<f32>,
+}
 
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(FFT_SIZE);
-    let hann: Vec<f32> = (0..FFT_SIZE)
-        .map(|i| {
-            let phase = (2.0 * std::f32::consts::PI * i as f32) / (FFT_SIZE as f32 - 1.0);
-            0.5 - 0.5 * phase.cos()
+struct SortformerInferenceModel {
+    preprocessor: SortformerPreprocessor,
+    encoder: SortformerConformerEncoder,
+    encoder_proj: Linear,
+    transformer: SortformerTransformerEncoder,
+    head: SortformerSpeakerHead,
+}
+
+impl SortformerInferenceModel {
+    fn load(vb: &VarBuilder, preprocessor_cfg: SortformerPreprocessorConfig) -> Result<Self> {
+        let preprocessor = SortformerPreprocessor::load(vb, preprocessor_cfg)?;
+        let encoder = SortformerConformerEncoder::load(vb.pp("encoder"))?;
+
+        let encoder_proj_w = vb
+            .pp("sortformer_modules.encoder_proj")
+            .get_unchecked_dtype("weight", DType::F32)?;
+        let (proj_out, proj_in) = encoder_proj_w.dims2()?;
+        let encoder_proj =
+            mlx::load_linear(proj_in, proj_out, vb.pp("sortformer_modules.encoder_proj"))?;
+
+        let transformer = SortformerTransformerEncoder::load(vb.pp("transformer_encoder"))?;
+        let head = SortformerSpeakerHead::load(vb.pp("sortformer_modules"))?;
+
+        Ok(Self {
+            preprocessor,
+            encoder,
+            encoder_proj,
+            transformer,
+            head,
         })
-        .collect();
+    }
 
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    while start < samples.len() {
-        let end = (start + frame_len).min(samples.len());
-        let frame = &samples[start..end];
-        if frame.is_empty() {
-            break;
+    fn infer_speaker_probabilities(
+        &self,
+        samples: &[f32],
+    ) -> Result<(Vec<[f32; MAX_SUPPORTED_SPEAKERS]>, usize)> {
+        let mut normalized = samples.to_vec();
+        let max_abs = normalized
+            .iter()
+            .copied()
+            .map(f32::abs)
+            .fold(0.0f32, f32::max)
+            .max(1e-6);
+        for sample in &mut normalized {
+            *sample /= max_abs;
         }
 
-        let rms = (frame.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>()
-            / frame.len() as f64)
-            .sqrt() as f32;
-        let rms_db = 20.0 * (rms.max(1e-7)).log10();
-
-        let mut zc = 0usize;
-        for pair in frame.windows(2) {
-            if (pair[0] >= 0.0 && pair[1] < 0.0) || (pair[0] < 0.0 && pair[1] >= 0.0) {
-                zc += 1;
-            }
+        let (features, feature_frames) = self.preprocessor.compute_features(&normalized)?;
+        let (encoded, encoded_len) = self.encoder.forward(&features, feature_frames)?;
+        if encoded_len == 0 {
+            return Ok((Vec::new(), self.encoder.frame_stride_samples()));
         }
-        let zcr = zc as f32 / frame.len() as f32;
 
-        let mut fft_in = vec![Complex32::new(0.0, 0.0); FFT_SIZE];
-        for i in 0..FFT_SIZE {
-            let sample = frame.get(i).copied().unwrap_or(0.0);
-            fft_in[i] = Complex32::new(sample * hann[i], 0.0);
+        let mut x = encoded.i((.., ..encoded_len, ..))?;
+        x = x.apply(&self.encoder_proj)?;
+        x = self.transformer.forward(&x)?;
+        let probs = self.head.forward(&x)?;
+
+        let probs = probs.squeeze(0)?;
+        let dims = probs.dims2()?;
+        if dims.1 != MAX_SUPPORTED_SPEAKERS {
+            return Err(Error::InferenceError(format!(
+                "Unexpected Sortformer speaker dimension {}; expected {}",
+                dims.1, MAX_SUPPORTED_SPEAKERS
+            )));
         }
-        fft.process(&mut fft_in);
 
-        let mut total_power = 0.0f32;
-        let mut low_power = 0.0f32;
-        let mut mid_power = 0.0f32;
-        let mut high_power = 0.0f32;
-        let mut centroid_num = 0.0f32;
-
-        for (bin, c) in fft_in.iter().take(FFT_SIZE / 2).enumerate() {
-            let freq_hz = bin as f32 * TARGET_SAMPLE_RATE as f32 / FFT_SIZE as f32;
-            let power = (c.re * c.re + c.im * c.im).max(0.0);
-            total_power += power;
-            centroid_num += freq_hz * power;
-
-            if freq_hz <= 300.0 {
-                low_power += power;
-            } else if freq_hz <= 1200.0 {
-                mid_power += power;
-            } else if freq_hz <= 4000.0 {
-                high_power += power;
+        let values = probs.flatten_all()?.to_vec1::<f32>()?;
+        let mut out = vec![[0.0f32; MAX_SUPPORTED_SPEAKERS]; dims.0];
+        for frame in 0..dims.0 {
+            for spk in 0..MAX_SUPPORTED_SPEAKERS {
+                out[frame][spk] = values[frame * MAX_SUPPORTED_SPEAKERS + spk];
             }
         }
 
-        let total_power = total_power.max(1e-9);
-        let centroid_norm = (centroid_num / total_power) / (TARGET_SAMPLE_RATE as f32 / 2.0);
-        let low_ratio = low_power / total_power;
-        let mid_ratio = mid_power / total_power;
-        let high_ratio = high_power / total_power;
+        Ok((out, self.encoder.frame_stride_samples()))
+    }
+}
 
-        let vector = vec![
-            (rms_db + 100.0) / 100.0,
-            zcr,
-            centroid_norm,
-            low_ratio,
-            mid_ratio,
-            high_ratio,
-        ];
+struct SortformerPreprocessor {
+    sample_rate: usize,
+    n_fft: usize,
+    win_length: usize,
+    hop_length: usize,
+    _window: Vec<f32>,
+    padded_window: Vec<f32>,
+    fb: Vec<f32>,
+    n_mels: usize,
+    n_freqs: usize,
+}
 
-        out.push(FrameFeatures {
-            start_sample: start,
-            end_sample: end,
-            rms_db,
-            vector,
-        });
+impl SortformerPreprocessor {
+    fn load(vb: &VarBuilder, cfg: SortformerPreprocessorConfig) -> Result<Self> {
+        let sample_rate = cfg.sample_rate.unwrap_or(TARGET_SAMPLE_RATE) as usize;
+        let n_fft = cfg.n_fft.unwrap_or(512);
+        let win_length =
+            ((cfg.window_size.unwrap_or(0.025) * sample_rate as f32).round() as usize).max(1);
+        let hop_length =
+            ((cfg.window_stride.unwrap_or(0.01) * sample_rate as f32).round() as usize).max(1);
+        let n_mels = cfg.features.unwrap_or(128);
 
-        if end >= samples.len() {
+        let preproc_vb = vb.pp("preprocessor.featurizer");
+        let window = match preproc_vb.get_unchecked_dtype("window", DType::F32) {
+            Ok(window_tensor) => window_tensor.to_vec1::<f32>()?,
+            Err(_) => hann_window(win_length),
+        };
+
+        let (fb, loaded_mels, loaded_freqs) = match preproc_vb.get_unchecked_dtype("fb", DType::F32)
+        {
+            Ok(fb_tensor) => {
+                let (_, mels, freqs) = fb_tensor.dims3()?;
+                let fb = fb_tensor.squeeze(0)?.flatten_all()?.to_vec1::<f32>()?;
+                (fb, mels, freqs)
+            }
+            Err(_) => {
+                let generated =
+                    mel_filterbank(sample_rate, n_fft, n_mels, 0.0, sample_rate as f32 / 2.0);
+                (generated, n_mels, n_fft / 2 + 1)
+            }
+        };
+
+        let n_freqs = n_fft / 2 + 1;
+        if loaded_freqs != n_freqs {
+            return Err(Error::ModelLoadError(format!(
+                "Unexpected Sortformer filterbank bins: expected {}, got {}",
+                n_freqs, loaded_freqs
+            )));
+        }
+
+        let mut padded_window = vec![0.0f32; n_fft];
+        let src_len = window.len().min(n_fft);
+        let offset = (n_fft - src_len) / 2;
+        padded_window[offset..offset + src_len].copy_from_slice(&window[..src_len]);
+
+        Ok(Self {
+            sample_rate,
+            n_fft,
+            win_length,
+            hop_length,
+            _window: window,
+            padded_window,
+            fb,
+            n_mels: loaded_mels,
+            n_freqs,
+        })
+    }
+
+    fn compute_features(&self, audio: &[f32]) -> Result<(Tensor, usize)> {
+        if audio.is_empty() {
+            return Ok((
+                Tensor::zeros((1, self.n_mels, 1), DType::F32, &Device::Cpu)?,
+                0,
+            ));
+        }
+
+        let mut x = audio.to_vec();
+        preemphasis(&mut x, PREEMPH);
+
+        let center_pad = self.n_fft / 2;
+        let mut padded = Vec::with_capacity(x.len() + center_pad * 2);
+        padded.extend(std::iter::repeat(0.0).take(center_pad));
+        padded.extend_from_slice(&x);
+        padded.extend(std::iter::repeat(0.0).take(center_pad));
+
+        let frame_count = if padded.len() >= self.n_fft {
+            (padded.len() - self.n_fft) / self.hop_length + 1
+        } else {
+            1
+        };
+
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(self.n_fft);
+
+        let mut spectrum = vec![0f32; frame_count * self.n_freqs];
+        let mut buffer = vec![Complex::<f32>::new(0.0, 0.0); self.n_fft];
+        for frame_idx in 0..frame_count {
+            let start = frame_idx * self.hop_length;
+            let slice = &padded[start..start + self.n_fft];
+            for i in 0..self.n_fft {
+                buffer[i].re = slice[i] * self.padded_window[i];
+                buffer[i].im = 0.0;
+            }
+            fft.process(&mut buffer);
+            for k in 0..self.n_freqs {
+                let mag = (buffer[k].re * buffer[k].re + buffer[k].im * buffer[k].im).sqrt();
+                spectrum[frame_idx * self.n_freqs + k] = mag * mag;
+            }
+        }
+
+        let mut mel = vec![0f32; self.n_mels * frame_count];
+        for m in 0..self.n_mels {
+            for t in 0..frame_count {
+                let mut acc = 0f32;
+                let spec_row = &spectrum[t * self.n_freqs..(t + 1) * self.n_freqs];
+                let fb_row = &self.fb[m * self.n_freqs..(m + 1) * self.n_freqs];
+                for f in 0..self.n_freqs {
+                    acc += spec_row[f] * fb_row[f];
+                }
+                mel[m * frame_count + t] = (acc + LOG_GUARD).ln();
+            }
+        }
+
+        let valid_frames = audio.len() / self.hop_length;
+        normalize_per_feature(
+            &mut mel,
+            self.n_mels,
+            frame_count,
+            valid_frames.min(frame_count),
+        );
+
+        if valid_frames < frame_count {
+            for m in 0..self.n_mels {
+                for t in valid_frames..frame_count {
+                    mel[m * frame_count + t] = 0.0;
+                }
+            }
+        }
+
+        let features = Tensor::from_vec(mel, (1, self.n_mels, frame_count), &Device::Cpu)?;
+        Ok((features, valid_frames.min(frame_count)))
+    }
+}
+
+struct SortformerConformerEncoder {
+    pre_encode: ConvSubsamplingDw,
+    layers: Vec<ConformerLayer>,
+    d_model: usize,
+    frame_stride_samples: usize,
+}
+
+impl SortformerConformerEncoder {
+    fn load(vb: VarBuilder) -> Result<Self> {
+        let pre_encode = ConvSubsamplingDw::load(vb.pp("pre_encode"))?;
+
+        let mut layers = Vec::new();
+        let mut idx = 0usize;
+        loop {
+            let layer_vb = vb.pp(format!("layers.{idx}"));
+            if !layer_vb.contains_tensor("norm_out.weight") {
+                break;
+            }
+            layers.push(ConformerLayer::load(layer_vb)?);
+            idx += 1;
+        }
+        if layers.is_empty() {
+            return Err(Error::ModelLoadError(
+                "Sortformer Conformer encoder has no layers".to_string(),
+            ));
+        }
+
+        let d_model = layers[0].d_model();
+        Ok(Self {
+            pre_encode,
+            layers,
+            d_model,
+            frame_stride_samples: 160 * 8,
+        })
+    }
+
+    fn forward(&self, features: &Tensor, feature_frames: usize) -> Result<(Tensor, usize)> {
+        let (mut x, encoded_len) = self.pre_encode.forward(features, feature_frames)?;
+        let pos_len = x.dim(1)?;
+        let pos_emb = build_rel_positional_embedding(pos_len, self.d_model, x.device())?;
+        for layer in &self.layers {
+            x = layer.forward(&x, &pos_emb)?;
+        }
+        Ok((x, encoded_len))
+    }
+
+    fn frame_stride_samples(&self) -> usize {
+        self.frame_stride_samples
+    }
+}
+
+struct ConvSubsamplingDw {
+    conv0: Conv2d,
+    conv2: Conv2d,
+    conv3: Conv2d,
+    conv5: Conv2d,
+    conv6: Conv2d,
+    out: Linear,
+}
+
+impl ConvSubsamplingDw {
+    fn load(vb: VarBuilder) -> Result<Self> {
+        let conv0_w = vb.pp("conv.0").get_unchecked_dtype("weight", DType::F32)?;
+        let (out_channels, _, _, _) = conv0_w.dims4()?;
+
+        let stride_cfg = Conv2dConfig {
+            stride: 2,
+            padding: 1,
+            ..Default::default()
+        };
+        let point_cfg = Conv2dConfig {
+            stride: 1,
+            padding: 0,
+            ..Default::default()
+        };
+
+        let conv0 = mlx::load_conv2d(1, out_channels, 3, stride_cfg, vb.pp("conv.0"))?;
+
+        let mut dw_stride_cfg = stride_cfg;
+        dw_stride_cfg.groups = out_channels;
+        let conv2 = mlx::load_conv2d(1, out_channels, 3, dw_stride_cfg, vb.pp("conv.2"))?;
+        let conv3 = mlx::load_conv2d(out_channels, out_channels, 1, point_cfg, vb.pp("conv.3"))?;
+        let conv5 = mlx::load_conv2d(1, out_channels, 3, dw_stride_cfg, vb.pp("conv.5"))?;
+        let conv6 = mlx::load_conv2d(out_channels, out_channels, 1, point_cfg, vb.pp("conv.6"))?;
+
+        let out_w = vb.pp("out").get_unchecked_dtype("weight", DType::F32)?;
+        let (out_dim, in_dim) = out_w.dims2()?;
+        let out = mlx::load_linear(in_dim, out_dim, vb.pp("out"))?;
+
+        Ok(Self {
+            conv0,
+            conv2,
+            conv3,
+            conv5,
+            conv6,
+            out,
+        })
+    }
+
+    fn forward(&self, features: &Tensor, feature_frames: usize) -> Result<(Tensor, usize)> {
+        let mut x = features.transpose(1, 2)?.unsqueeze(1)?; // [B,1,T,F]
+
+        x = self.conv0.forward(&x)?;
+        x = x.relu()?;
+
+        x = self.conv2.forward(&x)?;
+        x = self.conv3.forward(&x)?;
+        x = x.relu()?;
+
+        x = self.conv5.forward(&x)?;
+        x = self.conv6.forward(&x)?;
+        x = x.relu()?;
+
+        let (b, c, t, f) = x.dims4()?;
+        let x = x
+            .transpose(1, 2)?
+            .reshape((b, t, c * f))?
+            .apply(&self.out)?;
+        let encoded_len = subsampled_len_3x(feature_frames).min(t);
+        Ok((x, encoded_len))
+    }
+}
+
+fn subsampled_len_3x(mut len: usize) -> usize {
+    for _ in 0..3 {
+        len = len.div_ceil(2);
+    }
+    len
+}
+
+struct ConformerLayer {
+    norm_ff1: LayerNorm,
+    ff1: FeedForward,
+    norm_self_att: LayerNorm,
+    self_attn: RelPosSelfAttention,
+    norm_conv: LayerNorm,
+    conv: ConformerConv,
+    norm_ff2: LayerNorm,
+    ff2: FeedForward,
+    norm_out: LayerNorm,
+    d_model: usize,
+}
+
+impl ConformerLayer {
+    fn load(vb: VarBuilder) -> Result<Self> {
+        let d_model = vb
+            .pp("norm_out")
+            .get_unchecked_dtype("weight", DType::F32)?
+            .dim(0)?;
+
+        let ff_dim = vb
+            .pp("feed_forward1.linear1")
+            .get_unchecked_dtype("weight", DType::F32)?
+            .dims2()?
+            .0;
+
+        let norm_ff1 = layer_norm(d_model, 1e-5, vb.pp("norm_feed_forward1"))?;
+        let ff1 = FeedForward::load(vb.pp("feed_forward1"), d_model, ff_dim)?;
+
+        let norm_self_att = layer_norm(d_model, 1e-5, vb.pp("norm_self_att"))?;
+        let self_attn = RelPosSelfAttention::load(vb.pp("self_attn"), d_model)?;
+
+        let norm_conv = layer_norm(d_model, 1e-5, vb.pp("norm_conv"))?;
+        let conv = ConformerConv::load(vb.pp("conv"), d_model)?;
+
+        let norm_ff2 = layer_norm(d_model, 1e-5, vb.pp("norm_feed_forward2"))?;
+        let ff2 = FeedForward::load(vb.pp("feed_forward2"), d_model, ff_dim)?;
+
+        let norm_out = layer_norm(d_model, 1e-5, vb.pp("norm_out"))?;
+
+        Ok(Self {
+            norm_ff1,
+            ff1,
+            norm_self_att,
+            self_attn,
+            norm_conv,
+            conv,
+            norm_ff2,
+            ff2,
+            norm_out,
+            d_model,
+        })
+    }
+
+    fn d_model(&self) -> usize {
+        self.d_model
+    }
+
+    fn forward(&self, x: &Tensor, pos_emb: &Tensor) -> Result<Tensor> {
+        let mut residual = x.clone();
+
+        let ff1 = self.ff1.forward(&self.norm_ff1.forward(&residual)?)?;
+        residual = residual.broadcast_add(&ff1.affine(0.5, 0.0)?)?;
+
+        let attn = self
+            .self_attn
+            .forward(&self.norm_self_att.forward(&residual)?, pos_emb)?;
+        residual = residual.broadcast_add(&attn)?;
+
+        let conv = self.conv.forward(&self.norm_conv.forward(&residual)?)?;
+        residual = residual.broadcast_add(&conv)?;
+
+        let ff2 = self.ff2.forward(&self.norm_ff2.forward(&residual)?)?;
+        residual = residual.broadcast_add(&ff2.affine(0.5, 0.0)?)?;
+
+        self.norm_out
+            .forward(&residual)
+            .map_err(|e| Error::InferenceError(e.to_string()))
+    }
+}
+
+struct FeedForward {
+    linear1: Linear,
+    linear2: Linear,
+}
+
+impl FeedForward {
+    fn load(vb: VarBuilder, d_model: usize, ff_dim: usize) -> Result<Self> {
+        let linear1 = mlx::load_linear(d_model, ff_dim, vb.pp("linear1"))?;
+        let linear2 = mlx::load_linear(ff_dim, d_model, vb.pp("linear2"))?;
+        Ok(Self { linear1, linear2 })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let x = self.linear1.forward(x)?;
+        let x = swish(&x)?;
+        self.linear2
+            .forward(&x)
+            .map_err(|e| Error::InferenceError(e.to_string()))
+    }
+}
+
+struct ConformerConv {
+    pointwise_conv1: Conv1d,
+    depthwise_conv: Conv1d,
+    batch_norm: candle_nn::BatchNorm,
+    pointwise_conv2: Conv1d,
+    d_model: usize,
+}
+
+impl ConformerConv {
+    fn load(vb: VarBuilder, d_model: usize) -> Result<Self> {
+        let kernel_size = vb
+            .pp("depthwise_conv")
+            .get_unchecked_dtype("weight", DType::F32)?
+            .dims3()?
+            .2;
+
+        let pointwise_conv1 = mlx::load_conv1d_no_bias(
+            d_model,
+            d_model * 2,
+            1,
+            Conv1dConfig::default(),
+            vb.pp("pointwise_conv1"),
+        )?;
+
+        let depthwise_conv = mlx::load_conv1d_no_bias(
+            d_model,
+            d_model,
+            kernel_size,
+            Conv1dConfig {
+                padding: (kernel_size - 1) / 2,
+                groups: d_model,
+                ..Default::default()
+            },
+            vb.pp("depthwise_conv"),
+        )?;
+
+        let batch_norm = batch_norm(d_model, 1e-5, vb.pp("batch_norm"))?;
+
+        let pointwise_conv2 = mlx::load_conv1d_no_bias(
+            d_model,
+            d_model,
+            1,
+            Conv1dConfig::default(),
+            vb.pp("pointwise_conv2"),
+        )?;
+
+        Ok(Self {
+            pointwise_conv1,
+            depthwise_conv,
+            batch_norm,
+            pointwise_conv2,
+            d_model,
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let mut x = x.transpose(1, 2)?;
+
+        x = self.pointwise_conv1.forward(&x)?;
+        let x_a = x.i((.., ..self.d_model, ..))?;
+        let x_b = x.i((.., self.d_model.., ..))?;
+        x = x_a.broadcast_mul(&ops::sigmoid(&x_b)?)?;
+
+        x = self.depthwise_conv.forward(&x)?;
+        x = self.batch_norm.forward_t(&x, false)?;
+        x = swish(&x)?;
+        x = self.pointwise_conv2.forward(&x)?;
+
+        x.transpose(1, 2).map_err(Error::from)
+    }
+}
+
+struct RelPosSelfAttention {
+    linear_q: Linear,
+    linear_k: Linear,
+    linear_v: Linear,
+    linear_out: Linear,
+    linear_pos: Linear,
+    pos_bias_u: Tensor,
+    pos_bias_v: Tensor,
+    num_heads: usize,
+    head_dim: usize,
+    d_model: usize,
+}
+
+impl RelPosSelfAttention {
+    fn load(vb: VarBuilder, d_model: usize) -> Result<Self> {
+        let pos_bias_u = vb.get_unchecked_dtype("pos_bias_u", DType::F32)?;
+        let (num_heads, head_dim) = pos_bias_u.dims2()?;
+        let pos_bias_v = vb.get((num_heads, head_dim), "pos_bias_v")?;
+
+        if num_heads * head_dim != d_model {
+            return Err(Error::ModelLoadError(format!(
+                "Sortformer attention head dims mismatch: heads={num_heads}, head_dim={head_dim}, d_model={d_model}"
+            )));
+        }
+
+        let linear_q = mlx::load_linear(d_model, d_model, vb.pp("linear_q"))?;
+        let linear_k = mlx::load_linear(d_model, d_model, vb.pp("linear_k"))?;
+        let linear_v = mlx::load_linear(d_model, d_model, vb.pp("linear_v"))?;
+        let linear_out = mlx::load_linear(d_model, d_model, vb.pp("linear_out"))?;
+        let linear_pos = mlx::load_linear_no_bias(d_model, d_model, vb.pp("linear_pos"))?;
+
+        Ok(Self {
+            linear_q,
+            linear_k,
+            linear_v,
+            linear_out,
+            linear_pos,
+            pos_bias_u,
+            pos_bias_v,
+            num_heads,
+            head_dim,
+            d_model,
+        })
+    }
+
+    fn forward(&self, x: &Tensor, pos_emb: &Tensor) -> Result<Tensor> {
+        let (b, t, _) = x.dims3()?;
+
+        let q = self
+            .linear_q
+            .forward(x)?
+            .reshape((b, t, self.num_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let k = self
+            .linear_k
+            .forward(x)?
+            .reshape((b, t, self.num_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let v = self
+            .linear_v
+            .forward(x)?
+            .reshape((b, t, self.num_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+
+        let p = self
+            .linear_pos
+            .forward(pos_emb)?
+            .reshape((1, 2 * t - 1, self.num_heads, self.head_dim))?
+            .transpose(1, 2)?;
+
+        let pos_bias_u = self
+            .pos_bias_u
+            .reshape((1, self.num_heads, 1, self.head_dim))?;
+        let pos_bias_v = self
+            .pos_bias_v
+            .reshape((1, self.num_heads, 1, self.head_dim))?;
+
+        let q_u = q.broadcast_add(&pos_bias_u)?;
+        let q_v = q.broadcast_add(&pos_bias_v)?;
+
+        let k_t = k.transpose(2, 3)?.contiguous()?;
+        let p_t = p.transpose(2, 3)?.contiguous()?;
+        let matrix_ac = q_u.matmul(&k_t)?;
+        let matrix_bd = rel_shift(&q_v.matmul(&p_t)?)?;
+        let matrix_bd = matrix_bd.narrow(3, 0, t)?;
+
+        let scores = matrix_ac
+            .broadcast_add(&matrix_bd)?
+            .affine(1.0 / (self.head_dim as f64).sqrt(), 0.0)?;
+        let attn = ops::softmax(&scores, 3)?;
+
+        let out = attn.matmul(&v)?;
+        let out = out.transpose(1, 2)?.reshape((b, t, self.d_model))?;
+
+        self.linear_out
+            .forward(&out)
+            .map_err(|e| Error::InferenceError(e.to_string()))
+    }
+}
+
+fn rel_shift(x: &Tensor) -> Result<Tensor> {
+    let (b, h, qlen, pos_len) = x.dims4()?;
+    let x = x.pad_with_zeros(3, 1, 0)?;
+    let x = x.reshape((b, h, pos_len + 1, qlen))?;
+    let x = x.narrow(2, 1, pos_len)?;
+    x.reshape((b, h, qlen, pos_len)).map_err(Error::from)
+}
+
+struct SortformerTransformerEncoder {
+    layers: Vec<SortformerTransformerLayer>,
+}
+
+impl SortformerTransformerEncoder {
+    fn load(vb: VarBuilder) -> Result<Self> {
+        let mut layers = Vec::new();
+        let mut idx = 0usize;
+        loop {
+            let layer_vb = vb.pp(format!("layers.{idx}"));
+            if !layer_vb.contains_tensor("layer_norm_1.weight") {
+                break;
+            }
+            layers.push(SortformerTransformerLayer::load(layer_vb)?);
+            idx += 1;
+        }
+        if layers.is_empty() {
+            return Err(Error::ModelLoadError(
+                "Sortformer transformer encoder has no layers".to_string(),
+            ));
+        }
+        Ok(Self { layers })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let mut out = x.clone();
+        for layer in &self.layers {
+            out = layer.forward(&out)?;
+        }
+        Ok(out)
+    }
+}
+
+struct SortformerTransformerLayer {
+    norm1: LayerNorm,
+    q: Linear,
+    k: Linear,
+    v: Linear,
+    out_proj: Linear,
+    norm2: LayerNorm,
+    dense_in: Linear,
+    dense_out: Linear,
+    d_model: usize,
+    num_heads: usize,
+    head_dim: usize,
+}
+
+impl SortformerTransformerLayer {
+    fn load(vb: VarBuilder) -> Result<Self> {
+        let d_model = vb
+            .pp("layer_norm_1")
+            .get_unchecked_dtype("weight", DType::F32)?
+            .dim(0)?;
+
+        let q_w = vb
+            .pp("first_sub_layer.query_net")
+            .get_unchecked_dtype("weight", DType::F32)?;
+        let (_, q_in) = q_w.dims2()?;
+        if q_in != d_model {
+            return Err(Error::ModelLoadError(format!(
+                "Sortformer transformer query input dim mismatch: expected {d_model}, got {q_in}"
+            )));
+        }
+
+        let dense_in_w = vb
+            .pp("second_sub_layer.dense_in")
+            .get_unchecked_dtype("weight", DType::F32)?;
+        let (inner_size, dense_in) = dense_in_w.dims2()?;
+        if dense_in != d_model {
+            return Err(Error::ModelLoadError(format!(
+                "Sortformer transformer FFN input dim mismatch: expected {d_model}, got {dense_in}"
+            )));
+        }
+
+        let num_heads = 8usize;
+        if d_model % num_heads != 0 {
+            return Err(Error::ModelLoadError(format!(
+                "Sortformer transformer hidden size {d_model} is not divisible by {num_heads} heads"
+            )));
+        }
+        let head_dim = d_model / num_heads;
+
+        Ok(Self {
+            norm1: layer_norm(d_model, 1e-5, vb.pp("layer_norm_1"))?,
+            q: mlx::load_linear(d_model, d_model, vb.pp("first_sub_layer.query_net"))?,
+            k: mlx::load_linear(d_model, d_model, vb.pp("first_sub_layer.key_net"))?,
+            v: mlx::load_linear(d_model, d_model, vb.pp("first_sub_layer.value_net"))?,
+            out_proj: mlx::load_linear(d_model, d_model, vb.pp("first_sub_layer.out_projection"))?,
+            norm2: layer_norm(d_model, 1e-5, vb.pp("layer_norm_2"))?,
+            dense_in: mlx::load_linear(d_model, inner_size, vb.pp("second_sub_layer.dense_in"))?,
+            dense_out: mlx::load_linear(inner_size, d_model, vb.pp("second_sub_layer.dense_out"))?,
+            d_model,
+            num_heads,
+            head_dim,
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let residual = x.clone();
+        let h = self.norm1.forward(x)?;
+        let attn = self.self_attention(&h)?;
+        let h = residual.broadcast_add(&attn)?;
+
+        let residual2 = h.clone();
+        let h2 = self.norm2.forward(&h)?;
+        let ff = self
+            .dense_out
+            .forward(&self.dense_in.forward(&h2)?.relu()?)?;
+        residual2.broadcast_add(&ff).map_err(Error::from)
+    }
+
+    fn self_attention(&self, x: &Tensor) -> Result<Tensor> {
+        let (b, t, _) = x.dims3()?;
+
+        let q = self
+            .q
+            .forward(x)?
+            .reshape((b, t, self.num_heads, self.head_dim))?
+            .transpose(1, 2)?;
+        let k = self
+            .k
+            .forward(x)?
+            .reshape((b, t, self.num_heads, self.head_dim))?
+            .transpose(1, 2)?;
+        let v = self
+            .v
+            .forward(x)?
+            .reshape((b, t, self.num_heads, self.head_dim))?
+            .transpose(1, 2)?;
+
+        let scores = q
+            .matmul(&k.transpose(2, 3)?)?
+            .affine(1.0 / (self.head_dim as f64).sqrt(), 0.0)?;
+        let attn = ops::softmax(&scores, 3)?;
+        let ctx = attn.matmul(&v)?;
+
+        let ctx = ctx.transpose(1, 2)?.reshape((b, t, self.d_model))?;
+        self.out_proj.forward(&ctx).map_err(Error::from)
+    }
+}
+
+struct SortformerSpeakerHead {
+    first_hidden_to_hidden: Linear,
+    single_hidden_to_spks: Linear,
+}
+
+impl SortformerSpeakerHead {
+    fn load(vb: VarBuilder) -> Result<Self> {
+        let first_w = vb
+            .pp("first_hidden_to_hidden")
+            .get_unchecked_dtype("weight", DType::F32)?;
+        let (first_out, first_in) = first_w.dims2()?;
+        if first_out != first_in {
+            return Err(Error::ModelLoadError(format!(
+                "Unexpected Sortformer hidden projection shape: [{first_out}, {first_in}]"
+            )));
+        }
+
+        let second_w = vb
+            .pp("single_hidden_to_spks")
+            .get_unchecked_dtype("weight", DType::F32)?;
+        let (spk_out, spk_in) = second_w.dims2()?;
+        if spk_out != MAX_SUPPORTED_SPEAKERS {
+            return Err(Error::ModelLoadError(format!(
+                "Unexpected Sortformer speaker head output dim {spk_out}; expected {MAX_SUPPORTED_SPEAKERS}"
+            )));
+        }
+        if spk_in != first_out {
+            return Err(Error::ModelLoadError(format!(
+                "Sortformer speaker head dim mismatch: hidden={first_out}, input={spk_in}"
+            )));
+        }
+
+        let first_hidden_to_hidden =
+            mlx::load_linear(first_in, first_out, vb.pp("first_hidden_to_hidden"))?;
+        let single_hidden_to_spks =
+            mlx::load_linear(spk_in, spk_out, vb.pp("single_hidden_to_spks"))?;
+        Ok(Self {
+            first_hidden_to_hidden,
+            single_hidden_to_spks,
+        })
+    }
+
+    fn forward(&self, hidden_out: &Tensor) -> Result<Tensor> {
+        let hidden_out = hidden_out.relu()?;
+        let hidden_out = self.first_hidden_to_hidden.forward(&hidden_out)?;
+        let hidden_out = hidden_out.relu()?;
+        let spk_logits = self.single_hidden_to_spks.forward(&hidden_out)?;
+        ops::sigmoid(&spk_logits).map_err(Error::from)
+    }
+}
+
+fn select_speaker_channels(
+    probs: &[[f32; MAX_SUPPORTED_SPEAKERS]],
+    vad_mask: &[bool],
+    min_speakers: usize,
+    max_speakers: usize,
+) -> Vec<usize> {
+    let mut scores = vec![0.0f32; MAX_SUPPORTED_SPEAKERS];
+    let mut counts = vec![0usize; MAX_SUPPORTED_SPEAKERS];
+
+    for (frame_idx, row) in probs.iter().enumerate() {
+        if !vad_mask.get(frame_idx).copied().unwrap_or(true) {
+            continue;
+        }
+        for spk in 0..MAX_SUPPORTED_SPEAKERS {
+            scores[spk] += row[spk];
+            counts[spk] += 1;
+        }
+    }
+
+    for spk in 0..MAX_SUPPORTED_SPEAKERS {
+        if counts[spk] > 0 {
+            scores[spk] /= counts[spk] as f32;
+        }
+    }
+
+    let mut ranked = (0..MAX_SUPPORTED_SPEAKERS)
+        .map(|idx| (idx, scores[idx]))
+        .collect::<Vec<_>>();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    let keep = max_speakers.clamp(min_speakers, MAX_SUPPORTED_SPEAKERS);
+    ranked.into_iter().take(keep).map(|(idx, _)| idx).collect()
+}
+
+fn realtime_voice_vad_frame_mask(
+    samples: &[f32],
+    frame_count: usize,
+    frame_stride_samples: usize,
+    vad_threshold: f32,
+) -> Vec<bool> {
+    if frame_count == 0 || frame_stride_samples == 0 {
+        return Vec::new();
+    }
+
+    let threshold = vad_threshold.clamp(0.001, 1.0);
+    let mut mask = vec![false; frame_count];
+    for (frame_idx, active) in mask.iter_mut().enumerate().take(frame_count) {
+        let start = frame_idx * frame_stride_samples;
+        if start >= samples.len() {
             break;
         }
-        start = start.saturating_add(hop_len);
+        let end = ((frame_idx + 1) * frame_stride_samples).min(samples.len());
+        *active = rms_f32(&samples[start..end]) >= threshold;
     }
-
-    Ok(out)
+    mask
 }
 
-fn adaptive_vad_threshold_db(values: &[f32]) -> f32 {
-    if values.is_empty() {
-        return -45.0;
-    }
-
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.total_cmp(b));
-    let p35 = percentile_sorted(&sorted, 0.35);
-    let p90 = percentile_sorted(&sorted, 0.90);
-    (p35 + (p90 - p35) * 0.18).clamp(-55.0, -18.0)
-}
-
-fn percentile_sorted(sorted: &[f32], q: f32) -> f32 {
-    if sorted.is_empty() {
+fn rms_f32(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
         return 0.0;
     }
-    let clamped = q.clamp(0.0, 1.0);
-    let idx = ((sorted.len().saturating_sub(1)) as f32 * clamped).round() as usize;
-    sorted[idx.min(sorted.len() - 1)]
+    let sum_squares: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_squares / samples.len() as f32).sqrt()
 }
 
 fn smooth_activity_mask(active: &mut [bool], min_speech_frames: usize, min_silence_frames: usize) {
@@ -341,7 +1252,6 @@ fn smooth_activity_mask(active: &mut [bool], min_speech_frames: usize, min_silen
         return;
     }
 
-    // Fill short silent gaps between speech regions.
     let mut idx = 0usize;
     while idx < active.len() {
         if active[idx] {
@@ -363,7 +1273,6 @@ fn smooth_activity_mask(active: &mut [bool], min_speech_frames: usize, min_silen
         }
     }
 
-    // Remove very short speech bursts.
     idx = 0;
     while idx < active.len() {
         if !active[idx] {
@@ -401,230 +1310,85 @@ fn collect_active_regions(active: &[bool]) -> Vec<(usize, usize)> {
     regions
 }
 
-#[derive(Debug, Clone)]
-struct ClusteringResult {
-    labels: Vec<usize>,
-    confidences: Vec<Option<f32>>,
-}
-
-fn cluster_embeddings(
-    embeddings: &[Vec<f32>],
-    min_speakers: usize,
-    max_speakers: usize,
-) -> ClusteringResult {
-    if embeddings.is_empty() {
-        return ClusteringResult {
-            labels: Vec::new(),
-            confidences: Vec::new(),
-        };
-    }
-    if embeddings.len() == 1 {
-        return ClusteringResult {
-            labels: vec![0],
-            confidences: vec![Some(1.0)],
-        };
-    }
-
-    let max_k = max_speakers.min(embeddings.len()).max(1);
-    let min_k = min_speakers.min(max_k).max(1);
-
-    let mut best_labels = vec![0usize; embeddings.len()];
-    let mut best_centroids = vec![mean_vector(embeddings)];
-    let mut best_score = f32::NEG_INFINITY;
-
-    for k in min_k..=max_k {
-        let (labels, centroids) = kmeans(embeddings, k, 40);
-        let score =
-            silhouette_like_score(embeddings, &labels, &centroids) - 0.03 * (k as f32 - 1.0);
-        if score > best_score {
-            best_score = score;
-            best_labels = labels;
-            best_centroids = centroids;
-        }
-    }
-
-    let confidences = assignment_confidence(embeddings, &best_labels, &best_centroids);
-    ClusteringResult {
-        labels: best_labels,
-        confidences,
-    }
-}
-
-fn kmeans(embeddings: &[Vec<f32>], k: usize, max_iter: usize) -> (Vec<usize>, Vec<Vec<f32>>) {
-    let mut centroids = init_centroids_farthest(embeddings, k);
-    let mut labels = vec![0usize; embeddings.len()];
-
-    for _ in 0..max_iter {
-        let mut changed = false;
-        for (idx, emb) in embeddings.iter().enumerate() {
-            let mut best_label = 0usize;
-            let mut best_dist = f32::INFINITY;
-            for (cluster_idx, centroid) in centroids.iter().enumerate() {
-                let dist = squared_l2(emb, centroid);
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_label = cluster_idx;
-                }
-            }
-            if labels[idx] != best_label {
-                labels[idx] = best_label;
-                changed = true;
-            }
-        }
-
-        let mut next_centroids = vec![vec![0.0f32; embeddings[0].len()]; k];
-        let mut counts = vec![0usize; k];
-        for (emb, label) in embeddings.iter().zip(labels.iter().copied()) {
-            counts[label] += 1;
-            for (dim, value) in emb.iter().enumerate() {
-                next_centroids[label][dim] += *value;
-            }
-        }
-        for cluster_idx in 0..k {
-            if counts[cluster_idx] == 0 {
-                next_centroids[cluster_idx] = centroids[cluster_idx].clone();
-                continue;
-            }
-            for dim in 0..next_centroids[cluster_idx].len() {
-                next_centroids[cluster_idx][dim] /= counts[cluster_idx] as f32;
-            }
-        }
-
-        centroids = next_centroids;
-        if !changed {
-            break;
-        }
-    }
-
-    (labels, centroids)
-}
-
-fn init_centroids_farthest(embeddings: &[Vec<f32>], k: usize) -> Vec<Vec<f32>> {
-    let mut centroids = Vec::with_capacity(k);
-    centroids.push(embeddings[0].clone());
-
-    while centroids.len() < k {
-        let mut farthest_idx = 0usize;
-        let mut farthest_dist = f32::NEG_INFINITY;
-
-        for (idx, emb) in embeddings.iter().enumerate() {
-            let nearest = centroids
-                .iter()
-                .map(|c| squared_l2(emb, c))
-                .fold(f32::INFINITY, f32::min);
-            if nearest > farthest_dist {
-                farthest_dist = nearest;
-                farthest_idx = idx;
-            }
-        }
-        centroids.push(embeddings[farthest_idx].clone());
-    }
-
-    centroids
-}
-
-fn mean_vector(vectors: &[Vec<f32>]) -> Vec<f32> {
-    if vectors.is_empty() {
-        return Vec::new();
-    }
-    let mut out = vec![0.0f32; vectors[0].len()];
-    for vector in vectors {
-        for (idx, value) in vector.iter().enumerate() {
-            out[idx] += *value;
-        }
-    }
-    for value in &mut out {
-        *value /= vectors.len() as f32;
-    }
-    out
-}
-
-fn silhouette_like_score(embeddings: &[Vec<f32>], labels: &[usize], centroids: &[Vec<f32>]) -> f32 {
-    if embeddings.is_empty() || centroids.is_empty() {
-        return 0.0;
-    }
-    if centroids.len() == 1 {
-        return 0.0;
-    }
-
-    let mut score_sum = 0.0f32;
-    for (emb, label) in embeddings.iter().zip(labels.iter().copied()) {
-        let a = squared_l2(emb, &centroids[label]).sqrt();
-        let mut b = f32::INFINITY;
-        for (cluster_idx, centroid) in centroids.iter().enumerate() {
-            if cluster_idx == label {
-                continue;
-            }
-            b = b.min(squared_l2(emb, centroid).sqrt());
-        }
-        let denom = a.max(b).max(1e-6);
-        score_sum += (b - a) / denom;
-    }
-    score_sum / embeddings.len() as f32
-}
-
-fn assignment_confidence(
-    embeddings: &[Vec<f32>],
-    labels: &[usize],
-    centroids: &[Vec<f32>],
-) -> Vec<Option<f32>> {
-    if centroids.is_empty() {
-        return vec![None; embeddings.len()];
-    }
-    if centroids.len() == 1 {
-        return vec![Some(1.0); embeddings.len()];
-    }
-
-    let mut out = Vec::with_capacity(embeddings.len());
-    for (emb, label) in embeddings.iter().zip(labels.iter().copied()) {
-        let own = squared_l2(emb, &centroids[label]).sqrt();
-        let mut other = f32::INFINITY;
-        for (cluster_idx, centroid) in centroids.iter().enumerate() {
-            if cluster_idx == label {
-                continue;
-            }
-            other = other.min(squared_l2(emb, centroid).sqrt());
-        }
-        let conf = ((other - own) / (other + own + 1e-6)).clamp(0.0, 1.0);
-        out.push(Some(conf));
-    }
-    out
-}
-
-fn squared_l2(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| {
-            let d = *x - *y;
-            d * d
-        })
-        .sum()
-}
-
 fn merge_adjacent_segments(segments: &mut Vec<DiarizationSegment>, merge_gap_secs: f32) {
     if segments.len() <= 1 {
         return;
     }
 
-    let mut merged = Vec::with_capacity(segments.len());
-    let mut current = segments[0].clone();
-    for segment in segments.iter().skip(1) {
-        let gap = (segment.start_secs - current.end_secs).max(0.0);
-        if segment.speaker == current.speaker && gap <= merge_gap_secs {
-            current.end_secs = current.end_secs.max(segment.end_secs);
-            current.confidence = match (current.confidence, segment.confidence) {
-                (Some(a), Some(b)) => Some((a + b) / 2.0),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
-            };
-        } else {
-            merged.push(current);
-            current = segment.clone();
+    let mut by_speaker: BTreeMap<String, Vec<DiarizationSegment>> = BTreeMap::new();
+    for segment in segments.drain(..) {
+        by_speaker
+            .entry(segment.speaker.clone())
+            .or_default()
+            .push(segment);
+    }
+
+    let mut merged_all = Vec::new();
+    for (_, mut speaker_segments) in by_speaker {
+        speaker_segments.sort_by(|a, b| a.start_secs.total_cmp(&b.start_secs));
+        let mut iter = speaker_segments.into_iter();
+        let Some(mut current) = iter.next() else {
+            continue;
+        };
+
+        for segment in iter {
+            let gap = (segment.start_secs - current.end_secs).max(0.0);
+            if gap <= merge_gap_secs {
+                current.end_secs = current.end_secs.max(segment.end_secs);
+                current.confidence = match (current.confidence, segment.confidence) {
+                    (Some(a), Some(b)) => Some((a + b) / 2.0),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                };
+            } else {
+                merged_all.push(current);
+                current = segment;
+            }
+        }
+        merged_all.push(current);
+    }
+
+    merged_all.sort_by(|a, b| {
+        a.start_secs
+            .total_cmp(&b.start_secs)
+            .then(a.speaker.cmp(&b.speaker))
+    });
+    *segments = merged_all;
+}
+
+fn build_rel_positional_embedding(len: usize, d_model: usize, device: &Device) -> Result<Tensor> {
+    if len == 0 {
+        return Err(Error::InvalidInput(
+            "Cannot build positional embedding for empty sequence".to_string(),
+        ));
+    }
+
+    let pos_len = 2 * len - 1;
+    let mut positions = Vec::with_capacity(pos_len);
+    for p in (-(len as isize - 1))..=(len as isize - 1) {
+        positions.push((-p) as f32);
+    }
+
+    let mut emb = vec![0f32; pos_len * d_model];
+    let denom = (10_000f32).ln() / d_model as f32;
+
+    for (pi, p) in positions.iter().enumerate() {
+        for i in (0..d_model).step_by(2) {
+            let div = (-denom * i as f32).exp();
+            let angle = p * div;
+            emb[pi * d_model + i] = angle.sin();
+            if i + 1 < d_model {
+                emb[pi * d_model + i + 1] = angle.cos();
+            }
         }
     }
-    merged.push(current);
-    *segments = merged;
+
+    Tensor::from_vec(emb, (1, pos_len, d_model), device).map_err(Error::from)
+}
+
+fn swish(x: &Tensor) -> Result<Tensor> {
+    x.broadcast_mul(&ops::sigmoid(x)?).map_err(Error::from)
 }
 
 fn resample_linear(audio: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
@@ -653,4 +1417,204 @@ fn resample_linear(audio: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
     }
 
     out
+}
+
+fn hann_window(win_length: usize) -> Vec<f32> {
+    if win_length <= 1 {
+        return vec![1.0; win_length.max(1)];
+    }
+
+    (0..win_length)
+        .map(|i| {
+            let x = (2.0 * std::f32::consts::PI * i as f32) / (win_length as f32 - 1.0);
+            0.5 - 0.5 * x.cos()
+        })
+        .collect()
+}
+
+fn hz_to_mel_slaney(hz: f32) -> f32 {
+    let f_sp = 200.0 / 3.0;
+    let min_log_hz = 1000.0;
+    let min_log_mel = min_log_hz / f_sp;
+    let logstep = (6.4f32).ln() / 27.0;
+
+    if hz < min_log_hz {
+        hz / f_sp
+    } else {
+        min_log_mel + (hz / min_log_hz).ln() / logstep
+    }
+}
+
+fn mel_to_hz_slaney(mel: f32) -> f32 {
+    let f_sp = 200.0 / 3.0;
+    let min_log_hz = 1000.0;
+    let min_log_mel = min_log_hz / f_sp;
+    let logstep = (6.4f32).ln() / 27.0;
+
+    if mel < min_log_mel {
+        mel * f_sp
+    } else {
+        min_log_hz * (logstep * (mel - min_log_mel)).exp()
+    }
+}
+
+fn mel_filterbank(
+    sample_rate: usize,
+    n_fft: usize,
+    n_mels: usize,
+    fmin: f32,
+    fmax: f32,
+) -> Vec<f32> {
+    let n_freqs = n_fft / 2 + 1;
+    let nyquist = sample_rate as f32 / 2.0;
+    let mel_min = hz_to_mel_slaney(fmin.max(0.0));
+    let mel_max = hz_to_mel_slaney(fmax.min(nyquist).max(fmin));
+
+    let mel_points: Vec<f32> = (0..(n_mels + 2))
+        .map(|i| mel_min + (mel_max - mel_min) * i as f32 / (n_mels + 1) as f32)
+        .collect();
+
+    let hz_points: Vec<f32> = mel_points.into_iter().map(mel_to_hz_slaney).collect();
+    let fft_freqs: Vec<f32> = (0..n_freqs)
+        .map(|i| nyquist * i as f32 / (n_freqs.saturating_sub(1).max(1)) as f32)
+        .collect();
+
+    let mut fb = vec![0f32; n_mels * n_freqs];
+    for m in 0..n_mels {
+        let left = hz_points[m];
+        let center = hz_points[m + 1];
+        let right = hz_points[m + 2];
+        let lower_width = (center - left).max(1e-12);
+        let upper_width = (right - center).max(1e-12);
+        let enorm = if right > left {
+            2.0 / (right - left)
+        } else {
+            0.0
+        };
+
+        for (k, &freq) in fft_freqs.iter().enumerate() {
+            let lower = (freq - left) / lower_width;
+            let upper = (right - freq) / upper_width;
+            fb[m * n_freqs + k] = lower.min(upper).max(0.0) * enorm;
+        }
+    }
+
+    fb
+}
+
+fn preemphasis(x: &mut [f32], preemph: f32) {
+    if x.len() < 2 {
+        return;
+    }
+
+    let mut prev = x[0];
+    for sample in x.iter_mut().skip(1) {
+        let cur = *sample;
+        *sample = cur - preemph * prev;
+        prev = cur;
+    }
+}
+
+fn normalize_per_feature(mel: &mut [f32], n_mels: usize, frames: usize, valid_frames: usize) {
+    if valid_frames == 0 {
+        return;
+    }
+
+    for m in 0..n_mels {
+        let row = &mut mel[m * frames..(m + 1) * frames];
+
+        let mean = row[..valid_frames].iter().copied().sum::<f32>() / valid_frames as f32;
+
+        let var = if valid_frames > 1 {
+            row[..valid_frames]
+                .iter()
+                .map(|v| {
+                    let d = *v - mean;
+                    d * d
+                })
+                .sum::<f32>()
+                / (valid_frames as f32 - 1.0)
+        } else {
+            0.0
+        };
+
+        let std = var.sqrt() + NORMALIZE_EPS;
+        for v in row[..valid_frames].iter_mut() {
+            *v = (*v - mean) / std;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn realtime_voice_vad_frame_mask_uses_rms_threshold() {
+        let samples = vec![
+            0.0, 0.0, 0.0, 0.0, // silence
+            0.3, 0.3, 0.3, 0.3, // speech
+            0.0, 0.0, 0.0, 0.0, // silence
+            0.4, 0.4, 0.4, 0.4, // speech
+        ];
+        let mask = realtime_voice_vad_frame_mask(&samples, 4, 4, 0.02);
+        assert_eq!(mask, vec![false, true, false, true]);
+    }
+
+    #[test]
+    fn speaker_channel_selection_respects_vad_mask() {
+        let probs = vec![
+            [0.90, 0.10, 0.05, 0.02],
+            [0.85, 0.15, 0.06, 0.02],
+            [0.05, 0.10, 0.95, 0.03], // masked out below
+            [0.80, 0.20, 0.05, 0.02],
+        ];
+        let vad_mask = vec![true, true, false, true];
+        let selected = select_speaker_channels(&probs, &vad_mask, 1, 2);
+        assert_eq!(selected, vec![0, 1]);
+    }
+
+    #[test]
+    fn smooth_activity_mask_fills_gaps_and_removes_short_bursts() {
+        let mut active = vec![
+            true, true, false, true, true, false, false, false, true, false, false,
+        ];
+        smooth_activity_mask(&mut active, 2, 1);
+        assert_eq!(
+            active,
+            vec![true, true, true, true, true, false, false, false, false, false, false]
+        );
+    }
+
+    #[test]
+    fn merge_adjacent_segments_merges_per_speaker_with_overlap_present() {
+        let mut segments = vec![
+            DiarizationSegment {
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.0,
+                end_secs: 1.0,
+                confidence: Some(0.8),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 0.8,
+                end_secs: 1.4,
+                confidence: Some(0.9),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 1.05,
+                end_secs: 2.0,
+                confidence: Some(0.6),
+            },
+        ];
+
+        merge_adjacent_segments(&mut segments, 0.1);
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].speaker, "SPEAKER_00");
+        assert!((segments[0].start_secs - 0.0).abs() < 1e-6);
+        assert!((segments[0].end_secs - 2.0).abs() < 1e-6);
+        assert_eq!(segments[1].speaker, "SPEAKER_01");
+    }
 }
