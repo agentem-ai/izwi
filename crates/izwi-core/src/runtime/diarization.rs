@@ -453,12 +453,47 @@ fn assign_speaker_for_span(
         return (UNKNOWN_SPEAKER.to_string(), None, false);
     }
 
+    let word_span = (end_secs - start_secs).max(0.001);
+
     let mut best_overlap = 0.0f32;
+    let mut best_overlap_ratio = 0.0f32;
+    let mut best_specificity = 0.0f32;
+    let mut best_confidence = f32::MIN;
+    let mut best_segment_span = f32::MAX;
     let mut best_segment: Option<&DiarizationSegment> = None;
     for segment in segments {
         let overlap = interval_overlap(start_secs, end_secs, segment.start_secs, segment.end_secs);
-        if overlap > best_overlap {
+        if overlap <= 0.0 {
+            continue;
+        }
+
+        let segment_span = (segment.end_secs - segment.start_secs).max(0.001);
+        let overlap_ratio = (overlap / word_span).clamp(0.0, 1.0);
+        let specificity = (overlap / segment_span).clamp(0.0, 1.0);
+        let confidence = segment.confidence.unwrap_or(0.0);
+
+        let replace = best_segment.is_none()
+            || overlap_ratio > best_overlap_ratio
+            || (overlap_ratio == best_overlap_ratio && specificity > best_specificity)
+            || (overlap_ratio == best_overlap_ratio
+                && specificity == best_specificity
+                && overlap > best_overlap)
+            || (overlap_ratio == best_overlap_ratio
+                && specificity == best_specificity
+                && overlap == best_overlap
+                && confidence > best_confidence)
+            || (overlap_ratio == best_overlap_ratio
+                && specificity == best_specificity
+                && overlap == best_overlap
+                && confidence == best_confidence
+                && segment_span < best_segment_span);
+
+        if replace {
             best_overlap = overlap;
+            best_overlap_ratio = overlap_ratio;
+            best_specificity = specificity;
+            best_confidence = confidence;
+            best_segment_span = segment_span;
             best_segment = Some(segment);
         }
     }
@@ -807,6 +842,32 @@ mod tests {
         assert_eq!(words[2].speaker, "SPEAKER_01");
         assert_eq!(overlap_count, 2);
         assert_eq!(unattributed, 1);
+    }
+
+    #[test]
+    fn attribution_prefers_more_specific_segment_when_overlaps_tie() {
+        let segments = vec![
+            DiarizationSegment {
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.0,
+                end_secs: 10.0,
+                confidence: Some(0.9),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 0.0,
+                end_secs: 1.0,
+                confidence: Some(0.2),
+            },
+        ];
+
+        let aligned = vec![("hello".to_string(), 200, 800)];
+        let (words, overlap_count, unattributed) = attribute_words_to_speakers(&aligned, &segments);
+
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].speaker, "SPEAKER_01");
+        assert_eq!(overlap_count, 1);
+        assert_eq!(unattributed, 0);
     }
 
     #[test]
