@@ -878,7 +878,7 @@ export function ChatPlayground({
   const renderComposer = (centered = false) => (
     <div
       className={cn(
-        "relative rounded-xl border border-[var(--border-muted)] bg-background shadow-sm overflow-hidden",
+        "relative rounded-xl border border-[var(--border-muted)] bg-background shadow-sm overflow-visible",
         centered && "max-w-3xl mx-auto shadow-md",
       )}
     >
