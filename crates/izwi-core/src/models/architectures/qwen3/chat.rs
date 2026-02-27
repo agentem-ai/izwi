@@ -214,6 +214,9 @@ impl Qwen3ChatModel {
         let gguf_name = match variant {
             ModelVariant::Qwen306BGguf => "Qwen3-0.6B-Q8_0.gguf",
             ModelVariant::Qwen317BGguf => "Qwen3-1.7B-Q8_0.gguf",
+            ModelVariant::Qwen34BGguf => "Qwen3-4B-Q4_K_M.gguf",
+            ModelVariant::Qwen38BGguf => "Qwen3-8B-Q4_K_M.gguf",
+            ModelVariant::Qwen314BGguf => "Qwen3-14B-Q4_K_M.gguf",
             _ => {
                 return Err(Error::ModelLoadError(format!(
                     "Unsupported GGUF chat variant: {variant}"
