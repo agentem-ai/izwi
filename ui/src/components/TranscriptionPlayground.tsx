@@ -1296,26 +1296,24 @@ export function TranscriptionPlayground({
         </AnimatePresence>
       </div>
 
-      <aside className="rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm flex flex-col h-[440px] xl:h-full overflow-hidden">
-        <div className="px-4 py-3 border-b border-[var(--border-muted)] flex items-center justify-between gap-3 bg-muted/30">
+      <aside className="card border-[var(--border-muted)] p-4 sm:p-5 h-[440px] xl:h-full flex flex-col overflow-hidden">
+        <div className="flex items-start justify-between gap-3 mb-3">
           <div>
-            <div className="inline-flex items-center gap-2 text-xs text-muted-foreground font-medium uppercase tracking-wider">
+            <div className="inline-flex items-center gap-2 text-xs text-[var(--text-muted)]">
               <History className="w-3.5 h-3.5" />
               History
             </div>
-            <h3 className="text-sm font-semibold tracking-tight mt-1">
+            <h3 className="text-sm font-medium text-[var(--text-primary)] mt-1">
               Transcription History
             </h3>
-            <p className="text-xs text-muted-foreground mt-0.5">
+            <p className="text-xs text-[var(--text-subtle)] mt-1">
               {historyRecords.length}{" "}
               {historyRecords.length === 1 ? "record" : "records"}
             </p>
           </div>
-          <Button
+          <button
             onClick={() => void loadHistory()}
-            variant="ghost"
-            size="sm"
-            className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+            className="btn btn-ghost px-2.5 py-1.5 text-xs"
             disabled={historyLoading}
             title="Refresh history"
           >
@@ -1323,23 +1321,21 @@ export function TranscriptionPlayground({
               className={cn("w-3.5 h-3.5", historyLoading && "animate-spin")}
             />
             Refresh
-          </Button>
+          </button>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1 scrollbar-thin bg-background/50">
+        <div className="mt-1 flex-1 min-h-0 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-2 overflow-y-auto">
           {historyLoading ? (
-            <div className="h-full min-h-[200px] flex items-center justify-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="w-4 h-4 animate-spin" />
+            <div className="h-full min-h-full flex items-center justify-center gap-2 text-xs text-[var(--text-muted)]">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
               Loading history...
             </div>
           ) : historyRecords.length === 0 ? (
-            <div className="h-full min-h-[200px] flex items-center justify-center text-center px-4">
-              <div className="text-xs text-muted-foreground border border-dashed rounded-lg p-6 bg-muted/20 w-full">
-                No saved transcriptions yet.
-              </div>
+            <div className="h-full min-h-full flex items-center justify-center text-center px-3 text-xs text-[var(--text-subtle)]">
+              No saved transcriptions yet.
             </div>
           ) : (
-            <div className="space-y-1">
+            <div className="flex flex-col gap-2.5">
               {historyRecords.map((record) => {
                 const isActive = record.id === selectedHistoryRecordId;
                 return (
@@ -1355,39 +1351,46 @@ export function TranscriptionPlayground({
                     role="button"
                     tabIndex={0}
                     className={cn(
-                      "group w-full h-[96px] text-left rounded-md px-3 py-2.5 transition-colors overflow-hidden border border-transparent relative focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/45",
+                      "group w-full h-[102px] text-left rounded-lg border px-3 py-2.5 transition-colors overflow-hidden cursor-pointer relative focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                       isActive
-                        ? "bg-accent/80 hover:bg-accent/80"
-                        : "hover:bg-muted/50",
+                        ? "border-[var(--border-strong)] bg-[var(--bg-surface-3)]"
+                        : "border-[var(--border-muted)] bg-[var(--bg-surface-2)] hover:border-[var(--border-strong)]",
                     )}
                   >
-                    <div className="flex items-center justify-between gap-2 mb-1.5 pr-8">
-                      <span className="text-[11px] font-medium text-foreground/80 truncate">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-[var(--text-secondary)] truncate">
                         {record.audio_filename ||
                           record.model_id ||
                           "Audio input"}
                       </span>
-                      <span className="text-[10px] text-muted-foreground bg-background px-1.5 py-0.5 rounded border border-[var(--border-muted)] shadow-sm whitespace-nowrap shrink-0">
-                        {formatCreatedAt(record.created_at)}
-                      </span>
+                      <div className="inline-flex items-center gap-1.5 shrink-0">
+                        <span className="text-[10px] text-[var(--text-subtle)]">
+                          {formatCreatedAt(record.created_at)}
+                        </span>
+                        <button
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            openDeleteRecordConfirm(record.id);
+                          }}
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] text-[var(--text-subtle)] transition-colors hover:border-[var(--danger-border)] hover:bg-[var(--danger-bg)] hover:text-[var(--danger-text)]"
+                          title="Delete record"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-                    <p className="text-xs text-muted-foreground line-clamp-2 leading-snug pr-2">
+                    <p
+                      className="text-xs text-[var(--text-primary)] mt-1.5 leading-[1.35]"
+                      style={{
+                        display: "-webkit-box",
+                        WebkitLineClamp: 3,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
                       {record.transcription_preview}
                     </p>
-
-                    <Button
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        openDeleteRecordConfirm(record.id);
-                      }}
-                      variant="ghost"
-                      size="icon"
-                      className="absolute right-2 top-2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive hover:text-destructive-foreground"
-                      title="Delete record"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
                   </div>
                 );
               })}
@@ -1401,7 +1404,7 @@ export function TranscriptionPlayground({
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: "auto" }}
               exit={{ opacity: 0, height: 0 }}
-              className="m-3 p-3 rounded-lg border border-destructive/20 bg-destructive/10 text-destructive text-xs font-medium"
+              className="p-2 rounded border text-xs mt-2 bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]"
             >
               {historyError}
             </motion.div>
