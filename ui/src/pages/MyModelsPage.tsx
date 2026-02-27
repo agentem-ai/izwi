@@ -32,6 +32,17 @@ interface MyModelsPageProps {
 
 type FilterType = "all" | "downloaded" | "loaded" | "not_downloaded";
 type CategoryType = "all" | "tts" | "asr" | "chat";
+type ProviderSection = { provider: string; models: ModelInfo[] };
+
+const PROVIDER_ORDER = [
+  "Qwen",
+  "Liquid AI",
+  "Google",
+  "NVIDIA",
+  "Mistral AI",
+  "hexgrad",
+  "Other",
+] as const;
 
 export const MODEL_DETAILS: Record<
   string,
@@ -535,6 +546,35 @@ function getPrecisionLabel(capabilities: string[]): string | null {
   return null;
 }
 
+function getProviderLabel(variant: string): string {
+  if (variant.startsWith("Qwen3-")) return "Qwen";
+  if (variant.startsWith("LFM2")) return "Liquid AI";
+  if (variant.startsWith("Gemma-")) return "Google";
+  if (
+    variant.startsWith("Parakeet-") ||
+    variant.startsWith("diar_streaming_sortformer")
+  ) {
+    return "NVIDIA";
+  }
+  if (variant.startsWith("Voxtral-")) return "Mistral AI";
+  if (variant.startsWith("Kokoro-")) return "hexgrad";
+  return "Other";
+}
+
+function compareProviders(left: string, right: string): number {
+  const leftRank = PROVIDER_ORDER.indexOf(left as (typeof PROVIDER_ORDER)[number]);
+  const rightRank = PROVIDER_ORDER.indexOf(
+    right as (typeof PROVIDER_ORDER)[number],
+  );
+  const normalizedLeftRank = leftRank === -1 ? Number.MAX_SAFE_INTEGER : leftRank;
+  const normalizedRightRank =
+    rightRank === -1 ? Number.MAX_SAFE_INTEGER : rightRank;
+  if (normalizedLeftRank !== normalizedRightRank) {
+    return normalizedLeftRank - normalizedRightRank;
+  }
+  return left.localeCompare(right);
+}
+
 function requiresManualDownload(variant: string): boolean {
   return variant === "Gemma-3-1b-it";
 }
@@ -566,11 +606,13 @@ export function MyModelsPage({
         // Search filter
         if (searchQuery) {
           const query = searchQuery.toLowerCase();
+          const providerLabel = getProviderLabel(m.variant).toLowerCase();
           const matchesSearch =
             details.shortName.toLowerCase().includes(query) ||
             details.fullName.toLowerCase().includes(query) ||
             details.description.toLowerCase().includes(query) ||
-            details.capabilities.some((c) => c.toLowerCase().includes(query));
+            details.capabilities.some((c) => c.toLowerCase().includes(query)) ||
+            providerLabel.includes(query);
           if (!matchesSearch) return false;
         }
 
@@ -601,6 +643,26 @@ export function MyModelsPage({
         return a.variant.localeCompare(b.variant);
       });
   }, [models, searchQuery, statusFilter, categoryFilter]);
+
+  const providerSections = useMemo<ProviderSection[]>(() => {
+    const grouped = new Map<string, ModelInfo[]>();
+    for (const model of filteredModels) {
+      const provider = getProviderLabel(model.variant);
+      const bucket = grouped.get(provider);
+      if (bucket) {
+        bucket.push(model);
+      } else {
+        grouped.set(provider, [model]);
+      }
+    }
+
+    return Array.from(grouped.entries())
+      .sort(([left], [right]) => compareProviders(left, right))
+      .map(([provider, groupedModels]) => ({
+        provider,
+        models: groupedModels,
+      }));
+  }, [filteredModels]);
 
   const stats = useMemo(() => {
     const visibleModels = models.filter(
@@ -777,193 +839,209 @@ export function MyModelsPage({
           </p>
         </div>
       ) : (
-        <div className="space-y-2">
-          {filteredModels.map((model) => {
-            const details = MODEL_DETAILS[model.variant];
-            if (!details) return null;
-
-            const displayName = withQwen3Prefix(
-              details.shortName,
-              model.variant,
-            );
-            const precisionLabel = getPrecisionLabel(details.capabilities);
-            const isDownloading = model.status === "downloading";
-            const isLoading = model.status === "loading";
-            const isReady = model.status === "ready";
-            const isDownloaded = model.status === "downloaded";
-            const progressValue = downloadProgress[model.variant];
-            const progress =
-              progressValue?.percent ?? model.download_progress ?? 0;
-
-            return (
-              <div
-                key={model.variant}
-                className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3 sm:p-4"
-              >
-                <div className="flex flex-col gap-3 md:flex-row md:items-center">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {isDownloading || isLoading ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--status-warning-text)]" />
-                      ) : (
-                        <span
-                          className={clsx(
-                            "h-2 w-2 rounded-full",
-                            getStatusDotClass(model.status),
-                          )}
-                        />
-                      )}
-                      <h3 className="truncate text-sm font-medium text-[var(--text-primary)]">
-                        {displayName}
-                      </h3>
-                      <span
-                        className={clsx(
-                          "rounded border px-2 py-0.5 text-[11px] font-medium",
-                          getStatusBadgeClass(model.status),
-                        )}
-                      >
-                        {getStatusLabel(model.status)}
-                      </span>
-                    </div>
-
-                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-subtle)]">
-                      <span>{getCategoryLabel(details.category)}</span>
-                      {precisionLabel && (
-                        <>
-                          <span aria-hidden>•</span>
-                          <span>{precisionLabel}</span>
-                        </>
-                      )}
-                      <span aria-hidden>•</span>
-                      <span>{getModelSizeLabel(model)}</span>
-                    </div>
-
-                    {isDownloading && (
-                      <div className="mt-2 flex items-center gap-2">
-                        <div className="h-1.5 w-full max-w-[220px] overflow-hidden rounded-full bg-[var(--bg-surface-3)]">
-                          <div
-                            className="h-full rounded-full bg-[var(--accent-solid)] transition-all duration-300"
-                            style={{ width: `${progress}%` }}
-                          />
-                        </div>
-                        <span className="text-xs text-[var(--text-muted)]">
-                          {Math.round(progress)}%
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {model.status === "not_downloaded" &&
-                      (requiresManualDownload(model.variant) ? (
-                        <button
-                          className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] disabled:cursor-not-allowed disabled:opacity-60"
-                          disabled
-                          title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                          Manual download
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => onDownload(model.variant)}
-                          className="flex items-center gap-1.5 rounded-md bg-[var(--accent-solid)] px-3 py-1.5 text-xs font-medium text-[var(--text-on-accent)] transition-opacity hover:opacity-90"
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                          Download
-                        </button>
-                      ))}
-
-                    {isDownloading && onCancelDownload && (
-                      <button
-                        onClick={() => onCancelDownload(model.variant)}
-                        className="flex items-center gap-1 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-2.5 py-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                        Cancel
-                      </button>
-                    )}
-
-                    {isDownloaded && (
-                      <>
-                        <button
-                          onClick={() => onLoad(model.variant)}
-                          className="flex items-center gap-1.5 rounded-md bg-[var(--accent-solid)] px-3 py-1.5 text-xs font-medium text-[var(--text-on-accent)] transition-opacity hover:opacity-90"
-                        >
-                          <Play className="h-3.5 w-3.5" />
-                          Load
-                        </button>
-                        {confirmDelete === model.variant ? (
-                          <>
-                            <button
-                              onClick={() => setConfirmDelete(null)}
-                              className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-3)]"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                              Cancel
-                            </button>
-                            <button
-                              onClick={() => handleDelete(model.variant)}
-                              className={destructiveDeleteButtonClass}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              Confirm
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            onClick={() => setConfirmDelete(model.variant)}
-                            className={destructiveDeleteButtonClass}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Delete
-                          </button>
-                        )}
-                      </>
-                    )}
-
-                    {isReady && (
-                      <>
-                        <button
-                          onClick={() => onUnload(model.variant)}
-                          className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-surface-3)]"
-                        >
-                          <Square className="h-3.5 w-3.5" />
-                          Unload
-                        </button>
-                        {confirmDelete === model.variant ? (
-                          <>
-                            <button
-                              onClick={() => setConfirmDelete(null)}
-                              className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-3)]"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                              Cancel
-                            </button>
-                            <button
-                              onClick={() => handleDelete(model.variant)}
-                              className={destructiveDeleteButtonClass}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              Confirm
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            onClick={() => setConfirmDelete(model.variant)}
-                            className={destructiveDeleteButtonClass}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Delete
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
+        <div className="space-y-3">
+          {providerSections.map((section) => (
+            <section key={section.provider} className="space-y-2">
+              <div className="flex items-center gap-2 px-1">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+                  {section.provider}
+                </h3>
+                <span className="text-[10px] text-[var(--text-subtle)]">
+                  {section.models.length}
+                </span>
+                <div className="h-px flex-1 bg-[var(--border-muted)]" />
               </div>
-            );
-          })}
+
+              <div className="space-y-2">
+                {section.models.map((model) => {
+                  const details = MODEL_DETAILS[model.variant];
+                  if (!details) return null;
+
+                  const displayName = withQwen3Prefix(
+                    details.shortName,
+                    model.variant,
+                  );
+                  const precisionLabel = getPrecisionLabel(details.capabilities);
+                  const isDownloading = model.status === "downloading";
+                  const isLoading = model.status === "loading";
+                  const isReady = model.status === "ready";
+                  const isDownloaded = model.status === "downloaded";
+                  const progressValue = downloadProgress[model.variant];
+                  const progress =
+                    progressValue?.percent ?? model.download_progress ?? 0;
+
+                  return (
+                    <div
+                      key={model.variant}
+                      className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3 sm:p-4"
+                    >
+                      <div className="flex flex-col gap-3 md:flex-row md:items-center">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            {isDownloading || isLoading ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--status-warning-text)]" />
+                            ) : (
+                              <span
+                                className={clsx(
+                                  "h-2 w-2 rounded-full",
+                                  getStatusDotClass(model.status),
+                                )}
+                              />
+                            )}
+                            <h3 className="truncate text-sm font-medium text-[var(--text-primary)]">
+                              {displayName}
+                            </h3>
+                            <span
+                              className={clsx(
+                                "rounded border px-2 py-0.5 text-[11px] font-medium",
+                                getStatusBadgeClass(model.status),
+                              )}
+                            >
+                              {getStatusLabel(model.status)}
+                            </span>
+                          </div>
+
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-subtle)]">
+                            <span>{getCategoryLabel(details.category)}</span>
+                            {precisionLabel && (
+                              <>
+                                <span aria-hidden>•</span>
+                                <span>{precisionLabel}</span>
+                              </>
+                            )}
+                            <span aria-hidden>•</span>
+                            <span>{getModelSizeLabel(model)}</span>
+                          </div>
+
+                          {isDownloading && (
+                            <div className="mt-2 flex items-center gap-2">
+                              <div className="h-1.5 w-full max-w-[220px] overflow-hidden rounded-full bg-[var(--bg-surface-3)]">
+                                <div
+                                  className="h-full rounded-full bg-[var(--accent-solid)] transition-all duration-300"
+                                  style={{ width: `${progress}%` }}
+                                />
+                              </div>
+                              <span className="text-xs text-[var(--text-muted)]">
+                                {Math.round(progress)}%
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {model.status === "not_downloaded" &&
+                            (requiresManualDownload(model.variant) ? (
+                              <button
+                                className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] disabled:cursor-not-allowed disabled:opacity-60"
+                                disabled
+                                title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
+                              >
+                                <Download className="h-3.5 w-3.5" />
+                                Manual download
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => onDownload(model.variant)}
+                                className="flex items-center gap-1.5 rounded-md bg-[var(--accent-solid)] px-3 py-1.5 text-xs font-medium text-[var(--text-on-accent)] transition-opacity hover:opacity-90"
+                              >
+                                <Download className="h-3.5 w-3.5" />
+                                Download
+                              </button>
+                            ))}
+
+                          {isDownloading && onCancelDownload && (
+                            <button
+                              onClick={() => onCancelDownload(model.variant)}
+                              className="flex items-center gap-1 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-2.5 py-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                              Cancel
+                            </button>
+                          )}
+
+                          {isDownloaded && (
+                            <>
+                              <button
+                                onClick={() => onLoad(model.variant)}
+                                className="flex items-center gap-1.5 rounded-md bg-[var(--accent-solid)] px-3 py-1.5 text-xs font-medium text-[var(--text-on-accent)] transition-opacity hover:opacity-90"
+                              >
+                                <Play className="h-3.5 w-3.5" />
+                                Load
+                              </button>
+                              {confirmDelete === model.variant ? (
+                                <>
+                                  <button
+                                    onClick={() => setConfirmDelete(null)}
+                                    className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-3)]"
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                    Cancel
+                                  </button>
+                                  <button
+                                    onClick={() => handleDelete(model.variant)}
+                                    className={destructiveDeleteButtonClass}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                    Confirm
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  onClick={() => setConfirmDelete(model.variant)}
+                                  className={destructiveDeleteButtonClass}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  Delete
+                                </button>
+                              )}
+                            </>
+                          )}
+
+                          {isReady && (
+                            <>
+                              <button
+                                onClick={() => onUnload(model.variant)}
+                                className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-surface-3)]"
+                              >
+                                <Square className="h-3.5 w-3.5" />
+                                Unload
+                              </button>
+                              {confirmDelete === model.variant ? (
+                                <>
+                                  <button
+                                    onClick={() => setConfirmDelete(null)}
+                                    className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-3)]"
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                    Cancel
+                                  </button>
+                                  <button
+                                    onClick={() => handleDelete(model.variant)}
+                                    className={destructiveDeleteButtonClass}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                    Confirm
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  onClick={() => setConfirmDelete(model.variant)}
+                                  className={destructiveDeleteButtonClass}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  Delete
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
         </div>
       )}
     </PageShell>
