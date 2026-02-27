@@ -693,8 +693,8 @@ export function SpeechHistoryPanel({
 
   return (
     <>
-      <aside className="rounded-xl border bg-card text-card-foreground shadow-sm flex flex-col h-[440px] lg:h-[calc(100dvh-6.5rem)] overflow-hidden">
-        <div className="flex items-center justify-between gap-3 mb-3 px-4 py-3 border-b bg-muted/30">
+      <aside className="rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm flex flex-col h-[440px] lg:h-[calc(100dvh-6.5rem)] overflow-hidden">
+        <div className="flex items-center justify-between gap-3 mb-3 px-4 py-3 border-b border-[var(--border-muted)] bg-muted/30">
           <div>
             <div className="inline-flex items-center gap-2 text-xs text-muted-foreground font-medium uppercase tracking-wider">
               <Clock3 className="w-3.5 h-3.5" />
@@ -756,7 +756,7 @@ export function SpeechHistoryPanel({
                           record.speaker ||
                           "Speech generation"}
                       </span>
-                      <span className="text-[10px] text-muted-foreground bg-background px-1.5 py-0.5 rounded border shadow-sm whitespace-nowrap shrink-0">
+                      <span className="text-[10px] text-muted-foreground bg-background px-1.5 py-0.5 rounded border border-[var(--border-muted)] shadow-sm whitespace-nowrap shrink-0">
                         {formatCreatedAt(record.created_at)}
                       </span>
                     </div>
@@ -813,9 +813,9 @@ export function SpeechHistoryPanel({
               exit={{ y: 18, opacity: 0, scale: 0.985 }}
               transition={{ duration: 0.18 }}
               onClick={(event) => event.stopPropagation()}
-              className="mx-auto flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border bg-card text-card-foreground shadow-2xl"
+              className="mx-auto flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-2xl"
             >
-              <div className="flex items-center justify-between gap-3 border-b px-4 py-3 sm:px-6 bg-muted/20">
+              <div className="flex items-center justify-between gap-3 border-b border-[var(--border-muted)] px-4 py-3 sm:px-6 bg-muted/20">
                 <div className="min-w-0">
                   <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                     Saved Audio Record

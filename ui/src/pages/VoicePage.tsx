@@ -2646,7 +2646,12 @@ export function VoicePage({
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1 space-y-3">
+          <div
+            className={cn(
+              "min-h-0 flex-1 pr-1 space-y-3",
+              transcript.length > 0 ? "overflow-y-auto" : "overflow-y-hidden",
+            )}
+          >
             {transcript.length === 0 ? (
               <div className="h-full flex items-center justify-center text-center">
                 <div>

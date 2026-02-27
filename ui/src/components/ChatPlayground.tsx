@@ -878,7 +878,7 @@ export function ChatPlayground({
   const renderComposer = (centered = false) => (
     <div
       className={cn(
-        "relative rounded-xl border bg-background shadow-sm overflow-hidden",
+        "relative rounded-xl border border-[var(--border-muted)] bg-background shadow-sm overflow-hidden",
         centered && "max-w-3xl mx-auto shadow-md",
       )}
     >
@@ -974,8 +974,8 @@ export function ChatPlayground({
 
   return (
     <div className="relative flex flex-col lg:flex-row gap-4 h-[calc(100dvh-9rem)] lg:h-[calc(100dvh-6.5rem)]">
-      <aside className="w-full lg:w-80 lg:min-w-[20rem] max-h-[38dvh] lg:max-h-none shrink-0 rounded-xl border bg-card text-card-foreground flex flex-col overflow-hidden shadow-sm">
-        <div className="px-4 py-3 border-b flex items-center justify-between gap-3 bg-muted/30">
+      <aside className="w-full lg:w-80 lg:min-w-[20rem] max-h-[38dvh] lg:max-h-none shrink-0 rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground flex flex-col overflow-hidden shadow-sm">
+        <div className="px-4 py-3 border-b border-[var(--border-muted)] flex items-center justify-between gap-3 bg-muted/30">
           <div>
             <h2 className="text-sm font-semibold tracking-tight">Chats</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
@@ -1001,7 +1001,7 @@ export function ChatPlayground({
               Loading chats...
             </div>
           ) : threads.length === 0 ? (
-            <div className="p-4 text-center text-xs text-muted-foreground border border-dashed rounded-lg m-2 bg-muted/20">
+            <div className="p-4 text-center text-xs text-muted-foreground border border-[var(--border-muted)] border-dashed rounded-lg m-2 bg-muted/20">
               No chats yet. Create one to begin.
             </div>
           ) : (
@@ -1116,8 +1116,8 @@ export function ChatPlayground({
             </div>
           </div>
         ) : (
-          <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden bg-card border rounded-xl shadow-sm">
-            <div className="px-4 sm:px-6 py-4 border-b flex items-center justify-between gap-3 bg-muted/20">
+          <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden bg-card border border-[var(--border-muted)] rounded-xl shadow-sm">
+            <div className="px-4 sm:px-6 py-4 border-b border-[var(--border-muted)] flex items-center justify-between gap-3 bg-muted/20">
               <div>
                 <h2 className="text-sm font-semibold tracking-tight">
                   {activeThread
@@ -1193,7 +1193,7 @@ export function ChatPlayground({
                               "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 border shadow-sm",
                               isUser
                                 ? "bg-primary text-primary-foreground border-primary/20"
-                                : "bg-muted text-muted-foreground border-border",
+                                : "bg-muted text-muted-foreground border-[var(--border-muted)]",
                             )}
                           >
                             {isUser ? (
@@ -1214,7 +1214,7 @@ export function ChatPlayground({
                                 "rounded-2xl px-4 py-2.5 shadow-sm",
                                 isUser
                                   ? "bg-primary text-primary-foreground rounded-tr-sm"
-                                  : "bg-card border text-card-foreground rounded-tl-sm",
+                                  : "bg-card border border-[var(--border-muted)] text-card-foreground rounded-tl-sm",
                               )}
                             >
                               {isUser ? (
@@ -1225,7 +1225,7 @@ export function ChatPlayground({
                               ) : (
                                 <>
                                   {showStreamingThinking && parsed && (
-                                    <div className="mb-3 rounded-lg bg-muted/50 border px-3 py-2 text-xs text-muted-foreground">
+                                    <div className="mb-3 rounded-lg bg-muted/50 border border-[var(--border-muted)] px-3 py-2 text-xs text-muted-foreground">
                                       <div className="mb-2 flex items-center gap-1.5 uppercase tracking-wider text-[10px] font-semibold">
                                         <Loader2 className="w-3 h-3 animate-spin text-primary" />
                                         Thinking
@@ -1280,7 +1280,7 @@ export function ChatPlayground({
                                     parsed.hasThink &&
                                     !showStreamingThinking &&
                                     isThoughtExpanded && (
-                                      <div className="mt-2 rounded-lg bg-muted/30 border px-3 py-2 text-xs whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted-foreground">
+                                      <div className="mt-2 rounded-lg bg-muted/30 border border-[var(--border-muted)] px-3 py-2 text-xs whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted-foreground">
                                         {parsed.thinking}
                                       </div>
                                     )}
@@ -1321,13 +1321,13 @@ export function ChatPlayground({
 
                   {stats && !isStreaming && (
                     <div className="mb-3 text-[11px] font-medium text-muted-foreground flex items-center justify-center gap-3">
-                      <span className="bg-muted px-2 py-0.5 rounded-md border shadow-sm">
+                      <span className="bg-muted px-2 py-0.5 rounded-md border border-[var(--border-muted)] shadow-sm">
                         {stats.tokens_generated} tokens
                       </span>
-                      <span className="bg-muted px-2 py-0.5 rounded-md border shadow-sm">
+                      <span className="bg-muted px-2 py-0.5 rounded-md border border-[var(--border-muted)] shadow-sm">
                         {Math.round(stats.generation_time_ms)} ms
                       </span>
-                      <span className="bg-muted px-2 py-0.5 rounded-md border shadow-sm">
+                      <span className="bg-muted px-2 py-0.5 rounded-md border border-[var(--border-muted)] shadow-sm">
                         {Math.round(
                           stats.tokens_generated /
                             (stats.generation_time_ms / 1000),
