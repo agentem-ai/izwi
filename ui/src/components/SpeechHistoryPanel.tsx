@@ -35,6 +35,7 @@ interface SpeechHistoryPanelProps {
   title: string;
   emptyMessage: string;
   latestRecord?: SpeechHistoryRecord | null;
+  desktopHeightClassName?: string;
 }
 
 function formatCreatedAt(timestampMs: number): string {
@@ -131,6 +132,7 @@ export function SpeechHistoryPanel({
   title,
   emptyMessage,
   latestRecord = null,
+  desktopHeightClassName = "lg:h-[calc(100dvh-6.5rem)]",
 }: SpeechHistoryPanelProps) {
   const [records, setRecords] = useState<SpeechHistoryRecordSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -693,7 +695,12 @@ export function SpeechHistoryPanel({
 
   return (
     <>
-      <aside className="rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm flex flex-col h-[440px] lg:h-[calc(100dvh-6.5rem)] overflow-hidden">
+      <aside
+        className={cn(
+          "rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground shadow-sm flex flex-col h-[440px] overflow-hidden",
+          desktopHeightClassName,
+        )}
+      >
         <div className="flex items-center justify-between gap-3 mb-3 px-4 py-3 border-b border-[var(--border-muted)] bg-muted/30">
           <div>
             <div className="inline-flex items-center gap-2 text-xs text-muted-foreground font-medium uppercase tracking-wider">
