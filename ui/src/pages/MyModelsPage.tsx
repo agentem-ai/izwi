@@ -538,7 +538,9 @@ export function MyModelsPage({
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<FilterType>("all");
   const [categoryFilter, setCategoryFilter] = useState<CategoryType>("all");
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleteModalVariant, setDeleteModalVariant] = useState<string | null>(
+    null,
+  );
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const filteredModels = useMemo(() => {
@@ -625,13 +627,14 @@ export function MyModelsPage({
     };
   }, [models]);
 
-  const handleDelete = (variant: string) => {
-    setConfirmDelete(null);
-    onDelete(variant);
-  };
-
-  const destructiveDeleteButtonClass =
-    "flex items-center gap-1.5 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-2.5 py-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]";
+  const deleteTargetDetails =
+    deleteModalVariant && MODEL_DETAILS[deleteModalVariant]
+      ? MODEL_DETAILS[deleteModalVariant]
+      : null;
+  const deleteTargetName =
+    deleteTargetDetails && deleteModalVariant
+      ? withQwen3Prefix(deleteTargetDetails.shortName, deleteModalVariant)
+      : deleteModalVariant;
 
   if (loading) {
     return (
@@ -884,32 +887,14 @@ export function MyModelsPage({
                                 <Play className="h-3.5 w-3.5" />
                                 Load
                               </button>
-                              {confirmDelete === model.variant ? (
-                                <>
-                                  <button
-                                    onClick={() => setConfirmDelete(null)}
-                                    className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-3)]"
-                                  >
-                                    <X className="h-3.5 w-3.5" />
-                                    Cancel
-                                  </button>
-                                  <button
-                                    onClick={() => handleDelete(model.variant)}
-                                    className={destructiveDeleteButtonClass}
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                    Confirm
-                                  </button>
-                                </>
-                              ) : (
-                                <button
-                                  onClick={() => setConfirmDelete(model.variant)}
-                                  className={destructiveDeleteButtonClass}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                  Delete
-                                </button>
-                              )}
+                              <button
+                                onClick={() => setDeleteModalVariant(model.variant)}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
+                                title="Delete model"
+                                aria-label={`Delete ${displayName}`}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
                             </>
                           )}
 
@@ -922,32 +907,14 @@ export function MyModelsPage({
                                 <Square className="h-3.5 w-3.5" />
                                 Unload
                               </button>
-                              {confirmDelete === model.variant ? (
-                                <>
-                                  <button
-                                    onClick={() => setConfirmDelete(null)}
-                                    className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-3)]"
-                                  >
-                                    <X className="h-3.5 w-3.5" />
-                                    Cancel
-                                  </button>
-                                  <button
-                                    onClick={() => handleDelete(model.variant)}
-                                    className={destructiveDeleteButtonClass}
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                    Confirm
-                                  </button>
-                                </>
-                              ) : (
-                                <button
-                                  onClick={() => setConfirmDelete(model.variant)}
-                                  className={destructiveDeleteButtonClass}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                  Delete
-                                </button>
-                              )}
+                              <button
+                                onClick={() => setDeleteModalVariant(model.variant)}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
+                                title="Delete model"
+                                aria-label={`Delete ${displayName}`}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
                             </>
                           )}
                         </div>
@@ -958,6 +925,47 @@ export function MyModelsPage({
               </div>
             </section>
           ))}
+        </div>
+      )}
+
+      {deleteModalVariant && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setDeleteModalVariant(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-[var(--danger-border)] bg-[var(--bg-surface-1)] p-5 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+              Delete model?
+            </h3>
+            <p className="mt-2 text-sm text-[var(--text-muted)]">
+              This will remove the downloaded model files from local storage.
+            </p>
+            <p className="mt-3 truncate text-xs text-[var(--text-subtle)]">
+              {deleteTargetName || deleteModalVariant}
+            </p>
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setDeleteModalVariant(null)}
+                className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-3)]"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  onDelete(deleteModalVariant);
+                  setDeleteModalVariant(null);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete model
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </PageShell>
