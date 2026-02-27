@@ -13,6 +13,7 @@ import {
   Plus,
   Trash2,
   MessageSquare,
+  History,
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
@@ -974,96 +975,118 @@ export function ChatPlayground({
 
   return (
     <div className="relative flex flex-col lg:flex-row gap-4 h-[calc(100dvh-12rem)] lg:h-[calc(100dvh-11.75rem)]">
-      <aside className="w-full lg:w-80 lg:min-w-[20rem] max-h-[38dvh] lg:max-h-none shrink-0 rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground flex flex-col overflow-hidden shadow-sm">
-        <div className="px-4 py-3 border-b border-[var(--border-muted)] flex items-center justify-between gap-3 bg-muted/30">
+      <aside className="w-full lg:w-80 lg:min-w-[20rem] max-h-[38dvh] lg:max-h-none shrink-0 card border-[var(--border-muted)] p-4 sm:p-5 flex flex-col overflow-hidden">
+        <div className="flex items-start justify-between gap-3 mb-3">
           <div>
-            <h2 className="text-sm font-semibold tracking-tight">Chats</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">
+            <div className="inline-flex items-center gap-2 text-xs text-[var(--text-muted)]">
+              <History className="w-3.5 h-3.5" />
+              History
+            </div>
+            <h2 className="text-sm font-medium text-[var(--text-primary)] mt-1">
+              Chat History
+            </h2>
+            <p className="text-xs text-[var(--text-subtle)] mt-1">
               {threads.length} {threads.length === 1 ? "thread" : "threads"}
             </p>
           </div>
-          <Button
+          <button
             onClick={handleCreateThread}
             disabled={isStreaming || isPreparingThread}
-            variant="outline"
-            size="sm"
-            className="h-8 gap-1.5 shadow-sm"
+            className="btn btn-ghost px-2.5 py-1.5 text-xs"
           >
             <Plus className="w-3.5 h-3.5" />
             New
-          </Button>
+          </button>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1 scrollbar-thin">
+        <div className="mt-1 flex-1 min-h-0 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-2 overflow-y-auto">
           {threadsLoading ? (
-            <div className="p-4 text-center text-xs text-muted-foreground flex items-center justify-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin" />
+            <div className="h-full min-h-full flex items-center justify-center gap-2 text-xs text-[var(--text-muted)]">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
               Loading chats...
             </div>
           ) : threads.length === 0 ? (
-            <div className="p-4 text-center text-xs text-muted-foreground border border-[var(--border-muted)] border-dashed rounded-lg m-2 bg-muted/20">
+            <div className="h-full min-h-full flex items-center justify-center text-center px-3 text-xs text-[var(--text-subtle)]">
               No chats yet. Create one to begin.
             </div>
           ) : (
-            threads.map((thread) => {
-              const isActive = thread.id === activeThreadId;
-              const preview = threadPreviewFromContent(
-                thread.last_message_preview,
-              );
+            <div className="flex flex-col gap-2.5">
+              {threads.map((thread) => {
+                const isActive = thread.id === activeThreadId;
+                const preview = threadPreviewFromContent(
+                  thread.last_message_preview,
+                );
 
-              return (
-                <div
-                  key={thread.id}
-                  className={cn(
-                    "group relative rounded-md border border-transparent transition-colors hover:bg-muted/50",
-                    isActive && "bg-accent/80 hover:bg-accent/80",
-                  )}
-                >
-                  <button
+                return (
+                  <div
+                    key={thread.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => {
-                      if (isStreaming) {
+                      if (isStreaming || isPreparingThread) {
                         return;
                       }
                       setActiveThreadInUrl(thread.id);
                       setError(null);
                     }}
-                    disabled={isStreaming || isPreparingThread}
-                    className="block w-full text-left px-3 py-2.5 pr-10 outline-none"
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        if (isStreaming || isPreparingThread) {
+                          return;
+                        }
+                        setActiveThreadInUrl(thread.id);
+                        setError(null);
+                      }
+                    }}
+                    className={cn(
+                      "w-full h-[102px] text-left rounded-lg border px-3 py-2.5 transition-colors overflow-hidden cursor-pointer",
+                      isActive
+                        ? "border-[var(--border-strong)] bg-[var(--bg-surface-3)]"
+                        : "border-[var(--border-muted)] bg-[var(--bg-surface-2)] hover:border-[var(--border-strong)]",
+                      (isStreaming || isPreparingThread) && "opacity-70",
+                    )}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <p
-                        className={cn(
-                          "truncate text-sm font-medium leading-none",
-                          isActive ? "text-foreground" : "text-foreground/80",
-                        )}
-                      >
+                      <p className="text-[11px] text-[var(--text-secondary)] truncate">
                         {displayThreadTitle(thread.title)}
                       </p>
-                      <span className="shrink-0 text-[10px] text-muted-foreground">
-                        {formatThreadTimestamp(thread.updated_at)}
-                      </span>
+                      <div className="inline-flex items-center gap-1.5 shrink-0">
+                        <span className="text-[10px] text-[var(--text-subtle)]">
+                          {formatThreadTimestamp(thread.updated_at)}
+                        </span>
+                        <button
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (isStreaming || isPreparingThread) {
+                              return;
+                            }
+                            void handleDeleteThread(thread.id);
+                          }}
+                          disabled={isStreaming || isPreparingThread}
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] text-[var(--text-subtle)] transition-colors hover:border-[var(--danger-border)] hover:bg-[var(--danger-bg)] hover:text-[var(--danger-text)] disabled:opacity-50"
+                          title="Delete chat"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-                    <p className="mt-1.5 text-xs text-muted-foreground line-clamp-2 leading-snug">
+                    <p
+                      className="text-xs text-[var(--text-primary)] mt-1.5 leading-[1.35]"
+                      style={{
+                        display: "-webkit-box",
+                        WebkitLineClamp: 3,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
                       {preview}
                     </p>
-                  </button>
-
-                  <Button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleDeleteThread(thread.id);
-                    }}
-                    disabled={isStreaming || isPreparingThread}
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-1 top-1.5 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive hover:text-destructive-foreground"
-                    title="Delete chat"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </Button>
-                </div>
-              );
-            })
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       </aside>
