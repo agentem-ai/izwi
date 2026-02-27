@@ -191,8 +191,8 @@ const VOICE_AGENT_SYSTEM_PROMPT =
   "You are a helpful voice assistant. Reply with concise spoken-friendly language. Avoid markdown. Do not output <think> tags or internal reasoning. Return only the final spoken answer. Keep responses brief unless asked for details.";
 
 const PIPELINE_LABELS: Record<PipelineMode, string> = {
-  s2s: "Speech-to-Speech (S2S)",
-  stt_chat_tts: "STT -> Chat -> TTS",
+  s2s: "Unified Speech Model",
+  stt_chat_tts: "Modular Voice Stack",
 };
 
 function parseFinalAnswer(content: string): string {
@@ -2449,11 +2449,31 @@ export function VoicePage({
     processing: "Thinking",
     assistant_speaking: "Assistant speaking",
   }[runtimeStatus];
+  const statusDetail = {
+    idle: hasRunnableConfig
+      ? "Session is ready. Start when you want to speak."
+      : "Finish configuration to enable the local voice stack.",
+    listening: "Listening for your voice. Barge-in stays enabled.",
+    user_speaking: "Capturing your speech in realtime.",
+    processing: "Running local inference for the next response.",
+    assistant_speaking: "Assistant audio is streaming.",
+  }[runtimeStatus];
 
   const vadPercent = Math.min(
     100,
     Math.round((audioLevel / Math.max(vadThreshold, 0.001)) * 40),
   );
+  const sessionReadinessLabel = hasRunnableConfig
+    ? "Stack ready"
+    : "Setup required";
+  const sessionReadinessClass = hasRunnableConfig
+    ? "border-[var(--status-positive-border)] bg-[var(--status-positive-bg)] text-[var(--status-positive-text)]"
+    : "border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] text-[var(--status-warning-text)]";
+  const formatTranscriptTimestamp = (timestamp: number) =>
+    new Date(timestamp).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 
   const getStatusClass = (status: ModelInfo["status"]) => {
     switch (status) {
@@ -2504,14 +2524,6 @@ export function VoicePage({
       (!selectedAsrModel || !selectedTextModel || !selectedTtsModel)) ||
     !hasRunnableConfig;
 
-  const modelSummary = lfm2DirectMode
-    ? [{ label: "S2S Model", model: selectedS2sInfo }]
-    : [
-        { label: "ASR", model: selectedAsrInfo },
-        { label: "Text", model: selectedTextInfo },
-        { label: "TTS", model: selectedTtsInfo },
-      ];
-
   if (loading) {
     return (
       <PageShell>
@@ -2531,7 +2543,7 @@ export function VoicePage({
     <PageShell>
       <PageHeader
         title="Realtime Voice"
-        description="Low latency realtime voice loop."
+        description="Private, low-latency local voice conversations."
         actions={
           <button
             onClick={() => setIsConfigOpen(true)}
@@ -2543,11 +2555,32 @@ export function VoicePage({
         }
       />
 
-      <div className="grid xl:grid-cols-[360px,1fr] gap-4 lg:gap-6">
-        <div className="card p-5">
-          <div className="flex flex-col items-center text-center">
-            <div className="relative mb-5">
-              <div className="w-28 h-28 rounded-full bg-[#141414] border border-[#2a2a2a] flex items-center justify-center">
+      <div className="grid xl:grid-cols-[380px,1fr] gap-4 lg:gap-6">
+        <div className="card p-5 sm:p-6">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--text-subtle)]">
+              Session Control
+            </p>
+            <span
+              className={cn(
+                "inline-flex items-center rounded-md border px-2 py-0.5 text-[11px]",
+                sessionReadinessClass,
+              )}
+            >
+              {sessionReadinessLabel}
+            </span>
+          </div>
+
+          <div className="mt-5 flex flex-col items-center text-center">
+            <div className="relative mb-4">
+              {runtimeStatus !== "idle" && (
+                <motion.div
+                  className="absolute -inset-3 rounded-full bg-white/10 blur-md"
+                  animate={{ opacity: [0.25, 0.55, 0.25], scale: [0.96, 1, 0.96] }}
+                  transition={{ duration: 2.2, repeat: Infinity, ease: "easeInOut" }}
+                />
+              )}
+              <div className="relative w-28 h-28 rounded-full bg-[var(--bg-surface-0)] border border-[var(--border-strong)] flex items-center justify-center">
                 {runtimeStatus === "assistant_speaking" ? (
                   <Volume2 className="w-8 h-8 text-white" />
                 ) : runtimeStatus === "user_speaking" ? (
@@ -2563,13 +2596,10 @@ export function VoicePage({
               <div className="absolute -inset-2 rounded-full border border-white/10" />
             </div>
 
-            <div className="text-sm text-white font-medium">{statusLabel}</div>
-            <p className="text-xs text-gray-500 mt-1">
-              Barge-in is enabled while the assistant is speaking.
+            <div className="text-base text-white font-semibold">{statusLabel}</div>
+            <p className="mt-1 max-w-[270px] text-xs text-[var(--text-muted)]">
+              {statusDetail}
             </p>
-            <span className="mt-2 inline-flex items-center rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-3)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]">
-              {currentPipelineLabel}
-            </span>
 
             <Button
               onClick={toggleSession}
@@ -2589,58 +2619,47 @@ export function VoicePage({
                 </>
               )}
             </Button>
+
+            {!hasRunnableConfig && (
+              <p className="mt-2 text-[11px] text-[var(--status-warning-text)]">
+                Open Config to load required models.
+              </p>
+            )}
           </div>
 
-          <div className="mt-5 pt-4 border-t border-[#252525] space-y-3">
-            <div className="h-2 rounded bg-[#1b1b1b] border border-[#2a2a2a] overflow-hidden">
-              <div
-                className="h-full bg-white transition-all duration-75"
-                style={{ width: `${vadPercent}%` }}
-              />
-            </div>
-            <div className="space-y-2 text-xs">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-gray-500">Mode</span>
-                <span className="inline-flex items-center rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-3)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]">
-                  {currentPipelineLabel}
-                </span>
+          <div className="mt-6 space-y-3">
+            <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-2)] p-3">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="text-[var(--text-muted)]">Input level</span>
+                <span className="text-[var(--text-secondary)]">{vadPercent}%</span>
               </div>
-              {modelSummary.map((item) => (
+              <div className="mt-2 h-2 rounded bg-[var(--bg-surface-3)] border border-[var(--border-muted)] overflow-hidden">
                 <div
-                  key={item.label}
-                  className="flex items-center justify-between gap-2"
-                >
-                  <span className="text-gray-500">{item.label}</span>
-                  {item.model ? (
-                    <span
-                      className={clsx(
-                        "inline-flex items-center rounded-md border px-2 py-0.5 max-w-[220px] truncate text-[11px]",
-                        getStatusClass(item.model.status),
-                      )}
-                      title={item.model.variant}
-                    >
-                      {formatModelVariantLabel(item.model.variant)}
-                    </span>
-                  ) : (
-                    <span className="text-[var(--status-warning-text)]">
-                      Not selected
-                    </span>
-                  )}
-                </div>
-              ))}
+                  className="h-full bg-white transition-all duration-100"
+                  style={{ width: `${vadPercent}%` }}
+                />
+              </div>
+              <p className="mt-2 text-[11px] text-[var(--text-subtle)]">
+                Voice activity detection is tuned for interruptible conversation.
+              </p>
             </div>
           </div>
         </div>
 
-        <div className="card p-4 flex flex-col h-[420px] sm:h-[520px] lg:h-[640px] overflow-hidden">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm text-white font-medium">Conversation</span>
+        <div className="card p-4 sm:p-5 flex flex-col h-[420px] sm:h-[520px] lg:h-[640px] overflow-hidden">
+          <div className="flex items-center justify-between gap-2 mb-4">
+            <div>
+              <span className="text-sm text-white font-medium">Live Transcript</span>
+              <p className="text-[11px] text-[var(--text-subtle)] mt-0.5">
+                Streaming user and assistant turns in realtime.
+              </p>
+            </div>
             <div className="flex items-center gap-2">
               <span className="text-xs px-2 py-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] text-gray-300">
                 {statusLabel}
               </span>
               <span className="text-xs px-2 py-1 rounded border border-[var(--border-strong)] bg-[var(--bg-surface-3)] text-[var(--text-secondary)]">
-                {currentPipelineLabel}
+                On-device
               </span>
             </div>
           </div>
@@ -2681,11 +2700,14 @@ export function VoicePage({
                     >
                       <div
                         className={clsx(
-                          "text-[10px] mb-1 uppercase tracking-wide",
+                          "text-[10px] mb-1 uppercase tracking-wide flex items-center justify-between gap-2",
                           isUser ? "text-black/60" : "text-gray-500",
                         )}
                       >
-                        {isUser ? "User" : "Assistant"}
+                        <span>{isUser ? "User" : "Assistant"}</span>
+                        <span className="normal-case tracking-normal text-[10px] opacity-80">
+                          {formatTranscriptTimestamp(entry.timestamp)}
+                        </span>
                       </div>
                       {entry.text}
                     </div>
@@ -2752,10 +2774,10 @@ export function VoicePage({
                 <section className="space-y-4">
                   <div className="flex items-center justify-between gap-2">
                     <h3 className="text-sm font-medium text-white">
-                      Pipeline Mode
+                      Runtime Profile
                     </h3>
                     <span className="text-[11px] text-gray-500">
-                      Choose your realtime voice route.
+                      Choose how inference is orchestrated.
                     </span>
                   </div>
                   <div className="grid md:grid-cols-2 gap-3">
@@ -2768,9 +2790,7 @@ export function VoicePage({
                       )}
                       onClick={() => setPipelineMode("s2s")}
                     >
-                      <div className="text-sm font-medium">
-                        Speech-to-Speech (S2S)
-                      </div>
+                      <div className="text-sm font-medium">Unified Speech Model</div>
                       <p className="text-xs text-muted-foreground mt-1">
                         One LFM2 model handles user speech understanding and
                         assistant speech output.
@@ -2785,9 +2805,7 @@ export function VoicePage({
                       )}
                       onClick={() => setPipelineMode("stt_chat_tts")}
                     >
-                      <div className="text-sm font-medium">
-                        {"STT -> Chat -> TTS"}
-                      </div>
+                      <div className="text-sm font-medium">Modular Voice Stack</div>
                       <p className="text-xs text-muted-foreground mt-1">
                         Use separate ASR, language model, and TTS models for
                         maximum control.
@@ -2813,7 +2831,7 @@ export function VoicePage({
                       <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-2">
                         <div className="flex items-center justify-between gap-2">
                           <label className="text-xs text-gray-400">
-                            S2S Model
+                            Unified Model
                           </label>
                           {selectedS2sInfo && (
                             <span
@@ -2845,8 +2863,8 @@ export function VoicePage({
                       </div>
                       <div className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3">
                         <p className="text-xs text-gray-400">
-                          STT, text, and TTS selectors are disabled in S2S mode
-                          because the selected LFM2 model handles the entire
+                          ASR, text, and voice-output selectors are disabled in
+                          unified mode because one LFM2 model handles the full
                           realtime speech loop.
                         </p>
                       </div>
