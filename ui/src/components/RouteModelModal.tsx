@@ -22,6 +22,15 @@ interface RouteModelSection {
   models: ModelInfo[];
 }
 
+interface ProviderGroup {
+  provider: string;
+  models: ModelInfo[];
+}
+
+interface PreparedRouteModelSection extends RouteModelSection {
+  providerGroups: ProviderGroup[];
+}
+
 interface RouteModelModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -53,31 +62,22 @@ interface RouteModelModalProps {
   getModelLabel?: (variant: string) => string;
 }
 
+const PROVIDER_ORDER = [
+  "Qwen",
+  "Liquid AI",
+  "Google",
+  "NVIDIA",
+  "Mistral AI",
+  "hexgrad",
+  "Other",
+] as const;
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024)
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
-function getStatusLabel(status: ModelInfo["status"]): string {
-  switch (status) {
-    case "ready":
-      return "Loaded";
-    case "loading":
-      return "Loading";
-    case "downloading":
-      return "Downloading";
-    case "downloaded":
-      return "Downloaded";
-    case "not_downloaded":
-      return "Not downloaded";
-    case "error":
-      return "Error";
-    default:
-      return status;
-  }
 }
 
 function getStatusDotClass(status: ModelInfo["status"]): string {
@@ -96,31 +96,54 @@ function getStatusDotClass(status: ModelInfo["status"]): string {
   }
 }
 
-function getStatusBadgeClass(status: ModelInfo["status"]): string {
-  switch (status) {
-    case "ready":
-      return "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]";
-    case "downloaded":
-      return "bg-[var(--bg-surface-2)] border-[var(--border-strong)] text-[var(--text-secondary)]";
-    case "downloading":
-    case "loading":
-      return "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]";
-    case "error":
-      return "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]";
-    default:
-      return "bg-[var(--bg-surface-2)] border-[var(--border-muted)] text-[var(--text-muted)]";
+function getProviderLabel(variant: string): string {
+  if (variant.startsWith("Qwen3-")) return "Qwen";
+  if (variant.startsWith("LFM2")) return "Liquid AI";
+  if (variant.startsWith("Gemma-")) return "Google";
+  if (
+    variant.startsWith("Parakeet-") ||
+    variant.startsWith("diar_streaming_sortformer")
+  ) {
+    return "NVIDIA";
   }
+  if (variant.startsWith("Voxtral-")) return "Mistral AI";
+  if (variant.startsWith("Kokoro-")) return "hexgrad";
+  return "Other";
 }
 
-function getCategoryLabel(variant: string): string | null {
-  const category = MODEL_DETAILS[variant]?.category;
-  if (!category) {
-    return null;
+function compareProviders(left: string, right: string): number {
+  const leftRank = PROVIDER_ORDER.indexOf(
+    left as (typeof PROVIDER_ORDER)[number],
+  );
+  const rightRank = PROVIDER_ORDER.indexOf(
+    right as (typeof PROVIDER_ORDER)[number],
+  );
+  const normalizedLeftRank = leftRank === -1 ? Number.MAX_SAFE_INTEGER : leftRank;
+  const normalizedRightRank =
+    rightRank === -1 ? Number.MAX_SAFE_INTEGER : rightRank;
+  if (normalizedLeftRank !== normalizedRightRank) {
+    return normalizedLeftRank - normalizedRightRank;
   }
+  return left.localeCompare(right);
+}
 
-  if (category === "tts") return "Text to Speech";
-  if (category === "asr") return "Transcription";
-  return "Chat";
+function groupModelsByProvider(models: ModelInfo[]): ProviderGroup[] {
+  const grouped = new Map<string, ModelInfo[]>();
+  for (const model of models) {
+    const provider = getProviderLabel(model.variant);
+    const bucket = grouped.get(provider);
+    if (bucket) {
+      bucket.push(model);
+    } else {
+      grouped.set(provider, [model]);
+    }
+  }
+  return Array.from(grouped.entries())
+    .sort(([left], [right]) => compareProviders(left, right))
+    .map(([provider, sectionModels]) => ({
+      provider,
+      models: sectionModels,
+    }));
 }
 
 function defaultModelLabel(variant: string): string {
@@ -189,24 +212,19 @@ export function RouteModelModal({
     }
   }, [isOpen]);
 
-  const modalSections = useMemo(() => {
-    if (sections && sections.length > 0) {
-      return sections;
-    }
-    return [{ key: "models", models }];
+  const modalSections = useMemo<PreparedRouteModelSection[]>(() => {
+    const baseSections =
+      sections && sections.length > 0 ? sections : [{ key: "models", models }];
+    return baseSections.map((section) => ({
+      ...section,
+      providerGroups: groupModelsByProvider(section.models),
+    }));
   }, [models, sections]);
 
   const orderedModels = useMemo(
     () => modalSections.flatMap((section) => section.models),
     [modalSections],
   );
-
-  const activeReadyModelVariant =
-    orderedModels.find(
-      (model) =>
-        model.status === "ready" &&
-        (canUseModel ? canUseModel(model.variant) : true),
-    )?.variant ?? null;
 
   const deleteTargetModel = deleteTargetVariant
     ? orderedModels.find((model) => model.variant === deleteTargetVariant) ?? null
@@ -218,9 +236,6 @@ export function RouteModelModal({
     }
     return defaultModelLabel(variant);
   };
-
-  const destructiveDeleteButtonClass =
-    "flex items-center gap-1.5 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-2.5 py-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]";
 
   const handleConfirmDelete = () => {
     if (!deleteTargetModel) {
@@ -298,209 +313,199 @@ export function RouteModelModal({
                           No models in this group.
                         </div>
                       ) : (
-                        section.models.map((model) => {
-                          const isSelected = selectedVariant === model.variant;
-                          const isIntent = intentVariant === model.variant;
-                          const isActiveModel =
-                            activeReadyModelVariant === model.variant;
-                          const progressValue = downloadProgress[model.variant];
-                          const progress =
-                            progressValue?.percent ?? model.download_progress ?? 0;
-                          const canSelect = canUseModel
-                            ? canUseModel(model.variant)
-                            : true;
-                          const categoryLabel = getCategoryLabel(model.variant);
-                          const modelSizeLabel = getModelSizeLabel(
-                            model,
-                            progressValue,
-                          );
-
-                          return (
+                        <div className="space-y-2">
+                          {section.providerGroups.map((providerGroup) => (
                             <div
-                              key={model.variant}
-                              className={clsx(
-                                "rounded-xl border p-3 transition-colors sm:p-4",
-                                isIntent
-                                  ? "border-[var(--border-strong)] bg-[var(--bg-surface-2)]"
-                                  : isSelected
-                                    ? "border-[var(--border-strong)] bg-[var(--bg-surface-1)]"
-                                    : "border-[var(--border-muted)] bg-[var(--bg-surface-1)]",
-                              )}
+                              key={`${section.key}-${providerGroup.provider}`}
+                              className="space-y-2"
                             >
-                              <div className="flex flex-col gap-3 md:flex-row md:items-center">
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    {model.status === "downloading" ||
-                                    model.status === "loading" ? (
-                                      <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--status-warning-text)]" />
-                                    ) : (
-                                      <span
-                                        className={clsx(
-                                          "h-2 w-2 rounded-full",
-                                          getStatusDotClass(model.status),
-                                        )}
-                                      />
-                                    )}
-                                    <h3 className="truncate text-sm font-medium text-[var(--text-primary)]">
-                                      {resolveModelLabel(model.variant)}
-                                    </h3>
-                                    <span
-                                      className={clsx(
-                                        "rounded border px-2 py-0.5 text-[11px] font-medium",
-                                        getStatusBadgeClass(model.status),
-                                      )}
-                                    >
-                                      {getStatusLabel(model.status)}
-                                    </span>
-                                    {isActiveModel && canSelect && (
-                                      <span className="inline-flex items-center gap-1 text-[11px] text-[var(--text-secondary)]">
-                                        <CheckCircle2 className="h-3 w-3" />
-                                        Active
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-subtle)]">
-                                    {categoryLabel && <span>{categoryLabel}</span>}
-                                    {categoryLabel && <span aria-hidden>•</span>}
-                                    <span>{modelSizeLabel}</span>
-                                    <span aria-hidden>•</span>
-                                    <span className="truncate">{model.variant}</span>
-                                  </div>
-
-                                  {model.status === "downloading" && (
-                                    <div className="mt-2">
-                                      <div className="h-1.5 w-full max-w-[260px] overflow-hidden rounded-full bg-[var(--bg-surface-3)]">
-                                        <div
-                                          className="h-full rounded-full bg-[var(--accent-solid)] transition-all duration-300"
-                                          style={{ width: `${progress}%` }}
-                                        />
-                                      </div>
-                                      <div className="mt-1 text-[11px] text-[var(--text-muted)]">
-                                        Downloading {Math.round(progress)}%
-                                        {progressValue &&
-                                          progressValue.totalBytes > 0 && (
-                                            <>
-                                              {" "}
-                                              (
-                                              {formatBytes(
-                                                progressValue.downloadedBytes,
-                                              )} / {formatBytes(progressValue.totalBytes)})
-                                            </>
-                                          )}
-                                      </div>
-                                      {progressValue?.currentFile && (
-                                        <div className="mt-0.5 truncate text-[11px] text-[var(--text-subtle)]">
-                                          {progressValue.currentFile}
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  {model.status === "downloading" &&
-                                    onCancelDownload && (
-                                      <button
-                                        onClick={() => onCancelDownload(model.variant)}
-                                        className="flex items-center gap-1 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-2.5 py-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
-                                      >
-                                        <X className="h-3.5 w-3.5" />
-                                        Cancel
-                                      </button>
-                                    )}
-
-                                  {(model.status === "not_downloaded" ||
-                                    model.status === "error") &&
-                                    (requiresManualDownload(model.variant) ? (
-                                      <button
-                                        className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] disabled:cursor-not-allowed disabled:opacity-60"
-                                        disabled
-                                        title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
-                                      >
-                                        <Download className="h-3.5 w-3.5" />
-                                        Manual download
-                                      </button>
-                                    ) : (
-                                      <button
-                                        onClick={() => onDownload(model.variant)}
-                                        className="flex items-center gap-1.5 rounded-md bg-[var(--accent-solid)] px-3 py-1.5 text-xs font-medium text-[var(--text-on-accent)] transition-opacity hover:opacity-90"
-                                      >
-                                        <Download className="h-3.5 w-3.5" />
-                                        Download
-                                      </button>
-                                    ))}
-
-                                  {model.status === "downloaded" && (
-                                    <button
-                                      onClick={() => onLoad(model.variant)}
-                                      className="flex items-center gap-1.5 rounded-md bg-[var(--accent-solid)] px-3 py-1.5 text-xs font-medium text-[var(--text-on-accent)] transition-opacity hover:opacity-90"
-                                    >
-                                      <Play className="h-3.5 w-3.5" />
-                                      Load
-                                    </button>
-                                  )}
-
-                                  {model.status === "loading" && (
-                                    <button
-                                      className="flex items-center gap-1.5 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)]"
-                                      disabled
-                                    >
-                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                      Loading
-                                    </button>
-                                  )}
-
-                                  {model.status === "ready" && canSelect && (
-                                    isSelected ? (
-                                      <button
-                                        className="flex items-center gap-1.5 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)]"
-                                        disabled
-                                      >
-                                        <CheckCircle2 className="h-3.5 w-3.5" />
-                                        Selected
-                                      </button>
-                                    ) : (
-                                      <button
-                                        onClick={() => {
-                                          onUseModel(model.variant);
-                                          onClose();
-                                        }}
-                                        className="flex items-center gap-1.5 rounded-md bg-[var(--accent-solid)] px-3 py-1.5 text-xs font-medium text-[var(--text-on-accent)] transition-opacity hover:opacity-90"
-                                      >
-                                        <CheckCircle2 className="h-3.5 w-3.5" />
-                                        Use model
-                                      </button>
-                                    )
-                                  )}
-
-                                  {model.status === "ready" && (
-                                    <button
-                                      onClick={() => onUnload(model.variant)}
-                                      className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-surface-3)]"
-                                    >
-                                      <Square className="h-3.5 w-3.5" />
-                                      Unload
-                                    </button>
-                                  )}
-
-                                  {(model.status === "downloaded" ||
-                                    model.status === "ready") && (
-                                    <button
-                                      onClick={() =>
-                                        setDeleteTargetVariant(model.variant)
-                                      }
-                                      className={destructiveDeleteButtonClass}
-                                    >
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                      Delete
-                                    </button>
-                                  )}
-                                </div>
+                              <div className="flex items-center gap-2 px-1">
+                                <h4 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+                                  {providerGroup.provider}
+                                </h4>
+                                <span className="text-[10px] text-[var(--text-subtle)]">
+                                  {providerGroup.models.length}
+                                </span>
+                                <div className="h-px flex-1 bg-[var(--border-muted)]" />
                               </div>
+
+                              {providerGroup.models.map((model) => {
+                                const isSelected =
+                                  selectedVariant === model.variant;
+                                const isIntent = intentVariant === model.variant;
+                                const progressValue =
+                                  downloadProgress[model.variant];
+                                const progress =
+                                  progressValue?.percent ??
+                                  model.download_progress ??
+                                  0;
+                                const canSelect = canUseModel
+                                  ? canUseModel(model.variant)
+                                  : true;
+                                const modelSizeLabel = getModelSizeLabel(
+                                  model,
+                                  progressValue,
+                                );
+                                const modelLabel = resolveModelLabel(
+                                  model.variant,
+                                );
+
+                                return (
+                                  <div
+                                    key={model.variant}
+                                    className={clsx(
+                                      "rounded-xl border px-3 py-2.5 transition-colors",
+                                      isIntent
+                                        ? "border-[var(--border-strong)] bg-[var(--bg-surface-2)]"
+                                        : isSelected
+                                          ? "border-[var(--border-strong)] bg-[var(--bg-surface-1)]"
+                                          : "border-[var(--border-muted)] bg-[var(--bg-surface-1)]",
+                                    )}
+                                  >
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div className="min-w-0 flex items-center gap-2">
+                                        {model.status === "downloading" ||
+                                        model.status === "loading" ? (
+                                          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--status-warning-text)]" />
+                                        ) : (
+                                          <span
+                                            className={clsx(
+                                              "h-2 w-2 shrink-0 rounded-full",
+                                              getStatusDotClass(model.status),
+                                            )}
+                                          />
+                                        )}
+                                        <h3 className="truncate text-sm font-medium text-[var(--text-primary)]">
+                                          {modelLabel}
+                                        </h3>
+                                      </div>
+
+                                      <div className="shrink-0 flex items-center gap-1.5">
+                                        <span className="mr-1 text-xs text-[var(--text-subtle)] whitespace-nowrap">
+                                          {modelSizeLabel}
+                                        </span>
+                                        {model.status === "downloading" && (
+                                          <span className="text-xs text-[var(--status-warning-text)] whitespace-nowrap">
+                                            {Math.round(progress)}%
+                                          </span>
+                                        )}
+
+                                        {model.status === "downloading" &&
+                                          onCancelDownload && (
+                                            <button
+                                              onClick={() =>
+                                                onCancelDownload(model.variant)
+                                              }
+                                              className="flex items-center gap-1 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-2.5 py-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
+                                            >
+                                              <X className="h-3.5 w-3.5" />
+                                              Cancel
+                                            </button>
+                                          )}
+
+                                        {(model.status === "not_downloaded" ||
+                                          model.status === "error") &&
+                                          (requiresManualDownload(
+                                            model.variant,
+                                          ) ? (
+                                            <button
+                                              className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] disabled:cursor-not-allowed disabled:opacity-60"
+                                              disabled
+                                              title="Manual download required. See docs/user/manual-gemma-3-1b-download.md."
+                                            >
+                                              <Download className="h-3.5 w-3.5" />
+                                              Manual download
+                                            </button>
+                                          ) : (
+                                            <button
+                                              onClick={() =>
+                                                onDownload(model.variant)
+                                              }
+                                              className="flex items-center gap-1.5 rounded-md bg-[var(--accent-solid)] px-3 py-1.5 text-xs font-medium text-[var(--text-on-accent)] transition-opacity hover:opacity-90"
+                                            >
+                                              <Download className="h-3.5 w-3.5" />
+                                              Download
+                                            </button>
+                                          ))}
+
+                                        {model.status === "downloaded" && (
+                                          <button
+                                            onClick={() => onLoad(model.variant)}
+                                            className="flex items-center gap-1.5 rounded-md bg-[var(--accent-solid)] px-3 py-1.5 text-xs font-medium text-[var(--text-on-accent)] transition-opacity hover:opacity-90"
+                                          >
+                                            <Play className="h-3.5 w-3.5" />
+                                            Load
+                                          </button>
+                                        )}
+
+                                        {model.status === "loading" && (
+                                          <button
+                                            className="flex items-center gap-1.5 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)]"
+                                            disabled
+                                          >
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            Loading
+                                          </button>
+                                        )}
+
+                                        {model.status === "ready" &&
+                                          canSelect &&
+                                          (isSelected ? (
+                                            <button
+                                              className="flex items-center gap-1.5 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)]"
+                                              disabled
+                                            >
+                                              <CheckCircle2 className="h-3.5 w-3.5" />
+                                              Selected
+                                            </button>
+                                          ) : (
+                                            <button
+                                              onClick={() => {
+                                                onUseModel(model.variant);
+                                                onClose();
+                                              }}
+                                              className="flex items-center gap-1.5 rounded-md bg-[var(--accent-solid)] px-3 py-1.5 text-xs font-medium text-[var(--text-on-accent)] transition-opacity hover:opacity-90"
+                                            >
+                                              <CheckCircle2 className="h-3.5 w-3.5" />
+                                              Use model
+                                            </button>
+                                          ))}
+
+                                        {model.status === "ready" && (
+                                          <button
+                                            onClick={() =>
+                                              onUnload(model.variant)
+                                            }
+                                            className="flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-surface-3)]"
+                                          >
+                                            <Square className="h-3.5 w-3.5" />
+                                            Unload
+                                          </button>
+                                        )}
+
+                                        {(model.status === "downloaded" ||
+                                          model.status === "ready") && (
+                                          <button
+                                            onClick={() =>
+                                              setDeleteTargetVariant(
+                                                model.variant,
+                                              )
+                                            }
+                                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
+                                            title="Delete model"
+                                            aria-label={`Delete ${modelLabel}`}
+                                          >
+                                            <Trash2 className="h-3.5 w-3.5" />
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
                             </div>
-                          );
-                        })
+                          ))}
+                        </div>
                       )}
                     </section>
                   ))}
