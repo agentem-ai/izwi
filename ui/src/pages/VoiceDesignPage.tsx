@@ -162,7 +162,12 @@ export function VoiceDesignPage({
   return (
     <div className="max-w-7xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-xl font-semibold text-white">Voice Design</h1>
+        <h1 className="text-xl font-semibold text-[var(--text-primary)]">
+          Voice Design
+        </h1>
+        <p className="text-sm text-[var(--text-muted)] mt-1">
+          Design new voices from textual prompts and iterate with instant previews.
+        </p>
       </div>
 
       <VoiceDesignPlayground

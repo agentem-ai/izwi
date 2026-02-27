@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { motion } from "framer-motion";
 
 interface ProgressRingProps {
@@ -13,6 +14,7 @@ export function ProgressRing({
   strokeWidth = 4,
   className = "",
 }: ProgressRingProps) {
+  const gradientId = useId();
   const radius = (size - strokeWidth) / 2;
   const circumference = radius * 2 * Math.PI;
   const offset = circumference - (progress / 100) * circumference;
@@ -29,7 +31,7 @@ export function ProgressRing({
           cy={size / 2}
           r={radius}
           fill="none"
-          stroke="rgba(255, 255, 255, 0.1)"
+          stroke="rgba(148, 163, 184, 0.28)"
           strokeWidth={strokeWidth}
         />
         {/* Progress circle */}
@@ -38,7 +40,7 @@ export function ProgressRing({
           cy={size / 2}
           r={radius}
           fill="none"
-          stroke="url(#progressGradient)"
+          stroke={`url(#${gradientId})`}
           strokeWidth={strokeWidth}
           strokeLinecap="round"
           initial={{ strokeDashoffset: circumference }}
@@ -50,19 +52,19 @@ export function ProgressRing({
         />
         <defs>
           <linearGradient
-            id="progressGradient"
+            id={gradientId}
             x1="0%"
             y1="0%"
             x2="100%"
             y2="0%"
           >
-            <stop offset="0%" stopColor="#6366f1" />
-            <stop offset="100%" stopColor="#8b5cf6" />
+            <stop offset="0%" stopColor="#3b82f6" />
+            <stop offset="100%" stopColor="#22d3ee" />
           </linearGradient>
         </defs>
       </svg>
       <div className="absolute inset-0 flex items-center justify-center">
-        <span className="text-xs font-medium text-white">
+        <span className="text-xs font-semibold text-[var(--text-secondary)]">
           {Math.round(progress)}%
         </span>
       </div>
