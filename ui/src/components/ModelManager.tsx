@@ -292,6 +292,33 @@ const MODEL_DETAILS: Record<
     size: "2.2 GB",
     quantization: "Q8_0",
   },
+  "Qwen3-4B-GGUF": {
+    shortName: "Qwen3 Chat 4B GGUF",
+    fullName: "Qwen3 4B (GGUF Q4_K_M)",
+    description:
+      "Qwen3 4B chat model in GGUF format (only the Q4_K_M quantization is bundled)",
+    features: ["Text chat", "GGUF", "Q4_K_M quantized"],
+    size: "2.5 GB",
+    quantization: "Q4_K_M",
+  },
+  "Qwen3-8B-GGUF": {
+    shortName: "Qwen3 Chat 8B GGUF",
+    fullName: "Qwen3 8B (GGUF Q4_K_M)",
+    description:
+      "Qwen3 8B chat model in GGUF format (only the Q4_K_M quantization is bundled)",
+    features: ["Text chat", "GGUF", "Q4_K_M quantized"],
+    size: "5.2 GB",
+    quantization: "Q4_K_M",
+  },
+  "Qwen3-14B-GGUF": {
+    shortName: "Qwen3 Chat 14B GGUF",
+    fullName: "Qwen3 14B (GGUF Q4_K_M)",
+    description:
+      "Qwen3 14B chat model in GGUF format (only the Q4_K_M quantization is bundled)",
+    features: ["Text chat", "GGUF", "Q4_K_M quantized"],
+    size: "9.2 GB",
+    quantization: "Q4_K_M",
+  },
   "Gemma-3-1b-it": {
     shortName: "Gemma 3 1B",
     fullName: "Gemma 3 1B Instruct",

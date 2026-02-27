@@ -105,7 +105,15 @@ impl ModelVariant {
                 ModelFamily::ParakeetAsr
             }
             DiarStreamingSortformer4SpkV21 => ModelFamily::SortformerDiarization,
-            Qwen306B | Qwen306B4Bit | Qwen306BGguf | Qwen317B | Qwen317B4Bit | Qwen317BGguf => {
+            Qwen306B
+            | Qwen306B4Bit
+            | Qwen306BGguf
+            | Qwen317B
+            | Qwen317B4Bit
+            | Qwen317BGguf
+            | Qwen34BGguf
+            | Qwen38BGguf
+            | Qwen314BGguf => {
                 ModelFamily::Qwen3Chat
             }
             Gemma31BIt | Gemma34BIt => ModelFamily::Gemma3Chat,
@@ -360,11 +368,20 @@ fn resolve_by_heuristic(normalized: &str) -> Option<ModelVariant> {
     }
 
     if normalized.contains("qwen3") && !normalized.contains("asr") && !normalized.contains("tts") {
+        let is_14b = normalized.contains("14b");
         let is_17b = normalized.contains("17b") || normalized.contains("17");
+        let is_8b = normalized.contains("8b");
+        let is_4b = normalized.contains("qwen34b") || normalized.contains("4b");
         let q4 = normalized.contains("4bit") || normalized.contains("int4");
         let gguf =
             normalized.contains("gguf") || normalized.contains("q80") || normalized.contains("q8");
 
+        if is_14b {
+            return if gguf { Some(Qwen314BGguf) } else { None };
+        }
+        if is_4b {
+            return if gguf { Some(Qwen34BGguf) } else { None };
+        }
         if is_17b {
             return Some(if q4 {
                 Qwen317B4Bit
@@ -373,6 +390,9 @@ fn resolve_by_heuristic(normalized: &str) -> Option<ModelVariant> {
             } else {
                 Qwen317B
             });
+        }
+        if is_8b {
+            return if gguf { Some(Qwen38BGguf) } else { None };
         }
         if normalized.contains("06b") || normalized.contains("0dot6b") || normalized.contains("06")
         {
@@ -601,6 +621,29 @@ mod tests {
     fn parse_qwen_chat_17b_gguf_repo() {
         let parsed = parse_chat_model_variant(Some("Qwen/Qwen3-1.7B-GGUF")).unwrap();
         assert_eq!(parsed, ModelVariant::Qwen317BGguf);
+    }
+
+    #[test]
+    fn parse_qwen_chat_4b_repo_is_rejected() {
+        assert!(parse_chat_model_variant(Some("Qwen/Qwen3-4B")).is_err());
+    }
+
+    #[test]
+    fn parse_qwen_chat_4b_gguf_file_alias() {
+        let parsed = parse_chat_model_variant(Some("Qwen3-4B-Q4_K_M.gguf")).unwrap();
+        assert_eq!(parsed, ModelVariant::Qwen34BGguf);
+    }
+
+    #[test]
+    fn parse_qwen_chat_8b_gguf_file_alias() {
+        let parsed = parse_chat_model_variant(Some("Qwen3-8B-Q4_K_M.gguf")).unwrap();
+        assert_eq!(parsed, ModelVariant::Qwen38BGguf);
+    }
+
+    #[test]
+    fn parse_qwen_chat_14b_gguf_file_alias() {
+        let parsed = parse_chat_model_variant(Some("Qwen3-14B-Q4_K_M.gguf")).unwrap();
+        assert_eq!(parsed, ModelVariant::Qwen314BGguf);
     }
 
     #[test]

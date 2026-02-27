@@ -99,6 +99,9 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
       variant === "Qwen3-1.7B" ||
       variant === "Qwen3-1.7B-4bit" ||
       variant === "Qwen3-1.7B-GGUF" ||
+      variant === "Qwen3-4B-GGUF" ||
+      variant === "Qwen3-8B-GGUF" ||
+      variant === "Qwen3-14B-GGUF" ||
       variant === "Gemma-3-1b-it" ||
       variant === "Gemma-3-4b-it",
     emptyStateTitle: "No Chat Model Loaded",

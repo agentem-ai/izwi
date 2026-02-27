@@ -444,6 +444,9 @@ impl ModelDownloader {
                     let gguf_file = match variant {
                         ModelVariant::Qwen306BGguf => "Qwen3-0.6B-Q8_0.gguf",
                         ModelVariant::Qwen317BGguf => "Qwen3-1.7B-Q8_0.gguf",
+                        ModelVariant::Qwen34BGguf => "Qwen3-4B-Q4_K_M.gguf",
+                        ModelVariant::Qwen38BGguf => "Qwen3-8B-Q4_K_M.gguf",
+                        ModelVariant::Qwen314BGguf => "Qwen3-14B-Q4_K_M.gguf",
                         _ => unreachable!("checked by is_qwen_chat_gguf"),
                     };
                     path.join(gguf_file).exists()
@@ -984,6 +987,9 @@ impl ModelDownloader {
                     let gguf_file = match variant {
                         ModelVariant::Qwen306BGguf => "Qwen3-0.6B-Q8_0.gguf",
                         ModelVariant::Qwen317BGguf => "Qwen3-1.7B-Q8_0.gguf",
+                        ModelVariant::Qwen34BGguf => "Qwen3-4B-Q4_K_M.gguf",
+                        ModelVariant::Qwen38BGguf => "Qwen3-8B-Q4_K_M.gguf",
+                        ModelVariant::Qwen314BGguf => "Qwen3-14B-Q4_K_M.gguf",
                         _ => unreachable!("checked by is_qwen_chat_gguf"),
                     };
                     return vec![
@@ -1073,6 +1079,9 @@ impl ModelDownloader {
             let tokenizer_repo = match variant {
                 ModelVariant::Qwen306BGguf => "Qwen/Qwen3-0.6B",
                 ModelVariant::Qwen317BGguf => "Qwen/Qwen3-1.7B",
+                ModelVariant::Qwen34BGguf => "Qwen/Qwen3-4B",
+                ModelVariant::Qwen38BGguf => "Qwen/Qwen3-8B",
+                ModelVariant::Qwen314BGguf => "Qwen/Qwen3-14B",
                 _ => variant.repo_id(),
             };
 
@@ -1275,6 +1284,12 @@ impl ModelDownloader {
                 1_100_000_000
             } else if file.contains("Qwen3-1.7B") {
                 2_400_000_000
+            } else if file.contains("Qwen3-4B") {
+                2_500_000_000
+            } else if file.contains("Qwen3-8B") {
+                5_200_000_000
+            } else if file.contains("Qwen3-14B") {
+                9_200_000_000
             } else {
                 1_000_000_000
             }
@@ -1298,6 +1313,9 @@ impl ModelDownloader {
                     ModelVariant::Lfm25Audio15B4Bit => 884_000_000,
                     ModelVariant::Qwen306BGguf => 1_100_000_000,
                     ModelVariant::Qwen317BGguf => 2_400_000_000,
+                    ModelVariant::Qwen34BGguf => 2_500_000_000,
+                    ModelVariant::Qwen38BGguf => 5_200_000_000,
+                    ModelVariant::Qwen314BGguf => 9_200_000_000,
                     ModelVariant::ParakeetTdt06BV24Bit => 2_656_300_000,
                     ModelVariant::ParakeetTdt06BV34Bit => 3_160_000_000,
                     ModelVariant::Gemma31BIt => 2_100_000_000,
