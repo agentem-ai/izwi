@@ -378,11 +378,11 @@ impl ModelVariant {
             Self::Qwen317B4Bit => 1_115_700_000,        // ~1.04 GB
             Self::Qwen306BGguf => 1_100_000_000,        // ~1.02 GB (Q8_0 est)
             Self::Qwen317BGguf => 2_400_000_000,        // ~2.24 GB (Q8_0 est)
-            Self::Qwen34BGguf => 2_500_000_000,         // ~2.33 GB (Q4_K_M GGUF, HF file size, Feb 2026)
-            Self::Qwen38BGguf => 5_200_000_000,         // ~4.84 GB (Q4_K_M est)
-            Self::Qwen314BGguf => 9_200_000_000,        // ~8.57 GB (Q4_K_M est)
-            Self::Gemma31BIt => 2_200_000_000,          // ~2.05 GB (est)
-            Self::Gemma34BIt => 8_600_000_000,          // ~8.01 GB (est)
+            Self::Qwen34BGguf => 2_500_000_000, // ~2.33 GB (Q4_K_M GGUF, HF file size, Feb 2026)
+            Self::Qwen38BGguf => 5_200_000_000, // ~4.84 GB (Q4_K_M est)
+            Self::Qwen314BGguf => 9_200_000_000, // ~8.57 GB (Q4_K_M est)
+            Self::Gemma31BIt => 2_200_000_000,  // ~2.05 GB (est)
+            Self::Gemma34BIt => 8_600_000_000,  // ~8.01 GB (est)
             Self::Qwen3ForcedAligner06B => 1_840_072_459, // ~1.71 GB
             Self::Qwen3ForcedAligner06B4Bit => 703_200_000, // ~0.65 GB
             Self::VoxtralMini4BRealtime2602 => 8_000_000_000, // ~7.45 GB (est)

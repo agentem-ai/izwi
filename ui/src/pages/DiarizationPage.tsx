@@ -51,7 +51,7 @@ function isPipelineAlignerVariant(variant: string): boolean {
 }
 
 function isPipelineLlmVariant(variant: string): boolean {
-  return variant === "Qwen3-1.7B" || variant === "Qwen3-1.7B-4bit";
+  return variant === "Qwen3-1.7B-GGUF";
 }
 
 function getStatusLabel(status: ModelInfo["status"]): string {

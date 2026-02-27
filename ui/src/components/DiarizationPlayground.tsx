@@ -89,11 +89,28 @@ function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
+function isWavMimeType(mimeType: string | null | undefined): boolean {
+  if (!mimeType) {
+    return false;
+  }
+  const normalized = mimeType.toLowerCase();
+  return (
+    normalized === "audio/wav" ||
+    normalized === "audio/x-wav" ||
+    normalized === "audio/wave" ||
+    normalized === "audio/vnd.wave"
+  );
+}
+
 async function transcodeToWav(
   inputBlob: Blob,
   targetSampleRate = 16000,
+  sourceFileName?: string,
 ): Promise<Blob> {
-  if (inputBlob.type === "audio/wav" || inputBlob.type === "audio/x-wav") {
+  const filenameLooksWav = sourceFileName
+    ? sourceFileName.toLowerCase().endsWith(".wav")
+    : false;
+  if (isWavMimeType(inputBlob.type) || filenameLooksWav) {
     return inputBlob;
   }
 
@@ -253,13 +270,24 @@ export function DiarizationPlayground({
       setSpeakerTranscript("");
 
       try {
-        const wavBlob = await transcodeToWav(audioBlob, 16000);
+        const sourceFileName =
+          audioBlob instanceof File && audioBlob.name
+            ? audioBlob.name
+            : "audio.wav";
+        const wavBlob = await transcodeToWav(
+          audioBlob,
+          16000,
+          sourceFileName,
+        ).catch(() => audioBlob);
         revokeObjectUrlIfNeeded(audioUrl);
         setAudioUrl(null);
 
+        const uploadFilename =
+          wavBlob === audioBlob ? sourceFileName : "audio.wav";
+
         const record = await api.createDiarizationRecord({
           audio_file: wavBlob,
-          audio_filename: "audio.wav",
+          audio_filename: uploadFilename,
           model_id: selectedModel || undefined,
           asr_model_id: PIPELINE_ASR_MODEL_ID,
           aligner_model_id: PIPELINE_ALIGNER_MODEL_ID,

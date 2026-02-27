@@ -105,17 +105,8 @@ impl ModelVariant {
                 ModelFamily::ParakeetAsr
             }
             DiarStreamingSortformer4SpkV21 => ModelFamily::SortformerDiarization,
-            Qwen306B
-            | Qwen306B4Bit
-            | Qwen306BGguf
-            | Qwen317B
-            | Qwen317B4Bit
-            | Qwen317BGguf
-            | Qwen34BGguf
-            | Qwen38BGguf
-            | Qwen314BGguf => {
-                ModelFamily::Qwen3Chat
-            }
+            Qwen306B | Qwen306B4Bit | Qwen306BGguf | Qwen317B | Qwen317B4Bit | Qwen317BGguf
+            | Qwen34BGguf | Qwen38BGguf | Qwen314BGguf => ModelFamily::Qwen3Chat,
             Gemma31BIt | Gemma34BIt => ModelFamily::Gemma3Chat,
             Qwen3ForcedAligner06B | Qwen3ForcedAligner06B4Bit => ModelFamily::Qwen3ForcedAligner,
             VoxtralMini4BRealtime2602 => ModelFamily::Voxtral,
@@ -188,14 +179,14 @@ pub fn parse_chat_model_variant(
 }
 
 /// Resolve the LLM variant for diarization transcript refinement.
-/// Defaults to Qwen3-1.7B which supports thinking mode for better reasoning.
+/// Defaults to Qwen3-1.7B-GGUF and only accepts that variant.
 pub fn resolve_diarization_llm_variant(
     input: Option<&str>,
 ) -> Result<ModelVariant, ParseModelVariantError> {
-    match input.unwrap_or("Qwen3-1.7B") {
+    match input.unwrap_or("Qwen3-1.7B-GGUF") {
         id => {
             let variant = parse_model_variant(id)?;
-            if variant.is_chat() {
+            if variant == ModelVariant::Qwen317BGguf {
                 Ok(variant)
             } else {
                 Err(ParseModelVariantError::new(id))
@@ -621,6 +612,24 @@ mod tests {
     fn parse_qwen_chat_17b_gguf_repo() {
         let parsed = parse_chat_model_variant(Some("Qwen/Qwen3-1.7B-GGUF")).unwrap();
         assert_eq!(parsed, ModelVariant::Qwen317BGguf);
+    }
+
+    #[test]
+    fn resolve_diarization_llm_defaults_to_qwen_17b_gguf() {
+        let resolved = resolve_diarization_llm_variant(None).unwrap();
+        assert_eq!(resolved, ModelVariant::Qwen317BGguf);
+    }
+
+    #[test]
+    fn resolve_diarization_llm_accepts_qwen_17b_gguf_repo_alias() {
+        let resolved = resolve_diarization_llm_variant(Some("Qwen/Qwen3-1.7B-GGUF")).unwrap();
+        assert_eq!(resolved, ModelVariant::Qwen317BGguf);
+    }
+
+    #[test]
+    fn resolve_diarization_llm_rejects_other_chat_models() {
+        assert!(resolve_diarization_llm_variant(Some("Qwen3-1.7B")).is_err());
+        assert!(resolve_diarization_llm_variant(Some("google/gemma-3-1b-it")).is_err());
     }
 
     #[test]

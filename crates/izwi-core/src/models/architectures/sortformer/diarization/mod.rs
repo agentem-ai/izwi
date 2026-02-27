@@ -950,7 +950,8 @@ impl RelPosSelfAttention {
             .linear_pos
             .forward(pos_emb)?
             .reshape((1, 2 * t - 1, self.num_heads, self.head_dim))?
-            .transpose(1, 2)?;
+            .transpose(1, 2)?
+            .contiguous()?;
 
         let pos_bias_u = self
             .pos_bias_u
@@ -959,8 +960,8 @@ impl RelPosSelfAttention {
             .pos_bias_v
             .reshape((1, self.num_heads, 1, self.head_dim))?;
 
-        let q_u = q.broadcast_add(&pos_bias_u)?;
-        let q_v = q.broadcast_add(&pos_bias_v)?;
+        let q_u = q.broadcast_add(&pos_bias_u)?.contiguous()?;
+        let q_v = q.broadcast_add(&pos_bias_v)?.contiguous()?;
 
         let k_t = k.transpose(2, 3)?.contiguous()?;
         let p_t = p.transpose(2, 3)?.contiguous()?;
@@ -973,7 +974,7 @@ impl RelPosSelfAttention {
             .affine(1.0 / (self.head_dim as f64).sqrt(), 0.0)?;
         let attn = ops::softmax(&scores, 3)?;
 
-        let out = attn.matmul(&v)?;
+        let out = attn.contiguous()?.matmul(&v)?;
         let out = out.transpose(1, 2)?.reshape((b, t, self.d_model))?;
 
         self.linear_out
@@ -1108,23 +1109,27 @@ impl SortformerTransformerLayer {
             .q
             .forward(x)?
             .reshape((b, t, self.num_heads, self.head_dim))?
-            .transpose(1, 2)?;
+            .transpose(1, 2)?
+            .contiguous()?;
         let k = self
             .k
             .forward(x)?
             .reshape((b, t, self.num_heads, self.head_dim))?
-            .transpose(1, 2)?;
+            .transpose(1, 2)?
+            .contiguous()?;
         let v = self
             .v
             .forward(x)?
             .reshape((b, t, self.num_heads, self.head_dim))?
-            .transpose(1, 2)?;
+            .transpose(1, 2)?
+            .contiguous()?;
 
+        let k_t = k.transpose(2, 3)?.contiguous()?;
         let scores = q
-            .matmul(&k.transpose(2, 3)?)?
+            .matmul(&k_t)?
             .affine(1.0 / (self.head_dim as f64).sqrt(), 0.0)?;
         let attn = ops::softmax(&scores, 3)?;
-        let ctx = attn.matmul(&v)?;
+        let ctx = attn.contiguous()?.matmul(&v)?;
 
         let ctx = ctx.transpose(1, 2)?.reshape((b, t, self.d_model))?;
         self.out_proj.forward(&ctx).map_err(Error::from)
