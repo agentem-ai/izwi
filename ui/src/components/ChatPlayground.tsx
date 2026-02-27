@@ -883,91 +883,89 @@ export function ChatPlayground({
         centered && "max-w-3xl mx-auto shadow-md",
       )}
     >
-      <div className="bg-background">
-        <textarea
-          ref={textareaRef}
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void sendMessage();
-            }
-          }}
-          placeholder={
-            !activeThreadId
-              ? "Ask anything..."
-              : !selectedModel
-                ? "Choose a model and ask anything..."
-                : !selectedModelReady
-                  ? "Model selected but not loaded. Open Models to load it."
-                  : "Ask anything..."
+      <textarea
+        ref={textareaRef}
+        value={input}
+        onChange={(event) => setInput(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            void sendMessage();
           }
-          className={cn(
-            "w-full bg-transparent px-4 pt-4 pb-3 text-sm resize-none focus:outline-none placeholder:text-muted-foreground",
-            centered ? "min-h-[132px]" : "min-h-[96px]",
-          )}
-          disabled={isStreaming || isPreparingThread}
-        />
+        }}
+        placeholder={
+          !activeThreadId
+            ? "Ask anything..."
+            : !selectedModel
+              ? "Choose a model and ask anything..."
+              : !selectedModelReady
+                ? "Model selected but not loaded. Open Models to load it."
+                : "Ask anything..."
+        }
+        className={cn(
+          "w-full bg-transparent px-4 pt-4 pb-3 text-sm resize-none focus:outline-none placeholder:text-muted-foreground",
+          centered ? "min-h-[132px]" : "min-h-[96px]",
+        )}
+        disabled={isStreaming || isPreparingThread}
+      />
 
-        <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-3 pt-1">
-          <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-3 pt-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleOpenModels}
+            className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+          >
+            <Settings2 className="w-3.5 h-3.5" />
+            Models
+          </Button>
+          {supportsThinking && (
             <Button
-              variant="ghost"
+              variant={thinkingEnabledForModel ? "secondary" : "ghost"}
               size="sm"
-              onClick={handleOpenModels}
-              className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-            >
-              <Settings2 className="w-3.5 h-3.5" />
-              Models
-            </Button>
-            {supportsThinking && (
-              <Button
-                variant={thinkingEnabledForModel ? "secondary" : "ghost"}
-                size="sm"
-                onClick={() => setIsThinkingEnabled((previous) => !previous)}
-                disabled={isStreaming || isPreparingThread}
-                className={cn(
-                  "h-8 gap-1.5 text-xs",
-                  !thinkingEnabledForModel &&
-                    "text-muted-foreground hover:text-foreground",
-                )}
-                title={
-                  thinkingEnabledForModel
-                    ? "Thinking mode is enabled"
-                    : "Thinking mode is disabled"
-                }
-              >
-                <Brain className="w-3.5 h-3.5" />
-                Thinking {thinkingEnabledForModel ? "On" : "Off"}
-              </Button>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap sm:flex-nowrap">
-            {renderModelSelector()}
-
-            <Button
-              onClick={isStreaming ? stopStreaming : () => void sendMessage()}
-              disabled={isPreparingThread || (!isStreaming && !input.trim())}
-              variant={isStreaming ? "destructive" : "default"}
-              size="sm"
-              className="h-9 gap-1.5 font-medium px-4"
-            >
-              {isStreaming ? (
-                <Square className="w-3.5 h-3.5" />
-              ) : isPreparingThread ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Send className="w-3.5 h-3.5" />
+              onClick={() => setIsThinkingEnabled((previous) => !previous)}
+              disabled={isStreaming || isPreparingThread}
+              className={cn(
+                "h-8 gap-1.5 text-xs",
+                !thinkingEnabledForModel &&
+                  "text-muted-foreground hover:text-foreground",
               )}
-              {isStreaming
-                ? "Cancel"
-                : isPreparingThread
-                  ? "Starting..."
-                  : "Send"}
+              title={
+                thinkingEnabledForModel
+                  ? "Thinking mode is enabled"
+                  : "Thinking mode is disabled"
+              }
+            >
+              <Brain className="w-3.5 h-3.5" />
+              Thinking {thinkingEnabledForModel ? "On" : "Off"}
             </Button>
-          </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap sm:flex-nowrap">
+          {renderModelSelector()}
+
+          <Button
+            onClick={isStreaming ? stopStreaming : () => void sendMessage()}
+            disabled={isPreparingThread || (!isStreaming && !input.trim())}
+            variant={isStreaming ? "destructive" : "default"}
+            size="sm"
+            className="h-9 gap-1.5 font-medium px-4"
+          >
+            {isStreaming ? (
+              <Square className="w-3.5 h-3.5" />
+            ) : isPreparingThread ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Send className="w-3.5 h-3.5" />
+            )}
+            {isStreaming
+              ? "Cancel"
+              : isPreparingThread
+                ? "Starting..."
+                : "Send"}
+          </Button>
         </div>
       </div>
     </div>
