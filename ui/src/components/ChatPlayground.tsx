@@ -973,7 +973,7 @@ export function ChatPlayground({
   );
 
   return (
-    <div className="relative flex flex-col lg:flex-row gap-4 h-[calc(100dvh-9rem)] lg:h-[calc(100dvh-6.5rem)]">
+    <div className="relative flex flex-col lg:flex-row gap-4 h-[calc(100dvh-12rem)] lg:h-[calc(100dvh-11.75rem)]">
       <aside className="w-full lg:w-80 lg:min-w-[20rem] max-h-[38dvh] lg:max-h-none shrink-0 rounded-xl border border-[var(--border-muted)] bg-card text-card-foreground flex flex-col overflow-hidden shadow-sm">
         <div className="px-4 py-3 border-b border-[var(--border-muted)] flex items-center justify-between gap-3 bg-muted/30">
           <div>

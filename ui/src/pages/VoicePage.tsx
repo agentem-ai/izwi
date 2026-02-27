@@ -33,6 +33,7 @@ import {
 } from "../components/ui/select";
 import { Slider } from "../components/ui/slider";
 import { Button } from "../components/ui/button";
+import { PageHeader, PageShell } from "../components/PageShell";
 import { cn } from "@/lib/utils";
 
 type RuntimeStatus =
@@ -2513,7 +2514,7 @@ export function VoicePage({
 
   if (loading) {
     return (
-      <div className="max-w-6xl mx-auto">
+      <PageShell>
         <div className="flex flex-col items-center justify-center py-24 gap-3">
           <motion.div
             className="w-8 h-8 border-2 border-white border-t-transparent rounded-full"
@@ -2522,27 +2523,25 @@ export function VoicePage({
           />
           <p className="text-sm text-gray-400">Loading models...</p>
         </div>
-      </div>
+      </PageShell>
     );
   }
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="flex items-start justify-between gap-3 mb-6">
-        <div>
-          <h1 className="text-xl font-semibold text-white">Realtime Voice</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            {"Low latency realtime voice loop."}
-          </p>
-        </div>
-        <button
-          onClick={() => setIsConfigOpen(true)}
-          className="btn btn-secondary text-sm"
-        >
-          <Settings2 className="w-4 h-4" />
-          Config
-        </button>
-      </div>
+    <PageShell>
+      <PageHeader
+        title="Realtime Voice"
+        description="Low latency realtime voice loop."
+        actions={
+          <button
+            onClick={() => setIsConfigOpen(true)}
+            className="btn btn-secondary text-sm"
+          >
+            <Settings2 className="w-4 h-4" />
+            Config
+          </button>
+        }
+      />
 
       <div className="grid xl:grid-cols-[360px,1fr] gap-4 lg:gap-6">
         <div className="card p-5">
@@ -3265,6 +3264,6 @@ export function VoicePage({
           }
         }}
       />
-    </div>
+    </PageShell>
   );
 }

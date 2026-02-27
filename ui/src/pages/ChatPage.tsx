@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ModelInfo } from "../api";
 import { ChatPlayground } from "../components/ChatPlayground";
+import { PageHeader, PageShell } from "../components/PageShell";
 import { RouteModelModal } from "../components/RouteModelModal";
 import { VIEW_CONFIGS } from "../types";
 import { withQwen3Prefix } from "../utils/modelDisplay";
@@ -144,7 +145,9 @@ export function ChatPage({
     if (!isModelModalOpen || !modalIntentModel || !autoCloseOnIntentReady) {
       return;
     }
-    const targetModel = chatModels.find((model) => model.variant === modalIntentModel);
+    const targetModel = chatModels.find(
+      (model) => model.variant === modalIntentModel,
+    );
     if (targetModel?.status === "ready") {
       closeModelModal();
     }
@@ -179,7 +182,11 @@ export function ChatPage({
   }));
 
   return (
-    <div className="max-w-[1400px] mx-auto">
+    <PageShell>
+      <PageHeader
+        title="Chat"
+        description="Run local text conversations with selectable reasoning-capable models."
+      />
       <ChatPlayground
         selectedModel={resolvedSelectedModel}
         selectedModelReady={selectedModelReady}
@@ -221,6 +228,6 @@ export function ChatPage({
         getModelLabel={getChatModelName}
         emptyMessage="No chat models available for this route."
       />
-    </div>
+    </PageShell>
   );
 }

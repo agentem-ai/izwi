@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ModelInfo } from "../api";
 import { DiarizationPlayground } from "../components/DiarizationPlayground";
+import { PageHeader, PageShell } from "../components/PageShell";
 import { RouteModelModal } from "../components/RouteModelModal";
 
 interface DiarizationPageProps {
@@ -159,13 +160,17 @@ export function DiarizationPage({
       }
     }
 
-    const readyModel = diarizationModels.find((model) => model.status === "ready");
+    const readyModel = diarizationModels.find(
+      (model) => model.status === "ready",
+    );
     if (readyModel) {
       return readyModel.variant;
     }
 
     for (const variant of preferredModelOrder) {
-      const preferred = diarizationModels.find((model) => model.variant === variant);
+      const preferred = diarizationModels.find(
+        (model) => model.variant === variant,
+      );
       if (preferred) {
         return preferred.variant;
       }
@@ -175,8 +180,9 @@ export function DiarizationPage({
   })();
 
   const selectedModelInfo =
-    diarizationModels.find((model) => model.variant === resolvedSelectedModel) ??
-    null;
+    diarizationModels.find(
+      (model) => model.variant === resolvedSelectedModel,
+    ) ?? null;
   const selectedModelReady = selectedModelInfo?.status === "ready";
 
   const closeModelModal = () => {
@@ -230,12 +236,11 @@ export function DiarizationPage({
   };
 
   return (
-    <div className="max-w-7xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold text-[var(--text-primary)]">
-          Diarization
-        </h1>
-      </div>
+    <PageShell>
+      <PageHeader
+        title="Diarization"
+        description="Separate speakers from audio streams and review timestamped transcript segments."
+      />
 
       <DiarizationPlayground
         selectedModel={resolvedSelectedModel}
@@ -272,6 +277,6 @@ export function DiarizationPage({
         onUseModel={onSelect}
         emptyMessage="No diarization pipeline models available for this route."
       />
-    </div>
+    </PageShell>
   );
 }

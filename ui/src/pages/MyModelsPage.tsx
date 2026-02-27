@@ -11,6 +11,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { ModelInfo } from "../api";
+import { PageHeader, PageShell } from "../components/PageShell";
 import { withQwen3Prefix } from "../utils/modelDisplay";
 import clsx from "clsx";
 
@@ -411,7 +412,8 @@ export const MODEL_DETAILS: Record<
   "diar_streaming_sortformer_4spk-v2.1": {
     shortName: "Sortformer 4spk",
     fullName: "Streaming Sortformer 4spk v2.1",
-    description: "Streaming speaker diarization model from NVIDIA in .nemo format",
+    description:
+      "Streaming speaker diarization model from NVIDIA in .nemo format",
     category: "asr",
     capabilities: ["Diarization", "Up to 4 speakers", "Streaming"],
     size: "0.5 GB",
@@ -626,12 +628,12 @@ export function MyModelsPage({
 
   if (loading) {
     return (
-      <div className="max-w-6xl mx-auto">
+      <PageShell>
         <div className="flex items-center justify-center gap-2 py-24 text-[var(--text-muted)]">
           <Loader2 className="w-4 h-4 animate-spin" />
           <p className="text-sm">Loading models...</p>
         </div>
-      </div>
+      </PageShell>
     );
   }
 
@@ -641,60 +643,57 @@ export function MyModelsPage({
     categoryFilter !== "all";
 
   return (
-    <div className="max-w-6xl mx-auto space-y-4">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-[var(--text-primary)]">
-            Models
-          </h1>
-          <p className="mt-1 text-sm text-[var(--text-muted)]">
-            Download, load, and remove local models
-          </p>
-        </div>
+    <PageShell className="space-y-4">
+      <PageHeader
+        title="Models"
+        description="Download, load, and remove local models."
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {onRefresh && (
+              <button
+                onClick={async () => {
+                  setIsRefreshing(true);
+                  await onRefresh();
+                  setIsRefreshing(false);
+                }}
+                disabled={isRefreshing}
+                className="flex items-center gap-1.5 rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-2)] disabled:opacity-60"
+                title="Refresh models"
+              >
+                <RefreshCw
+                  className={clsx(
+                    "w-3.5 h-3.5",
+                    isRefreshing && "animate-spin",
+                  )}
+                />
+                Refresh
+              </button>
+            )}
 
-        <div className="flex flex-wrap items-center gap-2">
-          {onRefresh && (
-            <button
-              onClick={async () => {
-                setIsRefreshing(true);
-                await onRefresh();
-                setIsRefreshing(false);
-              }}
-              disabled={isRefreshing}
-              className="flex items-center gap-1.5 rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-2)] disabled:opacity-60"
-              title="Refresh models"
-            >
-              <RefreshCw
-                className={clsx(
-                  "w-3.5 h-3.5",
-                  isRefreshing && "animate-spin",
-                )}
-              />
-              Refresh
-            </button>
-          )}
+            <div className="flex items-center gap-2 rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2">
+              <HardDrive className="w-4 h-4 text-[var(--text-subtle)]" />
+              <div className="text-sm">
+                <span className="font-medium text-[var(--text-primary)]">
+                  {formatBytes(stats.totalSize)}
+                </span>
+                <span className="ml-1 text-[var(--text-muted)]">used</span>
+              </div>
+            </div>
 
-          <div className="flex items-center gap-2 rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2">
-            <HardDrive className="w-4 h-4 text-[var(--text-subtle)]" />
-            <div className="text-sm">
+            <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2 text-sm">
               <span className="font-medium text-[var(--text-primary)]">
-                {formatBytes(stats.totalSize)}
+                {stats.loaded}
               </span>
-              <span className="ml-1 text-[var(--text-muted)]">used</span>
+              <span className="ml-1 text-[var(--text-muted)]">loaded</span>
+              <span className="mx-1 text-[var(--text-subtle)]">/</span>
+              <span className="text-[var(--text-muted)]">
+                {stats.downloaded}
+              </span>
+              <span className="ml-1 text-[var(--text-subtle)]">downloaded</span>
             </div>
           </div>
-
-          <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2 text-sm">
-            <span className="font-medium text-[var(--text-primary)]">
-              {stats.loaded}
-            </span>
-            <span className="ml-1 text-[var(--text-muted)]">loaded</span>
-            <span className="mx-1 text-[var(--text-subtle)]">/</span>
-            <span className="text-[var(--text-muted)]">{stats.downloaded}</span>
-            <span className="ml-1 text-[var(--text-subtle)]">downloaded</span>
-          </div>
-        </div>
-      </div>
+        }
+      />
 
       <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3 sm:p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
@@ -967,6 +966,6 @@ export function MyModelsPage({
           })}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

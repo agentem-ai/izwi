@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ModelInfo } from "../api";
 import { RouteModelModal } from "../components/RouteModelModal";
 import { VoiceDesignPlayground } from "../components/VoiceDesignPlayground";
+import { PageHeader, PageShell } from "../components/PageShell";
 import { VIEW_CONFIGS } from "../types";
 
 interface VoiceDesignPageProps {
@@ -91,7 +92,8 @@ export function VoiceDesignPage({
   })();
 
   const selectedModelInfo =
-    routeModels.find((model) => model.variant === resolvedSelectedModel) ?? null;
+    routeModels.find((model) => model.variant === resolvedSelectedModel) ??
+    null;
   const selectedModelReady = selectedModelInfo?.status === "ready";
 
   useEffect(() => {
@@ -160,15 +162,11 @@ export function VoiceDesignPage({
   };
 
   return (
-    <div className="max-w-7xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold text-[var(--text-primary)]">
-          Voice Design
-        </h1>
-        <p className="text-sm text-[var(--text-muted)] mt-1">
-          Design new voices from textual prompts and iterate with instant previews.
-        </p>
-      </div>
+    <PageShell>
+      <PageHeader
+        title="Voice Design"
+        description="Design new voices from textual prompts and iterate with instant previews."
+      />
 
       <VoiceDesignPlayground
         selectedModel={resolvedSelectedModel}
@@ -203,6 +201,6 @@ export function VoiceDesignPage({
         onUseModel={onSelect}
         emptyMessage={viewConfig.emptyStateDescription}
       />
-    </div>
+    </PageShell>
   );
 }

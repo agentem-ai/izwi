@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ModelInfo } from "../api";
 import { RouteModelModal } from "../components/RouteModelModal";
 import { VoiceClonePlayground } from "../components/VoiceClonePlayground";
+import { PageHeader, PageShell } from "../components/PageShell";
 import { VIEW_CONFIGS } from "../types";
 
 interface VoiceCloningPageProps {
@@ -93,7 +94,8 @@ export function VoiceCloningPage({
   })();
 
   const selectedModelInfo =
-    routeModels.find((model) => model.variant === resolvedSelectedModel) ?? null;
+    routeModels.find((model) => model.variant === resolvedSelectedModel) ??
+    null;
   const selectedModelReady = selectedModelInfo?.status === "ready";
 
   useEffect(() => {
@@ -162,15 +164,11 @@ export function VoiceCloningPage({
   };
 
   return (
-    <div className="max-w-7xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold text-[var(--text-primary)]">
-          Voice Cloning
-        </h1>
-        <p className="text-sm text-[var(--text-muted)] mt-1">
-          Clone custom voices from reference audio with local model inference.
-        </p>
-      </div>
+    <PageShell>
+      <PageHeader
+        title="Voice Cloning"
+        description="Clone custom voices from reference audio with local model inference."
+      />
 
       <VoiceClonePlayground
         selectedModel={resolvedSelectedModel}
@@ -205,6 +203,6 @@ export function VoiceCloningPage({
         onUseModel={onSelect}
         emptyMessage={viewConfig.emptyStateDescription}
       />
-    </div>
+    </PageShell>
   );
 }

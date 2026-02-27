@@ -1,0 +1,59 @@
+import type { ReactNode } from "react";
+import { cn } from "@/lib/utils";
+
+interface PageShellProps {
+  children: ReactNode;
+  className?: string;
+}
+
+interface PageHeaderProps {
+  title: ReactNode;
+  description?: ReactNode;
+  actions?: ReactNode;
+  className?: string;
+  titleClassName?: string;
+}
+
+export function PageShell({ children, className }: PageShellProps) {
+  return (
+    <div className={cn("w-full max-w-[1460px] mx-auto", className)}>
+      {children}
+    </div>
+  );
+}
+
+export function PageHeader({
+  title,
+  description,
+  actions,
+  className,
+  titleClassName,
+}: PageHeaderProps) {
+  return (
+    <div
+      className={cn(
+        "mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between",
+        className,
+      )}
+    >
+      <div className="min-w-0">
+        <h1
+          className={cn(
+            "text-xl font-semibold tracking-tight text-[var(--text-primary)]",
+            titleClassName,
+          )}
+        >
+          {title}
+        </h1>
+        {description ? (
+          <p className="mt-1 text-sm text-[var(--text-muted)] max-w-3xl">
+            {description}
+          </p>
+        ) : null}
+      </div>
+      {actions ? (
+        <div className="flex shrink-0 items-center gap-2">{actions}</div>
+      ) : null}
+    </div>
+  );
+}

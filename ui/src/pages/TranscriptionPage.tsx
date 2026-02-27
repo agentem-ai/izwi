@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ModelInfo } from "../api";
+import { PageHeader, PageShell } from "../components/PageShell";
 import { RouteModelModal } from "../components/RouteModelModal";
 import { TranscriptionPlayground } from "../components/TranscriptionPlayground";
 import { VIEW_CONFIGS } from "../types";
@@ -103,13 +104,17 @@ export function TranscriptionPage({
       }
     }
 
-    const readyModel = transcriptionModels.find((model) => model.status === "ready");
+    const readyModel = transcriptionModels.find(
+      (model) => model.status === "ready",
+    );
     if (readyModel) {
       return readyModel.variant;
     }
 
     for (const variant of preferredModelOrder) {
-      const preferred = transcriptionModels.find((model) => model.variant === variant);
+      const preferred = transcriptionModels.find(
+        (model) => model.variant === variant,
+      );
       if (preferred) {
         return preferred.variant;
       }
@@ -119,8 +124,9 @@ export function TranscriptionPage({
   })();
 
   const selectedModelInfo =
-    transcriptionModels.find((model) => model.variant === resolvedSelectedModel) ??
-    null;
+    transcriptionModels.find(
+      (model) => model.variant === resolvedSelectedModel,
+    ) ?? null;
   const selectedModelReady = selectedModelInfo?.status === "ready";
 
   const closeModelModal = () => {
@@ -159,7 +165,9 @@ export function TranscriptionPage({
   }));
 
   const handleModelSelect = (variant: string) => {
-    const model = transcriptionModels.find((entry) => entry.variant === variant);
+    const model = transcriptionModels.find(
+      (entry) => entry.variant === variant,
+    );
     if (!model) {
       return;
     }
@@ -174,15 +182,11 @@ export function TranscriptionPage({
   };
 
   return (
-    <div className="max-w-[1460px] mx-auto">
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold text-[var(--text-primary)]">
-          Transcription
-        </h1>
-        <p className="text-sm text-[var(--text-muted)] mt-1">
-          Capture audio, transcribe live, and browse saved transcription history.
-        </p>
-      </div>
+    <PageShell>
+      <PageHeader
+        title="Transcription"
+        description="Capture audio, transcribe live, and browse saved transcription history."
+      />
 
       <TranscriptionPlayground
         selectedModel={resolvedSelectedModel}
@@ -217,6 +221,6 @@ export function TranscriptionPage({
         onUseModel={onSelect}
         emptyMessage="No transcription models available for this route."
       />
-    </div>
+    </PageShell>
   );
 }
