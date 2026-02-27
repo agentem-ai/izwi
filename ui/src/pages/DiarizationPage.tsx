@@ -245,7 +245,6 @@ export function DiarizationPage({
       <DiarizationPlayground
         selectedModel={resolvedSelectedModel}
         selectedModelReady={selectedModelReady}
-        modelLabel={selectedModelInfo?.variant ?? null}
         modelOptions={modelOptions}
         onSelectModel={handleModelSelect}
         onOpenModelManager={openModelManager}

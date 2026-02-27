@@ -177,7 +177,6 @@ export function TextToSpeechPage({
       <CustomVoicePlayground
         selectedModel={resolvedSelectedModel}
         selectedModelReady={selectedModelReady}
-        modelLabel={selectedModelInfo?.variant ?? null}
         modelOptions={modelOptions}
         onSelectModel={handleModelSelect}
         onOpenModelManager={openModelManager}
