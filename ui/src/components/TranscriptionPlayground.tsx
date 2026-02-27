@@ -1348,11 +1348,19 @@ export function TranscriptionPlayground({
               {historyRecords.map((record) => {
                 const isActive = record.id === selectedHistoryRecordId;
                 return (
-                  <button
+                  <div
                     key={record.id}
                     onClick={() => openHistoryRecord(record.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openHistoryRecord(record.id);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
                     className={cn(
-                      "group w-full h-[96px] text-left rounded-md px-3 py-2.5 transition-colors overflow-hidden border border-transparent relative",
+                      "group w-full h-[96px] text-left rounded-md px-3 py-2.5 transition-colors overflow-hidden border border-transparent relative focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/45",
                       isActive
                         ? "bg-accent/80 hover:bg-accent/80"
                         : "hover:bg-muted/50",
@@ -1385,7 +1393,7 @@ export function TranscriptionPlayground({
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
-                  </button>
+                  </div>
                 );
               })}
             </div>
