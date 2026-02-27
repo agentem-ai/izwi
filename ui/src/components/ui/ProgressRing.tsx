@@ -31,7 +31,7 @@ export function ProgressRing({
           cy={size / 2}
           r={radius}
           fill="none"
-          stroke="rgba(148, 163, 184, 0.28)"
+          stroke="var(--border-muted)"
           strokeWidth={strokeWidth}
         />
         {/* Progress circle */}
@@ -58,8 +58,8 @@ export function ProgressRing({
             x2="100%"
             y2="0%"
           >
-            <stop offset="0%" stopColor="#3b82f6" />
-            <stop offset="100%" stopColor="#22d3ee" />
+            <stop offset="0%" stopColor="var(--text-subtle)" />
+            <stop offset="100%" stopColor="var(--text-secondary)" />
           </linearGradient>
         </defs>
       </svg>

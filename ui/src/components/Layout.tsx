@@ -210,7 +210,7 @@ export function Layout({
       {/* Sidebar */}
       <aside
         className={cn(
-          "w-[18rem] border-r border-border/70 flex flex-col fixed h-full z-50 bg-card/82 backdrop-blur-xl transition-all duration-300 shadow-[0_22px_56px_-42px_rgba(15,23,42,0.88)]",
+          "w-[18rem] border-r border-border/70 flex flex-col fixed h-full z-50 bg-card/82 backdrop-blur-xl transition-all duration-300 shadow-[0_22px_56px_-42px_rgba(0,0,0,0.58)]",
           "lg:translate-x-0",
           isSidebarCollapsed ? "lg:w-[88px]" : "lg:w-[18rem]",
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full",
