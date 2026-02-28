@@ -21,8 +21,16 @@ use tracing::warn;
 const UNKNOWN_SPEAKER: &str = "UNKNOWN";
 const MAX_UTTERANCE_GAP_SECS: f32 = 0.9;
 const MIN_ALIGNMENT_COVERAGE: f32 = 0.25;
+const MAX_UNATTRIBUTED_WORD_RATIO: f32 = 0.4;
 const ALIGNMENT_COLLAPSE_TAIL_MS: u32 = 250;
+const ALIGNMENT_PREFIX_CLUSTER_MS_CAP: u32 = 1_000;
+const MAX_REASONABLE_WORD_SPAN_MS: u32 = 2_500;
 const PIPELINE_SAMPLE_RATE: u32 = 16_000;
+const MAX_FRAGMENT_WORDS: usize = 3;
+const MAX_FRAGMENT_DURATION_SECS: f32 = 1.25;
+const FRAGMENT_CONFIDENCE_MARGIN: f32 = 0.08;
+const PHRASE_CAPITALIZED_GAP_SECS: f32 = 0.35;
+const PHRASE_HARD_GAP_SECS: f32 = 0.75;
 
 #[derive(Debug, Clone)]
 struct PipelineAudio {
@@ -91,12 +99,6 @@ impl RuntimeService {
             .await?;
 
         let asr_variant = resolve_asr_model_variant(asr_model_id);
-        self.load_model(asr_variant).await?;
-        let asr_model = self
-            .model_registry
-            .get_asr(asr_variant)
-            .await
-            .ok_or_else(|| Error::ModelNotFound(asr_variant.to_string()))?;
 
         let aligner_variant =
             crate::runtime::asr::resolve_forced_aligner_variant(aligner_model_id)?;
@@ -117,20 +119,50 @@ impl RuntimeService {
             }
         };
 
-        let (asr_text, chunk_texts) = transcribe_audio_chunks(
-            asr_model.clone(),
-            &audio,
-            None,
-            aligner_model
-                .as_ref()
-                .and_then(|model| model.max_audio_seconds_hint()),
-        )
-        .await?;
+        let aligner_limit = aligner_model
+            .as_ref()
+            .and_then(|model| model.max_audio_seconds_hint());
+        let use_single_pass_asr = should_use_single_pass_diarization_asr(
+            audio.duration_secs,
+            aligner_limit,
+            aligner_model.is_some(),
+        );
+
+        let (asr_text, chunk_texts) = if use_single_pass_asr {
+            let transcription = self
+                .asr_transcribe_with_variant(asr_variant, audio_base64, None, None)
+                .await?;
+            (transcription.text, Vec::new())
+        } else {
+            self.load_model(asr_variant).await?;
+            let asr_model = self
+                .model_registry
+                .get_asr(asr_variant)
+                .await
+                .ok_or_else(|| Error::ModelNotFound(asr_variant.to_string()))?;
+            transcribe_audio_chunks(asr_model, &audio, None, aligner_limit).await?
+        };
         let asr_words = extract_words(&asr_text);
 
         let mut model_aligned_words = 0usize;
         let mut alignments = if asr_text.is_empty() {
             Vec::new()
+        } else if use_single_pass_asr && aligner_model.is_some() {
+            match self
+                .force_align_with_model(audio_base64, &asr_text, aligner_model_id)
+                .await
+            {
+                Ok(aligned) => {
+                    model_aligned_words = aligned.len();
+                    aligned
+                }
+                Err(err) => {
+                    warn!("Forced alignment failed, using heuristic timings: {err}");
+                    fallback_word_timings_from_words(&asr_words, audio.duration_secs)
+                }
+            }
+        } else if use_single_pass_asr {
+            fallback_word_timings_from_words(&asr_words, audio.duration_secs)
         } else if let Some(model) = aligner_model.as_ref() {
             let (aligned, aligned_word_count) =
                 force_align_audio_chunks(model.clone(), &audio, &chunk_texts).await;
@@ -154,25 +186,29 @@ impl RuntimeService {
 
         let (mut words, overlap_assigned_words, mut unattributed_words) =
             attribute_words_to_speakers(&alignments, &diarization.segments);
+        stabilize_word_speakers(&mut words);
+        normalize_phrase_speakers(&mut words, &diarization.segments);
 
-        if !words.is_empty() {
+        if attribution_requires_fallback(words.len(), overlap_assigned_words, unattributed_words) {
             let attribution_coverage = overlap_assigned_words as f32 / words.len() as f32;
-            if attribution_coverage < MIN_ALIGNMENT_COVERAGE {
-                warn!(
-                    "Speaker attribution coverage too low ({:.1}%), retrying with diarization-guided fallback timings",
-                    attribution_coverage * 100.0
-                );
-                alignments = fallback_word_timings_with_segments(
-                    &asr_words,
-                    &diarization.segments,
-                    diarization.duration_secs,
-                );
-                let (fallback_words, _fallback_overlap_assigned_words, fallback_unattributed_words) =
-                    attribute_words_to_speakers(&alignments, &diarization.segments);
-                words = fallback_words;
-                unattributed_words = fallback_unattributed_words;
-                model_aligned_words = 0;
-            }
+            let unattributed_ratio = unattributed_words as f32 / words.len() as f32;
+            warn!(
+                "Speaker attribution quality too low ({:.1}% overlap-backed, {:.1}% unattributed), retrying with diarization-guided fallback timings",
+                attribution_coverage * 100.0,
+                unattributed_ratio * 100.0
+            );
+            alignments = fallback_word_timings_with_segments(
+                &asr_words,
+                &diarization.segments,
+                diarization.duration_secs,
+            );
+            let (fallback_words, _fallback_overlap_assigned_words, fallback_unattributed_words) =
+                attribute_words_to_speakers(&alignments, &diarization.segments);
+            words = fallback_words;
+            stabilize_word_speakers(&mut words);
+            normalize_phrase_speakers(&mut words, &diarization.segments);
+            unattributed_words = fallback_unattributed_words;
+            model_aligned_words = 0;
         }
 
         let utterances = build_utterances(&words);
@@ -299,6 +335,21 @@ fn combined_chunk_limit(asr_limit: Option<f32>, aligner_limit: Option<f32>) -> O
         (Some(asr), None) => Some(asr),
         (None, Some(aligner)) => Some(aligner),
         (None, None) => None,
+    }
+}
+
+fn should_use_single_pass_diarization_asr(
+    duration_secs: f32,
+    aligner_limit: Option<f32>,
+    aligner_available: bool,
+) -> bool {
+    if !aligner_available {
+        return true;
+    }
+
+    match aligner_limit {
+        Some(limit) if limit.is_finite() && limit > 0.0 => duration_secs <= limit,
+        _ => true,
     }
 }
 
@@ -603,20 +654,32 @@ fn alignment_is_suspicious(
 
     let duration_ms = secs_to_ms(duration_secs).max(1);
     let tail_start = duration_ms.saturating_sub(ALIGNMENT_COLLAPSE_TAIL_MS);
+    let prefix_window_end = ((duration_ms / 50).max(250)).min(ALIGNMENT_PREFIX_CLUSTER_MS_CAP);
 
     let mut min_start = u32::MAX;
     let mut max_end = 0u32;
     let mut tiny_spans = 0usize;
     let mut tail_heavy = 0usize;
+    let mut prefix_clustered = 0usize;
+    let mut max_word_span_ms = 0u32;
 
     for (_, start, end) in alignments {
-        min_start = min_start.min((*start).min(duration_ms));
-        max_end = max_end.max((*end).min(duration_ms));
-        if *end <= start.saturating_add(1) {
+        let bounded_start = (*start).min(duration_ms);
+        let bounded_end = (*end).min(duration_ms).max(bounded_start);
+        let span_ms = bounded_end.saturating_sub(bounded_start);
+
+        min_start = min_start.min(bounded_start);
+        max_end = max_end.max(bounded_end);
+        max_word_span_ms = max_word_span_ms.max(span_ms);
+
+        if bounded_end <= bounded_start.saturating_add(1) {
             tiny_spans += 1;
         }
-        if *start >= tail_start {
+        if bounded_start >= tail_start {
             tail_heavy += 1;
+        }
+        if bounded_end <= prefix_window_end {
+            prefix_clustered += 1;
         }
     }
 
@@ -625,7 +688,24 @@ fn alignment_is_suspicious(
     len >= 8
         && (tiny_spans * 10 >= len * 8
             || tail_heavy * 10 >= len * 8
+            || max_word_span_ms >= MAX_REASONABLE_WORD_SPAN_MS
+            || (prefix_clustered * 10 >= len * 4 && tiny_spans * 10 >= len * 3)
             || span <= (duration_ms / 20).max(1))
+}
+
+fn attribution_requires_fallback(
+    word_count: usize,
+    overlap_assigned_words: usize,
+    unattributed_words: usize,
+) -> bool {
+    if word_count == 0 {
+        return false;
+    }
+
+    let overlap_coverage = overlap_assigned_words as f32 / word_count as f32;
+    let unattributed_ratio = unattributed_words as f32 / word_count as f32;
+
+    overlap_coverage < MIN_ALIGNMENT_COVERAGE || unattributed_ratio > MAX_UNATTRIBUTED_WORD_RATIO
 }
 
 fn attribute_words_to_speakers(
@@ -698,20 +778,22 @@ fn assign_speaker_for_span(
         let specificity = (overlap / segment_span).clamp(0.0, 1.0);
         let confidence = segment.confidence.unwrap_or(0.0);
 
+        let overlap_ratio_tied = approx_eq_f32(overlap_ratio, best_overlap_ratio);
+        let specificity_tied = approx_eq_f32(specificity, best_specificity);
+        let overlap_tied = approx_eq_f32(overlap, best_overlap);
+        let confidence_tied = approx_eq_f32(confidence, best_confidence);
         let replace = best_segment.is_none()
             || overlap_ratio > best_overlap_ratio
-            || (overlap_ratio == best_overlap_ratio && specificity > best_specificity)
-            || (overlap_ratio == best_overlap_ratio
-                && specificity == best_specificity
-                && overlap > best_overlap)
-            || (overlap_ratio == best_overlap_ratio
-                && specificity == best_specificity
-                && overlap == best_overlap
+            || (overlap_ratio_tied && specificity > best_specificity)
+            || (overlap_ratio_tied && specificity_tied && overlap > best_overlap)
+            || (overlap_ratio_tied
+                && specificity_tied
+                && overlap_tied
                 && confidence > best_confidence)
-            || (overlap_ratio == best_overlap_ratio
-                && specificity == best_specificity
-                && overlap == best_overlap
-                && confidence == best_confidence
+            || (overlap_ratio_tied
+                && specificity_tied
+                && overlap_tied
+                && confidence_tied
                 && segment_span < best_segment_span);
 
         if replace {
@@ -741,6 +823,10 @@ fn assign_speaker_for_span(
         .expect("segments checked non-empty");
 
     (nearest.speaker.clone(), nearest.confidence, false)
+}
+
+fn approx_eq_f32(left: f32, right: f32) -> bool {
+    (left - right).abs() <= 1e-6
 }
 
 fn span_distance(point: f32, start: f32, end: f32) -> f32 {
@@ -796,6 +882,261 @@ fn build_utterances(words: &[DiarizationWord]) -> Vec<DiarizationUtterance> {
 
     utterances.push(current);
     utterances
+}
+
+fn stabilize_word_speakers(words: &mut [DiarizationWord]) {
+    if words.len() < 3 {
+        return;
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let runs = collect_speaker_runs(words);
+        if runs.len() < 3 {
+            break;
+        }
+
+        for run_idx in 1..runs.len() {
+            let run = runs[run_idx];
+            let avg_confidence = average_run_confidence(words, run.start, run.end);
+            let duration = (words[run.end].end_secs - words[run.start].start_secs).max(0.0);
+            let word_count = run.end + 1 - run.start;
+
+            let previous = run_idx.checked_sub(1).map(|idx| runs[idx]);
+            let next = runs.get(run_idx + 1).copied();
+
+            let target_speaker = if let (Some(left), Some(right)) = (previous, next) {
+                if left.speaker(words) == right.speaker(words)
+                    && left.speaker(words) != run.speaker(words)
+                    && word_count <= MAX_FRAGMENT_WORDS
+                    && duration <= MAX_FRAGMENT_DURATION_SECS
+                {
+                    let neighbor_confidence = average_run_confidence(words, left.start, right.end);
+                    if avg_confidence + FRAGMENT_CONFIDENCE_MARGIN < neighbor_confidence {
+                        Some(left.speaker(words).to_string())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else if let Some(left) = previous {
+                if word_count <= 2
+                    && duration <= 1.0
+                    && left.speaker(words) != run.speaker(words)
+                    && avg_confidence + FRAGMENT_CONFIDENCE_MARGIN
+                        < average_run_confidence(words, left.start, left.end)
+                {
+                    Some(left.speaker(words).to_string())
+                } else {
+                    None
+                }
+            } else if let Some(right) = next {
+                if word_count <= 2
+                    && duration <= 1.0
+                    && right.speaker(words) != run.speaker(words)
+                    && avg_confidence + FRAGMENT_CONFIDENCE_MARGIN
+                        < average_run_confidence(words, right.start, right.end)
+                {
+                    Some(right.speaker(words).to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(target_speaker) = target_speaker {
+                for word in &mut words[run.start..=run.end] {
+                    word.speaker = target_speaker.clone();
+                }
+                changed = true;
+                break;
+            }
+        }
+    }
+}
+
+fn normalize_phrase_speakers(words: &mut [DiarizationWord], segments: &[DiarizationSegment]) {
+    let phrases = collect_phrase_runs(words);
+    if phrases.len() < 2 {
+        return;
+    }
+
+    let mut phrase_speakers = phrases
+        .iter()
+        .map(|phrase| choose_phrase_speaker(words, *phrase))
+        .collect::<Vec<_>>();
+
+    for phrase_idx in 1..phrases.len().saturating_sub(1) {
+        let previous = &phrase_speakers[phrase_idx - 1];
+        let current = &phrase_speakers[phrase_idx];
+        let next = &phrase_speakers[phrase_idx + 1];
+        if previous != current || next != current {
+            continue;
+        }
+
+        if let Some(alternate) =
+            fully_covering_alternate_speaker(words, phrases[phrase_idx], segments, current)
+        {
+            phrase_speakers[phrase_idx] = alternate;
+        }
+    }
+
+    for (phrase, speaker) in phrases.iter().zip(phrase_speakers.iter()) {
+        for word in &mut words[phrase.start..=phrase.end] {
+            word.speaker = speaker.clone();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpeakerRun {
+    start: usize,
+    end: usize,
+}
+
+impl SpeakerRun {
+    fn speaker<'a>(&self, words: &'a [DiarizationWord]) -> &'a str {
+        &words[self.start].speaker
+    }
+}
+
+fn collect_speaker_runs(words: &[DiarizationWord]) -> Vec<SpeakerRun> {
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let mut runs = Vec::new();
+    let mut start = 0usize;
+    for idx in 1..words.len() {
+        if words[idx].speaker != words[start].speaker {
+            runs.push(SpeakerRun {
+                start,
+                end: idx - 1,
+            });
+            start = idx;
+        }
+    }
+    runs.push(SpeakerRun {
+        start,
+        end: words.len() - 1,
+    });
+    runs
+}
+
+fn collect_phrase_runs(words: &[DiarizationWord]) -> Vec<SpeakerRun> {
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let mut phrases = Vec::new();
+    let mut start = 0usize;
+    for idx in 1..words.len() {
+        let previous = &words[idx - 1];
+        let current = &words[idx];
+        let gap = (current.start_secs - previous.end_secs).max(0.0);
+        let starts_capitalized = current
+            .word
+            .chars()
+            .next()
+            .map(|ch| ch.is_ascii_uppercase())
+            .unwrap_or(false);
+
+        if gap >= PHRASE_HARD_GAP_SECS || (gap >= PHRASE_CAPITALIZED_GAP_SECS && starts_capitalized)
+        {
+            phrases.push(SpeakerRun {
+                start,
+                end: idx - 1,
+            });
+            start = idx;
+        }
+    }
+    phrases.push(SpeakerRun {
+        start,
+        end: words.len() - 1,
+    });
+    phrases
+}
+
+fn choose_phrase_speaker(words: &[DiarizationWord], phrase: SpeakerRun) -> String {
+    let phrase_words = &words[phrase.start..=phrase.end];
+    let runs = collect_speaker_runs(phrase_words);
+
+    if runs.len() > 1 && runs[0].end + 1 >= 3 {
+        return phrase_words[runs[0].start].speaker.clone();
+    }
+
+    let mut best_run = runs[0];
+    let mut best_duration =
+        (phrase_words[best_run.end].end_secs - phrase_words[best_run.start].start_secs).max(0.0);
+
+    for run in runs.iter().copied().skip(1) {
+        let duration =
+            (phrase_words[run.end].end_secs - phrase_words[run.start].start_secs).max(0.0);
+        if duration > best_duration {
+            best_run = run;
+            best_duration = duration;
+        }
+    }
+
+    phrase_words[best_run.start].speaker.clone()
+}
+
+fn fully_covering_alternate_speaker(
+    words: &[DiarizationWord],
+    phrase: SpeakerRun,
+    segments: &[DiarizationSegment],
+    current_speaker: &str,
+) -> Option<String> {
+    let phrase_start = words[phrase.start].start_secs;
+    let phrase_end = words[phrase.end].end_secs;
+    let duration = (phrase_end - phrase_start).max(0.001);
+    if duration <= 0.0 {
+        return None;
+    }
+
+    let mut coverage_by_speaker = HashMap::<&str, f32>::new();
+    for segment in segments {
+        let overlap = interval_overlap(
+            phrase_start,
+            phrase_end,
+            segment.start_secs,
+            segment.end_secs,
+        );
+        if overlap > 0.0 {
+            *coverage_by_speaker
+                .entry(segment.speaker.as_str())
+                .or_insert(0.0) += overlap;
+        }
+    }
+
+    coverage_by_speaker
+        .into_iter()
+        .filter(|(speaker, _)| *speaker != current_speaker)
+        .filter(|(_, coverage)| *coverage >= duration * 0.9)
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(speaker, _)| speaker.to_string())
+}
+
+fn average_run_confidence(words: &[DiarizationWord], start: usize, end: usize) -> f32 {
+    let mut sum = 0.0f32;
+    let mut count = 0usize;
+    for word in &words[start..=end] {
+        if let Some(confidence) = word.speaker_confidence {
+            if confidence.is_finite() {
+                sum += confidence.clamp(0.0, 1.0);
+                count += 1;
+            }
+        }
+    }
+
+    if count == 0 {
+        0.0
+    } else {
+        sum / count as f32
+    }
 }
 
 fn append_token(target: &mut String, token: &str) {
@@ -1258,6 +1599,346 @@ mod tests {
     }
 
     #[test]
+    fn stabilize_word_speakers_absorbs_low_confidence_inner_fragment() {
+        let mut words = vec![
+            DiarizationWord {
+                word: "hello".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.0,
+                end_secs: 0.4,
+                speaker_confidence: Some(0.82),
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "there".to_string(),
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 0.5,
+                end_secs: 0.7,
+                speaker_confidence: Some(0.22),
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "friend".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.8,
+                end_secs: 1.2,
+                speaker_confidence: Some(0.81),
+                overlaps_segment: true,
+            },
+        ];
+
+        stabilize_word_speakers(&mut words);
+
+        assert!(words.iter().all(|word| word.speaker == "SPEAKER_00"));
+    }
+
+    #[test]
+    fn choose_phrase_speaker_prefers_opening_run_for_multiword_phrase() {
+        let words = vec![
+            DiarizationWord {
+                word: "So".to_string(),
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 0.0,
+                end_secs: 0.3,
+                speaker_confidence: Some(0.25),
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "Aaron".to_string(),
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 0.3,
+                end_secs: 0.6,
+                speaker_confidence: Some(0.25),
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "in".to_string(),
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 0.6,
+                end_secs: 0.9,
+                speaker_confidence: Some(0.25),
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "your".to_string(),
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 0.9,
+                end_secs: 1.2,
+                speaker_confidence: Some(0.25),
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "email".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 1.2,
+                end_secs: 1.6,
+                speaker_confidence: Some(0.8),
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "you".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 1.6,
+                end_secs: 2.0,
+                speaker_confidence: Some(0.8),
+                overlaps_segment: true,
+            },
+        ];
+
+        let phrase = SpeakerRun {
+            start: 0,
+            end: words.len() - 1,
+        };
+        let chosen = choose_phrase_speaker(&words, phrase);
+
+        assert_eq!(chosen, "SPEAKER_01");
+    }
+
+    #[test]
+    fn normalize_phrase_speakers_can_flip_ambiguous_middle_phrase() {
+        let segments = vec![
+            DiarizationSegment {
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.0,
+                end_secs: 6.0,
+                confidence: Some(0.8),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 2.0,
+                end_secs: 4.0,
+                confidence: Some(0.25),
+            },
+        ];
+        let mut words = vec![
+            DiarizationWord {
+                word: "hello".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.0,
+                end_secs: 1.0,
+                speaker_confidence: Some(0.8),
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "How".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 2.0,
+                end_secs: 2.6,
+                speaker_confidence: Some(0.8),
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "review".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 2.6,
+                end_secs: 4.0,
+                speaker_confidence: Some(0.8),
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "Yeah".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 4.5,
+                end_secs: 5.4,
+                speaker_confidence: Some(0.8),
+                overlaps_segment: true,
+            },
+        ];
+
+        normalize_phrase_speakers(&mut words, &segments);
+
+        assert_eq!(words[1].speaker, "SPEAKER_01");
+        assert_eq!(words[2].speaker, "SPEAKER_01");
+    }
+
+    #[test]
+    fn phrase_normalization_matches_expected_turns_for_overlap_heavy_sample() {
+        let segments = vec![
+            DiarizationSegment {
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.32,
+                end_secs: 4.0,
+                confidence: Some(0.78),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 0.32,
+                end_secs: 1.6,
+                confidence: Some(0.28),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 4.88,
+                end_secs: 12.32,
+                confidence: Some(0.78),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 4.88,
+                end_secs: 5.36,
+                confidence: Some(0.25),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 11.76,
+                end_secs: 12.32,
+                confidence: Some(0.25),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 13.04,
+                end_secs: 20.72,
+                confidence: Some(0.77),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 13.04,
+                end_secs: 20.72,
+                confidence: Some(0.27),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 21.2,
+                end_secs: 27.12,
+                confidence: Some(0.78),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 21.2,
+                end_secs: 21.6,
+                confidence: Some(0.26),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 23.2,
+                end_secs: 23.84,
+                confidence: Some(0.26),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 26.08,
+                end_secs: 27.12,
+                confidence: Some(0.27),
+            },
+        ];
+        let mut words = vec![
+            test_word("So", "SPEAKER_01", 0.32, 0.64, 0.28),
+            test_word("Aaron", "SPEAKER_01", 0.64, 1.04, 0.28),
+            test_word("in", "SPEAKER_01", 1.20, 1.28, 0.28),
+            test_word("your", "SPEAKER_01", 1.28, 1.44, 0.28),
+            test_word("email", "SPEAKER_00", 1.52, 1.92, 0.78),
+            test_word("you", "SPEAKER_00", 1.92, 2.08, 0.78),
+            test_word("said", "SPEAKER_00", 2.08, 2.32, 0.78),
+            test_word("you", "SPEAKER_00", 2.32, 2.40, 0.78),
+            test_word("wanted", "SPEAKER_00", 2.40, 2.72, 0.78),
+            test_word("to", "SPEAKER_00", 2.72, 2.80, 0.78),
+            test_word("talk", "SPEAKER_00", 2.80, 3.12, 0.78),
+            test_word("about", "SPEAKER_00", 3.12, 3.36, 0.78),
+            test_word("the", "SPEAKER_00", 3.36, 3.52, 0.78),
+            test_word("exam", "SPEAKER_00", 3.52, 4.08, 0.78),
+            test_word("Yeah", "SPEAKER_01", 4.88, 5.28, 0.25),
+            test_word("um", "SPEAKER_00", 5.44, 5.92, 0.78),
+            test_word("I've", "SPEAKER_00", 6.24, 6.40, 0.79),
+            test_word("just", "SPEAKER_00", 6.40, 6.72, 0.79),
+            test_word("never", "SPEAKER_00", 6.72, 7.04, 0.79),
+            test_word("taken", "SPEAKER_00", 7.04, 7.52, 0.79),
+            test_word("a", "SPEAKER_00", 7.52, 7.60, 0.79),
+            test_word("class", "SPEAKER_00", 7.60, 8.00, 0.79),
+            test_word("with", "SPEAKER_00", 8.00, 8.16, 0.79),
+            test_word("so", "SPEAKER_00", 8.16, 8.40, 0.79),
+            test_word("many", "SPEAKER_00", 8.40, 8.72, 0.79),
+            test_word("different", "SPEAKER_00", 8.72, 8.96, 0.79),
+            test_word("readings", "SPEAKER_00", 9.04, 9.68, 0.79),
+            test_word("I've", "SPEAKER_01", 10.16, 10.32, 0.26),
+            test_word("managed", "SPEAKER_00", 10.32, 10.80, 0.78),
+            test_word("to", "SPEAKER_00", 10.80, 10.88, 0.78),
+            test_word("keep", "SPEAKER_00", 10.88, 11.12, 0.78),
+            test_word("up", "SPEAKER_00", 11.12, 11.36, 0.78),
+            test_word("with", "SPEAKER_00", 11.36, 11.44, 0.78),
+            test_word("all", "SPEAKER_00", 11.52, 11.60, 0.78),
+            test_word("the", "SPEAKER_00", 11.60, 11.76, 0.78),
+            test_word("assignments", "SPEAKER_01", 11.76, 12.48, 0.25),
+            test_word("but", "SPEAKER_00", 12.96, 13.12, 0.77),
+            test_word("I'm", "SPEAKER_00", 13.12, 13.28, 0.77),
+            test_word("not", "SPEAKER_00", 13.28, 13.44, 0.77),
+            test_word("sure", "SPEAKER_00", 13.44, 13.76, 0.77),
+            test_word("how", "SPEAKER_00", 13.76, 13.92, 0.77),
+            test_word("to", "SPEAKER_00", 14.00, 14.24, 0.77),
+            test_word("how", "SPEAKER_00", 14.96, 15.20, 0.76),
+            test_word("to", "SPEAKER_00", 15.20, 15.52, 0.76),
+            test_word("How", "SPEAKER_00", 16.16, 16.56, 0.76),
+            test_word("to", "SPEAKER_00", 16.72, 16.72, 0.76),
+            test_word("review", "SPEAKER_00", 16.88, 17.44, 0.76),
+            test_word("everything", "SPEAKER_00", 17.44, 18.08, 0.76),
+            test_word("Yeah", "SPEAKER_00", 18.48, 18.96, 0.76),
+            test_word("in", "SPEAKER_00", 19.36, 19.52, 0.77),
+            test_word("other", "SPEAKER_00", 19.60, 19.84, 0.77),
+            test_word("classes", "SPEAKER_00", 19.84, 20.32, 0.77),
+            test_word("I've", "SPEAKER_00", 20.32, 20.48, 0.77),
+            test_word("had", "SPEAKER_00", 20.48, 20.80, 0.77),
+            test_word("there's", "SPEAKER_01", 21.20, 21.44, 0.26),
+            test_word("usually", "SPEAKER_00", 21.44, 21.92, 0.78),
+            test_word("just", "SPEAKER_00", 21.92, 22.16, 0.78),
+            test_word("one", "SPEAKER_00", 22.16, 22.48, 0.78),
+            test_word("book", "SPEAKER_00", 22.48, 22.72, 0.78),
+            test_word("to", "SPEAKER_00", 22.80, 22.88, 0.78),
+            test_word("review", "SPEAKER_00", 22.88, 23.20, 0.78),
+            test_word("not", "SPEAKER_01", 23.20, 23.36, 0.26),
+            test_word("three", "SPEAKER_01", 23.60, 23.84, 0.26),
+            test_word("different", "SPEAKER_00", 23.84, 24.16, 0.78),
+            test_word("books", "SPEAKER_00", 24.16, 24.48, 0.78),
+            test_word("plus", "SPEAKER_00", 24.48, 24.72, 0.78),
+            test_word("all", "SPEAKER_00", 24.80, 24.96, 0.78),
+            test_word("those", "SPEAKER_00", 24.96, 25.12, 0.78),
+            test_word("other", "SPEAKER_00", 25.12, 25.44, 0.78),
+            test_word("text", "SPEAKER_00", 25.44, 25.84, 0.78),
+            test_word("excerpts", "SPEAKER_00", 25.84, 26.40, 0.78),
+            test_word("and", "SPEAKER_01", 26.40, 26.56, 0.27),
+            test_word("videos", "SPEAKER_01", 26.56, 27.28, 0.27),
+        ];
+
+        stabilize_word_speakers(&mut words);
+        normalize_phrase_speakers(&mut words, &segments);
+        let utterances = build_utterances(&words);
+
+        assert_eq!(utterances.len(), 4);
+        assert_eq!(utterances[0].speaker, "SPEAKER_01");
+        assert_eq!(
+            utterances[0].text,
+            "So Aaron in your email you said you wanted to talk about the exam"
+        );
+        assert_eq!(utterances[1].speaker, "SPEAKER_00");
+        assert!(utterances[1]
+            .text
+            .starts_with("Yeah um I've just never taken a class"));
+        assert!(utterances[1].text.ends_with("how to how to"));
+        assert_eq!(utterances[2].speaker, "SPEAKER_01");
+        assert_eq!(utterances[2].text, "How to review everything");
+        assert_eq!(utterances[3].speaker, "SPEAKER_00");
+        assert!(utterances[3]
+            .text
+            .contains("there's usually just one book to review not three different books"));
+        assert!(utterances[3].text.ends_with("and videos"));
+    }
+
+    fn test_word(
+        word: &str,
+        speaker: &str,
+        start_secs: f32,
+        end_secs: f32,
+        speaker_confidence: f32,
+    ) -> DiarizationWord {
+        DiarizationWord {
+            word: word.to_string(),
+            speaker: speaker.to_string(),
+            start_secs,
+            end_secs,
+            speaker_confidence: Some(speaker_confidence),
+            overlaps_segment: true,
+        }
+    }
+
+    #[test]
     fn sanitize_refined_transcript_removes_thinking_and_keeps_lines() {
         let fallback = "SPEAKER_00 [0.00s - 1.00s]: hello there";
         let candidate = r#"
@@ -1338,5 +2019,45 @@ Here is the refined transcript:
             .map(|idx| (format!("w{idx}"), 27_302u32, 27_303u32))
             .collect::<Vec<_>>();
         assert!(alignment_is_suspicious(&alignments, 20, 27.303));
+    }
+
+    #[test]
+    fn alignment_is_suspicious_detects_front_loaded_micro_spans_and_bridge_word() {
+        let mut alignments = (0..42)
+            .map(|idx| (format!("w{idx}"), idx as u32, idx as u32 + 1))
+            .collect::<Vec<_>>();
+        alignments.push(("bridge".to_string(), 41, 13_600));
+        alignments.extend((43..73).map(|idx| {
+            let start = 18_080 + ((idx - 43) as u32 * 320);
+            (format!("w{idx}"), start, start + 240)
+        }));
+
+        assert!(alignment_is_suspicious(&alignments, 73, 27.303));
+    }
+
+    #[test]
+    fn attribution_requires_fallback_when_too_many_words_are_unattributed() {
+        assert!(attribution_requires_fallback(73, 31, 42));
+        assert!(!attribution_requires_fallback(73, 60, 13));
+    }
+
+    #[test]
+    fn should_use_single_pass_diarization_asr_prefers_stable_path_when_possible() {
+        assert!(should_use_single_pass_diarization_asr(
+            27.3,
+            Some(300.0),
+            true
+        ));
+        assert!(should_use_single_pass_diarization_asr(27.3, None, true));
+        assert!(should_use_single_pass_diarization_asr(
+            600.0,
+            Some(300.0),
+            false
+        ));
+        assert!(!should_use_single_pass_diarization_asr(
+            600.0,
+            Some(300.0),
+            true
+        ));
     }
 }

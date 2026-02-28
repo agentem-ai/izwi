@@ -27,6 +27,8 @@ const PREEMPH: f32 = 0.97;
 const LOG_GUARD: f32 = 5.960_464_5e-8;
 const NORMALIZE_EPS: f32 = 1e-5;
 const REALTIME_VAD_THRESHOLD: f32 = 0.02;
+const SPEAKER_ACTIVITY_FLOOR: f32 = 0.14;
+const SPEAKER_TOP_FRACTION: f32 = 0.1;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct SortformerModelConfig {
@@ -234,9 +236,15 @@ impl SortformerDiarizerModel {
 
         let mut raw_segments = Vec::<RawSegment>::new();
         for &speaker_idx in &selected_speakers {
+            let speaker_threshold = adaptive_speaker_threshold(
+                &gated_probs,
+                &vad_mask,
+                speaker_idx,
+                self.pred_threshold,
+            );
             let mut mask = gated_probs
                 .iter()
-                .map(|row| row[speaker_idx] >= self.pred_threshold)
+                .map(|row| row[speaker_idx] >= speaker_threshold)
                 .collect::<Vec<_>>();
             smooth_activity_mask(&mut mask, min_speech_frames, min_silence_frames);
             for (start_frame, end_frame) in collect_active_regions(&mask) {
@@ -303,6 +311,10 @@ impl SortformerDiarizerModel {
             .map(|(i, (speaker_idx, _))| (*speaker_idx, i))
             .collect::<HashMap<_, _>>();
 
+        let speaker_labels = (0..ordered.len())
+            .map(|idx| format!("SPEAKER_{idx:02}"))
+            .collect::<Vec<_>>();
+
         let mut segments = raw_segments
             .into_iter()
             .map(|segment| {
@@ -311,7 +323,10 @@ impl SortformerDiarizerModel {
                     .copied()
                     .unwrap_or(0);
                 DiarizationSegment {
-                    speaker: format!("SPEAKER_{remapped:02}"),
+                    speaker: speaker_labels
+                        .get(remapped)
+                        .cloned()
+                        .unwrap_or_else(|| format!("SPEAKER_{remapped:02}")),
                     start_secs: segment.start_secs,
                     end_secs: segment.end_secs,
                     confidence: segment.confidence,
@@ -1194,22 +1209,40 @@ fn select_speaker_channels(
     max_speakers: usize,
 ) -> Vec<usize> {
     let mut scores = vec![0.0f32; MAX_SUPPORTED_SPEAKERS];
-    let mut counts = vec![0usize; MAX_SUPPORTED_SPEAKERS];
+    let mut active_frame_counts = vec![0usize; MAX_SUPPORTED_SPEAKERS];
+    let mut total_vad_frames = 0usize;
+    let mut by_speaker = vec![Vec::<f32>::new(); MAX_SUPPORTED_SPEAKERS];
 
     for (frame_idx, row) in probs.iter().enumerate() {
         if !vad_mask.get(frame_idx).copied().unwrap_or(true) {
             continue;
         }
+        total_vad_frames += 1;
         for spk in 0..MAX_SUPPORTED_SPEAKERS {
-            scores[spk] += row[spk];
-            counts[spk] += 1;
+            let prob = row[spk];
+            by_speaker[spk].push(prob);
+            if prob >= SPEAKER_ACTIVITY_FLOOR {
+                active_frame_counts[spk] += 1;
+            }
         }
     }
 
     for spk in 0..MAX_SUPPORTED_SPEAKERS {
-        if counts[spk] > 0 {
-            scores[spk] /= counts[spk] as f32;
+        let values = &mut by_speaker[spk];
+        if values.is_empty() {
+            continue;
         }
+        values.sort_by(|a, b| b.total_cmp(a));
+        let top_count = ((values.len() as f32) * SPEAKER_TOP_FRACTION)
+            .ceil()
+            .max(1.0) as usize;
+        let top_mean = values.iter().take(top_count).copied().sum::<f32>() / top_count as f32;
+        let active_ratio = if total_vad_frames > 0 {
+            active_frame_counts[spk] as f32 / total_vad_frames as f32
+        } else {
+            0.0
+        };
+        scores[spk] = top_mean + active_ratio * 0.2;
     }
 
     let mut ranked = (0..MAX_SUPPORTED_SPEAKERS)
@@ -1219,6 +1252,33 @@ fn select_speaker_channels(
 
     let keep = max_speakers.clamp(min_speakers, MAX_SUPPORTED_SPEAKERS);
     ranked.into_iter().take(keep).map(|(idx, _)| idx).collect()
+}
+
+fn adaptive_speaker_threshold(
+    probs: &[[f32; MAX_SUPPORTED_SPEAKERS]],
+    vad_mask: &[bool],
+    speaker_idx: usize,
+    default_threshold: f32,
+) -> f32 {
+    let mut values = probs
+        .iter()
+        .enumerate()
+        .filter(|(frame_idx, _)| vad_mask.get(*frame_idx).copied().unwrap_or(true))
+        .map(|(_, row)| row[speaker_idx])
+        .filter(|value| value.is_finite())
+        .collect::<Vec<_>>();
+
+    if values.is_empty() {
+        return default_threshold;
+    }
+
+    values.sort_by(|a, b| b.total_cmp(a));
+    let top_count = ((values.len() as f32) * SPEAKER_TOP_FRACTION)
+        .ceil()
+        .max(1.0) as usize;
+    let robust_peak = values.iter().take(top_count).copied().sum::<f32>() / top_count as f32;
+
+    (robust_peak * 0.75).clamp(SPEAKER_ACTIVITY_FLOOR, default_threshold)
 }
 
 fn realtime_voice_vad_frame_mask(
@@ -1577,6 +1637,37 @@ mod tests {
         let vad_mask = vec![true, true, false, true];
         let selected = select_speaker_channels(&probs, &vad_mask, 1, 2);
         assert_eq!(selected, vec![0, 1]);
+    }
+
+    #[test]
+    fn speaker_channel_selection_preserves_sparse_strong_speaker() {
+        let probs = vec![
+            [0.65, 0.30, 0.05, 0.02],
+            [0.64, 0.31, 0.04, 0.02],
+            [0.10, 0.28, 0.60, 0.02],
+            [0.09, 0.27, 0.62, 0.02],
+            [0.63, 0.29, 0.05, 0.02],
+            [0.62, 0.28, 0.04, 0.02],
+        ];
+        let vad_mask = vec![true; probs.len()];
+
+        let selected = select_speaker_channels(&probs, &vad_mask, 1, 2);
+        assert_eq!(selected, vec![0, 2]);
+    }
+
+    #[test]
+    fn adaptive_speaker_threshold_lowers_threshold_for_weaker_present_channel() {
+        let probs = vec![
+            [0.60, 0.16, 0.05, 0.01],
+            [0.58, 0.18, 0.05, 0.01],
+            [0.62, 0.20, 0.04, 0.01],
+            [0.61, 0.19, 0.05, 0.01],
+        ];
+        let vad_mask = vec![true; probs.len()];
+
+        let adaptive = adaptive_speaker_threshold(&probs, &vad_mask, 1, 0.25);
+        assert!(adaptive < 0.25);
+        assert!(adaptive >= SPEAKER_ACTIVITY_FLOOR);
     }
 
     #[test]
