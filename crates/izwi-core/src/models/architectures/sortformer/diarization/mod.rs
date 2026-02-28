@@ -27,8 +27,8 @@ const PREEMPH: f32 = 0.97;
 const LOG_GUARD: f32 = 5.960_464_5e-8;
 const NORMALIZE_EPS: f32 = 1e-5;
 const REALTIME_VAD_THRESHOLD: f32 = 0.02;
-const SPEAKER_ACTIVITY_FLOOR: f32 = 0.14;
-const SPEAKER_TOP_FRACTION: f32 = 0.1;
+const TS_VAD_FRAME_LENGTH_SECS: f32 = 0.01;
+const TS_VAD_UNIT_FRAME_COUNT: usize = 8;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct SortformerModelConfig {
@@ -204,24 +204,26 @@ impl SortformerDiarizerModel {
                 5000.0,
             );
 
-        let frame_ms = frame_stride_samples as f32 * 1000.0 / TARGET_SAMPLE_RATE as f32;
-        let min_speech_frames = ((min_speech_ms / frame_ms).round() as usize).max(1);
-        let min_silence_frames = ((min_silence_ms / frame_ms).round() as usize).max(1);
-
-        let frame_count = speaker_probs.len();
-        let mut vad_mask = realtime_voice_vad_frame_mask(
-            &samples,
-            frame_count,
-            frame_stride_samples,
-            REALTIME_VAD_THRESHOLD,
-        );
-        smooth_activity_mask(&mut vad_mask, min_speech_frames, min_silence_frames);
-
         let mut gated_probs = speaker_probs;
-        for (frame_idx, active) in vad_mask.iter().copied().enumerate() {
-            if !active {
-                for spk in 0..MAX_SUPPORTED_SPEAKERS {
-                    gated_probs[frame_idx][spk] = 0.0;
+        if sortformer_rms_gating_enabled() {
+            let frame_ms = frame_stride_samples as f32 * 1000.0 / TARGET_SAMPLE_RATE as f32;
+            let min_speech_frames = ((min_speech_ms / frame_ms).round() as usize).max(1);
+            let min_silence_frames = ((min_silence_ms / frame_ms).round() as usize).max(1);
+
+            let frame_count = gated_probs.len();
+            let mut vad_mask = realtime_voice_vad_frame_mask(
+                &samples,
+                frame_count,
+                frame_stride_samples,
+                REALTIME_VAD_THRESHOLD,
+            );
+            smooth_activity_mask(&mut vad_mask, min_speech_frames, min_silence_frames);
+
+            for (frame_idx, active) in vad_mask.iter().copied().enumerate() {
+                if !active {
+                    for spk in 0..MAX_SUPPORTED_SPEAKERS {
+                        gated_probs[frame_idx][spk] = 0.0;
+                    }
                 }
             }
         }
@@ -231,43 +233,47 @@ impl SortformerDiarizerModel {
         let requested_min = config.min_speakers.unwrap_or(1);
         let min_speakers = requested_min.clamp(1, max_speakers);
 
-        let selected_speakers =
-            select_speaker_channels(&gated_probs, &vad_mask, min_speakers, max_speakers);
+        let postprocessing_params = resolve_postprocessing_params(
+            self.pred_threshold,
+            min_speech_ms / 1000.0,
+            min_silence_ms / 1000.0,
+        );
 
         let mut raw_segments = Vec::<RawSegment>::new();
-        for &speaker_idx in &selected_speakers {
-            let speaker_threshold = adaptive_speaker_threshold(
-                &gated_probs,
-                &vad_mask,
-                speaker_idx,
-                self.pred_threshold,
-            );
-            let mut mask = gated_probs
+        let mut speaker_stats = Vec::<SpeakerActivityStats>::new();
+        for speaker_idx in 0..MAX_SUPPORTED_SPEAKERS {
+            let speaker_segments =
+                ts_vad_post_processing(&gated_probs, speaker_idx, &postprocessing_params);
+            if speaker_segments.is_empty() {
+                speaker_stats.push(SpeakerActivityStats {
+                    speaker_idx,
+                    total_duration_secs: 0.0,
+                    peak_probability: 0.0,
+                    segment_count: 0,
+                });
+                continue;
+            }
+
+            let peak_probability = gated_probs
                 .iter()
-                .map(|row| row[speaker_idx] >= speaker_threshold)
-                .collect::<Vec<_>>();
-            smooth_activity_mask(&mut mask, min_speech_frames, min_silence_frames);
-            for (start_frame, end_frame) in collect_active_regions(&mask) {
-                let start_sample = start_frame * frame_stride_samples;
-                let end_sample = (end_frame + 1) * frame_stride_samples;
-                let start_secs = start_sample as f32 / TARGET_SAMPLE_RATE as f32;
-                let end_secs = (end_sample as f32 / TARGET_SAMPLE_RATE as f32).min(duration_secs);
+                .map(|row| row[speaker_idx])
+                .fold(0.0f32, f32::max);
+            let total_duration_secs = speaker_segments
+                .iter()
+                .map(|(start_secs, end_secs)| (end_secs - start_secs).max(0.0))
+                .sum::<f32>();
+
+            for (start_secs, end_secs) in speaker_segments {
                 if end_secs <= start_secs {
                     continue;
                 }
-
-                let mut sum = 0.0f32;
-                let mut count = 0usize;
-                for row in gated_probs.iter().take(end_frame + 1).skip(start_frame) {
-                    sum += row[speaker_idx];
-                    count += 1;
-                }
-                let confidence = if count > 0 {
-                    Some((sum / count as f32).clamp(0.0, 1.0))
-                } else {
-                    None
-                };
-
+                let confidence = average_speaker_probability_for_range(
+                    &gated_probs,
+                    speaker_idx,
+                    start_secs,
+                    end_secs,
+                    frame_stride_samples,
+                );
                 raw_segments.push(RawSegment {
                     speaker_idx,
                     start_secs,
@@ -275,6 +281,16 @@ impl SortformerDiarizerModel {
                     confidence,
                 });
             }
+
+            speaker_stats.push(SpeakerActivityStats {
+                speaker_idx,
+                total_duration_secs,
+                peak_probability,
+                segment_count: raw_segments
+                    .iter()
+                    .filter(|segment| segment.speaker_idx == speaker_idx)
+                    .count(),
+            });
         }
 
         if raw_segments.is_empty() {
@@ -284,6 +300,9 @@ impl SortformerDiarizerModel {
                 speaker_count: 0,
             });
         }
+
+        let selected_speakers = select_speaker_channels(&speaker_stats, min_speakers, max_speakers);
+        raw_segments.retain(|segment| selected_speakers.contains(&segment.speaker_idx));
 
         raw_segments.sort_by(|a, b| {
             a.start_secs
@@ -334,7 +353,7 @@ impl SortformerDiarizerModel {
             })
             .collect::<Vec<_>>();
 
-        merge_adjacent_segments(&mut segments, min_silence_ms / 1000.0);
+        merge_adjacent_segments(&mut segments, 0.0);
         segments.sort_by(|a, b| {
             a.start_secs
                 .total_cmp(&b.start_secs)
@@ -365,6 +384,25 @@ struct RawSegment {
     start_secs: f32,
     end_secs: f32,
     confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpeakerActivityStats {
+    speaker_idx: usize,
+    total_duration_secs: f32,
+    peak_probability: f32,
+    segment_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PostProcessingParams {
+    onset: f32,
+    offset: f32,
+    pad_onset: f32,
+    pad_offset: f32,
+    min_duration_on: f32,
+    min_duration_off: f32,
+    filter_speech_first: bool,
 }
 
 struct SortformerInferenceModel {
@@ -1202,83 +1240,311 @@ impl SortformerSpeakerHead {
     }
 }
 
+fn resolve_postprocessing_params(
+    pred_threshold: f32,
+    min_duration_on: f32,
+    min_duration_off: f32,
+) -> PostProcessingParams {
+    let preset = std::env::var("IZWI_SORTFORMER_PP_PRESET")
+        .unwrap_or_else(|_| "model".to_string())
+        .to_ascii_lowercase();
+
+    let mut params = match preset.as_str() {
+        "callhome" | "callhome_v2" => PostProcessingParams {
+            onset: 0.641,
+            offset: 0.561,
+            pad_onset: 0.229,
+            pad_offset: 0.079,
+            min_duration_on: 0.511,
+            min_duration_off: 0.296,
+            filter_speech_first: true,
+        },
+        "dihard3" | "dihard3_v2" => PostProcessingParams {
+            onset: 0.56,
+            offset: 1.0,
+            pad_onset: 0.063,
+            pad_offset: 0.002,
+            min_duration_on: 0.007,
+            min_duration_off: 0.151,
+            filter_speech_first: true,
+        },
+        _ => PostProcessingParams {
+            onset: pred_threshold.clamp(0.0, 1.0),
+            offset: pred_threshold.clamp(0.0, 1.0),
+            pad_onset: 0.0,
+            pad_offset: 0.0,
+            min_duration_on: min_duration_on.max(0.0),
+            min_duration_off: min_duration_off.max(0.0),
+            filter_speech_first: true,
+        },
+    };
+
+    if let Some(value) = env_postprocessing_value("IZWI_SORTFORMER_PP_ONSET") {
+        params.onset = value.clamp(0.0, 1.0);
+    }
+    if let Some(value) = env_postprocessing_value("IZWI_SORTFORMER_PP_OFFSET") {
+        params.offset = value.clamp(0.0, 1.0);
+    }
+    if let Some(value) = env_postprocessing_value("IZWI_SORTFORMER_PP_PAD_ONSET") {
+        params.pad_onset = value.max(0.0);
+    }
+    if let Some(value) = env_postprocessing_value("IZWI_SORTFORMER_PP_PAD_OFFSET") {
+        params.pad_offset = value.max(0.0);
+    }
+    if let Some(value) = env_postprocessing_value("IZWI_SORTFORMER_PP_MIN_DURATION_ON") {
+        params.min_duration_on = value.max(0.0);
+    }
+    if let Some(value) = env_postprocessing_value("IZWI_SORTFORMER_PP_MIN_DURATION_OFF") {
+        params.min_duration_off = value.max(0.0);
+    }
+    if let Some(value) = env_flag("IZWI_SORTFORMER_PP_FILTER_SPEECH_FIRST") {
+        params.filter_speech_first = value;
+    }
+
+    params
+}
+
+fn env_postprocessing_value(key: &str) -> Option<f32> {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+}
+
+fn env_flag(key: &str) -> Option<bool> {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+}
+
+fn sortformer_rms_gating_enabled() -> bool {
+    env_flag("IZWI_SORTFORMER_ENABLE_RMS_GATING").unwrap_or(false)
+}
+
 fn select_speaker_channels(
-    probs: &[[f32; MAX_SUPPORTED_SPEAKERS]],
-    vad_mask: &[bool],
+    stats: &[SpeakerActivityStats],
     min_speakers: usize,
     max_speakers: usize,
 ) -> Vec<usize> {
-    let mut scores = vec![0.0f32; MAX_SUPPORTED_SPEAKERS];
-    let mut active_frame_counts = vec![0usize; MAX_SUPPORTED_SPEAKERS];
-    let mut total_vad_frames = 0usize;
-    let mut by_speaker = vec![Vec::<f32>::new(); MAX_SUPPORTED_SPEAKERS];
-
-    for (frame_idx, row) in probs.iter().enumerate() {
-        if !vad_mask.get(frame_idx).copied().unwrap_or(true) {
-            continue;
-        }
-        total_vad_frames += 1;
-        for spk in 0..MAX_SUPPORTED_SPEAKERS {
-            let prob = row[spk];
-            by_speaker[spk].push(prob);
-            if prob >= SPEAKER_ACTIVITY_FLOOR {
-                active_frame_counts[spk] += 1;
-            }
-        }
-    }
-
-    for spk in 0..MAX_SUPPORTED_SPEAKERS {
-        let values = &mut by_speaker[spk];
-        if values.is_empty() {
-            continue;
-        }
-        values.sort_by(|a, b| b.total_cmp(a));
-        let top_count = ((values.len() as f32) * SPEAKER_TOP_FRACTION)
-            .ceil()
-            .max(1.0) as usize;
-        let top_mean = values.iter().take(top_count).copied().sum::<f32>() / top_count as f32;
-        let active_ratio = if total_vad_frames > 0 {
-            active_frame_counts[spk] as f32 / total_vad_frames as f32
-        } else {
-            0.0
-        };
-        scores[spk] = top_mean + active_ratio * 0.2;
-    }
-
-    let mut ranked = (0..MAX_SUPPORTED_SPEAKERS)
-        .map(|idx| (idx, scores[idx]))
-        .collect::<Vec<_>>();
-    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-
     let keep = max_speakers.clamp(min_speakers, MAX_SUPPORTED_SPEAKERS);
-    ranked.into_iter().take(keep).map(|(idx, _)| idx).collect()
+    let mut ranked = stats.to_vec();
+    ranked.sort_by(|a, b| {
+        b.total_duration_secs
+            .total_cmp(&a.total_duration_secs)
+            .then(b.segment_count.cmp(&a.segment_count))
+            .then(b.peak_probability.total_cmp(&a.peak_probability))
+            .then(a.speaker_idx.cmp(&b.speaker_idx))
+    });
+
+    let active = ranked
+        .iter()
+        .filter(|stat| stat.segment_count > 0 && stat.total_duration_secs > 0.0)
+        .map(|stat| stat.speaker_idx)
+        .take(keep)
+        .collect::<Vec<_>>();
+
+    if active.len() >= min_speakers {
+        return active;
+    }
+
+    ranked
+        .into_iter()
+        .take(keep)
+        .map(|stat| stat.speaker_idx)
+        .collect()
 }
 
-fn adaptive_speaker_threshold(
+fn ts_vad_post_processing(
     probs: &[[f32; MAX_SUPPORTED_SPEAKERS]],
-    vad_mask: &[bool],
     speaker_idx: usize,
-    default_threshold: f32,
-) -> f32 {
-    let mut values = probs
-        .iter()
-        .enumerate()
-        .filter(|(frame_idx, _)| vad_mask.get(*frame_idx).copied().unwrap_or(true))
-        .map(|(_, row)| row[speaker_idx])
-        .filter(|value| value.is_finite())
-        .collect::<Vec<_>>();
-
-    if values.is_empty() {
-        return default_threshold;
+    params: &PostProcessingParams,
+) -> Vec<(f32, f32)> {
+    let mut repeated = Vec::with_capacity(probs.len() * TS_VAD_UNIT_FRAME_COUNT);
+    for row in probs {
+        let value = row[speaker_idx].clamp(0.0, 1.0);
+        for _ in 0..TS_VAD_UNIT_FRAME_COUNT {
+            repeated.push(value);
+        }
     }
 
-    values.sort_by(|a, b| b.total_cmp(a));
-    let top_count = ((values.len() as f32) * SPEAKER_TOP_FRACTION)
-        .ceil()
-        .max(1.0) as usize;
-    let robust_peak = values.iter().take(top_count).copied().sum::<f32>() / top_count as f32;
+    filtering(&binarization(&repeated, params), params)
+}
 
-    (robust_peak * 0.75).clamp(SPEAKER_ACTIVITY_FLOOR, default_threshold)
+fn binarization(sequence: &[f32], params: &PostProcessingParams) -> Vec<(f32, f32)> {
+    let mut speech = false;
+    let mut start = 0.0f32;
+    let mut segments = Vec::new();
+    let mut last_index = 0usize;
+
+    for (idx, &value) in sequence.iter().enumerate() {
+        last_index = idx;
+        if speech {
+            if value < params.offset {
+                let seg_start = (start - params.pad_onset).max(0.0);
+                let seg_end = idx as f32 * TS_VAD_FRAME_LENGTH_SECS + params.pad_offset;
+                if seg_end > seg_start {
+                    segments.push((seg_start, seg_end));
+                }
+                start = idx as f32 * TS_VAD_FRAME_LENGTH_SECS;
+                speech = false;
+            }
+        } else if value > params.onset {
+            start = idx as f32 * TS_VAD_FRAME_LENGTH_SECS;
+            speech = true;
+        }
+    }
+
+    if speech {
+        let seg_start = (start - params.pad_onset).max(0.0);
+        let seg_end = last_index as f32 * TS_VAD_FRAME_LENGTH_SECS + params.pad_offset;
+        if seg_end > seg_start {
+            segments.push((seg_start, seg_end));
+        }
+    }
+
+    merge_overlap_ranges(&segments)
+}
+
+fn filtering(segments: &[(f32, f32)], params: &PostProcessingParams) -> Vec<(f32, f32)> {
+    if segments.is_empty() {
+        return Vec::new();
+    }
+
+    let mut speech_segments = segments.to_vec();
+    if params.filter_speech_first {
+        if params.min_duration_on > 0.0 {
+            speech_segments = filter_short_segments(&speech_segments, params.min_duration_on);
+        }
+        if params.min_duration_off > 0.0 && speech_segments.len() > 1 {
+            let non_speech_segments = get_gap_segments(&speech_segments);
+            let short_non_speech_segments = remove_ranges(
+                &non_speech_segments,
+                &filter_short_segments(&non_speech_segments, params.min_duration_off),
+            );
+            if !short_non_speech_segments.is_empty() {
+                speech_segments.extend(short_non_speech_segments);
+                speech_segments = merge_overlap_ranges(&speech_segments);
+            }
+        }
+    } else {
+        if params.min_duration_off > 0.0 && speech_segments.len() > 1 {
+            let non_speech_segments = get_gap_segments(&speech_segments);
+            let short_non_speech_segments = remove_ranges(
+                &non_speech_segments,
+                &filter_short_segments(&non_speech_segments, params.min_duration_off),
+            );
+            if !short_non_speech_segments.is_empty() {
+                speech_segments.extend(short_non_speech_segments);
+                speech_segments = merge_overlap_ranges(&speech_segments);
+            }
+        }
+        if params.min_duration_on > 0.0 {
+            speech_segments = filter_short_segments(&speech_segments, params.min_duration_on);
+        }
+    }
+    speech_segments
+}
+
+fn remove_ranges(
+    original_segments: &[(f32, f32)],
+    to_be_removed_segments: &[(f32, f32)],
+) -> Vec<(f32, f32)> {
+    if original_segments.is_empty() || to_be_removed_segments.is_empty() {
+        return original_segments.to_vec();
+    }
+
+    original_segments
+        .iter()
+        .copied()
+        .filter(|segment| {
+            !to_be_removed_segments.iter().any(|removed| {
+                (segment.0 - removed.0).abs() <= f32::EPSILON
+                    && (segment.1 - removed.1).abs() <= f32::EPSILON
+            })
+        })
+        .collect()
+}
+
+fn filter_short_segments(segments: &[(f32, f32)], threshold: f32) -> Vec<(f32, f32)> {
+    segments
+        .iter()
+        .copied()
+        .filter(|(start, end)| (end - start) >= threshold)
+        .collect()
+}
+
+fn get_gap_segments(segments: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    if segments.len() <= 1 {
+        return Vec::new();
+    }
+
+    let sorted = sort_ranges(segments);
+    sorted
+        .windows(2)
+        .filter_map(|window| {
+            let (_, left_end) = window[0];
+            let (right_start, _) = window[1];
+            (right_start > left_end).then_some((left_end, right_start))
+        })
+        .collect()
+}
+
+fn merge_overlap_ranges(segments: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    if segments.len() <= 1 {
+        return segments.to_vec();
+    }
+
+    let mut sorted = sort_ranges(segments);
+    let mut merged = Vec::with_capacity(sorted.len());
+    let mut current = sorted.remove(0);
+    for segment in sorted {
+        if current.1 >= segment.0 {
+            current.1 = current.1.max(segment.1);
+        } else {
+            merged.push(current);
+            current = segment;
+        }
+    }
+    merged.push(current);
+    merged
+}
+
+fn sort_ranges(segments: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let mut sorted = segments.to_vec();
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    sorted
+}
+
+fn average_speaker_probability_for_range(
+    probs: &[[f32; MAX_SUPPORTED_SPEAKERS]],
+    speaker_idx: usize,
+    start_secs: f32,
+    end_secs: f32,
+    frame_stride_samples: usize,
+) -> Option<f32> {
+    if probs.is_empty() || end_secs <= start_secs || frame_stride_samples == 0 {
+        return None;
+    }
+
+    let frame_stride_secs = frame_stride_samples as f32 / TARGET_SAMPLE_RATE as f32;
+    let start_frame = (start_secs / frame_stride_secs).floor().max(0.0) as usize;
+    let end_frame = ((end_secs / frame_stride_secs).ceil().max(0.0) as usize).min(probs.len());
+    if start_frame >= end_frame {
+        return None;
+    }
+
+    let mut sum = 0.0f32;
+    let mut count = 0usize;
+    for row in probs.iter().take(end_frame).skip(start_frame) {
+        sum += row[speaker_idx];
+        count += 1;
+    }
+
+    (count > 0).then_some((sum / count as f32).clamp(0.0, 1.0))
 }
 
 fn realtime_voice_vad_frame_mask(
@@ -1627,47 +1893,126 @@ mod tests {
     }
 
     #[test]
-    fn speaker_channel_selection_respects_vad_mask() {
-        let probs = vec![
-            [0.90, 0.10, 0.05, 0.02],
-            [0.85, 0.15, 0.06, 0.02],
-            [0.05, 0.10, 0.95, 0.03], // masked out below
-            [0.80, 0.20, 0.05, 0.02],
+    fn select_speaker_channels_prefers_active_speakers_by_duration() {
+        let stats = vec![
+            SpeakerActivityStats {
+                speaker_idx: 0,
+                total_duration_secs: 8.0,
+                peak_probability: 0.70,
+                segment_count: 2,
+            },
+            SpeakerActivityStats {
+                speaker_idx: 1,
+                total_duration_secs: 2.0,
+                peak_probability: 0.90,
+                segment_count: 3,
+            },
+            SpeakerActivityStats {
+                speaker_idx: 2,
+                total_duration_secs: 5.0,
+                peak_probability: 0.60,
+                segment_count: 1,
+            },
+            SpeakerActivityStats {
+                speaker_idx: 3,
+                total_duration_secs: 0.0,
+                peak_probability: 0.99,
+                segment_count: 0,
+            },
         ];
-        let vad_mask = vec![true, true, false, true];
-        let selected = select_speaker_channels(&probs, &vad_mask, 1, 2);
-        assert_eq!(selected, vec![0, 1]);
-    }
 
-    #[test]
-    fn speaker_channel_selection_preserves_sparse_strong_speaker() {
-        let probs = vec![
-            [0.65, 0.30, 0.05, 0.02],
-            [0.64, 0.31, 0.04, 0.02],
-            [0.10, 0.28, 0.60, 0.02],
-            [0.09, 0.27, 0.62, 0.02],
-            [0.63, 0.29, 0.05, 0.02],
-            [0.62, 0.28, 0.04, 0.02],
-        ];
-        let vad_mask = vec![true; probs.len()];
-
-        let selected = select_speaker_channels(&probs, &vad_mask, 1, 2);
+        let selected = select_speaker_channels(&stats, 1, 2);
         assert_eq!(selected, vec![0, 2]);
     }
 
     #[test]
-    fn adaptive_speaker_threshold_lowers_threshold_for_weaker_present_channel() {
-        let probs = vec![
-            [0.60, 0.16, 0.05, 0.01],
-            [0.58, 0.18, 0.05, 0.01],
-            [0.62, 0.20, 0.04, 0.01],
-            [0.61, 0.19, 0.05, 0.01],
+    fn select_speaker_channels_backfills_when_min_exceeds_active() {
+        let stats = vec![
+            SpeakerActivityStats {
+                speaker_idx: 0,
+                total_duration_secs: 0.0,
+                peak_probability: 0.40,
+                segment_count: 0,
+            },
+            SpeakerActivityStats {
+                speaker_idx: 1,
+                total_duration_secs: 3.0,
+                peak_probability: 0.60,
+                segment_count: 2,
+            },
+            SpeakerActivityStats {
+                speaker_idx: 2,
+                total_duration_secs: 0.0,
+                peak_probability: 0.80,
+                segment_count: 0,
+            },
+            SpeakerActivityStats {
+                speaker_idx: 3,
+                total_duration_secs: 0.0,
+                peak_probability: 0.20,
+                segment_count: 0,
+            },
         ];
-        let vad_mask = vec![true; probs.len()];
 
-        let adaptive = adaptive_speaker_threshold(&probs, &vad_mask, 1, 0.25);
-        assert!(adaptive < 0.25);
-        assert!(adaptive >= SPEAKER_ACTIVITY_FLOOR);
+        let selected = select_speaker_channels(&stats, 2, 2);
+        assert_eq!(selected, vec![1, 2]);
+    }
+
+    #[test]
+    fn binarization_matches_nemo_threshold_transitions() {
+        let params = PostProcessingParams {
+            onset: 0.5,
+            offset: 0.5,
+            pad_onset: 0.0,
+            pad_offset: 0.0,
+            min_duration_on: 0.0,
+            min_duration_off: 0.0,
+            filter_speech_first: true,
+        };
+
+        let sequence = vec![0.1, 0.6, 0.7, 0.2, 0.1];
+        let segments = binarization(&sequence, &params);
+
+        assert_eq!(segments, vec![(0.01, 0.03)]);
+    }
+
+    #[test]
+    fn filtering_merges_short_non_speech_gaps_like_nemo_default_order() {
+        let params = PostProcessingParams {
+            onset: 0.5,
+            offset: 0.5,
+            pad_onset: 0.0,
+            pad_offset: 0.0,
+            min_duration_on: 0.0,
+            min_duration_off: 0.15,
+            filter_speech_first: true,
+        };
+
+        let segments = vec![(0.0, 0.5), (0.55, 1.0), (1.3, 1.7)];
+        let filtered = filtering(&segments, &params);
+
+        assert_eq!(filtered, vec![(0.0, 1.0), (1.3, 1.7)]);
+    }
+
+    #[test]
+    fn filtering_respects_filter_speech_first_toggle() {
+        let segments = vec![(0.0, 0.10), (0.14, 0.22)];
+        let speech_first = PostProcessingParams {
+            onset: 0.5,
+            offset: 0.5,
+            pad_onset: 0.0,
+            pad_offset: 0.0,
+            min_duration_on: 0.12,
+            min_duration_off: 0.08,
+            filter_speech_first: true,
+        };
+        let nonspeech_first = PostProcessingParams {
+            filter_speech_first: false,
+            ..speech_first
+        };
+
+        assert!(filtering(&segments, &speech_first).is_empty());
+        assert_eq!(filtering(&segments, &nonspeech_first), vec![(0.0, 0.22)]);
     }
 
     #[test]
