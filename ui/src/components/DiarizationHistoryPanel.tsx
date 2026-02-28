@@ -24,13 +24,11 @@ import {
   type DiarizationRecord,
   type DiarizationRecordSummary,
 } from "../api";
-
-interface TranscriptEntry {
-  speaker: string;
-  start: number;
-  end: number;
-  text: string;
-}
+import {
+  formattedTranscriptFromRecord,
+  previewTranscript,
+  transcriptEntriesFromRecord,
+} from "../utils/diarizationTranscript";
 
 interface DiarizationHistoryPanelProps {
   latestRecord?: DiarizationRecord | null;
@@ -78,71 +76,14 @@ function formatClockTime(totalSeconds: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function normalizeDiarizedTranscript(
-  transcript: string,
-  rawTranscript: string,
-): string {
-  const source = (transcript || rawTranscript || "").trim();
-  if (!source) {
-    return "";
-  }
-
-  const withoutThink = source.replace(/<think>[\s\S]*?<\/think>/gi, " ");
-  const withoutFences = withoutThink
-    .replace(/```text/gi, "")
-    .replace(/```/g, "")
-    .trim();
-
-  const lines = withoutFences
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.replace(/^[-*]\s+/, "").replace(/^\d+\.\s+/, ""))
-    .filter((line) =>
-      /^[A-Za-z0-9_]+\s+\[\d+(?:\.\d+)?s\s*-\s*\d+(?:\.\d+)?s\]:/.test(line),
-    );
-
-  if (lines.length > 0) {
-    return lines.join("\n");
-  }
-
-  return withoutFences;
-}
-
-function parseTranscriptEntries(transcript: string): TranscriptEntry[] {
-  return transcript
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line): TranscriptEntry | null => {
-      const match = line.match(
-        /^([A-Za-z0-9_]+)\s+\[([0-9]+(?:\.[0-9]+)?)s\s*-\s*([0-9]+(?:\.[0-9]+)?)s\]:\s*(.*)$/,
-      );
-      if (!match) {
-        return null;
-      }
-      const start = Number(match[2]);
-      const end = Number(match[3]);
-      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-        return null;
-      }
-      return {
-        speaker: match[1],
-        start,
-        end,
-        text: match[4].trim(),
-      };
-    })
-    .filter((entry): entry is TranscriptEntry => entry !== null);
-}
-
 function summarizeRecord(record: DiarizationRecord): DiarizationRecordSummary {
-  const normalized = normalizeDiarizedTranscript(
+  const entries = transcriptEntriesFromRecord(record);
+  const preview = previewTranscript(
+    entries,
     record.transcript ?? "",
     record.raw_transcript ?? "",
   );
-  const preview =
-    normalized.length <= 180 ? normalized : `${normalized.slice(0, 180)}...`;
+  const formatted = formattedTranscriptFromRecord(record);
 
   return {
     id: record.id,
@@ -155,7 +96,7 @@ function summarizeRecord(record: DiarizationRecord): DiarizationRecordSummary {
     audio_mime_type: record.audio_mime_type,
     audio_filename: record.audio_filename,
     transcript_preview: preview || "No transcript",
-    transcript_chars: Array.from(normalized).length,
+    transcript_chars: Array.from(formatted).length,
   };
 }
 
@@ -551,17 +492,14 @@ export function DiarizationHistoryPanel({
   }, []);
 
   const normalizedActiveTranscript = useMemo(
-    () =>
-      normalizeDiarizedTranscript(
-        activeHistoryRecord?.transcript || "",
-        activeHistoryRecord?.raw_transcript || "",
-      ),
-    [activeHistoryRecord?.raw_transcript, activeHistoryRecord?.transcript],
+    () => (activeHistoryRecord ? formattedTranscriptFromRecord(activeHistoryRecord) : ""),
+    [activeHistoryRecord],
   );
 
   const activeEntries = useMemo(
-    () => parseTranscriptEntries(normalizedActiveTranscript),
-    [normalizedActiveTranscript],
+    () =>
+      activeHistoryRecord ? transcriptEntriesFromRecord(activeHistoryRecord) : [],
+    [activeHistoryRecord],
   );
 
   const handleCopyHistoryTranscript = useCallback(async () => {
