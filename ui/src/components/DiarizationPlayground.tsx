@@ -16,12 +16,9 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { api, type DiarizationRecord } from "../api";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./ui/select";
+  formattedTranscriptFromResult,
+  transcriptEntriesFromResult,
+} from "../utils/diarizationTranscript";
 import { DiarizationHistoryPanel } from "./DiarizationHistoryPanel";
 
 function revokeObjectUrlIfNeeded(url: string | null): void {
@@ -30,18 +27,9 @@ function revokeObjectUrlIfNeeded(url: string | null): void {
   }
 }
 
-interface ModelOption {
-  value: string;
-  label: string;
-  statusLabel: string;
-  isReady: boolean;
-}
-
 interface DiarizationPlaygroundProps {
   selectedModel: string | null;
   selectedModelReady?: boolean;
-  modelOptions?: ModelOption[];
-  onSelectModel?: (variant: string) => void;
   onOpenModelManager?: () => void;
   onTogglePipelineLoadAll?: () => void;
   pipelineAllLoaded?: boolean;
@@ -50,6 +38,7 @@ interface DiarizationPlaygroundProps {
   pipelineAsrModelId?: string | null;
   pipelineAlignerModelId?: string | null;
   pipelineLlmModelId?: string | null;
+  pipelineLlmModelReady?: boolean;
   pipelineModelsReady?: boolean;
   onPipelineModelsRequired?: () => void;
 }
@@ -164,76 +153,9 @@ async function transcodeToWav(
   }
 }
 
-interface TranscriptEntry {
-  speaker: string;
-  start: number;
-  end: number;
-  text: string;
-}
-
-function normalizeDiarizedTranscript(
-  transcript: string,
-  rawTranscript: string,
-): string {
-  const source = (transcript || rawTranscript || "").trim();
-  if (!source) {
-    return "";
-  }
-
-  const withoutThink = source.replace(/<think>[\s\S]*?<\/think>/gi, " ");
-  const withoutFences = withoutThink
-    .replace(/```text/gi, "")
-    .replace(/```/g, "")
-    .trim();
-
-  const lines = withoutFences
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.replace(/^[-*]\s+/, "").replace(/^\d+\.\s+/, ""))
-    .filter((line) =>
-      /^[A-Za-z0-9_]+\s+\[\d+(?:\.\d+)?s\s*-\s*\d+(?:\.\d+)?s\]:/.test(line),
-    );
-
-  if (lines.length > 0) {
-    return lines.join("\n");
-  }
-
-  return withoutFences;
-}
-
-function parseTranscriptEntries(transcript: string): TranscriptEntry[] {
-  return transcript
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line): TranscriptEntry | null => {
-      const match = line.match(
-        /^([A-Za-z0-9_]+)\s+\[([0-9]+(?:\.[0-9]+)?)s\s*-\s*([0-9]+(?:\.[0-9]+)?)s\]:\s*(.*)$/,
-      );
-      if (!match) {
-        return null;
-      }
-      const start = Number(match[2]);
-      const end = Number(match[3]);
-      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-        return null;
-      }
-      return {
-        speaker: match[1],
-        start,
-        end,
-        text: match[4].trim(),
-      };
-    })
-    .filter((entry): entry is TranscriptEntry => entry !== null);
-}
-
 export function DiarizationPlayground({
   selectedModel,
   selectedModelReady = false,
-  modelOptions = [],
-  onSelectModel,
   onOpenModelManager,
   onTogglePipelineLoadAll,
   pipelineAllLoaded = false,
@@ -242,6 +164,7 @@ export function DiarizationPlayground({
   pipelineAsrModelId = null,
   pipelineAlignerModelId = null,
   pipelineLlmModelId = null,
+  pipelineLlmModelReady = false,
   pipelineModelsReady = true,
   onPipelineModelsRequired,
 }: DiarizationPlaygroundProps) {
@@ -258,6 +181,7 @@ export function DiarizationPlayground({
   const [maxSpeakers, setMaxSpeakers] = useState(4);
   const [minSpeechMs, setMinSpeechMs] = useState(240);
   const [minSilenceMs, setMinSilenceMs] = useState(200);
+  const [enableRefinement, setEnableRefinement] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -272,17 +196,10 @@ export function DiarizationPlayground({
   }, [selectedModel, selectedModelReady, onModelRequired]);
 
   const requireReadyPipelineModels = useCallback(() => {
-    if (
-      !pipelineAsrModelId ||
-      !pipelineAlignerModelId ||
-      !pipelineLlmModelId ||
-      !pipelineModelsReady
-    ) {
+    if (!pipelineAsrModelId || !pipelineAlignerModelId || !pipelineModelsReady) {
       onPipelineModelsRequired?.();
       if (!onPipelineModelsRequired) {
-        setError(
-          "Load ASR, forced aligner, and transcript refiner models before diarization.",
-        );
+        setError("Load ASR and forced aligner models before diarization.");
       }
       return false;
     }
@@ -291,7 +208,6 @@ export function DiarizationPlayground({
     onPipelineModelsRequired,
     pipelineAlignerModelId,
     pipelineAsrModelId,
-    pipelineLlmModelId,
     pipelineModelsReady,
   ]);
 
@@ -330,8 +246,14 @@ export function DiarizationPlayground({
           model_id: selectedModel || undefined,
           asr_model_id: pipelineAsrModelId || undefined,
           aligner_model_id: pipelineAlignerModelId || undefined,
-          llm_model_id: pipelineLlmModelId || undefined,
-          enable_llm_refinement: true,
+          llm_model_id:
+            enableRefinement && pipelineLlmModelReady && pipelineLlmModelId
+              ? pipelineLlmModelId
+              : undefined,
+          enable_llm_refinement:
+            enableRefinement &&
+            pipelineLlmModelReady &&
+            Boolean(pipelineLlmModelId),
           min_speakers: minSpeakers,
           max_speakers: maxSpeakers,
           min_speech_duration_ms: minSpeechMs,
@@ -340,13 +262,7 @@ export function DiarizationPlayground({
 
         setLatestRecord(record);
         setAudioUrl(api.diarizationRecordAudioUrl(record.id));
-
-        const cleanedTranscript = normalizeDiarizedTranscript(
-          record.transcript || "",
-          record.raw_transcript || "",
-        );
-
-        setSpeakerTranscript(cleanedTranscript);
+        setSpeakerTranscript(formattedTranscriptFromResult(record));
       } catch (err) {
         setError(err instanceof Error ? err.message : "Diarization failed");
       } finally {
@@ -355,6 +271,7 @@ export function DiarizationPlayground({
     },
     [
       audioUrl,
+      enableRefinement,
       maxSpeakers,
       minSilenceMs,
       minSpeakers,
@@ -362,6 +279,7 @@ export function DiarizationPlayground({
       pipelineAlignerModelId,
       pipelineAsrModelId,
       pipelineLlmModelId,
+      pipelineLlmModelReady,
       requireReadyModel,
       requireReadyPipelineModels,
       selectedModel,
@@ -425,13 +343,24 @@ export function DiarizationPlayground({
   const handleFileUpload = async (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
-    const file = event.target.files?.[0];
+    const input = event.currentTarget;
+    const file = input.files?.[0];
     if (!file) {
       return;
     }
+    input.value = "";
     await processAudio(file);
-    event.target.value = "";
   };
+
+  const openFilePicker = useCallback(() => {
+    if (!requireReadyModel()) {
+      return;
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+      fileInputRef.current.click();
+    }
+  }, [requireReadyModel]);
 
   const handleReset = () => {
     revokeObjectUrlIfNeeded(audioUrl);
@@ -443,8 +372,15 @@ export function DiarizationPlayground({
   };
 
   const transcriptEntries = useMemo(
-    () => parseTranscriptEntries(speakerTranscript),
-    [speakerTranscript],
+    () =>
+      latestRecord
+        ? transcriptEntriesFromResult(latestRecord)
+        : transcriptEntriesFromResult({
+            utterances: [],
+            transcript: speakerTranscript,
+            raw_transcript: speakerTranscript,
+          }),
+    [latestRecord, speakerTranscript],
   );
 
   const asText = useMemo(() => speakerTranscript.trim(), [speakerTranscript]);
@@ -472,6 +408,12 @@ export function DiarizationPlayground({
       setMinSpeakers(maxSpeakers);
     }
   }, [minSpeakers, maxSpeakers]);
+
+  useEffect(() => {
+    if ((!pipelineLlmModelId || !pipelineLlmModelReady) && enableRefinement) {
+      setEnableRefinement(false);
+    }
+  }, [enableRefinement, pipelineLlmModelId, pipelineLlmModelReady]);
 
   useEffect(() => {
     return () => {
@@ -525,36 +467,6 @@ export function DiarizationPlayground({
                 Models
               </Button>
             )}
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-[var(--border-muted)] bg-muted/30 p-4 space-y-3 shadow-inner">
-          <div className="text-[11px] text-muted-foreground uppercase tracking-wide">
-            Active Model
-          </div>
-          <Select
-            value={selectedModel ?? undefined}
-            onValueChange={onSelectModel}
-            disabled={modelOptions.length === 0}
-          >
-            <SelectTrigger className="h-[34px] text-xs">
-              <SelectValue placeholder="Select model" />
-            </SelectTrigger>
-            <SelectContent>
-              {modelOptions.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label} ({option.statusLabel})
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <div
-            className={cn(
-              "text-xs",
-              selectedModelReady ? "text-muted-foreground" : "text-amber-500",
-            )}
-          >
-            {selectedModelReady ? "Loaded and ready" : "Model not loaded yet"}
           </div>
         </div>
 
@@ -629,6 +541,25 @@ export function DiarizationPlayground({
               />
             </label>
           </div>
+          <label className="flex items-start gap-3 rounded-lg border border-[var(--border-muted)] bg-muted/20 px-3 py-2.5">
+            <input
+              type="checkbox"
+              checked={enableRefinement}
+              onChange={(event) => setEnableRefinement(event.target.checked)}
+              disabled={!pipelineLlmModelId || !pipelineLlmModelReady}
+              className="mt-0.5 h-4 w-4 rounded border-input"
+            />
+            <span className="space-y-0.5">
+              <span className="block text-xs font-medium text-foreground">
+                Transcript refinement
+              </span>
+              <span className="block text-[11px] text-muted-foreground">
+                {pipelineLlmModelId && pipelineLlmModelReady
+                  ? "Optional LLM cleanup after speaker attribution."
+                  : "Load a refiner model to enable optional post-processing."}
+              </span>
+            </span>
+          </label>
         </div>
 
         <div className="py-2 space-y-4">
@@ -663,28 +594,21 @@ export function DiarizationPlayground({
             </div>
             <Button
               variant="secondary"
-              className="w-full relative overflow-hidden h-12"
-              onClick={() => {
-                if (!requireReadyModel()) {
-                  return;
-                }
-                fileInputRef.current?.click();
-              }}
+              className="w-full h-12"
+              onClick={openFilePicker}
               disabled={!canRunInput}
             >
-              <div className="absolute inset-0 flex items-center justify-center gap-2 pointer-events-none">
-                <Upload className="w-4 h-4" />
-                <span className="font-medium text-sm">Upload Audio File</span>
-              </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="audio/*"
-                onChange={handleFileUpload}
-                className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-                disabled={!canRunInput}
-              />
+              <Upload className="w-4 h-4" />
+              <span className="font-medium text-sm">Upload Audio File</span>
             </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*"
+              onChange={handleFileUpload}
+              className="hidden"
+              disabled={!canRunInput}
+            />
           </div>
         </div>
 

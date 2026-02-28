@@ -79,25 +79,6 @@ function isPipelineLlmVariant(variant: string): boolean {
   return variant === "Qwen3-1.7B-GGUF";
 }
 
-function getStatusLabel(status: ModelInfo["status"]): string {
-  switch (status) {
-    case "ready":
-      return "Loaded";
-    case "loading":
-      return "Loading";
-    case "downloading":
-      return "Downloading";
-    case "downloaded":
-      return "Downloaded";
-    case "not_downloaded":
-      return "Not downloaded";
-    case "error":
-      return "Error";
-    default:
-      return status;
-  }
-}
-
 export function DiarizationPage({
   models,
   selectedModel,
@@ -232,7 +213,7 @@ export function DiarizationPage({
     llmPipelineModels.some(
       (model) => model.variant === resolvedLlmModel && model.status === "ready",
     );
-  const pipelineModelsReady = asrModelReady && alignerModelReady && llmModelReady;
+  const pipelineModelsReady = asrModelReady && alignerModelReady;
 
   const targetPipelineVariants = useMemo(
     () =>
@@ -303,7 +284,6 @@ export function DiarizationPage({
     const missingPipelineVariant =
       (!asrModelReady && resolvedAsrModel) ||
       (!alignerModelReady && resolvedAlignerModel) ||
-      (!llmModelReady && resolvedLlmModel) ||
       resolvedSelectedModel;
     setModalIntentModel(missingPipelineVariant);
     setAutoCloseOnIntentReady(true);
@@ -376,28 +356,6 @@ export function DiarizationPage({
     }
   }, [isPipelineLoadAllRequested, onDownload, onLoad, targetPipelineModels]);
 
-  const modelOptions = diarizationModels.map((model) => ({
-    value: model.variant,
-    label: model.variant,
-    statusLabel: getStatusLabel(model.status),
-    isReady: model.status === "ready",
-  }));
-
-  const handleModelSelect = (variant: string) => {
-    const model = diarizationModels.find((entry) => entry.variant === variant);
-    if (!model) {
-      return;
-    }
-
-    onSelect(variant);
-
-    if (model.status !== "ready") {
-      setModalIntentModel(variant);
-      setAutoCloseOnIntentReady(true);
-      setIsModelModalOpen(true);
-    }
-  };
-
   return (
     <PageShell>
       <PageHeader
@@ -408,8 +366,6 @@ export function DiarizationPage({
       <DiarizationPlayground
         selectedModel={resolvedSelectedModel}
         selectedModelReady={selectedModelReady}
-        modelOptions={modelOptions}
-        onSelectModel={handleModelSelect}
         onOpenModelManager={openModelManager}
         onTogglePipelineLoadAll={handleToggleLoadAllPipeline}
         pipelineAllLoaded={pipelineAllLoaded}
@@ -423,12 +379,11 @@ export function DiarizationPage({
         pipelineAsrModelId={resolvedAsrModel}
         pipelineAlignerModelId={resolvedAlignerModel}
         pipelineLlmModelId={resolvedLlmModel}
+        pipelineLlmModelReady={llmModelReady}
         pipelineModelsReady={pipelineModelsReady}
         onPipelineModelsRequired={() => {
           openModelManagerForPipeline();
-          onError(
-            "Load ASR, forced aligner, and transcript refiner models before diarization.",
-          );
+          onError("Load ASR and forced aligner models before diarization.");
         }}
       />
 

@@ -189,7 +189,7 @@ impl RuntimeService {
     }
 }
 
-fn resolve_forced_aligner_variant(model_id: Option<&str>) -> Result<ModelVariant> {
+pub(crate) fn resolve_forced_aligner_variant(model_id: Option<&str>) -> Result<ModelVariant> {
     let variant = match model_id {
         Some(raw) => {
             parse_model_variant(raw).map_err(|err| Error::InvalidInput(err.to_string()))?

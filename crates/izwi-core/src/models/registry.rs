@@ -273,6 +273,16 @@ pub struct NativeAsrDecodeStep {
 }
 
 impl NativeAsrModel {
+    pub fn transcribe(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+    ) -> Result<String> {
+        let mut no_op = |_delta: &str| {};
+        self.transcribe_with_callback(audio, sample_rate, language, &mut no_op)
+    }
+
     pub fn transcribe_with_callback(
         &self,
         audio: &[f32],

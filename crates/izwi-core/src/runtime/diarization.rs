@@ -4,6 +4,7 @@ use crate::catalog::{
     resolve_asr_model_variant, resolve_diarization_llm_variant, resolve_diarization_model_variant,
 };
 use crate::error::{Error, Result};
+use crate::models::registry::NativeAsrModel;
 use crate::models::shared::chat::{ChatMessage, ChatRole};
 use crate::runtime::audio_io::{base64_decode, decode_audio_bytes};
 use crate::runtime::service::RuntimeService;
@@ -12,23 +13,38 @@ use crate::runtime::types::{
     DiarizationUtterance, DiarizationWord,
 };
 use crate::ModelVariant;
+use izwi_asr_toolkit::{plan_audio_chunks, AsrLongFormConfig, AudioChunk, TranscriptAssembler};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::warn;
 
 const UNKNOWN_SPEAKER: &str = "UNKNOWN";
 const MAX_UTTERANCE_GAP_SECS: f32 = 0.9;
 const MIN_ALIGNMENT_COVERAGE: f32 = 0.25;
 const ALIGNMENT_COLLAPSE_TAIL_MS: u32 = 250;
+const PIPELINE_SAMPLE_RATE: u32 = 16_000;
+
+#[derive(Debug, Clone)]
+struct PipelineAudio {
+    samples: Vec<f32>,
+    sample_rate: u32,
+    duration_secs: f32,
+}
+
+#[derive(Debug, Clone)]
+struct TranscribedChunk {
+    range: AudioChunk,
+    text: String,
+}
 
 impl RuntimeService {
-    /// Run speaker diarization over a single audio input.
-    pub async fn diarize(
+    async fn diarize_samples(
         &self,
-        audio_base64: &str,
+        samples: &[f32],
+        sample_rate: u32,
         model_id: Option<&str>,
         config: &DiarizationConfig,
     ) -> Result<DiarizationResult> {
-        let (samples, sample_rate) = decode_audio_bytes(&base64_decode(audio_base64)?)?;
         let variant = resolve_diarization_model_variant(model_id);
         self.load_model(variant).await?;
 
@@ -38,7 +54,19 @@ impl RuntimeService {
             .await
             .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
 
-        model.diarize(&samples, sample_rate, config)
+        model.diarize(samples, sample_rate, config)
+    }
+
+    /// Run speaker diarization over a single audio input.
+    pub async fn diarize(
+        &self,
+        audio_base64: &str,
+        model_id: Option<&str>,
+        config: &DiarizationConfig,
+    ) -> Result<DiarizationResult> {
+        let audio = decode_pipeline_audio(audio_base64)?;
+        self.diarize_samples(&audio.samples, audio.sample_rate, model_id, config)
+            .await
     }
 
     /// Run diarization and produce speaker-attributed transcript artifacts.
@@ -52,41 +80,64 @@ impl RuntimeService {
         config: &DiarizationConfig,
         enable_llm_refinement: bool,
     ) -> Result<DiarizationTranscriptResult> {
+        let audio = decode_pipeline_audio(audio_base64)?;
         let diarization = self
-            .diarize(audio_base64, diarization_model_id, config)
+            .diarize_samples(
+                &audio.samples,
+                audio.sample_rate,
+                diarization_model_id,
+                config,
+            )
             .await?;
 
         let asr_variant = resolve_asr_model_variant(asr_model_id);
-        let asr = self
-            .asr_transcribe(audio_base64, Some(asr_variant.dir_name()), None)
-            .await?;
-        let asr_text = asr.text.trim().to_string();
+        self.load_model(asr_variant).await?;
+        let asr_model = self
+            .model_registry
+            .get_asr(asr_variant)
+            .await
+            .ok_or_else(|| Error::ModelNotFound(asr_variant.to_string()))?;
+
+        let aligner_variant =
+            crate::runtime::asr::resolve_forced_aligner_variant(aligner_model_id)?;
+        let aligner_model = match self.load_model(aligner_variant).await {
+            Ok(()) => match self.model_registry.get_asr(aligner_variant).await {
+                Some(model) => Some(model),
+                None => {
+                    warn!(
+                        "Forced aligner {} was loaded but not found in registry",
+                        aligner_variant
+                    );
+                    None
+                }
+            },
+            Err(err) => {
+                warn!("Forced aligner load failed, using heuristic timings: {err}");
+                None
+            }
+        };
+
+        let (asr_text, chunk_texts) = transcribe_audio_chunks(
+            asr_model.clone(),
+            &audio,
+            None,
+            aligner_model
+                .as_ref()
+                .and_then(|model| model.max_audio_seconds_hint()),
+        )
+        .await?;
         let asr_words = extract_words(&asr_text);
 
+        let mut model_aligned_words = 0usize;
         let mut alignments = if asr_text.is_empty() {
             Vec::new()
+        } else if let Some(model) = aligner_model.as_ref() {
+            let (aligned, aligned_word_count) =
+                force_align_audio_chunks(model.clone(), &audio, &chunk_texts).await;
+            model_aligned_words = aligned_word_count;
+            aligned
         } else {
-            match self
-                .force_align_with_model(audio_base64, &asr_text, aligner_model_id)
-                .await
-            {
-                Ok(aligned) if !aligned.is_empty() => aligned,
-                Ok(_) => fallback_word_timings_with_segments(
-                    &asr_words,
-                    &diarization.segments,
-                    diarization.duration_secs,
-                ),
-                Err(err) => {
-                    warn!(
-                        "Forced alignment failed, falling back to diarization-guided word timing: {err}"
-                    );
-                    fallback_word_timings_with_segments(
-                        &asr_words,
-                        &diarization.segments,
-                        diarization.duration_secs,
-                    )
-                }
-            }
+            fallback_word_timings_from_chunks(&chunk_texts, audio.sample_rate)
         };
 
         if alignment_is_suspicious(&alignments, asr_words.len(), diarization.duration_secs) {
@@ -98,28 +149,29 @@ impl RuntimeService {
                 &diarization.segments,
                 diarization.duration_secs,
             );
+            model_aligned_words = 0;
         }
 
-        let (mut words, mut overlap_assigned_words, mut unattributed_words) =
+        let (mut words, overlap_assigned_words, mut unattributed_words) =
             attribute_words_to_speakers(&alignments, &diarization.segments);
 
         if !words.is_empty() {
-            let coverage = overlap_assigned_words as f32 / words.len() as f32;
-            if coverage < MIN_ALIGNMENT_COVERAGE {
+            let attribution_coverage = overlap_assigned_words as f32 / words.len() as f32;
+            if attribution_coverage < MIN_ALIGNMENT_COVERAGE {
                 warn!(
-                    "Alignment coverage too low ({:.1}%), retrying with diarization-guided fallback timings",
-                    coverage * 100.0
+                    "Speaker attribution coverage too low ({:.1}%), retrying with diarization-guided fallback timings",
+                    attribution_coverage * 100.0
                 );
                 alignments = fallback_word_timings_with_segments(
                     &asr_words,
                     &diarization.segments,
                     diarization.duration_secs,
                 );
-                let (fallback_words, fallback_overlap_assigned_words, fallback_unattributed_words) =
+                let (fallback_words, _fallback_overlap_assigned_words, fallback_unattributed_words) =
                     attribute_words_to_speakers(&alignments, &diarization.segments);
                 words = fallback_words;
-                overlap_assigned_words = fallback_overlap_assigned_words;
                 unattributed_words = fallback_unattributed_words;
+                model_aligned_words = 0;
             }
         }
 
@@ -154,7 +206,7 @@ impl RuntimeService {
         let alignment_coverage = if words.is_empty() {
             0.0
         } else {
-            overlap_assigned_words as f32 / words.len() as f32
+            (model_aligned_words.min(words.len())) as f32 / words.len() as f32
         };
 
         Ok(DiarizationTranscriptResult {
@@ -202,6 +254,180 @@ impl RuntimeService {
 
 fn resolve_chat_variant(model_id: Option<&str>) -> Result<ModelVariant> {
     resolve_diarization_llm_variant(model_id).map_err(|err| Error::InvalidInput(err.to_string()))
+}
+
+fn decode_pipeline_audio(audio_base64: &str) -> Result<PipelineAudio> {
+    let (samples, sample_rate) = decode_audio_bytes(&base64_decode(audio_base64)?)?;
+    let normalized = resample_linear(&samples, sample_rate, PIPELINE_SAMPLE_RATE);
+    let duration_secs = if PIPELINE_SAMPLE_RATE > 0 {
+        normalized.len() as f32 / PIPELINE_SAMPLE_RATE as f32
+    } else {
+        0.0
+    };
+
+    Ok(PipelineAudio {
+        samples: normalized,
+        sample_rate: PIPELINE_SAMPLE_RATE,
+        duration_secs,
+    })
+}
+
+fn pipeline_chunk_config() -> AsrLongFormConfig {
+    let mut cfg = AsrLongFormConfig::default();
+    if let Some(v) = env_positive_f32("IZWI_ASR_CHUNK_TARGET_SECS") {
+        cfg.target_chunk_secs = v;
+    }
+    if let Some(v) = env_positive_f32("IZWI_ASR_CHUNK_MAX_SECS") {
+        cfg.hard_max_chunk_secs = v;
+    }
+    if let Some(v) = env_positive_f32("IZWI_ASR_CHUNK_OVERLAP_SECS") {
+        cfg.overlap_secs = v;
+    }
+    cfg
+}
+
+fn env_positive_f32(key: &str) -> Option<f32> {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+fn combined_chunk_limit(asr_limit: Option<f32>, aligner_limit: Option<f32>) -> Option<f32> {
+    match (asr_limit, aligner_limit) {
+        (Some(asr), Some(aligner)) => Some(asr.min(aligner)),
+        (Some(asr), None) => Some(asr),
+        (None, Some(aligner)) => Some(aligner),
+        (None, None) => None,
+    }
+}
+
+async fn transcribe_audio_chunks(
+    model: Arc<NativeAsrModel>,
+    audio: &PipelineAudio,
+    language: Option<&str>,
+    aligner_limit: Option<f32>,
+) -> Result<(String, Vec<TranscribedChunk>)> {
+    let cfg = pipeline_chunk_config();
+    let chunk_limit = combined_chunk_limit(model.max_audio_seconds_hint(), aligner_limit);
+    let chunks = plan_audio_chunks(&audio.samples, audio.sample_rate, &cfg, chunk_limit);
+    if chunks.is_empty() {
+        return Err(Error::InvalidInput(
+            "ASR chunk planner produced no chunks".to_string(),
+        ));
+    }
+
+    let language = language.map(|value| value.to_string());
+    let mut assembler = TranscriptAssembler::new(cfg);
+    let mut transcribed = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        if chunk.end_sample <= chunk.start_sample || chunk.end_sample > audio.samples.len() {
+            continue;
+        }
+        let chunk_audio = audio.samples[chunk.start_sample..chunk.end_sample].to_vec();
+        let model = model.clone();
+        let language = language.clone();
+        let text = tokio::task::spawn_blocking(move || {
+            model.transcribe(&chunk_audio, PIPELINE_SAMPLE_RATE, language.as_deref())
+        })
+        .await
+        .map_err(|err| Error::InferenceError(format!("ASR task failed: {err}")))??;
+        assembler.push_chunk_text(&text);
+        transcribed.push(TranscribedChunk { range: chunk, text });
+    }
+
+    Ok((assembler.finish().trim().to_string(), transcribed))
+}
+
+async fn force_align_audio_chunks(
+    model: Arc<NativeAsrModel>,
+    audio: &PipelineAudio,
+    chunks: &[TranscribedChunk],
+) -> (Vec<(String, u32, u32)>, usize) {
+    let mut merged = Vec::new();
+    let mut model_aligned_words = 0usize;
+
+    for chunk in chunks {
+        let words = extract_words(&chunk.text);
+        if words.is_empty()
+            || chunk.range.end_sample <= chunk.range.start_sample
+            || chunk.range.end_sample > audio.samples.len()
+        {
+            continue;
+        }
+
+        let chunk_audio = audio.samples[chunk.range.start_sample..chunk.range.end_sample].to_vec();
+        let chunk_duration_secs = chunk_audio.len() as f32 / audio.sample_rate.max(1) as f32;
+        let chunk_start_ms = samples_to_ms(chunk.range.start_sample, audio.sample_rate);
+        let text = chunk.text.clone();
+        let model_for_task = model.clone();
+
+        let aligned = match tokio::task::spawn_blocking(move || {
+            model_for_task.force_align(&chunk_audio, PIPELINE_SAMPLE_RATE, &text)
+        })
+        .await
+        {
+            Ok(Ok(aligned))
+                if !aligned.is_empty()
+                    && !alignment_is_suspicious(&aligned, words.len(), chunk_duration_secs) =>
+            {
+                model_aligned_words += aligned.len();
+                aligned
+            }
+            Ok(Ok(_)) => fallback_word_timings_from_words(&words, chunk_duration_secs),
+            Ok(Err(err)) => {
+                warn!("Forced alignment failed for one chunk, using interval fallback: {err}");
+                fallback_word_timings_from_words(&words, chunk_duration_secs)
+            }
+            Err(err) => {
+                warn!("Forced alignment task failed for one chunk, using interval fallback: {err}");
+                fallback_word_timings_from_words(&words, chunk_duration_secs)
+            }
+        };
+
+        let rebased = aligned
+            .into_iter()
+            .map(|(word, start, end)| {
+                (
+                    word,
+                    chunk_start_ms.saturating_add(start),
+                    chunk_start_ms.saturating_add(end),
+                )
+            })
+            .collect::<Vec<_>>();
+        append_chunk_alignments(&mut merged, rebased);
+    }
+
+    (merged, model_aligned_words)
+}
+
+fn fallback_word_timings_from_chunks(
+    chunks: &[TranscribedChunk],
+    sample_rate: u32,
+) -> Vec<(String, u32, u32)> {
+    let mut alignments = Vec::new();
+
+    for chunk in chunks {
+        let words = extract_words(&chunk.text);
+        if words.is_empty() || chunk.range.end_sample <= chunk.range.start_sample {
+            continue;
+        }
+        let chunk_duration_secs = chunk.range.len_samples() as f32 / sample_rate.max(1) as f32;
+        let chunk_start_ms = samples_to_ms(chunk.range.start_sample, sample_rate);
+        let chunk_alignments = fallback_word_timings_from_words(&words, chunk_duration_secs)
+            .into_iter()
+            .map(|(word, start, end)| {
+                (
+                    word,
+                    chunk_start_ms.saturating_add(start),
+                    chunk_start_ms.saturating_add(end),
+                )
+            })
+            .collect::<Vec<_>>();
+        append_chunk_alignments(&mut alignments, chunk_alignments);
+    }
+
+    alignments
 }
 
 fn fallback_word_timings(text: &str, duration_secs: f32) -> Vec<(String, u32, u32)> {
@@ -708,6 +934,65 @@ fn bag_word_overlap(reference_words: &[String], candidate_words: &[String]) -> (
     (recall, precision)
 }
 
+fn append_chunk_alignments(
+    merged: &mut Vec<(String, u32, u32)>,
+    chunk_alignments: Vec<(String, u32, u32)>,
+) {
+    if merged.is_empty() {
+        merged.extend(chunk_alignments);
+        return;
+    }
+
+    let overlap = word_overlap_prefix_len(merged, &chunk_alignments, 24);
+    let skip = if overlap > 0 {
+        overlap
+    } else {
+        trim_timing_overlap_prefix_len(merged, &chunk_alignments)
+    };
+
+    merged.extend(chunk_alignments.into_iter().skip(skip));
+}
+
+fn word_overlap_prefix_len(
+    merged: &[(String, u32, u32)],
+    incoming: &[(String, u32, u32)],
+    max_words: usize,
+) -> usize {
+    let max_overlap = merged.len().min(incoming.len()).min(max_words);
+    for overlap in (1..=max_overlap).rev() {
+        let left = &merged[merged.len() - overlap..];
+        let right = &incoming[..overlap];
+        let all_match = left
+            .iter()
+            .zip(right.iter())
+            .all(|((lw, _, _), (rw, _, _))| lw.eq_ignore_ascii_case(rw));
+        if all_match {
+            return overlap;
+        }
+    }
+    0
+}
+
+fn trim_timing_overlap_prefix_len(
+    merged: &[(String, u32, u32)],
+    incoming: &[(String, u32, u32)],
+) -> usize {
+    let Some((_, _, last_end)) = merged.last() else {
+        return 0;
+    };
+    incoming
+        .iter()
+        .take_while(|(_, start, end)| *end <= *last_end || *start < *last_end)
+        .count()
+}
+
+fn samples_to_ms(sample_index: usize, sample_rate: u32) -> u32 {
+    if sample_rate == 0 {
+        return 0;
+    }
+    ((sample_index as u64 * 1000) / sample_rate as u64) as u32
+}
+
 fn strip_tagged_sections(input: &str, start_tag: &str, end_tag: &str) -> String {
     let mut output = input.to_string();
     let start_tag = start_tag.to_ascii_lowercase();
@@ -789,6 +1074,26 @@ fn is_seconds_token(token: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn resample_linear(audio: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
+    if audio.is_empty() || src_rate == 0 || dst_rate == 0 || src_rate == dst_rate {
+        return audio.to_vec();
+    }
+
+    let ratio = dst_rate as f64 / src_rate as f64;
+    let out_len = ((audio.len() as f64) * ratio).round().max(1.0) as usize;
+    let mut out = vec![0.0f32; out_len];
+
+    for (idx, sample) in out.iter_mut().enumerate() {
+        let src_pos = idx as f64 / ratio;
+        let left = src_pos.floor() as usize;
+        let right = (left + 1).min(audio.len().saturating_sub(1));
+        let frac = (src_pos - left as f64) as f32;
+        *sample = audio[left] * (1.0 - frac) + audio[right] * frac;
+    }
+
+    out
+}
+
 fn secs_to_ms(value: f32) -> u32 {
     if !value.is_finite() || value <= 0.0 {
         0
@@ -811,6 +1116,52 @@ mod tests {
                 assert!(*start >= timings[idx - 1].1);
             }
         }
+    }
+
+    #[test]
+    fn append_chunk_alignments_dedupes_text_overlap() {
+        let mut merged = vec![
+            ("hello".to_string(), 0, 100),
+            ("world".to_string(), 100, 200),
+        ];
+        let incoming = vec![
+            ("world".to_string(), 180, 260),
+            ("again".to_string(), 260, 340),
+        ];
+
+        append_chunk_alignments(&mut merged, incoming);
+
+        assert_eq!(
+            merged,
+            vec![
+                ("hello".to_string(), 0, 100),
+                ("world".to_string(), 100, 200),
+                ("again".to_string(), 260, 340),
+            ]
+        );
+    }
+
+    #[test]
+    fn append_chunk_alignments_trims_timing_overlap_without_text_match() {
+        let mut merged = vec![
+            ("hello".to_string(), 0, 100),
+            ("world".to_string(), 100, 220),
+        ];
+        let incoming = vec![
+            ("there".to_string(), 180, 210),
+            ("friend".to_string(), 221, 320),
+        ];
+
+        append_chunk_alignments(&mut merged, incoming);
+
+        assert_eq!(
+            merged,
+            vec![
+                ("hello".to_string(), 0, 100),
+                ("world".to_string(), 100, 220),
+                ("friend".to_string(), 221, 320),
+            ]
+        );
     }
 
     #[test]

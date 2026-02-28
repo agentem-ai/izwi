@@ -121,7 +121,7 @@ pub async fn diarizations(
             req.aligner_model.as_deref(),
             req.llm_model.as_deref(),
             &config,
-            req.enable_llm_refinement.unwrap_or(true),
+            req.enable_llm_refinement.unwrap_or(false),
         )
         .await?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;

@@ -175,7 +175,7 @@ pub async fn create_record(
                 min_speech_duration_ms: parsed.min_speech_duration_ms.map(|v| v as f32),
                 min_silence_duration_ms: parsed.min_silence_duration_ms.map(|v| v as f32),
             },
-            parsed.enable_llm_refinement.unwrap_or(true),
+            parsed.enable_llm_refinement.unwrap_or(false),
         )
         .await?;
 
@@ -197,7 +197,7 @@ pub async fn create_record(
             max_speakers: parsed.max_speakers,
             min_speech_duration_ms: parsed.min_speech_duration_ms,
             min_silence_duration_ms: parsed.min_silence_duration_ms,
-            enable_llm_refinement: parsed.enable_llm_refinement.unwrap_or(true),
+            enable_llm_refinement: parsed.enable_llm_refinement.unwrap_or(false),
             processing_time_ms,
             duration_secs: Some(output.duration_secs as f64),
             rtf,
