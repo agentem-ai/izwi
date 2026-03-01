@@ -998,13 +998,18 @@ fn normalize_phrase_speakers(words: &mut [DiarizationWord], segments: &[Diarizat
 
     let mut phrase_speakers = phrases
         .iter()
-        .map(|phrase| choose_phrase_speaker(words, *phrase))
+        .map(|phrase| {
+            phrase_can_be_normalized(words, *phrase).then(|| choose_phrase_speaker(words, *phrase))
+        })
         .collect::<Vec<_>>();
 
     for phrase_idx in 1..phrases.len().saturating_sub(1) {
         let previous = &phrase_speakers[phrase_idx - 1];
         let current = &phrase_speakers[phrase_idx];
         let next = &phrase_speakers[phrase_idx + 1];
+        let (Some(previous), Some(current), Some(next)) = (previous, current, next) else {
+            continue;
+        };
         if previous != current || next != current {
             continue;
         }
@@ -1012,11 +1017,14 @@ fn normalize_phrase_speakers(words: &mut [DiarizationWord], segments: &[Diarizat
         if let Some(alternate) =
             fully_covering_alternate_speaker(words, phrases[phrase_idx], segments, current)
         {
-            phrase_speakers[phrase_idx] = alternate;
+            phrase_speakers[phrase_idx] = Some(alternate);
         }
     }
 
     for (phrase, speaker) in phrases.iter().zip(phrase_speakers.iter()) {
+        let Some(speaker) = speaker else {
+            continue;
+        };
         for word in &mut words[phrase.start..=phrase.end] {
             word.speaker = speaker.clone();
         }
@@ -1114,6 +1122,19 @@ fn choose_phrase_speaker(words: &[DiarizationWord], phrase: SpeakerRun) -> Strin
     }
 
     phrase_words[best_run.start].speaker.clone()
+}
+
+fn phrase_can_be_normalized(words: &[DiarizationWord], phrase: SpeakerRun) -> bool {
+    let phrase_words = &words[phrase.start..=phrase.end];
+    let mut distinct_speakers = HashMap::<&str, usize>::new();
+    for word in phrase_words {
+        *distinct_speakers.entry(word.speaker.as_str()).or_insert(0) += 1;
+        if distinct_speakers.len() > 2 {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn fully_covering_alternate_speaker(
@@ -1781,6 +1802,51 @@ mod tests {
 
         assert_eq!(words[1].speaker, "SPEAKER_01");
         assert_eq!(words[2].speaker, "SPEAKER_01");
+    }
+
+    #[test]
+    fn normalize_phrase_speakers_preserves_three_speaker_phrase() {
+        let segments = vec![
+            DiarizationSegment {
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.0,
+                end_secs: 0.62,
+                confidence: Some(0.92),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 0.62,
+                end_secs: 1.16,
+                confidence: Some(0.89),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_02".to_string(),
+                start_secs: 1.16,
+                end_secs: 1.72,
+                confidence: Some(0.91),
+            },
+        ];
+        let mut words = vec![
+            test_word("Alice", "SPEAKER_00", 0.00, 0.28, 0.92),
+            test_word("opens", "SPEAKER_00", 0.28, 0.58, 0.92),
+            test_word("Bob", "SPEAKER_01", 0.62, 0.86, 0.89),
+            test_word("answers", "SPEAKER_01", 0.86, 1.12, 0.89),
+            test_word("Carol", "SPEAKER_02", 1.16, 1.40, 0.91),
+            test_word("wraps", "SPEAKER_02", 1.40, 1.70, 0.91),
+            test_word("Later", "SPEAKER_00", 2.20, 2.52, 0.92),
+            test_word("done", "SPEAKER_00", 2.52, 2.82, 0.92),
+        ];
+
+        normalize_phrase_speakers(&mut words, &segments);
+        let utterances = build_utterances(&words);
+
+        assert_eq!(words[0].speaker, "SPEAKER_00");
+        assert_eq!(words[2].speaker, "SPEAKER_01");
+        assert_eq!(words[4].speaker, "SPEAKER_02");
+        assert_eq!(utterances.len(), 4);
+        assert_eq!(utterances[0].speaker, "SPEAKER_00");
+        assert_eq!(utterances[1].speaker, "SPEAKER_01");
+        assert_eq!(utterances[2].speaker, "SPEAKER_02");
     }
 
     #[test]
