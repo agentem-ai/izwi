@@ -36,6 +36,7 @@ struct SortformerModelConfig {
     max_num_of_spks: Option<usize>,
     streaming_mode: Option<bool>,
     preprocessor: Option<SortformerPreprocessorConfig>,
+    encoder: Option<SortformerEncoderConfig>,
     sortformer_modules: Option<SortformerModulesConfig>,
 }
 
@@ -46,6 +47,12 @@ struct SortformerPreprocessorConfig {
     window_stride: Option<f32>,
     features: Option<usize>,
     n_fft: Option<usize>,
+    normalize: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SortformerEncoderConfig {
+    xscaling: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -160,7 +167,6 @@ pub struct SortformerDiarizerModel {
     _artifacts: SortformerArtifacts,
     _checkpoint_tensor_count: usize,
     model: SortformerInferenceModel,
-    pred_threshold: f32,
 }
 
 impl SortformerDiarizerModel {
@@ -234,6 +240,7 @@ impl SortformerDiarizerModel {
                     window_stride: Some(0.01),
                     features: Some(128),
                     n_fft: Some(512),
+                    normalize: Some("NA".to_string()),
                 });
 
         let modules_cfg = config.sortformer_modules.clone().unwrap_or_default();
@@ -243,20 +250,15 @@ impl SortformerDiarizerModel {
             preprocessor_cfg,
             variant,
             streaming_mode,
+            config.encoder.clone(),
             modules_cfg.clone(),
         )?;
-
-        let pred_threshold = modules_cfg
-            .pred_score_threshold
-            .unwrap_or(0.25)
-            .clamp(0.05, 0.95);
 
         Ok(Self {
             variant,
             _artifacts: artifacts,
             _checkpoint_tensor_count: tensor_info.len(),
             model,
-            pred_threshold,
         })
     }
 
@@ -298,15 +300,31 @@ impl SortformerDiarizerModel {
             });
         }
 
-        let min_speech_ms = config
+        let explicit_min_speech_ms = config
             .min_speech_duration_ms
+            .filter(|value| value.is_finite())
+            .map(|value| {
+                value.clamp(
+                    frame_stride_samples as f32 * 1000.0 / TARGET_SAMPLE_RATE as f32,
+                    5000.0,
+                )
+            });
+        let explicit_min_silence_ms = config
+            .min_silence_duration_ms
+            .filter(|value| value.is_finite())
+            .map(|value| {
+                value.clamp(
+                    frame_stride_samples as f32 * 1000.0 / TARGET_SAMPLE_RATE as f32,
+                    5000.0,
+                )
+            });
+        let min_speech_ms = explicit_min_speech_ms
             .unwrap_or(DEFAULT_MIN_SPEECH_MS)
             .clamp(
                 frame_stride_samples as f32 * 1000.0 / TARGET_SAMPLE_RATE as f32,
                 5000.0,
             );
-        let min_silence_ms = config
-            .min_silence_duration_ms
+        let min_silence_ms = explicit_min_silence_ms
             .unwrap_or(DEFAULT_MIN_SILENCE_MS)
             .clamp(
                 frame_stride_samples as f32 * 1000.0 / TARGET_SAMPLE_RATE as f32,
@@ -341,12 +359,10 @@ impl SortformerDiarizerModel {
         let max_speakers = requested_max.clamp(1, MAX_SUPPORTED_SPEAKERS);
         let requested_min = config.min_speakers.unwrap_or(1);
         let min_speakers = requested_min.clamp(1, max_speakers);
+        let limit_speaker_channels = should_limit_speaker_channels(config);
 
-        let postprocessing_params = resolve_postprocessing_params(
-            self.pred_threshold,
-            min_speech_ms / 1000.0,
-            min_silence_ms / 1000.0,
-        );
+        let postprocessing_params =
+            resolve_postprocessing_params(config, explicit_min_speech_ms, explicit_min_silence_ms);
 
         let mut raw_segments = Vec::<RawSegment>::new();
         let mut speaker_stats = Vec::<SpeakerActivityStats>::new();
@@ -354,12 +370,14 @@ impl SortformerDiarizerModel {
             let speaker_segments =
                 ts_vad_post_processing(&gated_probs, speaker_idx, &postprocessing_params);
             if speaker_segments.is_empty() {
-                speaker_stats.push(SpeakerActivityStats {
-                    speaker_idx,
-                    total_duration_secs: 0.0,
-                    peak_probability: 0.0,
-                    segment_count: 0,
-                });
+                if limit_speaker_channels {
+                    speaker_stats.push(SpeakerActivityStats {
+                        speaker_idx,
+                        total_duration_secs: 0.0,
+                        peak_probability: 0.0,
+                        segment_count: 0,
+                    });
+                }
                 continue;
             }
 
@@ -373,6 +391,8 @@ impl SortformerDiarizerModel {
                 .sum::<f32>();
 
             for (start_secs, end_secs) in speaker_segments {
+                let start_secs = start_secs.clamp(0.0, duration_secs);
+                let end_secs = end_secs.clamp(0.0, duration_secs);
                 if end_secs <= start_secs {
                     continue;
                 }
@@ -391,15 +411,17 @@ impl SortformerDiarizerModel {
                 });
             }
 
-            speaker_stats.push(SpeakerActivityStats {
-                speaker_idx,
-                total_duration_secs,
-                peak_probability,
-                segment_count: raw_segments
-                    .iter()
-                    .filter(|segment| segment.speaker_idx == speaker_idx)
-                    .count(),
-            });
+            if limit_speaker_channels {
+                speaker_stats.push(SpeakerActivityStats {
+                    speaker_idx,
+                    total_duration_secs,
+                    peak_probability,
+                    segment_count: raw_segments
+                        .iter()
+                        .filter(|segment| segment.speaker_idx == speaker_idx)
+                        .count(),
+                });
+            }
         }
 
         if raw_segments.is_empty() {
@@ -410,8 +432,11 @@ impl SortformerDiarizerModel {
             });
         }
 
-        let selected_speakers = select_speaker_channels(&speaker_stats, min_speakers, max_speakers);
-        raw_segments.retain(|segment| selected_speakers.contains(&segment.speaker_idx));
+        if limit_speaker_channels {
+            let selected_speakers =
+                select_speaker_channels(&speaker_stats, min_speakers, max_speakers);
+            raw_segments.retain(|segment| selected_speakers.contains(&segment.speaker_idx));
+        }
 
         raw_segments.sort_by(|a, b| {
             a.start_secs
@@ -529,10 +554,14 @@ impl SortformerInferenceModel {
         preprocessor_cfg: SortformerPreprocessorConfig,
         variant: ModelVariant,
         streaming_mode: bool,
+        encoder_cfg: Option<SortformerEncoderConfig>,
         modules_cfg: SortformerModulesConfig,
     ) -> Result<Self> {
         let preprocessor = SortformerPreprocessor::load(vb, preprocessor_cfg)?;
-        let encoder = SortformerConformerEncoder::load(vb.pp("encoder"))?;
+        let encoder = SortformerConformerEncoder::load(
+            vb.pp("encoder"),
+            encoder_cfg.and_then(|cfg| cfg.xscaling).unwrap_or(true),
+        )?;
 
         let encoder_proj_w = vb
             .pp("sortformer_modules.encoder_proj")
@@ -567,18 +596,27 @@ impl SortformerInferenceModel {
         &self,
         samples: &[f32],
     ) -> Result<(Vec<[f32; MAX_SUPPORTED_SPEAKERS]>, usize)> {
-        let mut normalized = samples.to_vec();
-        let max_abs = normalized
-            .iter()
-            .copied()
-            .map(f32::abs)
-            .fold(0.0f32, f32::max)
-            .max(1e-6);
-        for sample in &mut normalized {
-            *sample /= max_abs;
-        }
+        let normalized_storage;
+        let feature_input = if self.streaming.is_some() {
+            samples
+        } else {
+            normalized_storage = {
+                let mut normalized = samples.to_vec();
+                let max_abs = normalized
+                    .iter()
+                    .copied()
+                    .map(f32::abs)
+                    .fold(0.0f32, f32::max)
+                    .max(1e-6);
+                for sample in &mut normalized {
+                    *sample /= max_abs;
+                }
+                normalized
+            };
+            &normalized_storage
+        };
 
-        let (features, feature_frames) = self.preprocessor.compute_features(&normalized)?;
+        let (features, feature_frames) = self.preprocessor.compute_features(feature_input)?;
         if feature_frames == 0 {
             return Ok((Vec::new(), self.encoder.frame_stride_samples()));
         }
@@ -741,10 +779,8 @@ fn resolve_streaming_profile(variant: ModelVariant) -> SortformerStreamingProfil
         }
     }
 
-    match variant {
-        ModelVariant::DiarStreamingSortformer4SpkV21 => SortformerStreamingProfile::HighLatency,
-        _ => SortformerStreamingProfile::Model,
-    }
+    let _ = variant;
+    SortformerStreamingProfile::Model
 }
 
 fn plan_streaming_feature_chunks(
@@ -1113,6 +1149,14 @@ struct SortformerPreprocessor {
     fb: Vec<f32>,
     n_mels: usize,
     n_freqs: usize,
+    normalize: SortformerFeatureNormalize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortformerFeatureNormalize {
+    None,
+    PerFeature,
+    AllFeatures,
 }
 
 impl SortformerPreprocessor {
@@ -1124,6 +1168,15 @@ impl SortformerPreprocessor {
         let hop_length =
             ((cfg.window_stride.unwrap_or(0.01) * sample_rate as f32).round() as usize).max(1);
         let n_mels = cfg.features.unwrap_or(128);
+        let normalize = match cfg
+            .normalize
+            .as_deref()
+            .map(|value| value.trim().to_ascii_lowercase())
+        {
+            Some(value) if value == "per_feature" => SortformerFeatureNormalize::PerFeature,
+            Some(value) if value == "all_features" => SortformerFeatureNormalize::AllFeatures,
+            _ => SortformerFeatureNormalize::None,
+        };
 
         let preproc_vb = vb.pp("preprocessor.featurizer");
         let window = match preproc_vb.get_unchecked_dtype("window", DType::F32) {
@@ -1168,6 +1221,7 @@ impl SortformerPreprocessor {
             fb,
             n_mels: loaded_mels,
             n_freqs,
+            normalize,
         })
     }
 
@@ -1227,12 +1281,16 @@ impl SortformerPreprocessor {
         }
 
         let valid_frames = audio.len() / self.hop_length;
-        normalize_per_feature(
-            &mut mel,
-            self.n_mels,
-            frame_count,
-            valid_frames.min(frame_count),
-        );
+        let normalized_frames = valid_frames.min(frame_count);
+        match self.normalize {
+            SortformerFeatureNormalize::None => {}
+            SortformerFeatureNormalize::PerFeature => {
+                normalize_per_feature(&mut mel, self.n_mels, frame_count, normalized_frames)
+            }
+            SortformerFeatureNormalize::AllFeatures => {
+                normalize_all_features(&mut mel, self.n_mels, frame_count, normalized_frames)
+            }
+        }
 
         if valid_frames < frame_count {
             for m in 0..self.n_mels {
@@ -1251,11 +1309,12 @@ struct SortformerConformerEncoder {
     pre_encode: ConvSubsamplingDw,
     layers: Vec<ConformerLayer>,
     d_model: usize,
+    input_scale: f64,
     frame_stride_samples: usize,
 }
 
 impl SortformerConformerEncoder {
-    fn load(vb: VarBuilder) -> Result<Self> {
+    fn load(vb: VarBuilder, xscaling: bool) -> Result<Self> {
         let pre_encode = ConvSubsamplingDw::load(vb.pp("pre_encode"))?;
 
         let mut layers = Vec::new();
@@ -1279,6 +1338,11 @@ impl SortformerConformerEncoder {
             pre_encode,
             layers,
             d_model,
+            input_scale: if xscaling {
+                (d_model as f64).sqrt()
+            } else {
+                1.0
+            },
             frame_stride_samples: 160 * 8,
         })
     }
@@ -1298,7 +1362,11 @@ impl SortformerConformerEncoder {
         pre_encoded: &Tensor,
         encoded_len: usize,
     ) -> Result<(Tensor, usize)> {
-        let mut x = pre_encoded.clone();
+        let mut x = if self.input_scale != 1.0 {
+            pre_encoded.affine(self.input_scale, 0.0)?
+        } else {
+            pre_encoded.clone()
+        };
         let pos_len = x.dim(1)?;
         let pos_emb = build_rel_positional_embedding(pos_len, self.d_model, x.device())?;
         for layer in &self.layers {
@@ -1513,7 +1581,7 @@ impl ConformerConv {
             .dims3()?
             .2;
 
-        let pointwise_conv1 = mlx::load_conv1d_no_bias(
+        let pointwise_conv1 = mlx::load_conv1d(
             d_model,
             d_model * 2,
             1,
@@ -1521,7 +1589,7 @@ impl ConformerConv {
             vb.pp("pointwise_conv1"),
         )?;
 
-        let depthwise_conv = mlx::load_conv1d_no_bias(
+        let depthwise_conv = mlx::load_conv1d(
             d_model,
             d_model,
             kernel_size,
@@ -1535,7 +1603,7 @@ impl ConformerConv {
 
         let batch_norm = batch_norm(d_model, 1e-5, vb.pp("batch_norm"))?;
 
-        let pointwise_conv2 = mlx::load_conv1d_no_bias(
+        let pointwise_conv2 = mlx::load_conv1d(
             d_model,
             d_model,
             1,
@@ -1779,17 +1847,14 @@ impl SortformerTransformerLayer {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let residual = x.clone();
-        let h = self.norm1.forward(x)?;
-        let attn = self.self_attention(&h)?;
-        let h = residual.broadcast_add(&attn)?;
-
-        let residual2 = h.clone();
-        let h2 = self.norm2.forward(&h)?;
+        let attn = self.self_attention(x)?;
+        let h = self.norm1.forward(&x.broadcast_add(&attn)?)?;
         let ff = self
             .dense_out
-            .forward(&self.dense_in.forward(&h2)?.relu()?)?;
-        residual2.broadcast_add(&ff).map_err(Error::from)
+            .forward(&self.dense_in.forward(&h)?.relu()?)?;
+        self.norm2
+            .forward(&h.broadcast_add(&ff)?)
+            .map_err(Error::from)
     }
 
     fn self_attention(&self, x: &Tensor) -> Result<Tensor> {
@@ -1878,9 +1943,9 @@ impl SortformerSpeakerHead {
 }
 
 fn resolve_postprocessing_params(
-    pred_threshold: f32,
-    min_duration_on: f32,
-    min_duration_off: f32,
+    _config: &DiarizationConfig,
+    min_duration_on_ms: Option<f32>,
+    min_duration_off_ms: Option<f32>,
 ) -> PostProcessingParams {
     let preset = std::env::var("IZWI_SORTFORMER_PP_PRESET")
         .unwrap_or_else(|_| "model".to_string())
@@ -1905,13 +1970,22 @@ fn resolve_postprocessing_params(
             min_duration_off: 0.151,
             filter_speech_first: true,
         },
-        _ => PostProcessingParams {
-            onset: pred_threshold.clamp(0.0, 1.0),
-            offset: pred_threshold.clamp(0.0, 1.0),
+        "legacy" | "legacy_model" => PostProcessingParams {
+            onset: 0.25,
+            offset: 0.25,
             pad_onset: 0.0,
             pad_offset: 0.0,
-            min_duration_on: min_duration_on.max(0.0),
-            min_duration_off: min_duration_off.max(0.0),
+            min_duration_on: min_duration_on_ms.unwrap_or(0.0).max(0.0) / 1000.0,
+            min_duration_off: min_duration_off_ms.unwrap_or(0.0).max(0.0) / 1000.0,
+            filter_speech_first: true,
+        },
+        _ => PostProcessingParams {
+            onset: 0.5,
+            offset: 0.5,
+            pad_onset: 0.0,
+            pad_offset: 0.0,
+            min_duration_on: min_duration_on_ms.unwrap_or(0.0).max(0.0) / 1000.0,
+            min_duration_off: min_duration_off_ms.unwrap_or(0.0).max(0.0) / 1000.0,
             filter_speech_first: true,
         },
     };
@@ -1939,6 +2013,10 @@ fn resolve_postprocessing_params(
     }
 
     params
+}
+
+fn should_limit_speaker_channels(config: &DiarizationConfig) -> bool {
+    config.min_speakers.is_some() || config.max_speakers.is_some()
 }
 
 fn env_postprocessing_value(key: &str) -> Option<f32> {
@@ -2513,9 +2591,51 @@ fn normalize_per_feature(mel: &mut [f32], n_mels: usize, frames: usize, valid_fr
     }
 }
 
+fn normalize_all_features(mel: &mut [f32], n_mels: usize, frames: usize, valid_frames: usize) {
+    if valid_frames == 0 {
+        return;
+    }
+
+    let total = n_mels * valid_frames;
+    if total == 0 {
+        return;
+    }
+
+    let mut sum = 0.0f32;
+    for m in 0..n_mels {
+        let row = &mel[m * frames..(m + 1) * frames];
+        sum += row[..valid_frames].iter().copied().sum::<f32>();
+    }
+    let mean = sum / total as f32;
+
+    let var = if total > 1 {
+        let mut accum = 0.0f32;
+        for m in 0..n_mels {
+            let row = &mel[m * frames..(m + 1) * frames];
+            for value in &row[..valid_frames] {
+                let delta = *value - mean;
+                accum += delta * delta;
+            }
+        }
+        accum / (total as f32 - 1.0)
+    } else {
+        0.0
+    };
+
+    let std = var.sqrt() + NORMALIZE_EPS;
+    for m in 0..n_mels {
+        let row = &mut mel[m * frames..(m + 1) * frames];
+        for value in &mut row[..valid_frames] {
+            *value = (*value - mean) / std;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::audio_io::decode_audio_bytes;
+    use std::path::PathBuf;
 
     fn streaming_cfg_for_test() -> SortformerStreamingConfig {
         SortformerStreamingConfig {
@@ -2662,6 +2782,27 @@ mod tests {
         assert_eq!(cfg.fifo_len, 40);
         assert_eq!(cfg.spkcache_update_period, 300);
         assert_eq!(cfg.spkcache_len, 188);
+    }
+
+    #[test]
+    fn resolve_postprocessing_params_defaults_to_reference_binarization() {
+        let params = resolve_postprocessing_params(&DiarizationConfig::default(), None, None);
+        assert_eq!(params.onset, 0.5);
+        assert_eq!(params.offset, 0.5);
+        assert_eq!(params.pad_onset, 0.0);
+        assert_eq!(params.pad_offset, 0.0);
+        assert_eq!(params.min_duration_on, 0.0);
+        assert_eq!(params.min_duration_off, 0.0);
+        assert!(params.filter_speech_first);
+    }
+
+    #[test]
+    fn should_limit_speaker_channels_only_when_requested() {
+        assert!(!should_limit_speaker_channels(&DiarizationConfig::default()));
+        assert!(should_limit_speaker_channels(&DiarizationConfig {
+            max_speakers: Some(2),
+            ..DiarizationConfig::default()
+        }));
     }
 
     #[test]
@@ -2830,5 +2971,104 @@ mod tests {
         assert!((segments[0].start_secs - 0.0).abs() < 1e-6);
         assert!((segments[0].end_secs - 2.0).abs() < 1e-6);
         assert_eq!(segments[1].speaker, "SPEAKER_01");
+    }
+
+    #[test]
+    #[ignore = "requires local Sortformer checkpoint"]
+    fn sortformer_local_checkpoint_matches_diarization_2_reference_segments() {
+        let models_root = std::env::var("IZWI_MODELS_DIR")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                dirs::data_local_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("izwi")
+                    .join("models")
+            });
+        let model_dir = models_root.join(ModelVariant::DiarStreamingSortformer4SpkV21.dir_name());
+        if !model_dir
+            .join("diar_streaming_sortformer_4spk-v2.1.nemo")
+            .exists()
+        {
+            eprintln!(
+                "Skipping Sortformer checkpoint test, model not found at {}",
+                model_dir.display()
+            );
+            return;
+        }
+
+        let audio_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/diarization-2.mp3");
+        let audio_bytes = std::fs::read(&audio_path).expect("sample audio should exist");
+        let (samples, sample_rate) = decode_audio_bytes(&audio_bytes).expect("audio should decode");
+
+        let model =
+            SortformerDiarizerModel::load(&model_dir, ModelVariant::DiarStreamingSortformer4SpkV21)
+                .expect("sortformer checkpoint should load");
+        let diarization = model
+            .diarize(&samples, sample_rate, &DiarizationConfig::default())
+            .expect("sortformer diarization should run");
+
+        let expected = vec![
+            (0.40, 2.72, 0usize),
+            (3.20, 4.96, 0),
+            (5.44, 10.08, 0),
+            (10.72, 15.52, 0),
+            (15.60, 18.32, 0),
+            (19.60, 20.08, 0),
+            (20.88, 22.88, 0),
+            (23.28, 27.84, 0),
+            (28.40, 29.84, 0),
+            (30.16, 36.96, 0),
+            (38.40, 42.64, 0),
+            (42.80, 62.16, 1),
+            (62.40, 68.80, 2),
+            (69.44, 92.80, 2),
+            (92.88, 97.60, 3),
+            (97.92, 104.00, 0),
+            (104.16, 116.55, 0),
+        ];
+
+        assert_eq!(
+            diarization.segments.len(),
+            expected.len(),
+            "unexpected segment count: {:#?}",
+            diarization.segments
+        );
+
+        for (segment, (expected_start, expected_end, expected_speaker)) in
+            diarization.segments.iter().zip(expected.iter())
+        {
+            let actual_speaker = parse_test_speaker_id(&segment.speaker);
+            assert!(
+                (segment.start_secs - expected_start).abs() <= 0.02,
+                "segment start mismatch for {:?}: expected {}, got {}",
+                segment,
+                expected_start,
+                segment.start_secs
+            );
+            assert!(
+                (segment.end_secs - expected_end).abs() <= 0.02,
+                "segment end mismatch for {:?}: expected {}, got {}",
+                segment,
+                expected_end,
+                segment.end_secs
+            );
+            assert_eq!(
+                actual_speaker, *expected_speaker,
+                "speaker mismatch for {:?}",
+                segment
+            );
+        }
+    }
+
+    fn parse_test_speaker_id(label: &str) -> usize {
+        label
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<usize>()
+            .unwrap_or(0)
     }
 }
