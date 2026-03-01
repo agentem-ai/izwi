@@ -2769,13 +2769,38 @@ mod tests {
     }
 
     #[test]
-    fn resolve_streaming_config_uses_v21_high_latency_profile_by_default() {
+    fn resolve_streaming_config_uses_model_profile_by_default() {
         let cfg = resolve_streaming_config(
             ModelVariant::DiarStreamingSortformer4SpkV21,
             &SortformerModulesConfig::default(),
             512,
         )
         .unwrap();
+
+        assert_eq!(cfg.chunk_len, 188);
+        assert_eq!(cfg.chunk_right_context, 1);
+        assert_eq!(cfg.fifo_len, 0);
+        assert_eq!(cfg.spkcache_update_period, 188);
+        assert_eq!(cfg.spkcache_len, 188);
+    }
+
+    #[test]
+    fn resolve_streaming_config_honors_high_latency_override() {
+        let key = "IZWI_SORTFORMER_STREAMING_PROFILE";
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, "high");
+
+        let cfg = resolve_streaming_config(
+            ModelVariant::DiarStreamingSortformer4SpkV21,
+            &SortformerModulesConfig::default(),
+            512,
+        )
+        .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
 
         assert_eq!(cfg.chunk_len, 340);
         assert_eq!(cfg.chunk_right_context, 40);
