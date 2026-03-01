@@ -305,9 +305,10 @@ impl NativeAsrModel {
         audio: &[f32],
         sample_rate: u32,
         reference_text: &str,
+        language: Option<&str>,
     ) -> Result<Vec<(String, u32, u32)>> {
         match self {
-            Self::Qwen3(model) => model.force_align(audio, sample_rate, reference_text),
+            Self::Qwen3(model) => model.force_align(audio, sample_rate, reference_text, language),
             Self::Parakeet(_) => Err(Error::InvalidInput(
                 "Forced alignment is only available for Qwen3-ForcedAligner models".to_string(),
             )),

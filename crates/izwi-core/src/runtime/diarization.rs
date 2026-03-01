@@ -149,7 +149,12 @@ impl RuntimeService {
             Vec::new()
         } else if use_single_pass_asr && aligner_model.is_some() {
             match self
-                .force_align_with_model(audio_base64, &asr_text, aligner_model_id)
+                .force_align_with_model_and_language(
+                    audio_base64,
+                    &asr_text,
+                    None,
+                    aligner_model_id,
+                )
                 .await
             {
                 Ok(aligned) => {
@@ -414,7 +419,7 @@ async fn force_align_audio_chunks(
         let model_for_task = model.clone();
 
         let aligned = match tokio::task::spawn_blocking(move || {
-            model_for_task.force_align(&chunk_audio, PIPELINE_SAMPLE_RATE, &text)
+            model_for_task.force_align(&chunk_audio, PIPELINE_SAMPLE_RATE, &text, None)
         })
         .await
         {

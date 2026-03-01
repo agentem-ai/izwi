@@ -165,7 +165,7 @@ impl RuntimeService {
         audio_base64: &str,
         reference_text: &str,
     ) -> Result<Vec<(String, u32, u32)>> {
-        self.force_align_with_model(audio_base64, reference_text, None)
+        self.force_align_with_model_and_language(audio_base64, reference_text, None, None)
             .await
     }
 
@@ -173,6 +173,17 @@ impl RuntimeService {
         &self,
         audio_base64: &str,
         reference_text: &str,
+        model_id: Option<&str>,
+    ) -> Result<Vec<(String, u32, u32)>> {
+        self.force_align_with_model_and_language(audio_base64, reference_text, None, model_id)
+            .await
+    }
+
+    pub async fn force_align_with_model_and_language(
+        &self,
+        audio_base64: &str,
+        reference_text: &str,
+        language: Option<&str>,
         model_id: Option<&str>,
     ) -> Result<Vec<(String, u32, u32)>> {
         let variant = resolve_forced_aligner_variant(model_id)?;
@@ -185,7 +196,7 @@ impl RuntimeService {
             .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?;
 
         let (samples, sample_rate) = decode_audio_bytes(&base64_decode(audio_base64)?)?;
-        model.force_align(&samples, sample_rate, reference_text)
+        model.force_align(&samples, sample_rate, reference_text, language)
     }
 }
 
