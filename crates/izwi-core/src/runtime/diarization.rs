@@ -913,7 +913,37 @@ fn build_utterances(words: &[DiarizationWord]) -> Vec<DiarizationUtterance> {
     }
 
     utterances.push(current);
-    utterances
+    merge_adjacent_same_speaker_utterances(utterances)
+}
+
+fn merge_adjacent_same_speaker_utterances(
+    utterances: Vec<DiarizationUtterance>,
+) -> Vec<DiarizationUtterance> {
+    if utterances.len() <= 1 {
+        return utterances;
+    }
+
+    let mut merged: Vec<DiarizationUtterance> = Vec::with_capacity(utterances.len());
+    for utterance in utterances {
+        if let Some(previous) = merged.last_mut() {
+            if previous.speaker == utterance.speaker {
+                let next_text = utterance.text.trim();
+                if !next_text.is_empty() {
+                    if previous.text.is_empty() {
+                        previous.text.push_str(next_text);
+                    } else {
+                        previous.text.push(' ');
+                        previous.text.push_str(next_text);
+                    }
+                }
+                previous.end_secs = previous.end_secs.max(utterance.end_secs);
+                previous.word_end = utterance.word_end;
+                continue;
+            }
+        }
+        merged.push(utterance);
+    }
+    merged
 }
 
 fn stabilize_word_speakers(words: &mut [DiarizationWord]) {
@@ -1717,6 +1747,62 @@ mod tests {
         assert_eq!(utterances.len(), 2);
         assert_eq!(utterances[0].speaker, "SPEAKER_00");
         assert!(utterances[0].text.contains("hello world"));
+        assert_eq!(utterances[1].speaker, "SPEAKER_01");
+    }
+
+    #[test]
+    fn build_utterances_merges_consecutive_same_speaker_runs_after_long_pauses() {
+        let words = vec![
+            DiarizationWord {
+                word: "first".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.0,
+                end_secs: 0.4,
+                speaker_confidence: None,
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "block".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.4,
+                end_secs: 0.8,
+                speaker_confidence: None,
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "second".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 2.0,
+                end_secs: 2.4,
+                speaker_confidence: None,
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "block".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 2.4,
+                end_secs: 2.8,
+                speaker_confidence: None,
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "other".to_string(),
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 3.2,
+                end_secs: 3.6,
+                speaker_confidence: None,
+                overlaps_segment: true,
+            },
+        ];
+
+        let utterances = build_utterances(&words);
+        assert_eq!(utterances.len(), 2, "{utterances:#?}");
+        assert_eq!(utterances[0].speaker, "SPEAKER_00");
+        assert_eq!(utterances[0].start_secs, 0.0);
+        assert_eq!(utterances[0].end_secs, 2.8);
+        assert_eq!(utterances[0].word_start, 0);
+        assert_eq!(utterances[0].word_end, 3);
+        assert_eq!(utterances[0].text, "first block second block");
         assert_eq!(utterances[1].speaker, "SPEAKER_01");
     }
 
