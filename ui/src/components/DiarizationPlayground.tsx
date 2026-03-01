@@ -164,7 +164,6 @@ export function DiarizationPlayground({
   pipelineAsrModelId = null,
   pipelineAlignerModelId = null,
   pipelineLlmModelId = null,
-  pipelineLlmModelReady = false,
   pipelineModelsReady = true,
   onPipelineModelsRequired,
 }: DiarizationPlaygroundProps) {
@@ -181,7 +180,6 @@ export function DiarizationPlayground({
   const [maxSpeakers, setMaxSpeakers] = useState(4);
   const [minSpeechMs, setMinSpeechMs] = useState(240);
   const [minSilenceMs, setMinSilenceMs] = useState(200);
-  const [enableRefinement, setEnableRefinement] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -246,14 +244,7 @@ export function DiarizationPlayground({
           model_id: selectedModel || undefined,
           asr_model_id: pipelineAsrModelId || undefined,
           aligner_model_id: pipelineAlignerModelId || undefined,
-          llm_model_id:
-            enableRefinement && pipelineLlmModelReady && pipelineLlmModelId
-              ? pipelineLlmModelId
-              : undefined,
-          enable_llm_refinement:
-            enableRefinement &&
-            pipelineLlmModelReady &&
-            Boolean(pipelineLlmModelId),
+          llm_model_id: pipelineLlmModelId || undefined,
           min_speakers: minSpeakers,
           max_speakers: maxSpeakers,
           min_speech_duration_ms: minSpeechMs,
@@ -271,7 +262,6 @@ export function DiarizationPlayground({
     },
     [
       audioUrl,
-      enableRefinement,
       maxSpeakers,
       minSilenceMs,
       minSpeakers,
@@ -279,7 +269,6 @@ export function DiarizationPlayground({
       pipelineAlignerModelId,
       pipelineAsrModelId,
       pipelineLlmModelId,
-      pipelineLlmModelReady,
       requireReadyModel,
       requireReadyPipelineModels,
       selectedModel,
@@ -410,12 +399,6 @@ export function DiarizationPlayground({
   }, [minSpeakers, maxSpeakers]);
 
   useEffect(() => {
-    if ((!pipelineLlmModelId || !pipelineLlmModelReady) && enableRefinement) {
-      setEnableRefinement(false);
-    }
-  }, [enableRefinement, pipelineLlmModelId, pipelineLlmModelReady]);
-
-  useEffect(() => {
     return () => {
       revokeObjectUrlIfNeeded(audioUrl);
     };
@@ -541,25 +524,6 @@ export function DiarizationPlayground({
               />
             </label>
           </div>
-          <label className="flex items-start gap-3 rounded-lg border border-[var(--border-muted)] bg-muted/20 px-3 py-2.5">
-            <input
-              type="checkbox"
-              checked={enableRefinement}
-              onChange={(event) => setEnableRefinement(event.target.checked)}
-              disabled={!pipelineLlmModelId || !pipelineLlmModelReady}
-              className="mt-0.5 h-4 w-4 rounded border-input"
-            />
-            <span className="space-y-0.5">
-              <span className="block text-xs font-medium text-foreground">
-                Transcript refinement
-              </span>
-              <span className="block text-[11px] text-muted-foreground">
-                {pipelineLlmModelId && pipelineLlmModelReady
-                  ? "Optional LLM cleanup after speaker attribution."
-                  : "Load a refiner model to enable optional post-processing."}
-              </span>
-            </span>
-          </label>
         </div>
 
         <div className="py-2 space-y-4">
