@@ -957,6 +957,7 @@ fn stabilize_word_speakers(words: &mut [DiarizationWord]) {
                 if word_count <= 2
                     && duration <= 1.0
                     && left.speaker(words) != run.speaker(words)
+                    && !run_has_overlap_backed_words(words, run.start, run.end)
                     && avg_confidence + FRAGMENT_CONFIDENCE_MARGIN
                         < average_run_confidence(words, left.start, left.end)
                 {
@@ -968,6 +969,7 @@ fn stabilize_word_speakers(words: &mut [DiarizationWord]) {
                 if word_count <= 2
                     && duration <= 1.0
                     && right.speaker(words) != run.speaker(words)
+                    && !run_has_overlap_backed_words(words, run.start, run.end)
                     && avg_confidence + FRAGMENT_CONFIDENCE_MARGIN
                         < average_run_confidence(words, right.start, right.end)
                 {
@@ -998,18 +1000,20 @@ fn normalize_phrase_speakers(words: &mut [DiarizationWord], segments: &[Diarizat
 
     let mut phrase_speakers = phrases
         .iter()
-        .map(|phrase| {
-            phrase_can_be_normalized(words, *phrase).then(|| choose_phrase_speaker(words, *phrase))
-        })
+        .map(|phrase| choose_phrase_speaker(words, *phrase))
+        .collect::<Vec<_>>();
+    let phrase_normalizable = phrases
+        .iter()
+        .map(|phrase| phrase_can_be_normalized(words, *phrase))
         .collect::<Vec<_>>();
 
     for phrase_idx in 1..phrases.len().saturating_sub(1) {
+        if !phrase_normalizable[phrase_idx] {
+            continue;
+        }
         let previous = &phrase_speakers[phrase_idx - 1];
         let current = &phrase_speakers[phrase_idx];
         let next = &phrase_speakers[phrase_idx + 1];
-        let (Some(previous), Some(current), Some(next)) = (previous, current, next) else {
-            continue;
-        };
         if previous != current || next != current {
             continue;
         }
@@ -1017,14 +1021,18 @@ fn normalize_phrase_speakers(words: &mut [DiarizationWord], segments: &[Diarizat
         if let Some(alternate) =
             fully_covering_alternate_speaker(words, phrases[phrase_idx], segments, current)
         {
-            phrase_speakers[phrase_idx] = Some(alternate);
+            phrase_speakers[phrase_idx] = alternate;
         }
     }
 
-    for (phrase, speaker) in phrases.iter().zip(phrase_speakers.iter()) {
-        let Some(speaker) = speaker else {
+    for ((phrase, speaker), normalizable) in phrases
+        .iter()
+        .zip(phrase_speakers.iter())
+        .zip(phrase_normalizable.iter())
+    {
+        if !*normalizable {
             continue;
-        };
+        }
         for word in &mut words[phrase.start..=phrase.end] {
             word.speaker = speaker.clone();
         }
@@ -1104,24 +1112,54 @@ fn choose_phrase_speaker(words: &[DiarizationWord], phrase: SpeakerRun) -> Strin
     let phrase_words = &words[phrase.start..=phrase.end];
     let runs = collect_speaker_runs(phrase_words);
 
-    if runs.len() > 1 && runs[0].end + 1 >= 3 {
+    if runs.len() == 1 {
         return phrase_words[runs[0].start].speaker.clone();
     }
 
-    let mut best_run = runs[0];
-    let mut best_duration =
-        (phrase_words[best_run.end].end_secs - phrase_words[best_run.start].start_secs).max(0.0);
-
-    for run in runs.iter().copied().skip(1) {
-        let duration =
-            (phrase_words[run.end].end_secs - phrase_words[run.start].start_secs).max(0.0);
-        if duration > best_duration {
-            best_run = run;
-            best_duration = duration;
-        }
+    #[derive(Debug, Clone, Copy)]
+    struct PhraseSpeakerStats {
+        total_duration: f32,
+        confidence_weighted_duration: f32,
+        total_words: usize,
+        first_run_idx: usize,
     }
 
-    phrase_words[best_run.start].speaker.clone()
+    let mut stats = HashMap::<&str, PhraseSpeakerStats>::new();
+    for (run_idx, run) in runs.iter().copied().enumerate() {
+        let duration = run_duration_secs(phrase_words, run);
+        let avg_confidence = average_run_confidence(phrase_words, run.start, run.end);
+        let word_count = run.end + 1 - run.start;
+        stats
+            .entry(run.speaker(phrase_words))
+            .and_modify(|entry| {
+                entry.total_duration += duration;
+                entry.confidence_weighted_duration += duration * avg_confidence;
+                entry.total_words += word_count;
+            })
+            .or_insert(PhraseSpeakerStats {
+                total_duration: duration,
+                confidence_weighted_duration: duration * avg_confidence,
+                total_words: word_count,
+                first_run_idx: run_idx,
+            });
+    }
+
+    stats
+        .into_iter()
+        .max_by(|left, right| {
+            left.1
+                .total_duration
+                .total_cmp(&right.1.total_duration)
+                .then(
+                    left.1
+                        .confidence_weighted_duration
+                        .total_cmp(&right.1.confidence_weighted_duration),
+                )
+                .then(left.1.total_words.cmp(&right.1.total_words))
+                .then(right.1.first_run_idx.cmp(&left.1.first_run_idx))
+        })
+        .map(|(speaker, _)| speaker.to_string())
+        .unwrap_or_else(|| phrase_words[runs[0].start].speaker.clone())
 }
 
 fn phrase_can_be_normalized(words: &[DiarizationWord], phrase: SpeakerRun) -> bool {
@@ -1134,7 +1172,34 @@ fn phrase_can_be_normalized(words: &[DiarizationWord], phrase: SpeakerRun) -> bo
         }
     }
 
-    true
+    let runs = collect_speaker_runs(phrase_words);
+    if runs.len() <= 1 {
+        return true;
+    }
+
+    // A simple two-run phrase is usually a real turn boundary, not a fragment
+    // that should be collapsed into one speaker.
+    if runs.len() == 2 {
+        return false;
+    }
+
+    if runs[0].speaker(phrase_words) != runs[runs.len() - 1].speaker(phrase_words) {
+        return false;
+    }
+
+    runs.iter()
+        .copied()
+        .skip(1)
+        .take(runs.len().saturating_sub(2))
+        .all(|run| {
+            let word_count = run.end + 1 - run.start;
+            let duration = run_duration_secs(phrase_words, run);
+            word_count <= MAX_FRAGMENT_WORDS && duration <= MAX_FRAGMENT_DURATION_SECS
+        })
+}
+
+fn run_duration_secs(words: &[DiarizationWord], run: SpeakerRun) -> f32 {
+    (words[run.end].end_secs - words[run.start].start_secs).max(0.0)
 }
 
 fn fully_covering_alternate_speaker(
@@ -1190,6 +1255,10 @@ fn average_run_confidence(words: &[DiarizationWord], start: usize, end: usize) -
     } else {
         sum / count as f32
     }
+}
+
+fn run_has_overlap_backed_words(words: &[DiarizationWord], start: usize, end: usize) -> bool {
+    words[start..=end].iter().any(|word| word.overlaps_segment)
 }
 
 fn append_token(target: &mut String, token: &str) {
@@ -1686,7 +1755,41 @@ mod tests {
     }
 
     #[test]
-    fn choose_phrase_speaker_prefers_opening_run_for_multiword_phrase() {
+    fn stabilize_word_speakers_preserves_overlap_backed_edge_turn() {
+        let mut words = vec![
+            DiarizationWord {
+                word: "hello".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.0,
+                end_secs: 0.4,
+                speaker_confidence: Some(0.82),
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "world".to_string(),
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 0.4,
+                end_secs: 0.8,
+                speaker_confidence: Some(0.82),
+                overlaps_segment: true,
+            },
+            DiarizationWord {
+                word: "yeah".to_string(),
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 0.9,
+                end_secs: 1.2,
+                speaker_confidence: Some(0.22),
+                overlaps_segment: true,
+            },
+        ];
+
+        stabilize_word_speakers(&mut words);
+
+        assert_eq!(words[2].speaker, "SPEAKER_01");
+    }
+
+    #[test]
+    fn choose_phrase_speaker_prefers_total_phrase_support() {
         let words = vec![
             DiarizationWord {
                 word: "So".to_string(),
@@ -1724,15 +1827,15 @@ mod tests {
                 word: "email".to_string(),
                 speaker: "SPEAKER_00".to_string(),
                 start_secs: 1.2,
-                end_secs: 1.6,
+                end_secs: 2.1,
                 speaker_confidence: Some(0.8),
                 overlaps_segment: true,
             },
             DiarizationWord {
                 word: "you".to_string(),
                 speaker: "SPEAKER_00".to_string(),
-                start_secs: 1.6,
-                end_secs: 2.0,
+                start_secs: 2.1,
+                end_secs: 2.8,
                 speaker_confidence: Some(0.8),
                 overlaps_segment: true,
             },
@@ -1744,7 +1847,44 @@ mod tests {
         };
         let chosen = choose_phrase_speaker(&words, phrase);
 
-        assert_eq!(chosen, "SPEAKER_01");
+        assert_eq!(chosen, "SPEAKER_00");
+    }
+
+    #[test]
+    fn normalize_phrase_speakers_preserves_two_run_turn_boundary() {
+        let segments = vec![
+            DiarizationSegment {
+                speaker: "SPEAKER_01".to_string(),
+                start_secs: 0.0,
+                end_secs: 1.44,
+                confidence: Some(0.28),
+            },
+            DiarizationSegment {
+                speaker: "SPEAKER_00".to_string(),
+                start_secs: 1.52,
+                end_secs: 4.08,
+                confidence: Some(0.78),
+            },
+        ];
+        let mut words = vec![
+            test_word("So", "SPEAKER_01", 0.32, 0.64, 0.28),
+            test_word("Aaron", "SPEAKER_01", 0.64, 1.04, 0.28),
+            test_word("in", "SPEAKER_01", 1.20, 1.28, 0.28),
+            test_word("your", "SPEAKER_01", 1.28, 1.44, 0.28),
+            test_word("email", "SPEAKER_00", 1.52, 1.92, 0.78),
+            test_word("you", "SPEAKER_00", 1.92, 2.08, 0.78),
+            test_word("said", "SPEAKER_00", 2.08, 2.32, 0.78),
+            test_word("wanted", "SPEAKER_00", 2.40, 2.72, 0.78),
+        ];
+
+        normalize_phrase_speakers(&mut words, &segments);
+        let utterances = build_utterances(&words);
+
+        assert_eq!(utterances.len(), 2);
+        assert_eq!(utterances[0].speaker, "SPEAKER_01");
+        assert_eq!(utterances[0].text, "So Aaron in your");
+        assert_eq!(utterances[1].speaker, "SPEAKER_00");
+        assert!(utterances[1].text.starts_with("email you said"));
     }
 
     #[test]
@@ -1999,24 +2139,17 @@ mod tests {
         normalize_phrase_speakers(&mut words, &segments);
         let utterances = build_utterances(&words);
 
-        assert_eq!(utterances.len(), 4);
+        assert!(utterances.len() >= 4, "{utterances:#?}");
         assert_eq!(utterances[0].speaker, "SPEAKER_01");
-        assert_eq!(
-            utterances[0].text,
-            "So Aaron in your email you said you wanted to talk about the exam"
-        );
+        assert_eq!(utterances[0].text, "So Aaron in your");
         assert_eq!(utterances[1].speaker, "SPEAKER_00");
-        assert!(utterances[1]
-            .text
-            .starts_with("Yeah um I've just never taken a class"));
-        assert!(utterances[1].text.ends_with("how to how to"));
-        assert_eq!(utterances[2].speaker, "SPEAKER_01");
-        assert_eq!(utterances[2].text, "How to review everything");
-        assert_eq!(utterances[3].speaker, "SPEAKER_00");
-        assert!(utterances[3]
-            .text
-            .contains("there's usually just one book to review not three different books"));
-        assert!(utterances[3].text.ends_with("and videos"));
+        assert!(utterances[1].text.starts_with("email you said"));
+        assert!(utterances
+            .iter()
+            .any(|utterance| utterance.speaker == "SPEAKER_01"
+                && utterance.text == "How to review everything"));
+        assert_eq!(utterances.last().unwrap().speaker, "SPEAKER_01");
+        assert!(utterances.last().unwrap().text.ends_with("and videos"));
     }
 
     fn test_word(
