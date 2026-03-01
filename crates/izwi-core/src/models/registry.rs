@@ -14,7 +14,8 @@ use crate::models::architectures::kokoro::KokoroTtsModel;
 use crate::models::architectures::lfm2::audio::Lfm2AudioModel;
 use crate::models::architectures::parakeet::asr::ParakeetAsrModel;
 use crate::models::architectures::qwen3::asr::{
-    AsrDecodeState as Qwen3AsrDecodeState, AsrDecodeStep as Qwen3AsrDecodeStep, Qwen3AsrModel,
+    AsrDecodeState as Qwen3AsrDecodeState, AsrDecodeStep as Qwen3AsrDecodeStep,
+    AsrTranscriptionOutput as Qwen3AsrTranscriptionOutput, Qwen3AsrModel,
 };
 use crate::models::architectures::qwen3::chat::{
     ChatDecodeState as Qwen3ChatDecodeState, ChatGenerationOutput, Qwen3ChatModel,
@@ -272,6 +273,12 @@ pub struct NativeAsrDecodeStep {
     pub finished: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct NativeAsrTranscription {
+    pub text: String,
+    pub language: Option<String>,
+}
+
 impl NativeAsrModel {
     pub fn transcribe(
         &self,
@@ -297,6 +304,25 @@ impl NativeAsrModel {
             Self::Parakeet(model) => {
                 model.transcribe_with_callback(audio, sample_rate, language, on_delta)
             }
+        }
+    }
+
+    pub fn transcribe_with_details(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+    ) -> Result<NativeAsrTranscription> {
+        match self {
+            Self::Qwen3(model) => {
+                let Qwen3AsrTranscriptionOutput { text, language } =
+                    model.transcribe_with_details(audio, sample_rate, language)?;
+                Ok(NativeAsrTranscription { text, language })
+            }
+            Self::Parakeet(model) => Ok(NativeAsrTranscription {
+                text: model.transcribe(audio, sample_rate, language)?,
+                language: language.map(|value| value.to_string()),
+            }),
         }
     }
 
