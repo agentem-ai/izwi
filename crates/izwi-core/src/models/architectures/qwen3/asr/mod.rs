@@ -69,6 +69,12 @@ pub struct AsrDecodeStep {
     pub finished: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsrTranscriptionOutput {
+    pub text: String,
+    pub language: Option<String>,
+}
+
 const DEFAULT_TRANSCRIBE_MAX_NEW_TOKENS: usize = 512;
 
 impl Qwen3AsrModel {
@@ -287,6 +293,20 @@ impl Qwen3AsrModel {
     ) -> Result<String> {
         let mut no_op = |_delta: &str| {};
         self.transcribe_with_callback(audio, sample_rate, language, &mut no_op)
+    }
+
+    pub fn transcribe_with_details(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+    ) -> Result<AsrTranscriptionOutput> {
+        let raw = self.transcribe(audio, sample_rate, language)?;
+        let (detected_language, text) = parse_asr_output(&raw, language);
+        Ok(AsrTranscriptionOutput {
+            text,
+            language: detected_language,
+        })
     }
 
     /// Upper-bound hint for chunk sizing in long-form ASR orchestration.
@@ -1404,6 +1424,50 @@ fn forced_language_name(language: Option<&str>) -> Option<String> {
     Some(normalized_language_name(lang))
 }
 
+fn parse_asr_output(raw: &str, user_language: Option<&str>) -> (Option<String>, String) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return (forced_language_name(user_language), String::new());
+    }
+
+    if let Some(language) = forced_language_name(user_language) {
+        return (Some(language), trimmed.to_string());
+    }
+
+    let asr_text_token = "<asr_text>";
+    let Some((meta_part, text_part)) = trimmed.split_once(asr_text_token) else {
+        return (None, trimmed.to_string());
+    };
+
+    let meta_trimmed = meta_part.trim();
+    let text_trimmed = text_part.trim();
+    if meta_trimmed.to_ascii_lowercase().contains("language none") {
+        return if text_trimmed.is_empty() {
+            (None, String::new())
+        } else {
+            (None, text_trimmed.to_string())
+        };
+    }
+
+    for line in meta_trimmed.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("language ") {
+            let value = value.trim();
+            if !value.is_empty() {
+                return (
+                    Some(normalized_language_name(value)),
+                    text_trimmed.to_string(),
+                );
+            }
+        }
+    }
+
+    (None, text_trimmed.to_string())
+}
+
 fn build_mrope_positions(
     seq_len: usize,
     start_pos: usize,
@@ -1579,6 +1643,30 @@ mod tests {
             forced_language_name(Some("english")),
             Some("English".to_string())
         );
+    }
+
+    #[test]
+    fn parse_asr_output_extracts_detected_language_and_text() {
+        let (language, text) = parse_asr_output(
+            "language Chinese<asr_text>甚至出现交易几乎停滞的情况。",
+            None,
+        );
+        assert_eq!(language.as_deref(), Some("Chinese"));
+        assert_eq!(text, "甚至出现交易几乎停滞的情况。");
+    }
+
+    #[test]
+    fn parse_asr_output_respects_forced_language() {
+        let (language, text) = parse_asr_output("hello world", Some("english"));
+        assert_eq!(language.as_deref(), Some("English"));
+        assert_eq!(text, "hello world");
+    }
+
+    #[test]
+    fn parse_asr_output_handles_empty_audio_marker() {
+        let (language, text) = parse_asr_output("language None<asr_text>", None);
+        assert_eq!(language, None);
+        assert!(text.is_empty());
     }
 
     #[test]

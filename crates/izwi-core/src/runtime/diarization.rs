@@ -43,6 +43,7 @@ struct PipelineAudio {
 struct TranscribedChunk {
     range: AudioChunk,
     text: String,
+    language: Option<String>,
 }
 
 impl RuntimeService {
@@ -128,11 +129,25 @@ impl RuntimeService {
             aligner_model.is_some(),
         );
 
-        let (asr_text, chunk_texts) = if use_single_pass_asr {
-            let transcription = self
-                .asr_transcribe_with_variant(asr_variant, audio_base64, None, None)
-                .await?;
-            (transcription.text, Vec::new())
+        let (asr_text, chunk_texts, detected_language) = if use_single_pass_asr {
+            self.load_model(asr_variant).await?;
+            let asr_model = self
+                .model_registry
+                .get_asr(asr_variant)
+                .await
+                .ok_or_else(|| Error::ModelNotFound(asr_variant.to_string()))?;
+            let audio_samples = audio.samples.clone();
+            let asr_model_for_task = asr_model.clone();
+            let transcription = tokio::task::spawn_blocking(move || {
+                asr_model_for_task.transcribe_with_details(
+                    &audio_samples,
+                    PIPELINE_SAMPLE_RATE,
+                    None,
+                )
+            })
+            .await
+            .map_err(|err| Error::InferenceError(format!("ASR task failed: {err}")))??;
+            (transcription.text, Vec::new(), transcription.language)
         } else {
             self.load_model(asr_variant).await?;
             let asr_model = self
@@ -140,7 +155,9 @@ impl RuntimeService {
                 .get_asr(asr_variant)
                 .await
                 .ok_or_else(|| Error::ModelNotFound(asr_variant.to_string()))?;
-            transcribe_audio_chunks(asr_model, &audio, None, aligner_limit).await?
+            let (text, chunks) =
+                transcribe_audio_chunks(asr_model, &audio, None, aligner_limit).await?;
+            (text, chunks, None)
         };
         let asr_words = extract_words(&asr_text);
 
@@ -152,7 +169,7 @@ impl RuntimeService {
                 .force_align_with_model_and_language(
                     audio_base64,
                     &asr_text,
-                    None,
+                    detected_language.as_deref(),
                     aligner_model_id,
                 )
                 .await
@@ -383,13 +400,17 @@ async fn transcribe_audio_chunks(
         let chunk_audio = audio.samples[chunk.start_sample..chunk.end_sample].to_vec();
         let model = model.clone();
         let language = language.clone();
-        let text = tokio::task::spawn_blocking(move || {
-            model.transcribe(&chunk_audio, PIPELINE_SAMPLE_RATE, language.as_deref())
+        let transcription = tokio::task::spawn_blocking(move || {
+            model.transcribe_with_details(&chunk_audio, PIPELINE_SAMPLE_RATE, language.as_deref())
         })
         .await
         .map_err(|err| Error::InferenceError(format!("ASR task failed: {err}")))??;
-        assembler.push_chunk_text(&text);
-        transcribed.push(TranscribedChunk { range: chunk, text });
+        assembler.push_chunk_text(&transcription.text);
+        transcribed.push(TranscribedChunk {
+            range: chunk,
+            text: transcription.text,
+            language: transcription.language,
+        });
     }
 
     Ok((assembler.finish().trim().to_string(), transcribed))
@@ -416,10 +437,16 @@ async fn force_align_audio_chunks(
         let chunk_duration_secs = chunk_audio.len() as f32 / audio.sample_rate.max(1) as f32;
         let chunk_start_ms = samples_to_ms(chunk.range.start_sample, audio.sample_rate);
         let text = chunk.text.clone();
+        let language = chunk.language.clone();
         let model_for_task = model.clone();
 
         let aligned = match tokio::task::spawn_blocking(move || {
-            model_for_task.force_align(&chunk_audio, PIPELINE_SAMPLE_RATE, &text, None)
+            model_for_task.force_align(
+                &chunk_audio,
+                PIPELINE_SAMPLE_RATE,
+                &text,
+                language.as_deref(),
+            )
         })
         .await
         {
