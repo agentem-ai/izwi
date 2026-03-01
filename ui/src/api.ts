@@ -2132,6 +2132,8 @@ class ApiClient {
   private buildDiarizationRecordRequestInit(
     request: DiarizationRecordCreateRequest,
   ): RequestInit {
+    const enableLlmRefinement = true;
+
     if (request.audio_file) {
       const form = new FormData();
       form.append(
@@ -2145,12 +2147,7 @@ class ApiClient {
         form.append("aligner_model", request.aligner_model_id);
       }
       if (request.llm_model_id) form.append("llm_model", request.llm_model_id);
-      if (typeof request.enable_llm_refinement === "boolean") {
-        form.append(
-          "enable_llm_refinement",
-          request.enable_llm_refinement ? "true" : "false",
-        );
-      }
+      form.append("enable_llm_refinement", "true");
       if (typeof request.min_speakers === "number") {
         form.append("min_speakers", String(request.min_speakers));
       }
@@ -2191,7 +2188,7 @@ class ApiClient {
         asr_model: request.asr_model_id,
         aligner_model: request.aligner_model_id,
         llm_model: request.llm_model_id,
-        enable_llm_refinement: request.enable_llm_refinement,
+        enable_llm_refinement: enableLlmRefinement,
         min_speakers: request.min_speakers,
         max_speakers: request.max_speakers,
         min_speech_duration_ms: request.min_speech_duration_ms,
@@ -2204,6 +2201,8 @@ class ApiClient {
     request: DiarizationRequest,
     responseFormat: DiarizationResponseFormat,
   ): RequestInit {
+    const enableLlmRefinement = true;
+
     if (request.audio_file) {
       const form = new FormData();
       form.append(
@@ -2217,12 +2216,7 @@ class ApiClient {
         form.append("aligner_model", request.aligner_model_id);
       }
       if (request.llm_model_id) form.append("llm_model", request.llm_model_id);
-      if (typeof request.enable_llm_refinement === "boolean") {
-        form.append(
-          "enable_llm_refinement",
-          request.enable_llm_refinement ? "true" : "false",
-        );
-      }
+      form.append("enable_llm_refinement", "true");
       if (typeof request.min_speakers === "number") {
         form.append("min_speakers", String(request.min_speakers));
       }
@@ -2263,7 +2257,7 @@ class ApiClient {
         asr_model: request.asr_model_id,
         aligner_model: request.aligner_model_id,
         llm_model: request.llm_model_id,
-        enable_llm_refinement: request.enable_llm_refinement,
+        enable_llm_refinement: enableLlmRefinement,
         min_speakers: request.min_speakers,
         max_speakers: request.max_speakers,
         min_speech_duration_ms: request.min_speech_duration_ms,
