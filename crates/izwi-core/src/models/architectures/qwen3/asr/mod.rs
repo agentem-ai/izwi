@@ -477,6 +477,7 @@ impl Qwen3AsrModel {
         audio: &[f32],
         sample_rate: u32,
         reference_text: &str,
+        _language: Option<&str>,
     ) -> Result<Vec<(String, u32, u32)>> {
         if self.is_forced_aligner {
             return self.force_align_with_nar_head(audio, sample_rate, reference_text);
@@ -1686,7 +1687,7 @@ mod tests {
         let model = Qwen3AsrModel::load(&model_dir, device).expect("forced aligner should load");
         let audio = vec![0f32; 16_000];
         let alignment = model
-            .force_align(&audio, 16_000, "hello world")
+            .force_align(&audio, 16_000, "hello world", None)
             .expect("forced align should run");
         assert!(
             !alignment.is_empty(),
