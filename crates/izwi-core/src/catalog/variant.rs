@@ -635,8 +635,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_qwen35_chat_2b_repo() {
-        let parsed = parse_chat_model_variant(Some("Qwen/Qwen3.5-2B")).unwrap();
+    fn parse_qwen35_chat_2b_unsloth_repo() {
+        let parsed = parse_chat_model_variant(Some("unsloth/Qwen3.5-2B-GGUF")).unwrap();
         assert_eq!(parsed, ModelVariant::Qwen352B);
     }
 
@@ -651,6 +651,12 @@ mod tests {
         let parsed = parse_chat_model_variant(Some("Qwen3.5-9B")).unwrap();
         assert_eq!(parsed, ModelVariant::Qwen359B);
         assert_eq!(parsed.family(), ModelFamily::Qwen35Chat);
+    }
+
+    #[test]
+    fn parse_qwen35_chat_4b_q4_gguf_file_alias() {
+        let parsed = parse_chat_model_variant(Some("Qwen3.5-4B-Q4_K_M.gguf")).unwrap();
+        assert_eq!(parsed, ModelVariant::Qwen354B);
     }
 
     #[test]
