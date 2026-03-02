@@ -63,7 +63,9 @@ pub use catalog::{
     resolve_asr_model_variant, resolve_diarization_model_variant,
 };
 pub use model::{DownloadProgress, ModelInfo, ModelManager, ModelStatus, ModelVariant};
-pub use models::shared::chat::{ChatMessage, ChatRole};
+pub use models::shared::chat::{
+    parse_qwen35_thinking_control_content, qwen35_thinking_control_content, ChatMessage, ChatRole,
+};
 
 // Canonical native registry/device exports.
 pub use models::{DeviceProfile, DeviceSelector, ModelRegistry};
