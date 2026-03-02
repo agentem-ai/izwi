@@ -33,6 +33,13 @@ pub async fn create_response(
 ) -> Result<Response<Body>, ApiError> {
     let model_variant = parse_chat_model_variant(Some(&req.model))
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
+    if response_input_contains_multimodal_content(req.input.as_ref())
+        && !is_qwen35_chat_variant(model_variant)
+    {
+        return Err(ApiError::bad_request(
+            "Multimodal responses input is currently supported only for Qwen3.5 chat variants",
+        ));
+    }
 
     let (messages, input_items) = build_input_messages(
         model_variant,
@@ -385,6 +392,27 @@ enum ResponseInboundRole {
 
 const QWEN_VISION_IMAGE_TOKEN: &str = "<|vision_start|><|image_pad|><|vision_end|>";
 const QWEN_VISION_VIDEO_TOKEN: &str = "<|vision_start|><|video_pad|><|vision_end|>";
+
+fn response_input_contains_multimodal_content(input: Option<&ResponseInput>) -> bool {
+    let Some(input) = input else {
+        return false;
+    };
+
+    let check_content = |content: &Option<ResponseInputContent>| -> bool {
+        match content {
+            Some(ResponseInputContent::Parts(parts)) => parts
+                .iter()
+                .any(|part| content_part_is_image(part) || content_part_is_video(part)),
+            _ => false,
+        }
+    };
+
+    match input {
+        ResponseInput::Text(_) => false,
+        ResponseInput::One(item) => check_content(&item.content),
+        ResponseInput::Many(items) => items.iter().any(|item| check_content(&item.content)),
+    }
+}
 
 fn build_input_messages(
     model_variant: ModelVariant,
@@ -843,5 +871,27 @@ mod tests {
         assert!(content.contains("<tool_call>"));
         assert!(content.contains("<function=get_weather>"));
         assert!(content.contains("<parameter=city>"));
+    }
+
+    #[test]
+    fn detects_multimodal_content_in_responses_input() {
+        let input = ResponseInput::Many(vec![ResponseInputItem {
+            role: Some("user".to_string()),
+            content: Some(ResponseInputContent::Parts(vec![
+                ResponseInputContentPart {
+                    kind: Some("input_image".to_string()),
+                    text: None,
+                    input_text: None,
+                    image_url: Some(json!({"url":"https://example.com/img.png"})),
+                    input_image: None,
+                    image: None,
+                    video: None,
+                    input_video: None,
+                },
+            ])),
+            tool_calls: None,
+        }]);
+
+        assert!(response_input_contains_multimodal_content(Some(&input)));
     }
 }

@@ -540,6 +540,15 @@ fn is_qwen35_chat_variant(variant: ModelVariant) -> bool {
     )
 }
 
+fn request_contains_multimodal_content(messages: &[OpenAiInboundMessage]) -> bool {
+    messages.iter().any(|message| match &message.content {
+        Some(OpenAiInboundContent::Parts(parts)) => parts
+            .iter()
+            .any(|part| content_part_is_image(part) || content_part_is_video(part)),
+        _ => false,
+    })
+}
+
 fn build_assistant_response_parts(
     text: String,
 ) -> (
@@ -572,6 +581,11 @@ pub async fn completions(
     }
 
     let variant = parse_chat_model(&req.model)?;
+    if request_contains_multimodal_content(&req.messages) && !is_qwen35_chat_variant(variant) {
+        return Err(ApiError::bad_request(
+            "Multimodal chat input is currently supported only for Qwen3.5 chat variants",
+        ));
+    }
     let messages = to_core_messages(
         variant,
         req.messages.clone(),
@@ -921,5 +935,34 @@ mod tests {
         assert!(content.is_none());
         assert_eq!(finish_reason, "tool_calls");
         assert_eq!(tool_calls.map(|calls| calls.len()), Some(1));
+    }
+
+    #[test]
+    fn detects_multimodal_parts_in_request_messages() {
+        let messages = vec![
+            OpenAiInboundMessage {
+                role: "user".to_string(),
+                content: Some(OpenAiInboundContent::Parts(vec![
+                    OpenAiInboundContentPart {
+                        kind: Some("image_url".to_string()),
+                        text: None,
+                        input_text: None,
+                        image_url: Some(json!({"url":"https://example.com/cat.png"})),
+                        input_image: None,
+                        image: None,
+                        video: None,
+                        input_video: None,
+                    },
+                ])),
+                tool_calls: None,
+            },
+            OpenAiInboundMessage {
+                role: "assistant".to_string(),
+                content: Some(OpenAiInboundContent::Text("ok".to_string())),
+                tool_calls: None,
+            },
+        ];
+
+        assert!(request_contains_multimodal_content(&messages));
     }
 }

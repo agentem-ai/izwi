@@ -24,6 +24,32 @@ use crate::model::info::ModelVariant;
 
 const HF_BASE_URL: &str = "https://huggingface.co";
 const CHUNK_SIZE: usize = 8192; // 8KB chunks for streaming
+const QWEN35_MMPROJ_FILE: &str = "mmproj-F16.gguf";
+
+fn qwen_chat_gguf_filename(variant: ModelVariant) -> Option<&'static str> {
+    match variant {
+        ModelVariant::Qwen306BGguf => Some("Qwen3-0.6B-Q8_0.gguf"),
+        ModelVariant::Qwen317BGguf => Some("Qwen3-1.7B-Q8_0.gguf"),
+        ModelVariant::Qwen34BGguf => Some("Qwen3-4B-Q4_K_M.gguf"),
+        ModelVariant::Qwen38BGguf => Some("Qwen3-8B-Q4_K_M.gguf"),
+        ModelVariant::Qwen314BGguf => Some("Qwen3-14B-Q4_K_M.gguf"),
+        ModelVariant::Qwen3508B => Some("Qwen3.5-0.8B-Q4_K_M.gguf"),
+        ModelVariant::Qwen352B => Some("Qwen3.5-2B-Q4_K_M.gguf"),
+        ModelVariant::Qwen354B => Some("Qwen3.5-4B-Q4_K_M.gguf"),
+        ModelVariant::Qwen359B => Some("Qwen3.5-9B-Q4_K_M.gguf"),
+        _ => None,
+    }
+}
+
+fn is_qwen35_chat_variant(variant: ModelVariant) -> bool {
+    matches!(
+        variant,
+        ModelVariant::Qwen3508B
+            | ModelVariant::Qwen352B
+            | ModelVariant::Qwen354B
+            | ModelVariant::Qwen359B
+    )
+}
 
 #[derive(Debug, Deserialize)]
 struct HfRepoTreeEntry {
@@ -443,19 +469,15 @@ impl ModelDownloader {
                 .exists(),
             ModelFamily::Qwen3Chat | ModelFamily::Qwen35Chat | ModelFamily::Gemma3Chat => {
                 if variant.is_qwen_chat_gguf() {
-                    let gguf_file = match variant {
-                        ModelVariant::Qwen306BGguf => "Qwen3-0.6B-Q8_0.gguf",
-                        ModelVariant::Qwen317BGguf => "Qwen3-1.7B-Q8_0.gguf",
-                        ModelVariant::Qwen34BGguf => "Qwen3-4B-Q4_K_M.gguf",
-                        ModelVariant::Qwen38BGguf => "Qwen3-8B-Q4_K_M.gguf",
-                        ModelVariant::Qwen314BGguf => "Qwen3-14B-Q4_K_M.gguf",
-                        ModelVariant::Qwen3508B => "Qwen3.5-0.8B-Q4_K_M.gguf",
-                        ModelVariant::Qwen352B => "Qwen3.5-2B-Q4_K_M.gguf",
-                        ModelVariant::Qwen354B => "Qwen3.5-4B-Q4_K_M.gguf",
-                        ModelVariant::Qwen359B => "Qwen3.5-9B-Q4_K_M.gguf",
-                        _ => unreachable!("checked by is_qwen_chat_gguf"),
+                    let gguf_file =
+                        qwen_chat_gguf_filename(variant).expect("checked by is_qwen_chat_gguf");
+                    let has_required_mmproj = if is_qwen35_chat_variant(variant) {
+                        path.join(QWEN35_MMPROJ_FILE).exists()
+                    } else {
+                        true
                     };
                     path.join(gguf_file).exists()
+                        && has_required_mmproj
                         && path.join("tokenizer.json").exists()
                         && path.join("tokenizer_config.json").exists()
                 } else {
@@ -990,25 +1012,19 @@ impl ModelDownloader {
             ],
             ModelFamily::Qwen3Chat | ModelFamily::Qwen35Chat | ModelFamily::Gemma3Chat => {
                 if variant.is_qwen_chat_gguf() {
-                    let gguf_file = match variant {
-                        ModelVariant::Qwen306BGguf => "Qwen3-0.6B-Q8_0.gguf",
-                        ModelVariant::Qwen317BGguf => "Qwen3-1.7B-Q8_0.gguf",
-                        ModelVariant::Qwen34BGguf => "Qwen3-4B-Q4_K_M.gguf",
-                        ModelVariant::Qwen38BGguf => "Qwen3-8B-Q4_K_M.gguf",
-                        ModelVariant::Qwen314BGguf => "Qwen3-14B-Q4_K_M.gguf",
-                        ModelVariant::Qwen3508B => "Qwen3.5-0.8B-Q4_K_M.gguf",
-                        ModelVariant::Qwen352B => "Qwen3.5-2B-Q4_K_M.gguf",
-                        ModelVariant::Qwen354B => "Qwen3.5-4B-Q4_K_M.gguf",
-                        ModelVariant::Qwen359B => "Qwen3.5-9B-Q4_K_M.gguf",
-                        _ => unreachable!("checked by is_qwen_chat_gguf"),
-                    };
-                    return vec![
+                    let gguf_file =
+                        qwen_chat_gguf_filename(variant).expect("checked by is_qwen_chat_gguf");
+                    let mut files = vec![
                         gguf_file.to_string(),
                         "params".to_string(),
                         "README.md".to_string(),
                         "tokenizer.json".to_string(),
                         "tokenizer_config.json".to_string(),
                     ];
+                    if is_qwen35_chat_variant(variant) {
+                        files.push(QWEN35_MMPROJ_FILE.to_string());
+                    }
+                    return files;
                 }
                 let mut files = vec![
                     "config.json".to_string(),

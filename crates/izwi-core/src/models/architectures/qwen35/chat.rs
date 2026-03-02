@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::BufReader;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, IndexOp, Tensor, D};
@@ -25,6 +25,10 @@ use crate::models::shared::chat::{
 use crate::models::shared::device::DeviceProfile;
 use crate::models::shared::weights::mlx;
 use crate::tokenizer::Tokenizer;
+
+const QWEN_VISION_START_TOKEN: &str = "<|vision_start|>";
+const QWEN_IMAGE_PAD_TOKEN: &str = "<|image_pad|>";
+const QWEN_VIDEO_PAD_TOKEN: &str = "<|video_pad|>";
 
 #[derive(Debug, Clone)]
 pub struct ChatGenerationOutput {
@@ -1125,10 +1129,17 @@ impl Qwen35Model {
     }
 }
 
+#[derive(Debug, Clone)]
+enum Qwen35VisionSupport {
+    MissingProjector,
+    ProjectorDiscovered { path: PathBuf },
+}
+
 pub struct Qwen35ChatModel {
     device: DeviceProfile,
     tokenizer: ChatTokenizer,
     text_model: Qwen35Model,
+    vision_support: Qwen35VisionSupport,
 }
 
 impl Qwen35ChatModel {
@@ -1192,6 +1203,7 @@ impl Qwen35ChatModel {
             device,
             tokenizer,
             text_model,
+            vision_support: Qwen35VisionSupport::MissingProjector,
         })
     }
 
@@ -1452,6 +1464,15 @@ impl Qwen35ChatModel {
 
         let vb = VarBuilder::from_tensors(tensors, dtype, &device.device);
         let text_model = Qwen35Model::load(config, vb)?;
+        let vision_support = if let Some(mmproj_path) = find_mmproj_gguf(model_dir)? {
+            info!(
+                "Detected Qwen3.5 projector artifact at {} (vision runtime phase-2 pending)",
+                mmproj_path.display()
+            );
+            Qwen35VisionSupport::ProjectorDiscovered { path: mmproj_path }
+        } else {
+            Qwen35VisionSupport::MissingProjector
+        };
 
         info!(
             "Loaded Qwen3.5 GGUF chat model on {:?} from {} with dtype {:?}",
@@ -1464,6 +1485,7 @@ impl Qwen35ChatModel {
             device,
             tokenizer,
             text_model,
+            vision_support,
         })
     }
 
@@ -1581,7 +1603,26 @@ impl Qwen35ChatModel {
     }
 
     fn build_prompt(&self, messages: &[ChatMessage]) -> Result<Vec<u32>> {
+        self.ensure_multimodal_ready(messages)?;
         build_qwen35_prompt_ids(&self.tokenizer, messages)
+    }
+
+    fn ensure_multimodal_ready(&self, messages: &[ChatMessage]) -> Result<()> {
+        if !messages_contain_vision_placeholders(messages) {
+            return Ok(());
+        }
+
+        match &self.vision_support {
+            Qwen35VisionSupport::MissingProjector => Err(Error::InvalidInput(
+                "Qwen3.5 multimodal input requested, but projector weights are missing. Download `mmproj-F16.gguf` for this model variant first.".to_string(),
+            )),
+            Qwen35VisionSupport::ProjectorDiscovered { path } => Err(Error::InvalidInput(
+                format!(
+                    "Qwen3.5 multimodal input requested and projector `{}` is available, but vision embedding runtime is not enabled in this build yet (phase 2 pending).",
+                    path.display()
+                ),
+            )),
+        }
     }
 }
 
@@ -1699,6 +1740,15 @@ fn qwen35_tools_system_content(tools: &[Value], first_system_content: Option<&st
     }
 
     out
+}
+
+fn messages_contain_vision_placeholders(messages: &[ChatMessage]) -> bool {
+    messages.iter().any(|message| {
+        let content = message.content.as_str();
+        content.contains(QWEN_VISION_START_TOKEN)
+            || content.contains(QWEN_IMAGE_PAD_TOKEN)
+            || content.contains(QWEN_VIDEO_PAD_TOKEN)
+    })
 }
 
 fn load_depthwise_conv_weight(
@@ -2364,6 +2414,44 @@ fn find_preferred_gguf(model_dir: &Path) -> Result<Option<std::path::PathBuf>> {
     )))
 }
 
+fn find_mmproj_gguf(model_dir: &Path) -> Result<Option<PathBuf>> {
+    if let Ok(explicit) = std::env::var("IZWI_QWEN35_MMPROJ_PATH") {
+        let explicit = explicit.trim();
+        if !explicit.is_empty() {
+            let path = PathBuf::from(explicit);
+            if path.exists() {
+                return Ok(Some(path));
+            }
+            return Err(Error::ModelLoadError(format!(
+                "IZWI_QWEN35_MMPROJ_PATH is set but file was not found: {}",
+                path.display()
+            )));
+        }
+    }
+
+    let preferred_names = ["mmproj-F16.gguf", "mmproj-BF16.gguf", "mmproj-F32.gguf"];
+    for name in preferred_names {
+        let candidate = model_dir.join(name);
+        if candidate.exists() {
+            return Ok(Some(candidate));
+        }
+    }
+
+    let mut candidates = std::fs::read_dir(model_dir)
+        .map_err(Error::from)?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .map(|name| name.ends_with(".gguf") && name.contains("mmproj"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort();
+    Ok(candidates.into_iter().next())
+}
+
 fn find_single_safetensor(model_dir: &Path) -> Result<std::path::PathBuf> {
     let direct = model_dir.join("model.safetensors");
     if direct.exists() {
@@ -2421,6 +2509,21 @@ mod tests {
         assert!(rendered.contains("<tool_call>"));
         assert!(rendered.contains("<IMPORTANT>"));
         assert!(rendered.contains("Use tools when needed."));
+    }
+
+    #[test]
+    fn detects_vision_placeholders_in_messages() {
+        let messages = vec![
+            ChatMessage {
+                role: ChatRole::User,
+                content: format!("look at this {QWEN_VISION_START_TOKEN}{QWEN_IMAGE_PAD_TOKEN}"),
+            },
+            ChatMessage {
+                role: ChatRole::Assistant,
+                content: "ok".to_string(),
+            },
+        ];
+        assert!(messages_contain_vision_placeholders(&messages));
     }
 
     #[test]
