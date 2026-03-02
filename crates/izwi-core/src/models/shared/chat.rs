@@ -1,5 +1,6 @@
 //! Shared chat message types across text-chat model families.
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -29,6 +30,20 @@ pub struct ChatMessage {
 
 const QWEN35_THINKING_CONTROL_PREFIX: &str = "__izwi_qwen35_enable_thinking=";
 const QWEN35_TOOLS_CONTROL_PREFIX: &str = "__izwi_qwen35_tools_json=";
+const QWEN35_MULTIMODAL_CONTROL_PREFIX: &str = "__izwi_qwen35_multimodal_json=";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Qwen35MultimodalKind {
+    Image,
+    Video,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Qwen35MultimodalInput {
+    pub kind: Qwen35MultimodalKind,
+    pub source: String,
+}
 
 /// Internal control marker used by server/runtime to steer Qwen3.5 chat-template
 /// thinking mode without exposing implementation details to users.
@@ -63,11 +78,36 @@ pub fn parse_qwen35_tools_control_content(content: &str) -> Option<Vec<Value>> {
     serde_json::from_str::<Vec<Value>>(suffix).ok()
 }
 
+/// Internal control marker used by server/runtime to pass Qwen3.5 image/video
+/// source descriptors to native multimodal runtime, aligned with placeholder
+/// order in the paired chat message.
+pub fn qwen35_multimodal_control_content(items: &[Qwen35MultimodalInput]) -> Option<String> {
+    if items.is_empty() {
+        return None;
+    }
+    let json = serde_json::to_vec(items).ok()?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(json);
+    Some(format!("{QWEN35_MULTIMODAL_CONTROL_PREFIX}{encoded}"))
+}
+
+pub fn parse_qwen35_multimodal_control_content(
+    content: &str,
+) -> Option<Vec<Qwen35MultimodalInput>> {
+    let raw = content.trim();
+    let suffix = raw.strip_prefix(QWEN35_MULTIMODAL_CONTROL_PREFIX)?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(suffix)
+        .ok()?;
+    serde_json::from_slice::<Vec<Qwen35MultimodalInput>>(&decoded).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_qwen35_thinking_control_content, parse_qwen35_tools_control_content,
-        qwen35_thinking_control_content, qwen35_tools_control_content,
+        parse_qwen35_multimodal_control_content, parse_qwen35_thinking_control_content,
+        parse_qwen35_tools_control_content, qwen35_multimodal_control_content,
+        qwen35_thinking_control_content, qwen35_tools_control_content, Qwen35MultimodalInput,
+        Qwen35MultimodalKind,
     };
     use serde_json::json;
 
@@ -126,6 +166,34 @@ mod tests {
     fn qwen35_tools_control_ignores_non_control_text() {
         assert_eq!(
             parse_qwen35_tools_control_content("not a control payload"),
+            None
+        );
+    }
+
+    #[test]
+    fn qwen35_multimodal_control_roundtrip() {
+        let items = vec![
+            Qwen35MultimodalInput {
+                kind: Qwen35MultimodalKind::Image,
+                source: "https://example.com/cat.png".to_string(),
+            },
+            Qwen35MultimodalInput {
+                kind: Qwen35MultimodalKind::Video,
+                source: "https://example.com/clip.mp4".to_string(),
+            },
+        ];
+
+        let encoded =
+            qwen35_multimodal_control_content(&items).expect("multimodal marker should encode");
+        let decoded = parse_qwen35_multimodal_control_content(&encoded)
+            .expect("multimodal marker should decode");
+        assert_eq!(decoded, items);
+    }
+
+    #[test]
+    fn qwen35_multimodal_control_ignores_non_control_text() {
+        assert_eq!(
+            parse_qwen35_multimodal_control_content("not a control payload"),
             None
         );
     }

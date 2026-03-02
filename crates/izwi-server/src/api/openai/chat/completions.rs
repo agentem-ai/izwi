@@ -16,8 +16,10 @@ use crate::api::openai::common::{parse_tool_choice, should_inject_tools, tool_ch
 use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::{parse_chat_model_variant, ModelVariant};
-use izwi_core::{ChatMessage, ChatRole};
+use izwi_core::{
+    parse_chat_model_variant, qwen35_multimodal_control_content, ChatMessage, ChatRole,
+    ModelVariant, Qwen35MultimodalInput, Qwen35MultimodalKind,
+};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
@@ -92,6 +94,8 @@ pub struct OpenAiInboundContentPart {
     pub image: Option<serde_json::Value>,
     #[serde(default)]
     pub video: Option<serde_json::Value>,
+    #[serde(default)]
+    pub video_url: Option<serde_json::Value>,
     #[serde(default)]
     pub input_video: Option<serde_json::Value>,
 }
@@ -189,6 +193,12 @@ enum InboundMessageRole {
 const QWEN_VISION_IMAGE_TOKEN: &str = "<|vision_start|><|image_pad|><|vision_end|>";
 const QWEN_VISION_VIDEO_TOKEN: &str = "<|vision_start|><|video_pad|><|vision_end|>";
 
+#[derive(Debug, Default)]
+struct FlattenedContent {
+    text: String,
+    multimodal: Vec<Qwen35MultimodalInput>,
+}
+
 fn max_new_tokens(
     variant: ModelVariant,
     max_completion_tokens: Option<usize>,
@@ -257,7 +267,17 @@ fn to_core_messages(
 
     for message in messages {
         let role = parse_role(&message.role)?;
-        let mut content = flatten_content(message.content);
+        let flattened = flatten_content(message.content)?;
+        let mut content = flattened.text;
+
+        if is_qwen35_chat_variant(variant) {
+            if let Some(control) = qwen35_multimodal_control_content(&flattened.multimodal) {
+                core.push(ChatMessage {
+                    role: ChatRole::System,
+                    content: control,
+                });
+            }
+        }
 
         if role == InboundMessageRole::Assistant
             && message
@@ -341,26 +361,43 @@ fn parse_role(raw: &str) -> Result<InboundMessageRole, ApiError> {
     }
 }
 
-fn flatten_content(content: Option<OpenAiInboundContent>) -> String {
+fn flatten_content(content: Option<OpenAiInboundContent>) -> Result<FlattenedContent, ApiError> {
     match content {
-        None => String::new(),
-        Some(OpenAiInboundContent::Text(text)) => text,
+        None => Ok(FlattenedContent::default()),
+        Some(OpenAiInboundContent::Text(text)) => Ok(FlattenedContent {
+            text,
+            multimodal: Vec::new(),
+        }),
         Some(OpenAiInboundContent::Parts(parts)) => {
-            let mut out = String::new();
+            let mut out = FlattenedContent::default();
             for part in parts {
                 if content_part_is_image(&part) {
-                    out.push_str(QWEN_VISION_IMAGE_TOKEN);
+                    out.text.push_str(QWEN_VISION_IMAGE_TOKEN);
+                    let media =
+                        media_from_part(&part, Qwen35MultimodalKind::Image).ok_or_else(|| {
+                            ApiError::bad_request(
+                                "Image content part is missing a usable source URL/data",
+                            )
+                        })?;
+                    out.multimodal.push(media);
                     continue;
                 }
                 if content_part_is_video(&part) {
-                    out.push_str(QWEN_VISION_VIDEO_TOKEN);
+                    out.text.push_str(QWEN_VISION_VIDEO_TOKEN);
+                    let media =
+                        media_from_part(&part, Qwen35MultimodalKind::Video).ok_or_else(|| {
+                            ApiError::bad_request(
+                                "Video content part is missing a usable source URL/data",
+                            )
+                        })?;
+                    out.multimodal.push(media);
                     continue;
                 }
                 if let Some(text) = part.text.or(part.input_text) {
-                    out.push_str(&text);
+                    out.text.push_str(&text);
                 }
             }
-            out
+            Ok(out)
         }
     }
 }
@@ -382,7 +419,124 @@ fn content_part_is_video(part: &OpenAiInboundContentPart) -> bool {
     ) {
         return true;
     }
-    part.video.is_some() || part.input_video.is_some()
+    part.video.is_some() || part.video_url.is_some() || part.input_video.is_some()
+}
+
+fn media_from_part(
+    part: &OpenAiInboundContentPart,
+    kind: Qwen35MultimodalKind,
+) -> Option<Qwen35MultimodalInput> {
+    let source = match kind {
+        Qwen35MultimodalKind::Image => [
+            part.image_url.as_ref(),
+            part.input_image.as_ref(),
+            part.image.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|value| resolve_media_source(value, 3)),
+        Qwen35MultimodalKind::Video => [
+            part.video.as_ref(),
+            part.video_url.as_ref(),
+            part.input_video.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|value| resolve_media_source(value, 3)),
+    }?;
+
+    Some(Qwen35MultimodalInput { kind, source })
+}
+
+fn resolve_media_source(value: &serde_json::Value, max_depth: usize) -> Option<String> {
+    if max_depth == 0 {
+        return None;
+    }
+
+    match value {
+        serde_json::Value::String(raw) => {
+            let source = raw.trim();
+            if source.is_empty() {
+                None
+            } else {
+                Some(source.to_string())
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(source) = map
+                .get("url")
+                .and_then(|v| resolve_media_source(v, max_depth - 1))
+            {
+                return Some(source);
+            }
+            for key in [
+                "src",
+                "uri",
+                "path",
+                "file",
+                "image_url",
+                "video_url",
+                "input_image",
+                "input_video",
+            ] {
+                if let Some(source) = map
+                    .get(key)
+                    .and_then(|v| resolve_media_source(v, max_depth - 1))
+                {
+                    return Some(source);
+                }
+            }
+
+            if let Some(data_url) = map
+                .get("b64_json")
+                .and_then(|v| v.as_str())
+                .and_then(|b64| data_url_from_base64_field(b64, map))
+            {
+                return Some(data_url);
+            }
+
+            if let Some(data) = map.get("data").and_then(|v| v.as_str()) {
+                let data = data.trim();
+                if data.starts_with("data:")
+                    || data.starts_with("http://")
+                    || data.starts_with("https://")
+                    || data.starts_with("file://")
+                {
+                    return Some(data.to_string());
+                }
+
+                let is_base64 = map
+                    .get("encoding")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|encoding| encoding.eq_ignore_ascii_case("base64"));
+                if is_base64 {
+                    return data_url_from_base64_field(data, map);
+                }
+            }
+
+            None
+        }
+        _ => None,
+    }
+}
+
+fn data_url_from_base64_field(
+    b64: &str,
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    let payload = b64.trim();
+    if payload.is_empty() {
+        return None;
+    }
+    let mime = map
+        .get("mime_type")
+        .or_else(|| map.get("media_type"))
+        .or_else(|| map.get("content_type"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("application/octet-stream");
+    Some(format!("data:{mime};base64,{payload}"))
 }
 
 fn render_tool_calls_xml(tool_calls: &[serde_json::Value]) -> Result<String, ApiError> {
@@ -841,6 +995,7 @@ mod tests {
                 input_image: None,
                 image: None,
                 video: None,
+                video_url: None,
                 input_video: None,
             },
             OpenAiInboundContentPart {
@@ -851,11 +1006,14 @@ mod tests {
                 input_image: None,
                 image: None,
                 video: None,
+                video_url: None,
                 input_video: None,
             },
-        ])));
+        ])))
+        .expect("flatten content");
 
-        assert_eq!(flattened, "helloworld");
+        assert_eq!(flattened.text, "helloworld");
+        assert!(flattened.multimodal.is_empty());
     }
 
     #[test]
@@ -869,6 +1027,7 @@ mod tests {
                 input_image: None,
                 image: None,
                 video: None,
+                video_url: None,
                 input_video: None,
             },
             OpenAiInboundContentPart {
@@ -879,6 +1038,7 @@ mod tests {
                 input_image: None,
                 image: None,
                 video: None,
+                video_url: None,
                 input_video: None,
             },
             OpenAiInboundContentPart {
@@ -889,6 +1049,7 @@ mod tests {
                 input_image: None,
                 image: None,
                 video: Some(json!({"url":"https://example.com/clip.mp4"})),
+                video_url: None,
                 input_video: None,
             },
             OpenAiInboundContentPart {
@@ -899,14 +1060,47 @@ mod tests {
                 input_image: None,
                 image: None,
                 video: None,
+                video_url: None,
                 input_video: None,
             },
-        ])));
+        ])))
+        .expect("flatten content");
 
         assert_eq!(
-            flattened,
+            flattened.text,
             format!("Before {QWEN_VISION_IMAGE_TOKEN}{QWEN_VISION_VIDEO_TOKEN} after")
         );
+        assert_eq!(flattened.multimodal.len(), 2);
+        assert_eq!(flattened.multimodal[0].kind, Qwen35MultimodalKind::Image);
+        assert_eq!(
+            flattened.multimodal[0].source,
+            "https://example.com/cat.png"
+        );
+        assert_eq!(flattened.multimodal[1].kind, Qwen35MultimodalKind::Video);
+        assert_eq!(
+            flattened.multimodal[1].source,
+            "https://example.com/clip.mp4"
+        );
+    }
+
+    #[test]
+    fn flatten_content_rejects_multimodal_part_without_source() {
+        let err = flatten_content(Some(OpenAiInboundContent::Parts(vec![
+            OpenAiInboundContentPart {
+                kind: Some("image_url".to_string()),
+                text: None,
+                input_text: None,
+                image_url: Some(json!({})),
+                input_image: None,
+                image: None,
+                video: None,
+                video_url: None,
+                input_video: None,
+            },
+        ])))
+        .expect_err("missing source should fail");
+
+        assert!(err.message.contains("missing a usable source"));
     }
 
     #[test]
@@ -966,6 +1160,7 @@ mod tests {
                         input_image: None,
                         image: None,
                         video: None,
+                        video_url: None,
                         input_video: None,
                     },
                 ])),

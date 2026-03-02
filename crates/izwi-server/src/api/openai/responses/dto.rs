@@ -72,6 +72,8 @@ pub struct ResponseInputContentPart {
     #[serde(default)]
     pub video: Option<serde_json::Value>,
     #[serde(default)]
+    pub video_url: Option<serde_json::Value>,
+    #[serde(default)]
     pub input_video: Option<serde_json::Value>,
 }
 

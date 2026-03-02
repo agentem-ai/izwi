@@ -64,8 +64,10 @@ pub use catalog::{
 };
 pub use model::{DownloadProgress, ModelInfo, ModelManager, ModelStatus, ModelVariant};
 pub use models::shared::chat::{
-    parse_qwen35_thinking_control_content, parse_qwen35_tools_control_content,
+    parse_qwen35_multimodal_control_content, parse_qwen35_thinking_control_content,
+    parse_qwen35_tools_control_content, qwen35_multimodal_control_content,
     qwen35_thinking_control_content, qwen35_tools_control_content, ChatMessage, ChatRole,
+    Qwen35MultimodalInput, Qwen35MultimodalKind,
 };
 
 // Canonical native registry/device exports.
