@@ -44,6 +44,13 @@ const REPETITION_MIN_NGRAM_WORDS: usize = 3;
 const REPETITION_MAX_NGRAM_WORDS: usize = 14;
 const REPETITION_LOOKBACK_WORDS: usize = 48;
 const REPETITION_MAX_GAP_WORDS: usize = 8;
+const REPETITION_APPROX_MIN_WORDS: usize = 8;
+const REPETITION_APPROX_MAX_WORDS: usize = 28;
+const REPETITION_APPROX_MAX_GAP_WORDS: usize = 14;
+const REPETITION_APPROX_MAX_LEN_DELTA: usize = 2;
+const REPETITION_APPROX_MIN_LCS_RATIO: f32 = 0.84;
+const REPETITION_APPROX_PREFIX_WINDOW_WORDS: usize = 3;
+const REPETITION_APPROX_MIN_PREFIX_MATCH_WORDS: usize = 2;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -896,7 +903,119 @@ fn collapse_unstable_repetition(text: &str) -> String {
         collapsed = concat_transcript(left, right);
     }
 
+    loop {
+        let Some((remove_start, remove_end)) = find_near_duplicate_span_range(collapsed.as_str())
+        else {
+            break;
+        };
+
+        let left = collapsed[..remove_start].trim_end();
+        let right = collapsed[remove_end..].trim_start();
+        collapsed = concat_transcript(left, right);
+    }
+
     collapsed
+}
+
+fn find_near_duplicate_span_range(text: &str) -> Option<(usize, usize)> {
+    let words = collect_word_spans(text);
+    if words.len() < REPETITION_APPROX_MIN_WORDS * 2 {
+        return None;
+    }
+
+    let max_len = REPETITION_APPROX_MAX_WORDS.min(words.len());
+    for len_a in (REPETITION_APPROX_MIN_WORDS..=max_len).rev() {
+        if len_a > words.len() {
+            continue;
+        }
+        let min_len_b = len_a
+            .saturating_sub(REPETITION_APPROX_MAX_LEN_DELTA)
+            .max(REPETITION_APPROX_MIN_WORDS);
+        let max_len_b = len_a
+            .saturating_add(REPETITION_APPROX_MAX_LEN_DELTA)
+            .min(max_len);
+
+        for start_a in 0..=words.len().saturating_sub(len_a) {
+            for len_b in (min_len_b..=max_len_b).rev() {
+                if len_b > words.len() {
+                    continue;
+                }
+                if start_a + len_b > words.len() {
+                    continue;
+                }
+
+                let min_start_b = start_a.saturating_add(len_a.saturating_sub(2));
+                let max_start_b = start_a
+                    .saturating_add(len_a)
+                    .saturating_add(REPETITION_APPROX_MAX_GAP_WORDS)
+                    .min(words.len().saturating_sub(len_b));
+                if min_start_b > max_start_b {
+                    continue;
+                }
+
+                let span_a = &words[start_a..start_a + len_a];
+                for start_b in min_start_b..=max_start_b {
+                    let span_b = &words[start_b..start_b + len_b];
+                    let prefix_match = prefix_word_match_count(
+                        span_a,
+                        span_b,
+                        REPETITION_APPROX_PREFIX_WINDOW_WORDS,
+                    );
+                    if prefix_match < REPETITION_APPROX_MIN_PREFIX_MATCH_WORDS {
+                        continue;
+                    }
+
+                    let lcs = lcs_word_len(span_a, span_b);
+                    let similarity = (lcs as f32) / (len_a.max(len_b) as f32);
+                    if similarity < REPETITION_APPROX_MIN_LCS_RATIO {
+                        continue;
+                    }
+
+                    let remove_start = words[start_b].start;
+                    let remove_end = words[start_b + len_b - 1].end;
+                    return Some((remove_start, remove_end));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn prefix_word_match_count(a: &[WordSpan], b: &[WordSpan], window: usize) -> usize {
+    let max = a.len().min(b.len()).min(window);
+    let mut matched = 0usize;
+    for idx in 0..max {
+        if a[idx].normalized == b[idx].normalized {
+            matched += 1;
+        } else {
+            break;
+        }
+    }
+    matched
+}
+
+fn lcs_word_len(a: &[WordSpan], b: &[WordSpan]) -> usize {
+    if a.is_empty() || b.is_empty() {
+        return 0;
+    }
+
+    let mut previous = vec![0usize; b.len() + 1];
+    let mut current = vec![0usize; b.len() + 1];
+
+    for left in a {
+        for (idx, right) in b.iter().enumerate() {
+            current[idx + 1] = if left.normalized == right.normalized {
+                previous[idx] + 1
+            } else {
+                previous[idx + 1].max(current[idx])
+            };
+        }
+        std::mem::swap(&mut previous, &mut current);
+        current.fill(0);
+    }
+
+    previous[b.len()]
 }
 
 fn normalize_word(token: &str) -> String {
@@ -1126,5 +1245,26 @@ mod tests {
         assert!(final_text.contains("I don't really know what to do now"));
         assert!(!final_text.contains("good day for meYeah"));
         assert!(!final_text.contains("sad Day is not a good day for me"));
+    }
+
+    #[test]
+    fn collapse_unstable_repetition_removes_near_duplicate_clause_burst() {
+        let text = "Okay, so it seems the performance of this thing is a little bit better, but uh Okay, so it seems the performance of this thing is a little bit better, but um we can definitely improve it.";
+        let collapsed = collapse_unstable_repetition(text);
+        assert!(
+            !collapsed.contains("better, but uh Okay, so it seems the performance"),
+            "near-duplicate clause burst should be collapsed: {collapsed}"
+        );
+        assert!(collapsed.contains("we can definitely improve it"));
+    }
+
+    #[test]
+    fn collapse_unstable_repetition_collapses_youre_vs_you_are_restart() {
+        let text = "you know uh interpret uh what you're saying you know uh interpret uh what you are saying";
+        let collapsed = collapse_unstable_repetition(text);
+        assert!(
+            !collapsed.contains("you're saying you know uh interpret uh what you are saying"),
+            "contraction/wording variant restart should be collapsed: {collapsed}"
+        );
     }
 }
