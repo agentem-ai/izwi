@@ -14,7 +14,7 @@ use serde_json::Value;
 use tracing::info;
 
 use crate::error::{Error, Result};
-use crate::models::architectures::qwen3::core::{build_rope_cache, causal_mask, repeat_kv};
+use crate::models::architectures::qwen3::core::{build_rope_cache, causal_mask};
 use crate::models::shared::chat::{ChatMessage, ChatRole};
 use crate::models::shared::device::DeviceProfile;
 use crate::models::shared::weights::mlx;
@@ -151,6 +151,8 @@ struct RawQwen35TextConfig {
     #[serde(default)]
     attention_bias: Option<bool>,
     #[serde(default)]
+    hidden_act: Option<String>,
+    #[serde(default)]
     linear_conv_kernel_dim: Option<usize>,
     #[serde(default)]
     linear_key_head_dim: Option<usize>,
@@ -200,6 +202,13 @@ struct Qwen35TextConfig {
 
 impl Qwen35TextConfig {
     fn from_raw(raw: RawQwen35TextConfig) -> Result<Self> {
+        let hidden_act = raw.hidden_act.as_deref().unwrap_or("silu");
+        if hidden_act != "silu" {
+            return Err(Error::InvalidInput(format!(
+                "Unsupported Qwen3.5 hidden_act `{hidden_act}`; expected `silu`"
+            )));
+        }
+
         let head_dim = raw
             .head_dim
             .unwrap_or(raw.hidden_size / raw.num_attention_heads.max(1));
@@ -353,21 +362,18 @@ impl Qwen35RmsNorm {
         let eps = Tensor::new(self.eps as f32, x.device())?;
         let denom = variance.broadcast_add(&eps)?.sqrt()?;
         let normalized = x_f32.broadcast_div(&denom)?;
-        let normalized = normalized.to_dtype(x_dtype)?;
 
         let scale = if self.one_centered {
-            let ones = Tensor::ones(
-                self.weight.dims1()?,
-                self.weight.dtype(),
-                self.weight.device(),
-            )?;
-            self.weight.broadcast_add(&ones)?
+            let ones = Tensor::ones(self.weight.dims1()?, DType::F32, self.weight.device())?;
+            self.weight.to_dtype(DType::F32)?.broadcast_add(&ones)?
         } else {
-            self.weight.clone()
-        }
-        .to_dtype(x_dtype)?;
+            self.weight.to_dtype(DType::F32)?
+        };
 
-        normalized.broadcast_mul(&scale).map_err(Error::from)
+        normalized
+            .broadcast_mul(&scale)?
+            .to_dtype(x_dtype)
+            .map_err(Error::from)
     }
 }
 
@@ -389,16 +395,16 @@ impl Qwen35RmsNormGated {
     }
 
     fn forward(&self, hidden_states: &Tensor, gate: &Tensor) -> Result<Tensor> {
-        let dtype = hidden_states.dtype();
+        let input_dtype = hidden_states.dtype();
         let hidden_states_f32 = hidden_states.to_dtype(DType::F32)?;
         let variance = hidden_states_f32.sqr()?.mean_keepdim(D::Minus1)?;
         let eps = Tensor::new(self.eps as f32, hidden_states.device())?;
         let denom = variance.broadcast_add(&eps)?.sqrt()?;
         let normalized = hidden_states_f32.broadcast_div(&denom)?;
-        let normalized = normalized.to_dtype(dtype)?;
 
-        let weighted = normalized.broadcast_mul(&self.weight.to_dtype(dtype)?)?;
-        Ok(weighted.broadcast_mul(&ops::silu(&gate.to_dtype(dtype)?)?)?)
+        let weighted = normalized.broadcast_mul(&self.weight.to_dtype(DType::F32)?)?;
+        let gated = weighted.broadcast_mul(&ops::silu(&gate.to_dtype(DType::F32)?)?)?;
+        Ok(gated.to_dtype(input_dtype)?)
     }
 }
 
@@ -445,26 +451,58 @@ struct Qwen35FullAttention {
 
 impl Qwen35FullAttention {
     fn load(cfg: &Qwen35TextConfig, vb: VarBuilder) -> Result<Self> {
-        let q_proj = mlx::load_linear(
-            cfg.hidden_size,
-            cfg.num_attention_heads * cfg.head_dim * 2,
-            vb.pp("q_proj"),
-        )?;
-        let k_proj = mlx::load_linear(
-            cfg.hidden_size,
-            cfg.num_key_value_heads * cfg.head_dim,
-            vb.pp("k_proj"),
-        )?;
-        let v_proj = mlx::load_linear(
-            cfg.hidden_size,
-            cfg.num_key_value_heads * cfg.head_dim,
-            vb.pp("v_proj"),
-        )?;
-        let o_proj = mlx::load_linear(
-            cfg.num_attention_heads * cfg.head_dim,
-            cfg.hidden_size,
-            vb.pp("o_proj"),
-        )?;
+        let q_proj = if cfg.attention_bias {
+            mlx::load_linear(
+                cfg.hidden_size,
+                cfg.num_attention_heads * cfg.head_dim * 2,
+                vb.pp("q_proj"),
+            )?
+        } else {
+            mlx::load_linear_no_bias(
+                cfg.hidden_size,
+                cfg.num_attention_heads * cfg.head_dim * 2,
+                vb.pp("q_proj"),
+            )?
+        };
+        let k_proj = if cfg.attention_bias {
+            mlx::load_linear(
+                cfg.hidden_size,
+                cfg.num_key_value_heads * cfg.head_dim,
+                vb.pp("k_proj"),
+            )?
+        } else {
+            mlx::load_linear_no_bias(
+                cfg.hidden_size,
+                cfg.num_key_value_heads * cfg.head_dim,
+                vb.pp("k_proj"),
+            )?
+        };
+        let v_proj = if cfg.attention_bias {
+            mlx::load_linear(
+                cfg.hidden_size,
+                cfg.num_key_value_heads * cfg.head_dim,
+                vb.pp("v_proj"),
+            )?
+        } else {
+            mlx::load_linear_no_bias(
+                cfg.hidden_size,
+                cfg.num_key_value_heads * cfg.head_dim,
+                vb.pp("v_proj"),
+            )?
+        };
+        let o_proj = if cfg.attention_bias {
+            mlx::load_linear(
+                cfg.num_attention_heads * cfg.head_dim,
+                cfg.hidden_size,
+                vb.pp("o_proj"),
+            )?
+        } else {
+            mlx::load_linear_no_bias(
+                cfg.num_attention_heads * cfg.head_dim,
+                cfg.hidden_size,
+                vb.pp("o_proj"),
+            )?
+        };
         let q_norm = Qwen35RmsNorm::load(cfg.head_dim, cfg.rms_norm_eps, true, vb.pp("q_norm"))?;
         let k_norm = Qwen35RmsNorm::load(cfg.head_dim, cfg.rms_norm_eps, true, vb.pp("k_norm"))?;
 
@@ -534,8 +572,8 @@ impl Qwen35FullAttention {
             let sin = Tensor::cat(&[sin_half.clone(), sin_half], 1)?
                 .unsqueeze(0)?
                 .unsqueeze(0)?;
-            query = apply_partial_rotary(&query, &cos, &sin, self.rotary_dim)?;
-            key = apply_partial_rotary(&key, &cos, &sin, self.rotary_dim)?;
+            query = apply_partial_rotary(&query, &cos, &sin, self.rotary_dim)?.contiguous()?;
+            key = apply_partial_rotary(&key, &cos, &sin, self.rotary_dim)?.contiguous()?;
         }
 
         let (k_all, v_all) = if let Some(layer_cache) = layer_cache {
@@ -566,16 +604,13 @@ impl Qwen35FullAttention {
             (key, value)
         };
 
-        let key = repeat_kv(&k_all.transpose(1, 2)?, self.num_heads, self.num_kv_heads)?
-            .transpose(1, 2)?
-            .contiguous()?;
-        let value = repeat_kv(&v_all.transpose(1, 2)?, self.num_heads, self.num_kv_heads)?
-            .transpose(1, 2)?
-            .contiguous()?;
+        let n_rep = self.num_heads / self.num_kv_heads;
+        let key = repeat_kv_bhsd(&k_all, n_rep)?.contiguous()?;
+        let value = repeat_kv_bhsd(&v_all, n_rep)?.contiguous()?;
 
         let mut att = query.matmul(&key.transpose(2, 3)?.contiguous()?)?;
         let scale =
-            Tensor::new((self.head_dim as f64).sqrt(), x.device())?.to_dtype(att.dtype())?;
+            Tensor::new((self.head_dim as f32).sqrt(), x.device())?.to_dtype(att.dtype())?;
         att = att.broadcast_div(&scale)?;
 
         let total_len = key.dim(2)?;
@@ -585,7 +620,7 @@ impl Qwen35FullAttention {
             att = att.broadcast_add(&mask)?;
         }
 
-        let att = ops::softmax(&att, D::Minus1)?;
+        let att = ops::softmax(&att.to_dtype(DType::F32)?, D::Minus1)?.to_dtype(query.dtype())?;
         let att_out = att.matmul(&value)?;
         let att_out = att_out
             .transpose(1, 2)?
@@ -608,8 +643,10 @@ struct Qwen35LinearAttention {
     conv_kernel_size: usize,
     conv: Conv1d,
     conv_weight: Tensor,
-    in_proj_qkvz: Linear,
-    in_proj_ba: Linear,
+    in_proj_qkv: Linear,
+    in_proj_z: Linear,
+    in_proj_b: Linear,
+    in_proj_a: Linear,
     dt_bias: Tensor,
     a_log: Tensor,
     norm: Qwen35RmsNormGated,
@@ -627,20 +664,20 @@ impl Qwen35LinearAttention {
         let conv_kernel_size = cfg.linear_conv_kernel_dim;
 
         let conv_dim = key_dim * 2 + value_dim;
-        let projection_size_qkvz = key_dim * 2 + value_dim * 2;
-        let projection_size_ba = num_v_heads * 2;
+        let projection_size_qkv = key_dim * 2 + value_dim;
 
         let linear_vb = vb.pp("linear_attn");
-        let in_proj_qkvz = mlx::load_linear_no_bias(
+        let in_proj_qkv = mlx::load_linear_no_bias(
             cfg.hidden_size,
-            projection_size_qkvz,
-            linear_vb.pp("in_proj_qkvz"),
+            projection_size_qkv,
+            linear_vb.pp("in_proj_qkv"),
         )?;
-        let in_proj_ba = mlx::load_linear_no_bias(
-            cfg.hidden_size,
-            projection_size_ba,
-            linear_vb.pp("in_proj_ba"),
-        )?;
+        let in_proj_z =
+            mlx::load_linear_no_bias(cfg.hidden_size, value_dim, linear_vb.pp("in_proj_z"))?;
+        let in_proj_b =
+            mlx::load_linear_no_bias(cfg.hidden_size, num_v_heads, linear_vb.pp("in_proj_b"))?;
+        let in_proj_a =
+            mlx::load_linear_no_bias(cfg.hidden_size, num_v_heads, linear_vb.pp("in_proj_a"))?;
 
         let conv_weight =
             load_depthwise_conv_weight(conv_dim, conv_kernel_size, linear_vb.pp("conv1d"))?;
@@ -671,8 +708,10 @@ impl Qwen35LinearAttention {
             conv_kernel_size,
             conv,
             conv_weight,
-            in_proj_qkvz,
-            in_proj_ba,
+            in_proj_qkv,
+            in_proj_z,
+            in_proj_b,
+            in_proj_a,
             dt_bias,
             a_log,
             norm,
@@ -710,19 +749,17 @@ impl Qwen35LinearAttention {
             (None, None)
         };
 
-        let projected_qkvz = self.in_proj_qkvz.forward(hidden_states)?;
-        let projected_ba = self.in_proj_ba.forward(hidden_states)?;
+        let projected_qkv = self.in_proj_qkv.forward(hidden_states)?;
+        let z = self.in_proj_z.forward(hidden_states)?.reshape((
+            batch_size,
+            seq_len,
+            self.num_v_heads,
+            self.head_v_dim,
+        ))?;
+        let b = self.in_proj_b.forward(hidden_states)?;
+        let a = self.in_proj_a.forward(hidden_states)?;
 
-        let (query, key, value, z, b, a) =
-            self.fix_query_key_value_ordering(&projected_qkvz, &projected_ba)?;
-
-        let query_flat = query.reshape((batch_size, seq_len, self.key_dim))?;
-        let key_flat = key.reshape((batch_size, seq_len, self.key_dim))?;
-        let value_flat = value.reshape((batch_size, seq_len, self.value_dim))?;
-
-        let mut mixed_qkv = Tensor::cat(&[query_flat, key_flat, value_flat], 2)?
-            .transpose(1, 2)?
-            .contiguous()?;
+        let mut mixed_qkv = projected_qkv.transpose(1, 2)?.contiguous()?;
 
         let use_precomputed_states =
             conv_state.as_ref().and_then(|slot| slot.as_ref()).is_some() && seq_len == 1;
@@ -780,12 +817,12 @@ impl Qwen35LinearAttention {
 
         let repeats = self.num_v_heads / self.num_k_heads;
         let query = if repeats > 1 {
-            repeat_kv(&query, self.num_v_heads, self.num_k_heads)?
+            repeat_kv_bshd(&query, repeats)?
         } else {
             query
         };
         let key = if repeats > 1 {
-            repeat_kv(&key, self.num_v_heads, self.num_k_heads)?
+            repeat_kv_bshd(&key, repeats)?
         } else {
             key
         };
@@ -814,41 +851,6 @@ impl Qwen35LinearAttention {
         let core_norm = core_norm.reshape((batch_size, seq_len, self.value_dim))?;
 
         Ok(self.out_proj.forward(&core_norm)?)
-    }
-
-    fn fix_query_key_value_ordering(
-        &self,
-        mixed_qkvz: &Tensor,
-        mixed_ba: &Tensor,
-    ) -> Result<(Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)> {
-        let (batch_size, seq_len, _) = mixed_qkvz.dims3()?;
-
-        let value_group = (self.num_v_heads / self.num_k_heads) * self.head_v_dim;
-        let qkvz_per_group = self.head_k_dim * 2 + value_group * 2;
-        let ba_per_group = (self.num_v_heads / self.num_k_heads) * 2;
-
-        let mixed_qkvz =
-            mixed_qkvz.reshape((batch_size, seq_len, self.num_k_heads, qkvz_per_group))?;
-        let mixed_ba = mixed_ba.reshape((batch_size, seq_len, self.num_k_heads, ba_per_group))?;
-
-        let query = mixed_qkvz.narrow(3, 0, self.head_k_dim)?;
-        let key = mixed_qkvz.narrow(3, self.head_k_dim, self.head_k_dim)?;
-        let value = mixed_qkvz.narrow(3, self.head_k_dim * 2, value_group)?;
-        let z = mixed_qkvz.narrow(3, self.head_k_dim * 2 + value_group, value_group)?;
-
-        let b = mixed_ba.narrow(3, 0, self.num_v_heads / self.num_k_heads)?;
-        let a = mixed_ba.narrow(
-            3,
-            self.num_v_heads / self.num_k_heads,
-            self.num_v_heads / self.num_k_heads,
-        )?;
-
-        let value = value.reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?;
-        let z = z.reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?;
-        let b = b.reshape((batch_size, seq_len, self.num_v_heads))?;
-        let a = a.reshape((batch_size, seq_len, self.num_v_heads))?;
-
-        Ok((query, key, value, z, b, a))
     }
 
     fn build_conv_state(&self, mixed_qkv: &Tensor) -> Result<Tensor> {
@@ -910,6 +912,7 @@ impl Qwen35LinearAttention {
         beta: &Tensor,
         initial_state: Option<&Tensor>,
     ) -> Result<(Tensor, Tensor)> {
+        let initial_dtype = query.dtype();
         let (batch_size, seq_len, num_heads, _head_k_dim) = query.dims4()?;
 
         let query = l2norm_last_dim(&query.to_dtype(DType::F32)?)?;
@@ -918,7 +921,7 @@ impl Qwen35LinearAttention {
         let beta = beta.to_dtype(DType::F32)?;
         let g = g.to_dtype(DType::F32)?.exp()?;
 
-        let scale = Tensor::new((self.head_k_dim as f64).sqrt(), query.device())?
+        let scale = Tensor::new((self.head_k_dim as f32).sqrt(), query.device())?
             .to_dtype(query.dtype())?;
         let query = query.broadcast_div(&scale)?;
 
@@ -963,7 +966,7 @@ impl Qwen35LinearAttention {
             outputs.push(out_t.unsqueeze(1)?);
         }
 
-        let output = Tensor::cat(&outputs, 1)?;
+        let output = Tensor::cat(&outputs, 1)?.to_dtype(initial_dtype)?;
         Ok((output, state))
     }
 }
@@ -1395,6 +1398,30 @@ fn stable_softplus(x: &Tensor) -> Result<Tensor> {
     x_pos.broadcast_add(&log1p).map_err(Error::from)
 }
 
+// HF parity helper for `repeat_kv` in full-attention path:
+// input/output layout is [batch, heads, seq_len, head_dim].
+fn repeat_kv_bhsd(xs: &Tensor, n_rep: usize) -> Result<Tensor> {
+    if n_rep == 1 {
+        return Ok(xs.clone());
+    }
+    let (batch, kv_heads, seq_len, head_dim) = xs.dims4()?;
+    let copies = (0..n_rep).map(|_| xs).collect::<Vec<_>>();
+    Tensor::cat(&copies, 2)?
+        .reshape((batch, kv_heads * n_rep, seq_len, head_dim))
+        .map_err(Error::from)
+}
+
+// Repeat heads for tensors laid out as [batch, seq_len, heads, head_dim].
+fn repeat_kv_bshd(xs: &Tensor, n_rep: usize) -> Result<Tensor> {
+    if n_rep == 1 {
+        return Ok(xs.clone());
+    }
+    let xs_bhsd = xs.transpose(1, 2)?;
+    repeat_kv_bhsd(&xs_bhsd, n_rep)?
+        .transpose(1, 2)
+        .map_err(Error::from)
+}
+
 fn apply_partial_rotary(
     x: &Tensor,
     cos: &Tensor,
@@ -1522,5 +1549,42 @@ fn find_single_safetensor(model_dir: &Path) -> Result<std::path::PathBuf> {
             "Unable to resolve Qwen3.5 safetensor checkpoint; expected model.safetensors or one model.safetensors-*-of-*.safetensors file"
                 .to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::shared::device::DeviceSelector;
+
+    #[test]
+    fn qwen35_local_load_smoke_if_env_set() {
+        let Some(model_dir) = std::env::var_os("IZWI_QWEN35_CHAT_MODEL_DIR") else {
+            return;
+        };
+
+        let preferred_device = std::env::var("IZWI_QWEN35_SMOKE_DEVICE").ok();
+        let device = DeviceSelector::detect_with_preference(preferred_device.as_deref())
+            .expect("detect device for qwen3.5 smoke");
+        let model = Qwen35ChatModel::load(Path::new(&model_dir), device)
+            .expect("load local qwen3.5 chat model");
+
+        let output = model
+            .generate(
+                &[
+                    ChatMessage {
+                        role: ChatRole::System,
+                        content: "You are a helpful assistant. Always reason inside <think>...</think> before giving the final answer. Keep thinking concise, always close </think>, then provide a clear final answer outside the tags.".to_string(),
+                    },
+                    ChatMessage {
+                        role: ChatRole::User,
+                        content: "Hello".to_string(),
+                    },
+                ],
+                2,
+            )
+            .expect("run qwen3.5 chat generation smoke");
+
+        assert!(output.tokens_generated <= 2);
     }
 }
