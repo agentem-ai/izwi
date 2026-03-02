@@ -199,6 +199,13 @@ function fallbackThreadTitleFromUserMessage(content: string): string {
   return truncateText(normalized, MAX_THREAD_TITLE_CHARS);
 }
 
+function isQwen35ChatModel(variant: string | null): boolean {
+  if (!variant) {
+    return false;
+  }
+  return variant.trim().toLowerCase().startsWith("qwen3.5-");
+}
+
 interface GenerateTitleArgs {
   threadId: string;
   userContent: string;
@@ -667,9 +674,14 @@ export function ChatPlayground({
       generation_time_ms: null,
     };
 
-    const systemPrompt = thinkingEnabledForModel
-      ? THINKING_SYSTEM_PROMPT.content
-      : DEFAULT_SYSTEM_PROMPT.content;
+    const qwen35ThinkingControl = isQwen35ChatModel(selectedModel)
+      ? thinkingEnabledForModel
+      : undefined;
+    const systemPrompt = isQwen35ChatModel(selectedModel)
+      ? "You are a helpful assistant."
+      : thinkingEnabledForModel
+        ? THINKING_SYSTEM_PROMPT.content
+        : DEFAULT_SYSTEM_PROMPT.content;
 
     setMessages((previous) => [
       ...previous,
@@ -686,6 +698,7 @@ export function ChatPlayground({
         model_id: selectedModel,
         content: text,
         system_prompt: systemPrompt,
+        enable_thinking: qwen35ThinkingControl,
       },
       {
         onStart: ({ userMessage }) => {

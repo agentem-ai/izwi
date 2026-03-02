@@ -116,6 +116,7 @@ export interface ChatThreadSendMessageRequest {
   content: string;
   max_tokens?: number;
   system_prompt?: string;
+  enable_thinking?: boolean;
 }
 
 export interface ChatThreadSendMessageResponse {
@@ -2386,6 +2387,7 @@ class ApiClient {
           max_tokens: request.max_tokens,
           stream: false,
           system_prompt: request.system_prompt,
+          enable_thinking: request.enable_thinking,
         }),
       },
     );
@@ -2413,6 +2415,7 @@ class ApiClient {
               max_tokens: request.max_tokens,
               stream: true,
               system_prompt: request.system_prompt,
+              enable_thinking: request.enable_thinking,
             }),
             signal: abortController.signal,
           },

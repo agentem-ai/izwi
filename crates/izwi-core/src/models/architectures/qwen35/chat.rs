@@ -18,7 +18,7 @@ use tracing::info;
 
 use crate::error::{Error, Result};
 use crate::models::architectures::qwen3::core::{build_rope_cache, causal_mask};
-use crate::models::shared::chat::{ChatMessage, ChatRole};
+use crate::models::shared::chat::{parse_qwen35_thinking_control_content, ChatMessage, ChatRole};
 use crate::models::shared::device::DeviceProfile;
 use crate::models::shared::weights::mlx;
 use crate::tokenizer::Tokenizer;
@@ -1578,53 +1578,73 @@ impl Qwen35ChatModel {
     }
 
     fn build_prompt(&self, messages: &[ChatMessage]) -> Result<Vec<u32>> {
-        if messages.is_empty() {
-            return Err(Error::InvalidInput(
-                "Chat request must include at least one message".to_string(),
-            ));
-        }
+        build_qwen35_prompt_ids(&self.tokenizer, messages)
+    }
+}
 
-        let mut prompt_messages = messages.to_vec();
-        if !matches!(
-            prompt_messages.first().map(|m| &m.role),
-            Some(ChatRole::System)
-        ) {
-            prompt_messages.insert(
-                0,
-                ChatMessage {
-                    role: ChatRole::System,
-                    content: "You are a helpful assistant.".to_string(),
-                },
-            );
-        }
+fn build_qwen35_prompt_ids(
+    tokenizer: &ChatTokenizer,
+    messages: &[ChatMessage],
+) -> Result<Vec<u32>> {
+    if messages.is_empty() {
+        return Err(Error::InvalidInput(
+            "Chat request must include at least one message".to_string(),
+        ));
+    }
 
-        let mut ids = Vec::new();
-        for message in &prompt_messages {
-            let content = if matches!(message.role, ChatRole::Assistant) {
-                strip_think_blocks(message.content.trim())
-            } else {
-                message.content.trim().to_string()
-            };
-
-            if content.is_empty() {
+    let mut enable_thinking = None;
+    let mut prompt_messages = Vec::with_capacity(messages.len());
+    for message in messages {
+        if matches!(message.role, ChatRole::System) {
+            if let Some(control) = parse_qwen35_thinking_control_content(&message.content) {
+                enable_thinking = Some(control);
                 continue;
             }
+        }
+        prompt_messages.push(message.clone());
+    }
 
-            ids.push(self.tokenizer.specials.im_start);
-            ids.extend(
-                self.tokenizer
-                    .encode_text(&format!("{}\n", message.role.as_prompt_role()))?,
-            );
-            ids.extend(self.tokenizer.encode_text(&content)?);
-            ids.push(self.tokenizer.specials.im_end);
-            ids.extend(self.tokenizer.encode_text("\n")?);
+    if !matches!(
+        prompt_messages.first().map(|m| &m.role),
+        Some(ChatRole::System)
+    ) {
+        prompt_messages.insert(
+            0,
+            ChatMessage {
+                role: ChatRole::System,
+                content: "You are a helpful assistant.".to_string(),
+            },
+        );
+    }
+
+    let mut ids = Vec::new();
+    for message in &prompt_messages {
+        let content = if matches!(message.role, ChatRole::Assistant) {
+            strip_think_blocks(message.content.trim())
+        } else {
+            message.content.trim().to_string()
+        };
+
+        if content.is_empty() {
+            continue;
         }
 
-        ids.push(self.tokenizer.specials.im_start);
-        ids.extend(self.tokenizer.encode_text("assistant\n")?);
-
-        Ok(ids)
+        ids.push(tokenizer.specials.im_start);
+        ids.extend(tokenizer.encode_text(&format!("{}\n", message.role.as_prompt_role()))?);
+        ids.extend(tokenizer.encode_text(&content)?);
+        ids.push(tokenizer.specials.im_end);
+        ids.extend(tokenizer.encode_text("\n")?);
     }
+
+    ids.push(tokenizer.specials.im_start);
+    ids.extend(tokenizer.encode_text("assistant\n")?);
+    if enable_thinking.unwrap_or(false) {
+        ids.extend(tokenizer.encode_text("<think>\n")?);
+    } else {
+        ids.extend(tokenizer.encode_text("<think>\n\n</think>\n\n")?);
+    }
+
+    Ok(ids)
 }
 
 fn load_depthwise_conv_weight(
@@ -2324,6 +2344,7 @@ fn find_single_safetensor(model_dir: &Path) -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::shared::chat::qwen35_thinking_control_content;
     use crate::models::shared::device::DeviceSelector;
 
     #[test]
@@ -2338,5 +2359,66 @@ mod tests {
         let model = Qwen35ChatModel::load(Path::new(&model_dir), device)
             .expect("load local qwen3.5 chat model");
         assert!(model.supports_incremental_decode());
+    }
+
+    #[test]
+    fn qwen35_prompt_thinking_toggle_if_env_set() {
+        let Some(model_dir) = std::env::var_os("IZWI_QWEN35_CHAT_MODEL_DIR") else {
+            return;
+        };
+
+        let tokenizer =
+            ChatTokenizer::load(Path::new(&model_dir), None).expect("load qwen3.5 tokenizer");
+
+        let user_message = ChatMessage {
+            role: ChatRole::User,
+            content: "hello".to_string(),
+        };
+
+        let no_control_prompt =
+            build_qwen35_prompt_ids(&tokenizer, std::slice::from_ref(&user_message))
+                .expect("build prompt without control");
+
+        let enabled_prompt = build_qwen35_prompt_ids(
+            &tokenizer,
+            &[
+                ChatMessage {
+                    role: ChatRole::System,
+                    content: qwen35_thinking_control_content(true),
+                },
+                user_message.clone(),
+            ],
+        )
+        .expect("build prompt with thinking enabled");
+
+        let disabled_prompt = build_qwen35_prompt_ids(
+            &tokenizer,
+            &[
+                ChatMessage {
+                    role: ChatRole::System,
+                    content: qwen35_thinking_control_content(false),
+                },
+                user_message,
+            ],
+        )
+        .expect("build prompt with thinking disabled");
+
+        let mut enabled_suffix = vec![tokenizer.specials.im_start];
+        enabled_suffix.extend(
+            tokenizer
+                .encode_text("assistant\n<think>\n")
+                .expect("encode enabled suffix"),
+        );
+
+        let mut disabled_suffix = vec![tokenizer.specials.im_start];
+        disabled_suffix.extend(
+            tokenizer
+                .encode_text("assistant\n<think>\n\n</think>\n\n")
+                .expect("encode disabled suffix"),
+        );
+
+        assert!(enabled_prompt.ends_with(&enabled_suffix));
+        assert!(disabled_prompt.ends_with(&disabled_suffix));
+        assert!(no_control_prompt.ends_with(&disabled_suffix));
     }
 }

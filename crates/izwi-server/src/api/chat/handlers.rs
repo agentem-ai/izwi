@@ -15,8 +15,8 @@ use crate::api::request_context::RequestContext;
 use crate::chat_store::{ChatThreadMessage, ChatThreadSummary};
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::{parse_chat_model_variant, ModelVariant};
-use izwi_core::{ChatMessage, ChatRole};
+use izwi_core::ModelVariant;
+use izwi_core::{parse_chat_model_variant, qwen35_thinking_control_content, ChatMessage, ChatRole};
 
 #[derive(Debug, Serialize)]
 pub struct ChatThreadListResponse {
@@ -65,6 +65,8 @@ pub struct CreateThreadMessageRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub top_p: Option<f32>,
+    #[serde(default)]
+    pub enable_thinking: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -238,9 +240,11 @@ pub async fn create_thread_message(
         .map_err(map_store_or_not_found)?;
 
     let runtime_messages = build_runtime_messages(
+        model_variant,
         &existing_messages,
         &user_content,
         req.system_prompt.as_deref(),
+        req.enable_thinking,
     )?;
 
     if req.stream.unwrap_or(false) {
@@ -469,11 +473,22 @@ fn parse_chat_model(model_id: &str) -> Result<ModelVariant, ApiError> {
 }
 
 fn build_runtime_messages(
+    model_variant: ModelVariant,
     existing: &[ChatThreadMessage],
     new_user_content: &str,
     system_prompt: Option<&str>,
+    enable_thinking: Option<bool>,
 ) -> Result<Vec<ChatMessage>, ApiError> {
     let mut messages = Vec::new();
+
+    if is_qwen35_chat_variant(model_variant) {
+        if let Some(enable_thinking) = enable_thinking {
+            messages.push(ChatMessage {
+                role: ChatRole::System,
+                content: qwen35_thinking_control_content(enable_thinking),
+            });
+        }
+    }
 
     if let Some(prompt) = system_prompt
         .map(str::trim)
@@ -499,6 +514,16 @@ fn build_runtime_messages(
     });
 
     Ok(messages)
+}
+
+fn is_qwen35_chat_variant(variant: ModelVariant) -> bool {
+    matches!(
+        variant,
+        ModelVariant::Qwen3508B
+            | ModelVariant::Qwen352B
+            | ModelVariant::Qwen354B
+            | ModelVariant::Qwen359B
+    )
 }
 
 fn parse_stored_role(role: &str) -> Result<ChatRole, ApiError> {
