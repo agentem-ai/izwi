@@ -15,8 +15,9 @@ use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::{AppState, StoredResponseInputItem, StoredResponseRecord};
 use izwi_core::{
-    parse_chat_model_variant, qwen35_thinking_control_content, qwen35_tools_control_content,
-    ChatMessage, ChatRole, ModelVariant,
+    parse_chat_model_variant, qwen35_multimodal_control_content, qwen35_thinking_control_content,
+    qwen35_tools_control_content, ChatMessage, ChatRole, ModelVariant, Qwen35MultimodalInput,
+    Qwen35MultimodalKind,
 };
 
 use super::dto::{
@@ -395,6 +396,12 @@ enum ResponseInboundRole {
 const QWEN_VISION_IMAGE_TOKEN: &str = "<|vision_start|><|image_pad|><|vision_end|>";
 const QWEN_VISION_VIDEO_TOKEN: &str = "<|vision_start|><|video_pad|><|vision_end|>";
 
+#[derive(Debug, Default)]
+struct FlattenedContent {
+    text: String,
+    multimodal: Vec<Qwen35MultimodalInput>,
+}
+
 fn response_input_contains_multimodal_content(input: Option<&ResponseInput>) -> bool {
     let Some(input) = input else {
         return false;
@@ -476,7 +483,9 @@ fn build_input_messages(
 
     let input_items = match input {
         None => Vec::new(),
-        Some(ResponseInput::Text(text)) => vec![("user".to_string(), text, false)],
+        Some(ResponseInput::Text(text)) => {
+            vec![("user".to_string(), text, false, Vec::new())]
+        }
         Some(ResponseInput::One(item)) => vec![normalize_input_item(item)?],
         Some(ResponseInput::Many(items)) => items
             .into_iter()
@@ -484,12 +493,20 @@ fn build_input_messages(
             .collect::<Result<Vec<_>, _>>()?,
     };
 
-    for (role, content, is_tool) in input_items {
+    for (role, content, is_tool, multimodal) in input_items {
         let parsed_role = parse_input_role(&role)?;
         if content.trim().is_empty() {
             return Err(ApiError::bad_request(
                 "Response input item content cannot be empty",
             ));
+        }
+        if is_qwen35_chat_variant(model_variant) {
+            if let Some(control) = qwen35_multimodal_control_content(&multimodal) {
+                messages.push(ChatMessage {
+                    role: ChatRole::System,
+                    content: control,
+                });
+            }
         }
 
         match parsed_role {
@@ -534,14 +551,15 @@ fn build_input_messages(
 
 fn normalize_input_item(
     item: super::dto::ResponseInputItem,
-) -> Result<(String, String, bool), ApiError> {
+) -> Result<(String, String, bool, Vec<Qwen35MultimodalInput>), ApiError> {
     let role = item
         .role
         .unwrap_or_else(|| "user".to_string())
         .trim()
         .to_ascii_lowercase();
 
-    let mut content = flatten_content(item.content);
+    let flattened = flatten_content(item.content)?;
+    let mut content = flattened.text;
     if role == "assistant"
         && item
             .tool_calls
@@ -563,29 +581,46 @@ fn normalize_input_item(
         ));
     }
 
-    Ok((role.clone(), content, role == "tool"))
+    Ok((role.clone(), content, role == "tool", flattened.multimodal))
 }
 
-fn flatten_content(content: Option<ResponseInputContent>) -> String {
+fn flatten_content(content: Option<ResponseInputContent>) -> Result<FlattenedContent, ApiError> {
     match content {
-        None => String::new(),
-        Some(ResponseInputContent::Text(text)) => text,
+        None => Ok(FlattenedContent::default()),
+        Some(ResponseInputContent::Text(text)) => Ok(FlattenedContent {
+            text,
+            multimodal: Vec::new(),
+        }),
         Some(ResponseInputContent::Parts(parts)) => {
-            let mut out = String::new();
+            let mut out = FlattenedContent::default();
             for part in parts {
                 if content_part_is_image(&part) {
-                    out.push_str(QWEN_VISION_IMAGE_TOKEN);
+                    out.text.push_str(QWEN_VISION_IMAGE_TOKEN);
+                    let media =
+                        media_from_part(&part, Qwen35MultimodalKind::Image).ok_or_else(|| {
+                            ApiError::bad_request(
+                                "Image content part is missing a usable source URL/data",
+                            )
+                        })?;
+                    out.multimodal.push(media);
                     continue;
                 }
                 if content_part_is_video(&part) {
-                    out.push_str(QWEN_VISION_VIDEO_TOKEN);
+                    out.text.push_str(QWEN_VISION_VIDEO_TOKEN);
+                    let media =
+                        media_from_part(&part, Qwen35MultimodalKind::Video).ok_or_else(|| {
+                            ApiError::bad_request(
+                                "Video content part is missing a usable source URL/data",
+                            )
+                        })?;
+                    out.multimodal.push(media);
                     continue;
                 }
                 if let Some(text) = part.input_text.or(part.text) {
-                    out.push_str(&text);
+                    out.text.push_str(&text);
                 }
             }
-            out
+            Ok(out)
         }
     }
 }
@@ -620,7 +655,124 @@ fn content_part_is_video(part: &super::dto::ResponseInputContentPart) -> bool {
     ) {
         return true;
     }
-    part.video.is_some() || part.input_video.is_some()
+    part.video.is_some() || part.video_url.is_some() || part.input_video.is_some()
+}
+
+fn media_from_part(
+    part: &super::dto::ResponseInputContentPart,
+    kind: Qwen35MultimodalKind,
+) -> Option<Qwen35MultimodalInput> {
+    let source = match kind {
+        Qwen35MultimodalKind::Image => [
+            part.image_url.as_ref(),
+            part.input_image.as_ref(),
+            part.image.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|value| resolve_media_source(value, 3)),
+        Qwen35MultimodalKind::Video => [
+            part.video.as_ref(),
+            part.video_url.as_ref(),
+            part.input_video.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|value| resolve_media_source(value, 3)),
+    }?;
+
+    Some(Qwen35MultimodalInput { kind, source })
+}
+
+fn resolve_media_source(value: &serde_json::Value, max_depth: usize) -> Option<String> {
+    if max_depth == 0 {
+        return None;
+    }
+
+    match value {
+        serde_json::Value::String(raw) => {
+            let source = raw.trim();
+            if source.is_empty() {
+                None
+            } else {
+                Some(source.to_string())
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(source) = map
+                .get("url")
+                .and_then(|v| resolve_media_source(v, max_depth - 1))
+            {
+                return Some(source);
+            }
+            for key in [
+                "src",
+                "uri",
+                "path",
+                "file",
+                "image_url",
+                "video_url",
+                "input_image",
+                "input_video",
+            ] {
+                if let Some(source) = map
+                    .get(key)
+                    .and_then(|v| resolve_media_source(v, max_depth - 1))
+                {
+                    return Some(source);
+                }
+            }
+
+            if let Some(data_url) = map
+                .get("b64_json")
+                .and_then(|v| v.as_str())
+                .and_then(|b64| data_url_from_base64_field(b64, map))
+            {
+                return Some(data_url);
+            }
+
+            if let Some(data) = map.get("data").and_then(|v| v.as_str()) {
+                let data = data.trim();
+                if data.starts_with("data:")
+                    || data.starts_with("http://")
+                    || data.starts_with("https://")
+                    || data.starts_with("file://")
+                {
+                    return Some(data.to_string());
+                }
+
+                let is_base64 = map
+                    .get("encoding")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|encoding| encoding.eq_ignore_ascii_case("base64"));
+                if is_base64 {
+                    return data_url_from_base64_field(data, map);
+                }
+            }
+
+            None
+        }
+        _ => None,
+    }
+}
+
+fn data_url_from_base64_field(
+    b64: &str,
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    let payload = b64.trim();
+    if payload.is_empty() {
+        return None;
+    }
+    let mime = map
+        .get("mime_type")
+        .or_else(|| map.get("media_type"))
+        .or_else(|| map.get("content_type"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("application/octet-stream");
+    Some(format!("data:{mime};base64,{payload}"))
 }
 
 fn render_tool_calls_xml(tool_calls: &[serde_json::Value]) -> Result<String, ApiError> {
@@ -802,6 +954,7 @@ mod tests {
                 input_image: None,
                 image: None,
                 video: None,
+                video_url: None,
                 input_video: None,
             },
             ResponseInputContentPart {
@@ -812,10 +965,13 @@ mod tests {
                 input_image: None,
                 image: None,
                 video: None,
+                video_url: None,
                 input_video: None,
             },
-        ])));
-        assert_eq!(flattened, "part1part2");
+        ])))
+        .expect("flatten");
+        assert_eq!(flattened.text, "part1part2");
+        assert!(flattened.multimodal.is_empty());
     }
 
     #[test]
@@ -829,6 +985,7 @@ mod tests {
                 input_image: None,
                 image: None,
                 video: None,
+                video_url: None,
                 input_video: None,
             },
             ResponseInputContentPart {
@@ -839,6 +996,7 @@ mod tests {
                 input_image: None,
                 image: None,
                 video: None,
+                video_url: None,
                 input_video: None,
             },
             ResponseInputContentPart {
@@ -849,13 +1007,38 @@ mod tests {
                 input_image: None,
                 image: None,
                 video: Some(json!({"url":"https://example.com/clip.mp4"})),
+                video_url: None,
                 input_video: None,
             },
-        ])));
+        ])))
+        .expect("flatten");
         assert_eq!(
-            flattened,
+            flattened.text,
             format!("Look {QWEN_VISION_IMAGE_TOKEN}{QWEN_VISION_VIDEO_TOKEN}")
         );
+        assert_eq!(flattened.multimodal.len(), 2);
+        assert_eq!(flattened.multimodal[0].kind, Qwen35MultimodalKind::Image);
+        assert_eq!(flattened.multimodal[1].kind, Qwen35MultimodalKind::Video);
+    }
+
+    #[test]
+    fn flatten_content_rejects_multimodal_part_without_source() {
+        let err = flatten_content(Some(ResponseInputContent::Parts(vec![
+            ResponseInputContentPart {
+                kind: Some("image_url".to_string()),
+                text: None,
+                input_text: None,
+                image_url: Some(json!({})),
+                input_image: None,
+                image: None,
+                video: None,
+                video_url: None,
+                input_video: None,
+            },
+        ])))
+        .expect_err("missing source should fail");
+
+        assert!(err.message.contains("missing a usable source"));
     }
 
     #[test]
@@ -865,10 +1048,11 @@ mod tests {
             content: Some(ResponseInputContent::Text("hello".to_string())),
             tool_calls: None,
         };
-        let (role, text, is_tool) = normalize_input_item(item).expect("normalize");
+        let (role, text, is_tool, multimodal) = normalize_input_item(item).expect("normalize");
         assert_eq!(role, "user");
         assert_eq!(text, "hello");
         assert!(!is_tool);
+        assert!(multimodal.is_empty());
     }
 
     #[test]
@@ -885,9 +1069,11 @@ mod tests {
             })]),
         };
 
-        let (role, content, is_tool) = normalize_input_item(item).expect("normalize tool call");
+        let (role, content, is_tool, multimodal) =
+            normalize_input_item(item).expect("normalize tool call");
         assert_eq!(role, "assistant");
         assert!(!is_tool);
+        assert!(multimodal.is_empty());
         assert!(content.contains("<tool_call>"));
         assert!(content.contains("<function=get_weather>"));
         assert!(content.contains("<parameter=city>"));
@@ -906,6 +1092,7 @@ mod tests {
                     input_image: None,
                     image: None,
                     video: None,
+                    video_url: None,
                     input_video: None,
                 },
             ])),

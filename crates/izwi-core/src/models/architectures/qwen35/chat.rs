@@ -3,7 +3,7 @@
 //! Qwen3.5 chat checkpoints use a hybrid architecture (full-attention + linear-attention)
 //! with `model_type = qwen3_5` and text weights under `model.language_model.*`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -18,9 +18,11 @@ use tracing::info;
 
 use crate::error::{Error, Result};
 use crate::models::architectures::qwen3::core::{build_rope_cache, causal_mask};
+use crate::models::architectures::qwen35::vision::Qwen35VisionRuntime;
 use crate::models::shared::chat::{
-    parse_qwen35_thinking_control_content, parse_qwen35_tools_control_content, ChatMessage,
-    ChatRole,
+    parse_qwen35_multimodal_control_content, parse_qwen35_thinking_control_content,
+    parse_qwen35_tools_control_content, ChatMessage, ChatRole, Qwen35MultimodalInput,
+    Qwen35MultimodalKind,
 };
 use crate::models::shared::device::DeviceProfile;
 use crate::models::shared::weights::mlx;
@@ -58,6 +60,8 @@ pub struct ChatDecodeStep {
 struct SpecialTokenIds {
     im_start: u32,
     im_end: u32,
+    image_pad: u32,
+    video_pad: u32,
     eos: u32,
     eos_alt: Option<u32>,
 }
@@ -110,6 +114,12 @@ impl ChatTokenizer {
             .and_then(id_for)
             .unwrap_or(im_end);
         let eos_alt = id_for("<|endoftext|>");
+        let image_pad = id_for(QWEN_IMAGE_PAD_TOKEN).ok_or_else(|| {
+            Error::TokenizationError("Missing <|image_pad|> token id".to_string())
+        })?;
+        let video_pad = id_for(QWEN_VIDEO_PAD_TOKEN).ok_or_else(|| {
+            Error::TokenizationError("Missing <|video_pad|> token id".to_string())
+        })?;
 
         Ok(Self {
             inner,
@@ -117,6 +127,8 @@ impl ChatTokenizer {
             specials: SpecialTokenIds {
                 im_start,
                 im_end,
+                image_pad,
+                video_pad,
                 eos,
                 eos_alt,
             },
@@ -1108,7 +1120,21 @@ impl Qwen35Model {
         start_pos: usize,
         cache: Option<&mut Qwen35Cache>,
     ) -> Result<Tensor> {
-        let mut x = self.embed_tokens.forward(input_ids)?;
+        let embeds = self.embeddings(input_ids)?;
+        self.forward_with_embeds(&embeds, start_pos, cache)
+    }
+
+    fn embeddings(&self, input_ids: &Tensor) -> Result<Tensor> {
+        self.embed_tokens.forward(input_ids).map_err(Error::from)
+    }
+
+    fn forward_with_embeds(
+        &self,
+        embeds: &Tensor,
+        start_pos: usize,
+        cache: Option<&mut Qwen35Cache>,
+    ) -> Result<Tensor> {
+        let mut x = embeds.clone();
 
         let mut cache = cache;
         for (idx, layer) in self.layers.iter().enumerate() {
@@ -1129,10 +1155,18 @@ impl Qwen35Model {
     }
 }
 
-#[derive(Debug, Clone)]
 enum Qwen35VisionSupport {
     MissingProjector,
-    ProjectorDiscovered { path: PathBuf },
+    Ready {
+        path: PathBuf,
+        runtime: Qwen35VisionRuntime,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct PromptBuildOutput {
+    ids: Vec<u32>,
+    multimodal: Vec<Qwen35MultimodalInput>,
 }
 
 pub struct Qwen35ChatModel {
@@ -1154,6 +1188,7 @@ impl Qwen35ChatModel {
         let config_path = model_dir.join("config.json");
         let config_str = fs::read_to_string(config_path)?;
         let config = parse_qwen35_config(&config_str)?;
+        let projection_dim = config.hidden_size;
 
         let tokenizer = ChatTokenizer::load(model_dir, Some(config.vocab_size))?;
 
@@ -1193,6 +1228,19 @@ impl Qwen35ChatModel {
         };
 
         let text_model = Qwen35Model::load(config, vb)?;
+        let vision_support = if let Some(mmproj_path) = find_mmproj_gguf(model_dir)? {
+            let runtime = Qwen35VisionRuntime::load(&mmproj_path, &device, dtype, projection_dim)?;
+            info!(
+                "Loaded Qwen3.5 multimodal projector runtime from {}",
+                mmproj_path.display()
+            );
+            Qwen35VisionSupport::Ready {
+                path: mmproj_path,
+                runtime,
+            }
+        } else {
+            Qwen35VisionSupport::MissingProjector
+        };
 
         info!(
             "Loaded Qwen3.5 chat model on {:?} with dtype {:?}",
@@ -1203,7 +1251,7 @@ impl Qwen35ChatModel {
             device,
             tokenizer,
             text_model,
-            vision_support: Qwen35VisionSupport::MissingProjector,
+            vision_support,
         })
     }
 
@@ -1212,6 +1260,7 @@ impl Qwen35ChatModel {
         let content = gguf_file::Content::read(&mut reader)
             .map_err(|e| Error::ModelLoadError(format!("Failed to parse GGUF header: {e}")))?;
         let config = parse_qwen35_gguf_config(&content)?;
+        let projection_dim = config.hidden_size;
 
         let tokenizer = ChatTokenizer::load(model_dir, Some(config.vocab_size))?;
 
@@ -1465,11 +1514,15 @@ impl Qwen35ChatModel {
         let vb = VarBuilder::from_tensors(tensors, dtype, &device.device);
         let text_model = Qwen35Model::load(config, vb)?;
         let vision_support = if let Some(mmproj_path) = find_mmproj_gguf(model_dir)? {
+            let runtime = Qwen35VisionRuntime::load(&mmproj_path, &device, dtype, projection_dim)?;
             info!(
-                "Detected Qwen3.5 projector artifact at {} (vision runtime phase-2 pending)",
+                "Loaded Qwen3.5 multimodal projector runtime from {}",
                 mmproj_path.display()
             );
-            Qwen35VisionSupport::ProjectorDiscovered { path: mmproj_path }
+            Qwen35VisionSupport::Ready {
+                path: mmproj_path,
+                runtime,
+            }
         } else {
             Qwen35VisionSupport::MissingProjector
         };
@@ -1527,20 +1580,24 @@ impl Qwen35ChatModel {
         messages: &[ChatMessage],
         max_new_tokens: usize,
     ) -> Result<ChatDecodeState> {
-        let prompt_ids = self.build_prompt(messages)?;
-        let input_ids = Tensor::from_vec(
-            prompt_ids.clone(),
-            (1, prompt_ids.len()),
-            &self.device.device,
-        )?;
-
+        let prompt = self.build_prompt(messages)?;
         let mut cache = self.text_model.new_cache();
-        let logits = self.text_model.forward(&input_ids, 0, Some(&mut cache))?;
+        let logits = if prompt.multimodal.is_empty() {
+            let input_ids = Tensor::from_vec(
+                prompt.ids.clone(),
+                (1, prompt.ids.len()),
+                &self.device.device,
+            )?;
+            self.text_model.forward(&input_ids, 0, Some(&mut cache))?
+        } else {
+            self.prefill_with_multimodal(&prompt.ids, &prompt.multimodal, &mut cache)?
+        };
+        let pos = logits.dim(1)?;
 
         Ok(ChatDecodeState {
             cache,
             logits,
-            pos: prompt_ids.len(),
+            pos,
             generated_ids: Vec::new(),
             assembled: String::new(),
             max_new_tokens: max_new_tokens.max(1),
@@ -1602,34 +1659,133 @@ impl Qwen35ChatModel {
         true
     }
 
-    fn build_prompt(&self, messages: &[ChatMessage]) -> Result<Vec<u32>> {
-        self.ensure_multimodal_ready(messages)?;
-        build_qwen35_prompt_ids(&self.tokenizer, messages)
+    fn build_prompt(&self, messages: &[ChatMessage]) -> Result<PromptBuildOutput> {
+        let prompt = build_qwen35_prompt_ids(&self.tokenizer, messages)?;
+        self.ensure_multimodal_ready(&prompt)?;
+        Ok(prompt)
     }
 
-    fn ensure_multimodal_ready(&self, messages: &[ChatMessage]) -> Result<()> {
-        if !messages_contain_vision_placeholders(messages) {
+    fn ensure_multimodal_ready(&self, prompt: &PromptBuildOutput) -> Result<()> {
+        let placeholder_count = prompt
+            .ids
+            .iter()
+            .filter(|&&id| {
+                id == self.tokenizer.specials.image_pad || id == self.tokenizer.specials.video_pad
+            })
+            .count();
+        let media_count = prompt.multimodal.len();
+
+        if placeholder_count == 0 && media_count == 0 {
             return Ok(());
+        }
+        if placeholder_count == 0 && media_count > 0 {
+            return Err(Error::InvalidInput(
+                "Qwen3.5 multimodal control payloads were provided, but no <|image_pad|>/<|video_pad|> placeholders were found in the prompt."
+                    .to_string(),
+            ));
+        }
+        if placeholder_count > 0 && media_count == 0 {
+            return Err(Error::InvalidInput(
+                "Qwen3.5 multimodal placeholders are present, but no media payloads were provided. Submit image/video parts (not placeholders only)."
+                    .to_string(),
+            ));
+        }
+        if placeholder_count != media_count {
+            return Err(Error::InvalidInput(format!(
+                "Qwen3.5 multimodal placeholder/media mismatch: prompt has {placeholder_count} placeholders, but {media_count} media payloads were provided."
+            )));
         }
 
         match &self.vision_support {
             Qwen35VisionSupport::MissingProjector => Err(Error::InvalidInput(
                 "Qwen3.5 multimodal input requested, but projector weights are missing. Download `mmproj-F16.gguf` for this model variant first.".to_string(),
             )),
-            Qwen35VisionSupport::ProjectorDiscovered { path } => Err(Error::InvalidInput(
-                format!(
-                    "Qwen3.5 multimodal input requested and projector `{}` is available, but vision embedding runtime is not enabled in this build yet (phase 2 pending).",
-                    path.display()
-                ),
-            )),
+            Qwen35VisionSupport::Ready { .. } => Ok(()),
         }
+    }
+
+    fn prefill_with_multimodal(
+        &self,
+        prompt_ids: &[u32],
+        multimodal: &[Qwen35MultimodalInput],
+        cache: &mut Qwen35Cache,
+    ) -> Result<Tensor> {
+        let runtime = match &self.vision_support {
+            Qwen35VisionSupport::Ready { runtime, .. } => runtime,
+            Qwen35VisionSupport::MissingProjector => {
+                return Err(Error::InvalidInput(
+                    "Qwen3.5 multimodal input requested, but projector weights are missing."
+                        .to_string(),
+                ))
+            }
+        };
+
+        let input_ids = Tensor::from_vec(
+            prompt_ids.to_vec(),
+            (1, prompt_ids.len()),
+            &self.device.device,
+        )?;
+        let input_embeds = self.text_model.embeddings(&input_ids)?;
+
+        let placeholder_positions = prompt_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &id)| {
+                if id == self.tokenizer.specials.image_pad {
+                    Some((idx, Qwen35MultimodalKind::Image))
+                } else if id == self.tokenizer.specials.video_pad {
+                    Some((idx, Qwen35MultimodalKind::Video))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if placeholder_positions.len() != multimodal.len() {
+            return Err(Error::InvalidInput(format!(
+                "Qwen3.5 multimodal placeholder/media mismatch during prefill: placeholders={}, media={}",
+                placeholder_positions.len(),
+                multimodal.len()
+            )));
+        }
+
+        let mut visual_embeds = Vec::with_capacity(multimodal.len());
+        for media in multimodal {
+            visual_embeds.push(runtime.encode_media(media)?);
+        }
+
+        let mut merged = Vec::with_capacity(placeholder_positions.len() * 2 + 1);
+        let mut start = 0usize;
+        for ((position, placeholder_kind), (media, visual)) in placeholder_positions
+            .iter()
+            .zip(multimodal.iter().zip(visual_embeds.iter()))
+        {
+            if *placeholder_kind != media.kind {
+                return Err(Error::InvalidInput(format!(
+                    "Qwen3.5 multimodal kind mismatch at placeholder {}: prompt expects {:?}, payload is {:?}",
+                    position, placeholder_kind, media.kind
+                )));
+            }
+            if *position > start {
+                merged.push(input_embeds.narrow(1, start, position - start)?);
+            }
+            merged.push(visual.unsqueeze(0)?);
+            start = position + 1;
+        }
+        if start < prompt_ids.len() {
+            merged.push(input_embeds.narrow(1, start, prompt_ids.len() - start)?);
+        }
+
+        let fused_embeds = Tensor::cat(&merged, 1)?;
+        self.text_model
+            .forward_with_embeds(&fused_embeds, 0, Some(cache))
     }
 }
 
 fn build_qwen35_prompt_ids(
     tokenizer: &ChatTokenizer,
     messages: &[ChatMessage],
-) -> Result<Vec<u32>> {
+) -> Result<PromptBuildOutput> {
     if messages.is_empty() {
         return Err(Error::InvalidInput(
             "Chat request must include at least one message".to_string(),
@@ -1638,7 +1794,15 @@ fn build_qwen35_prompt_ids(
 
     let mut enable_thinking = None;
     let mut tools: Option<Vec<Value>> = None;
+    let mut pending_multimodal = VecDeque::<Vec<Qwen35MultimodalInput>>::new();
     let mut prompt_messages = Vec::with_capacity(messages.len());
+
+    #[derive(Clone)]
+    struct PromptMessageEntry {
+        message: ChatMessage,
+        multimodal: Vec<Qwen35MultimodalInput>,
+    }
+
     for message in messages {
         if matches!(message.role, ChatRole::System) {
             if let Some(control) = parse_qwen35_thinking_control_content(&message.content) {
@@ -1651,17 +1815,32 @@ fn build_qwen35_prompt_ids(
                 }
                 continue;
             }
+            if let Some(control) = parse_qwen35_multimodal_control_content(&message.content) {
+                pending_multimodal.push_back(control);
+                continue;
+            }
         }
-        prompt_messages.push(message.clone());
+        let multimodal = pending_multimodal.pop_front().unwrap_or_default();
+        prompt_messages.push(PromptMessageEntry {
+            message: message.clone(),
+            multimodal,
+        });
+    }
+    if !pending_multimodal.is_empty() {
+        return Err(Error::InvalidInput(
+            "Qwen3.5 multimodal control payloads were provided without a following chat message."
+                .to_string(),
+        ));
     }
 
     let mut ids = Vec::new();
+    let mut multimodal = Vec::new();
     let mut consumed_first_system = false;
     if let Some(tools) = tools.as_ref().filter(|entries| !entries.is_empty()) {
-        let first_system = prompt_messages.first().and_then(|message| {
-            if matches!(message.role, ChatRole::System) {
+        let first_system = prompt_messages.first().and_then(|entry| {
+            if matches!(entry.message.role, ChatRole::System) {
                 consumed_first_system = true;
-                Some(message.content.trim().to_string())
+                Some(entry.message.content.trim().to_string())
             } else {
                 None
             }
@@ -1676,35 +1855,45 @@ fn build_qwen35_prompt_ids(
             ids.extend(tokenizer.encode_text("\n")?);
         }
     } else if !matches!(
-        prompt_messages.first().map(|m| &m.role),
+        prompt_messages.first().map(|m| &m.message.role),
         Some(ChatRole::System)
     ) {
         prompt_messages.insert(
             0,
-            ChatMessage {
-                role: ChatRole::System,
-                content: "You are a helpful assistant.".to_string(),
+            PromptMessageEntry {
+                message: ChatMessage {
+                    role: ChatRole::System,
+                    content: "You are a helpful assistant.".to_string(),
+                },
+                multimodal: Vec::new(),
             },
         );
     }
 
     let iter_start = if consumed_first_system { 1 } else { 0 };
-    for message in prompt_messages.iter().skip(iter_start) {
-        let content = if matches!(message.role, ChatRole::Assistant) {
-            strip_think_blocks(message.content.trim())
+    for entry in prompt_messages.iter().skip(iter_start) {
+        let content = if matches!(entry.message.role, ChatRole::Assistant) {
+            strip_think_blocks(entry.message.content.trim())
         } else {
-            message.content.trim().to_string()
+            entry.message.content.trim().to_string()
         };
 
         if content.is_empty() {
+            if !entry.multimodal.is_empty() {
+                return Err(Error::InvalidInput(
+                    "Qwen3.5 multimodal control payload is attached to an empty message."
+                        .to_string(),
+                ));
+            }
             continue;
         }
 
         ids.push(tokenizer.specials.im_start);
-        ids.extend(tokenizer.encode_text(&format!("{}\n", message.role.as_prompt_role()))?);
+        ids.extend(tokenizer.encode_text(&format!("{}\n", entry.message.role.as_prompt_role()))?);
         ids.extend(tokenizer.encode_text(&content)?);
         ids.push(tokenizer.specials.im_end);
         ids.extend(tokenizer.encode_text("\n")?);
+        multimodal.extend(entry.multimodal.iter().cloned());
     }
 
     ids.push(tokenizer.specials.im_start);
@@ -1715,7 +1904,7 @@ fn build_qwen35_prompt_ids(
         ids.extend(tokenizer.encode_text("<think>\n\n</think>\n\n")?);
     }
 
-    Ok(ids)
+    Ok(PromptBuildOutput { ids, multimodal })
 }
 
 fn qwen35_tools_system_content(tools: &[Value], first_system_content: Option<&str>) -> String {
@@ -2486,7 +2675,10 @@ fn find_single_safetensor(model_dir: &Path) -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::shared::chat::qwen35_thinking_control_content;
+    use crate::models::shared::chat::{
+        qwen35_multimodal_control_content, qwen35_thinking_control_content, Qwen35MultimodalInput,
+        Qwen35MultimodalKind,
+    };
     use crate::models::shared::device::DeviceSelector;
     use serde_json::json;
 
@@ -2596,8 +2788,50 @@ mod tests {
                 .expect("encode disabled suffix"),
         );
 
-        assert!(enabled_prompt.ends_with(&enabled_suffix));
-        assert!(disabled_prompt.ends_with(&disabled_suffix));
-        assert!(no_control_prompt.ends_with(&disabled_suffix));
+        assert!(enabled_prompt.ids.ends_with(&enabled_suffix));
+        assert!(disabled_prompt.ids.ends_with(&disabled_suffix));
+        assert!(no_control_prompt.ids.ends_with(&disabled_suffix));
+    }
+
+    #[test]
+    fn qwen35_prompt_multimodal_control_if_env_set() {
+        let Some(model_dir) = std::env::var_os("IZWI_QWEN35_CHAT_MODEL_DIR") else {
+            return;
+        };
+        let tokenizer =
+            ChatTokenizer::load(Path::new(&model_dir), None).expect("load qwen3.5 tokenizer");
+
+        let multimodal = vec![Qwen35MultimodalInput {
+            kind: Qwen35MultimodalKind::Image,
+            source: "https://example.com/cat.png".to_string(),
+        }];
+        let control =
+            qwen35_multimodal_control_content(&multimodal).expect("build multimodal control");
+        let prompt = build_qwen35_prompt_ids(
+            &tokenizer,
+            &[
+                ChatMessage {
+                    role: ChatRole::System,
+                    content: control,
+                },
+                ChatMessage {
+                    role: ChatRole::User,
+                    content: format!(
+                        "Describe this image {QWEN_VISION_START_TOKEN}{QWEN_IMAGE_PAD_TOKEN}<|vision_end|>"
+                    ),
+                },
+            ],
+        )
+        .expect("build prompt with multimodal control");
+
+        assert_eq!(prompt.multimodal.len(), 1);
+        assert_eq!(prompt.multimodal[0].kind, Qwen35MultimodalKind::Image);
+        assert_eq!(prompt.multimodal[0].source, "https://example.com/cat.png");
+        let image_pad_count = prompt
+            .ids
+            .iter()
+            .filter(|&&id| id == tokenizer.specials.image_pad)
+            .count();
+        assert_eq!(image_pad_count, 1);
     }
 }

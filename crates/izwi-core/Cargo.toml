@@ -46,6 +46,7 @@ reqwest = { workspace = true }
 indicatif = { workspace = true }
 dirs = { workspace = true }
 base64 = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [features]
 default = []
