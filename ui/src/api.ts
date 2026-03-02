@@ -111,9 +111,29 @@ export interface ChatThreadUpdateRequest {
   title: string;
 }
 
+export interface ChatThreadContentPart {
+  type:
+    | "text"
+    | "input_text"
+    | "image_url"
+    | "input_image"
+    | "video"
+    | "video_url"
+    | "input_video";
+  text?: string;
+  input_text?: string;
+  image_url?: unknown;
+  input_image?: unknown;
+  image?: unknown;
+  video?: unknown;
+  video_url?: unknown;
+  input_video?: unknown;
+}
+
 export interface ChatThreadSendMessageRequest {
   model_id?: string;
   content: string;
+  content_parts?: ChatThreadContentPart[];
   max_tokens?: number;
   system_prompt?: string;
   enable_thinking?: boolean;
@@ -2384,6 +2404,7 @@ class ApiClient {
         body: JSON.stringify({
           model: request.model_id ?? "Qwen3-0.6B-4bit",
           content: request.content,
+          content_parts: request.content_parts,
           max_tokens: request.max_tokens,
           stream: false,
           system_prompt: request.system_prompt,
@@ -2412,6 +2433,7 @@ class ApiClient {
             body: JSON.stringify({
               model: request.model_id ?? "Qwen3-0.6B-4bit",
               content: request.content,
+              content_parts: request.content_parts,
               max_tokens: request.max_tokens,
               stream: true,
               system_prompt: request.system_prompt,

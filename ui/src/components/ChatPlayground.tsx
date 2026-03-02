@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Bot,
@@ -14,11 +21,21 @@ import {
   Trash2,
   MessageSquare,
   History,
+  Paperclip,
+  ImageIcon,
+  Film,
+  X,
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { api, ChatMessage, ChatThread, ChatThreadMessageRecord } from "../api";
+import {
+  api,
+  ChatMessage,
+  ChatThread,
+  ChatThreadContentPart,
+  ChatThreadMessageRecord,
+} from "../api";
 import { MarkdownContent } from "./ui/MarkdownContent";
 
 interface ModelOption {
@@ -53,6 +70,21 @@ const DEFAULT_SYSTEM_PROMPT: ChatMessage = {
 
 const DEFAULT_THREAD_TITLE = "New chat";
 const MAX_THREAD_TITLE_CHARS = 80;
+const MAX_MEDIA_ATTACHMENTS = 4;
+const MAX_MEDIA_ATTACHMENT_MB = 32;
+const MAX_MEDIA_ATTACHMENT_BYTES = MAX_MEDIA_ATTACHMENT_MB * 1024 * 1024;
+
+type ComposerMediaKind = "image" | "video";
+
+interface ComposerMediaItem {
+  id: string;
+  kind: ComposerMediaKind;
+  name: string;
+  size: number;
+  mimeType: string;
+  dataUrl: string;
+  previewUrl: string;
+}
 
 interface ParsedAssistantContent {
   thinking: string;
@@ -206,6 +238,92 @@ function isQwen35ChatModel(variant: string | null): boolean {
   return variant.trim().toLowerCase().startsWith("qwen3.5-");
 }
 
+function formatBytes(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let value = size;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = unitIndex === 0 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function createMediaItemId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `media-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error(`Failed reading ${file.name}`));
+    };
+    reader.onerror = () => {
+      reject(new Error(`Failed reading ${file.name}`));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function buildUserDisplayContent(
+  text: string,
+  mediaItems: ComposerMediaItem[],
+): string {
+  const lines: string[] = [];
+  if (text.trim()) {
+    lines.push(text.trim());
+  }
+  for (const item of mediaItems) {
+    const label = item.kind === "image" ? "[image]" : "[video]";
+    lines.push(`${label} ${item.name}`);
+  }
+  return lines.join("\n").trim();
+}
+
+function buildThreadContentParts(
+  text: string,
+  mediaItems: ComposerMediaItem[],
+): ChatThreadContentPart[] {
+  const parts: ChatThreadContentPart[] = [];
+  if (text.trim()) {
+    parts.push({
+      type: "text",
+      text: text.trim(),
+    });
+  }
+  for (const item of mediaItems) {
+    const mediaPayload = {
+      url: item.dataUrl,
+      media_type: item.mimeType || undefined,
+      name: item.name,
+    };
+    if (item.kind === "image") {
+      parts.push({
+        type: "input_image",
+        input_image: mediaPayload,
+      });
+      continue;
+    }
+    parts.push({
+      type: "input_video",
+      input_video: mediaPayload,
+    });
+  }
+  return parts;
+}
+
 interface GenerateTitleArgs {
   threadId: string;
   userContent: string;
@@ -232,6 +350,7 @@ export function ChatPlayground({
     Record<string, boolean>
   >({});
   const [input, setInput] = useState("");
+  const [mediaItems, setMediaItems] = useState<ComposerMediaItem[]>([]);
   const [isThinkingEnabled, setIsThinkingEnabled] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isPreparingThread, setIsPreparingThread] = useState(false);
@@ -257,6 +376,8 @@ export function ChatPlayground({
   const listEndRef = useRef<HTMLDivElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const mediaInputRef = useRef<HTMLInputElement | null>(null);
+  const mediaItemsRef = useRef<ComposerMediaItem[]>([]);
 
   const selectedOption = useMemo(() => {
     if (!selectedModel) {
@@ -412,6 +533,31 @@ export function ChatPlayground({
       }
     };
   }, []);
+
+  const revokeMediaPreviews = useCallback((items: ComposerMediaItem[]) => {
+    for (const item of items) {
+      if (item.previewUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(item.previewUrl);
+      }
+    }
+  }, []);
+
+  const clearMediaItems = useCallback(() => {
+    setMediaItems((previous) => {
+      revokeMediaPreviews(previous);
+      return [];
+    });
+  }, [revokeMediaPreviews]);
+
+  useEffect(() => {
+    mediaItemsRef.current = mediaItems;
+  }, [mediaItems]);
+
+  useEffect(() => {
+    return () => {
+      revokeMediaPreviews(mediaItemsRef.current);
+    };
+  }, [revokeMediaPreviews]);
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -576,10 +722,11 @@ export function ChatPlayground({
       setStats(null);
       setError(null);
       setInput("");
+      clearMediaItems();
     } catch (createError) {
       setError(getErrorMessage(createError, "Failed to create a new chat."));
     }
-  }, [isStreaming, selectedModel, setActiveThreadInUrl]);
+  }, [clearMediaItems, isStreaming, selectedModel, setActiveThreadInUrl]);
 
   const handleDeleteThread = useCallback(
     async (threadId: string) => {
@@ -606,14 +753,126 @@ export function ChatPlayground({
     [isStreaming, setActiveThreadInUrl],
   );
 
+  const removeMediaItem = useCallback(
+    (id: string) => {
+      setMediaItems((previous) => {
+        const item = previous.find((entry) => entry.id === id);
+        if (item && item.previewUrl.startsWith("blob:")) {
+          URL.revokeObjectURL(item.previewUrl);
+        }
+        return previous.filter((entry) => entry.id !== id);
+      });
+    },
+    [setMediaItems],
+  );
+
+  const handleSelectMedia = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      try {
+        const pickedFiles = Array.from(event.target.files ?? []);
+        event.target.value = "";
+        if (pickedFiles.length === 0) {
+          return;
+        }
+
+        const availableSlots = Math.max(0, MAX_MEDIA_ATTACHMENTS - mediaItems.length);
+        if (availableSlots <= 0) {
+          setError(`You can attach up to ${MAX_MEDIA_ATTACHMENTS} files per message.`);
+          return;
+        }
+
+        let unsupportedCount = 0;
+        let oversizeCount = 0;
+        const parsedItems: ComposerMediaItem[] = [];
+
+        for (const file of pickedFiles) {
+          const mime = file.type || "";
+          const kind: ComposerMediaKind | null = mime.startsWith("image/")
+            ? "image"
+            : mime.startsWith("video/")
+              ? "video"
+              : null;
+
+          if (!kind) {
+            unsupportedCount += 1;
+            continue;
+          }
+          if (file.size > MAX_MEDIA_ATTACHMENT_BYTES) {
+            oversizeCount += 1;
+            continue;
+          }
+
+          const dataUrl = await fileToDataUrl(file);
+          parsedItems.push({
+            id: createMediaItemId(),
+            kind,
+            name: file.name || `${kind}-attachment`,
+            size: file.size,
+            mimeType: mime,
+            dataUrl,
+            previewUrl: URL.createObjectURL(file),
+          });
+        }
+
+        if (parsedItems.length === 0) {
+          if (unsupportedCount > 0) {
+            setError("Only image and video files are supported for chat attachments.");
+            return;
+          }
+          if (oversizeCount > 0) {
+            setError(
+              `Attachments must be ${MAX_MEDIA_ATTACHMENT_MB} MB or smaller per file.`,
+            );
+            return;
+          }
+        }
+
+        const acceptedItems = parsedItems.slice(0, availableSlots);
+        const droppedItems = parsedItems.slice(availableSlots);
+        revokeMediaPreviews(droppedItems);
+        setMediaItems((previous) => [...previous, ...acceptedItems]);
+
+        if (
+          pickedFiles.length > availableSlots ||
+          unsupportedCount > 0 ||
+          oversizeCount > 0
+        ) {
+          const warnings: string[] = [];
+          if (pickedFiles.length > availableSlots) {
+            warnings.push(`Only ${availableSlots} attachment slot(s) were available.`);
+          }
+          if (unsupportedCount > 0) {
+            warnings.push(`${unsupportedCount} file(s) were not image/video.`);
+          }
+          if (oversizeCount > 0) {
+            warnings.push(
+              `${oversizeCount} file(s) exceeded ${MAX_MEDIA_ATTACHMENT_MB} MB.`,
+            );
+          }
+          setError(warnings.join(" "));
+        } else {
+          setError(null);
+        }
+      } catch (error) {
+        setError(getErrorMessage(error, "Failed to read selected media files."));
+      }
+    },
+    [mediaItems.length, revokeMediaPreviews],
+  );
+
   const sendMessage = async () => {
     const text = input.trim();
-    if (!text || isStreaming || isPreparingThread) {
+    if ((!text && mediaItems.length === 0) || isStreaming || isPreparingThread) {
       return;
     }
 
     if (!selectedModel || !selectedModelReady) {
       onModelRequired();
+      return;
+    }
+
+    if (mediaItems.length > 0 && !isQwen35ChatModel(selectedModel)) {
+      setError("Image/video chat is currently supported only on Qwen3.5 models.");
       return;
     }
 
@@ -654,11 +913,13 @@ export function ChatPlayground({
     const userTempId = `tmp-user-${timestamp}`;
     const assistantTempId = `tmp-assistant-${timestamp}`;
 
+    const userDisplayContent = buildUserDisplayContent(text, mediaItems);
+    const contentParts = buildThreadContentParts(text, mediaItems);
     const optimisticUserMessage: ChatThreadMessageRecord = {
       id: userTempId,
       thread_id: targetThreadId,
       role: "user",
-      content: text,
+      content: userDisplayContent,
       created_at: timestamp,
       tokens_generated: null,
       generation_time_ms: null,
@@ -689,6 +950,7 @@ export function ChatPlayground({
       optimisticAssistantMessage,
     ]);
     setInput("");
+    clearMediaItems();
     setIsStreaming(true);
     setStreamingThreadId(targetThreadId);
 
@@ -697,6 +959,7 @@ export function ChatPlayground({
       {
         model_id: selectedModel,
         content: text,
+        content_parts: contentParts,
         system_prompt: systemPrompt,
         enable_thinking: qwen35ThinkingControl,
       },
@@ -776,7 +1039,7 @@ export function ChatPlayground({
           if (isFirstTurn) {
             void maybeGenerateThreadTitle({
               threadId: targetThreadId,
-              userContent: text,
+              userContent: userDisplayContent,
               assistantContent: assistantMessage.content,
               modelId,
             });
@@ -896,6 +1159,73 @@ export function ChatPlayground({
         centered && "max-w-3xl mx-auto shadow-md",
       )}
     >
+      {mediaItems.length > 0 && (
+        <div className="px-4 pt-3 pb-2 border-b border-[var(--border-muted)] bg-muted/20">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <p className="text-[11px] font-medium text-muted-foreground">
+              Attachments ({mediaItems.length}/{MAX_MEDIA_ATTACHMENTS})
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={clearMediaItems}
+              disabled={isStreaming || isPreparingThread}
+              className="h-7 px-2 text-[11px] text-muted-foreground"
+            >
+              Clear
+            </Button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {mediaItems.map((item) => (
+              <div
+                key={item.id}
+                className="relative w-[92px] h-[92px] rounded-md border border-[var(--border-muted)] overflow-hidden bg-muted/40"
+              >
+                {item.kind === "image" ? (
+                  <img
+                    src={item.previewUrl}
+                    alt={item.name}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <>
+                    <video
+                      src={item.previewUrl}
+                      className="w-full h-full object-cover"
+                      preload="metadata"
+                      muted
+                    />
+                    <div className="absolute inset-0 bg-black/25 flex items-center justify-center">
+                      <Film className="w-4 h-4 text-white" />
+                    </div>
+                  </>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removeMediaItem(item.id)}
+                  disabled={isStreaming || isPreparingThread}
+                  className="absolute top-1 right-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-black/40 bg-black/70 text-white transition-colors hover:bg-black/90 disabled:opacity-50"
+                  title={`Remove ${item.name}`}
+                >
+                  <X className="w-3 h-3" />
+                </button>
+                <div className="absolute left-0 right-0 bottom-0 bg-black/65 px-1.5 py-1 text-[10px] leading-tight text-white">
+                  <p className="truncate inline-flex items-center gap-1">
+                    {item.kind === "image" ? (
+                      <ImageIcon className="w-3 h-3 shrink-0" />
+                    ) : (
+                      <Film className="w-3 h-3 shrink-0" />
+                    )}
+                    <span className="truncate">{item.name}</span>
+                  </p>
+                  <p className="text-white/80">{formatBytes(item.size)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <textarea
         ref={textareaRef}
         value={input}
@@ -924,6 +1254,21 @@ export function ChatPlayground({
 
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-3 pt-1">
         <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => mediaInputRef.current?.click()}
+            disabled={
+              isStreaming ||
+              isPreparingThread ||
+              mediaItems.length >= MAX_MEDIA_ATTACHMENTS
+            }
+            className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+            title="Attach image or video"
+          >
+            <Paperclip className="w-3.5 h-3.5" />
+            Add Media
+          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -961,7 +1306,10 @@ export function ChatPlayground({
 
           <Button
             onClick={isStreaming ? stopStreaming : () => void sendMessage()}
-            disabled={isPreparingThread || (!isStreaming && !input.trim())}
+            disabled={
+              isPreparingThread ||
+              (!isStreaming && !input.trim() && mediaItems.length === 0)
+            }
             variant={isStreaming ? "destructive" : "default"}
             size="sm"
             className="h-9 gap-1.5 font-medium px-4"
@@ -986,6 +1334,14 @@ export function ChatPlayground({
 
   return (
     <div className="relative flex flex-col lg:flex-row gap-4 h-[calc(100dvh-12rem)] lg:h-[calc(100dvh-11.75rem)]">
+      <input
+        ref={mediaInputRef}
+        type="file"
+        accept="image/*,video/*"
+        multiple
+        onChange={handleSelectMedia}
+        className="hidden"
+      />
       <aside className="w-full lg:w-80 lg:min-w-[20rem] max-h-[38dvh] lg:max-h-none shrink-0 card border-[var(--border-muted)] p-4 sm:p-5 flex flex-col overflow-hidden">
         <div className="flex items-start justify-between gap-3 mb-3">
           <div>
