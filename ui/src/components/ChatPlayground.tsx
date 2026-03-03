@@ -30,6 +30,11 @@ import { useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   api,
   ChatMessage,
   ChatThread,
@@ -106,6 +111,11 @@ interface ParsedUserAttachment {
 interface ParsedUserMessageDisplay {
   text: string;
   attachments: ParsedUserAttachment[];
+}
+
+interface ImagePreviewState {
+  source: string;
+  label: string;
 }
 
 function parseAssistantContent(
@@ -613,6 +623,9 @@ export function ChatPlayground({
     generation_time_ms: number;
   } | null>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
+  const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(
+    null,
+  );
 
   const initializedRef = useRef(false);
   const activeThreadIdRef = useRef<string | null>(null);
@@ -1893,12 +1906,16 @@ export function ChatPlayground({
                                             >
                                               {attachment.kind === "image" &&
                                               attachment.source ? (
-                                                <a
-                                                  href={attachment.source}
-                                                  target="_blank"
-                                                  rel="noreferrer"
-                                                  title={attachment.label}
-                                                  className="block h-16 w-16 overflow-hidden rounded-md border border-primary-foreground/20 bg-primary-foreground/10 hover:bg-primary-foreground/15 transition-colors"
+                                                <button
+                                                  type="button"
+                                                  onClick={() =>
+                                                    setImagePreview({
+                                                      source: attachment.source!,
+                                                      label: attachment.label,
+                                                    })
+                                                  }
+                                                  title={`Open ${attachment.label}`}
+                                                  className="block h-16 w-16 overflow-hidden rounded-md border border-primary-foreground/20 bg-primary-foreground/10 hover:bg-primary-foreground/15 transition-colors focus:outline-none focus:ring-2 focus:ring-primary-foreground/70"
                                                 >
                                                   <img
                                                     src={attachment.source}
@@ -1906,7 +1923,7 @@ export function ChatPlayground({
                                                     loading="lazy"
                                                     className="h-full w-full object-cover"
                                                   />
-                                                </a>
+                                                </button>
                                               ) : (
                                                 <div className="inline-flex max-w-[220px] items-center gap-1.5 rounded-md border border-primary-foreground/20 bg-primary-foreground/10 px-2 py-1 text-xs text-primary-foreground/90">
                                                   {attachment.kind ===
@@ -2048,6 +2065,30 @@ export function ChatPlayground({
           </div>
         )}
       </div>
+
+      <Dialog
+        open={!!imagePreview}
+        onOpenChange={(open) => {
+          if (!open) {
+            setImagePreview(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-[min(92vw,1100px)] p-3 sm:p-4 bg-background/98 border-[var(--border-muted)]">
+          <DialogTitle className="sr-only">
+            {imagePreview?.label || "Image preview"}
+          </DialogTitle>
+          {imagePreview && (
+            <div className="flex max-h-[80vh] items-center justify-center overflow-auto rounded-lg border border-[var(--border-muted)] bg-muted/20 p-2">
+              <img
+                src={imagePreview.source}
+                alt={imagePreview.label}
+                className="max-h-[76vh] w-auto max-w-full rounded object-contain"
+              />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
