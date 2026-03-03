@@ -2586,6 +2586,16 @@ impl Qwen35ChatModel {
         let delta = text_delta(&state.assembled, &decoded);
         state.assembled = decoded;
 
+        if has_token_repetition_loop(&state.generated_ids) {
+            state.finished = true;
+            return Ok(ChatDecodeStep {
+                delta,
+                text: state.assembled.trim().to_string(),
+                tokens_generated: state.generated_ids.len(),
+                finished: true,
+            });
+        }
+
         let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
         state.logits = self.forward_text(&next_tensor, state.pos, Some(&mut state.cache))?;
         state.pos += 1;
@@ -3112,6 +3122,30 @@ fn text_delta(previous: &str, current: &str) -> String {
         .take_while(|(a, b)| a == b)
         .count();
     current.chars().skip(common).collect()
+}
+
+fn has_suffix_repeat(ids: &[u32], span: usize, repeats: usize) -> bool {
+    if span == 0 || repeats < 2 || ids.len() < span * repeats {
+        return false;
+    }
+    let tail_start = ids.len() - span;
+    let tail = &ids[tail_start..];
+    (2..=repeats).all(|rep| {
+        let start = ids.len() - (span * rep);
+        &ids[start..start + span] == tail
+    })
+}
+
+fn has_token_repetition_loop(ids: &[u32]) -> bool {
+    // Catch common degenerate loops from greedy decode where the same token span
+    // is emitted repeatedly (frequent in tiny reasoning models).
+    if ids.len() < 48 {
+        return false;
+    }
+    const PATTERNS: &[(usize, usize)] = &[(24, 3), (16, 3), (12, 3), (8, 4), (6, 5)];
+    PATTERNS
+        .iter()
+        .any(|(span, repeats)| has_suffix_repeat(ids, *span, *repeats))
 }
 
 fn gguf_md_get<'a>(content: &'a gguf_file::Content, key: &str) -> Result<&'a gguf_file::Value> {
@@ -3896,5 +3930,23 @@ mod tests {
         let input = "reasoning line one\nreasoning line two</think>\n\nFinal answer.";
         let stripped = strip_think_blocks(input);
         assert_eq!(stripped, "Final answer.");
+    }
+
+    #[test]
+    fn detects_token_repetition_loop() {
+        let mut ids = Vec::new();
+        let phrase = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        for _ in 0..5 {
+            ids.extend(phrase.iter().copied());
+        }
+        // Pad a little prefix so the minimum-length guard is satisfied.
+        ids.splice(0..0, vec![42; 16]);
+        assert!(has_token_repetition_loop(&ids));
+    }
+
+    #[test]
+    fn does_not_flag_short_sequences_as_loop() {
+        let ids: Vec<u32> = (1..30).collect();
+        assert!(!has_token_repetition_loop(&ids));
     }
 }
