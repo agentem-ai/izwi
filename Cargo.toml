@@ -66,6 +66,7 @@ reqwest = { version = "0.11", features = ["json", "stream", "blocking"] }
 indicatif = "0.17"
 dirs = "5.0"
 sha2 = "0.10"
+memmap2 = "0.9.10"
 
 # Configuration
 config = "0.14"
