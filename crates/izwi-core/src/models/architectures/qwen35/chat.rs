@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -13,13 +13,21 @@ use candle_core::quantized::{gguf_file, GgmlDType, QMatMul, QTensor};
 use candle_core::{DType, IndexOp, Tensor, D};
 use candle_nn::{ops, Conv1d, Conv1dConfig, Embedding, Linear, Module, VarBuilder};
 use candle_transformers::utils::repeat_kv as candle_repeat_kv;
+use memmap2::MmapOptions;
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::error::{Error, Result};
 use crate::models::architectures::qwen3::core::{build_rope_cache, causal_mask};
 use crate::models::architectures::qwen35::vision::Qwen35VisionRuntime;
+use crate::models::shared::attention::flash::{
+    flash_attention_requested, try_fused_self_attention,
+};
+use crate::models::shared::attention::paged::{
+    append_to_pages, default_kv_page_size, default_kv_quantization, materialize_pages,
+    paged_decode_attention, KvCacheQuantization, KvPage,
+};
 use crate::models::shared::chat::{
     parse_qwen35_multimodal_control_content, parse_qwen35_thinking_control_content,
     parse_qwen35_tools_control_content, ChatMessage, ChatRole, Qwen35MultimodalInput,
@@ -321,8 +329,10 @@ fn parse_qwen35_config(config_str: &str) -> Result<Qwen35TextConfig> {
 
 enum Qwen35LayerCache {
     Full {
-        k: Option<Tensor>,
-        v: Option<Tensor>,
+        k_pages: Vec<KvPage>,
+        v_pages: Vec<KvPage>,
+        page_size: usize,
+        quantization: KvCacheQuantization,
     },
     Linear {
         conv_state: Option<Tensor>,
@@ -336,10 +346,17 @@ struct Qwen35Cache {
 
 impl Qwen35Cache {
     fn new(layer_types: &[LayerType]) -> Self {
+        let page_size = default_kv_page_size();
+        let quantization = default_kv_quantization();
         let layers = layer_types
             .iter()
             .map(|layer_type| match layer_type {
-                LayerType::FullAttention => Qwen35LayerCache::Full { k: None, v: None },
+                LayerType::FullAttention => Qwen35LayerCache::Full {
+                    k_pages: Vec::new(),
+                    v_pages: Vec::new(),
+                    page_size,
+                    quantization,
+                },
                 LayerType::LinearAttention => Qwen35LayerCache::Linear {
                     conv_state: None,
                     recurrent_state: None,
@@ -352,6 +369,53 @@ impl Qwen35Cache {
     fn layer_mut(&mut self, idx: usize) -> Result<&mut Qwen35LayerCache> {
         self.layers.get_mut(idx).ok_or_else(|| {
             Error::InferenceError(format!("Invalid Qwen3.5 cache layer index: {idx}"))
+        })
+    }
+}
+
+#[derive(Clone)]
+struct Qwen35FullAttentionContext {
+    cos: Option<Tensor>,  // [1, 1, seq, rotary_dim]
+    sin: Option<Tensor>,  // [1, 1, seq, rotary_dim]
+    mask: Option<Tensor>, // [1, 1, seq, total_len_hint]
+    total_len_hint: usize,
+}
+
+impl Qwen35FullAttentionContext {
+    fn build(
+        seq_len: usize,
+        start_pos: usize,
+        rotary_dim: usize,
+        rope_theta: f64,
+        device: &candle_core::Device,
+        dtype: DType,
+    ) -> Result<Self> {
+        let (cos, sin) = if rotary_dim > 0 {
+            let (cos_half, sin_half) =
+                build_rope_cache(seq_len, rotary_dim, start_pos, rope_theta, device, dtype)?;
+            let cos = Tensor::cat(&[cos_half.clone(), cos_half], 1)?
+                .unsqueeze(0)?
+                .unsqueeze(0)?;
+            let sin = Tensor::cat(&[sin_half.clone(), sin_half], 1)?
+                .unsqueeze(0)?
+                .unsqueeze(0)?;
+            (Some(cos), Some(sin))
+        } else {
+            (None, None)
+        };
+
+        let total_len_hint = start_pos + seq_len;
+        let mask = if seq_len > 1 {
+            Some(causal_mask(seq_len, total_len_hint, start_pos, device, dtype)?.unsqueeze(1)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            cos,
+            sin,
+            mask,
+            total_len_hint,
         })
     }
 }
@@ -557,6 +621,7 @@ impl Qwen35FullAttention {
         start_pos: usize,
         rope_theta: f64,
         layer_cache: Option<&mut Qwen35LayerCache>,
+        full_attn_ctx: Option<&Qwen35FullAttentionContext>,
     ) -> Result<Tensor> {
         let (batch_size, seq_len, _) = x.dims3()?;
 
@@ -588,41 +653,73 @@ impl Qwen35FullAttention {
         let mut key = key.transpose(1, 2)?.contiguous()?;
         let value = value.transpose(1, 2)?.contiguous()?;
 
+        let n_rep = self.num_heads / self.num_kv_heads;
         if self.rotary_dim > 0 {
-            let (cos_half, sin_half) = build_rope_cache(
-                seq_len,
-                self.rotary_dim,
-                start_pos,
-                rope_theta,
-                x.device(),
-                query.dtype(),
-            )?;
-            let cos = Tensor::cat(&[cos_half.clone(), cos_half], 1)?
-                .unsqueeze(0)?
-                .unsqueeze(0)?;
-            let sin = Tensor::cat(&[sin_half.clone(), sin_half], 1)?
-                .unsqueeze(0)?
-                .unsqueeze(0)?;
-            query = apply_partial_rotary(&query, &cos, &sin, self.rotary_dim)?.contiguous()?;
-            key = apply_partial_rotary(&key, &cos, &sin, self.rotary_dim)?.contiguous()?;
+            if let Some(ctx) = full_attn_ctx {
+                let cos = ctx.cos.as_ref().ok_or_else(|| {
+                    Error::InferenceError(
+                        "Qwen3.5 full-attention context is missing rotary cosine cache".to_string(),
+                    )
+                })?;
+                let sin = ctx.sin.as_ref().ok_or_else(|| {
+                    Error::InferenceError(
+                        "Qwen3.5 full-attention context is missing rotary sine cache".to_string(),
+                    )
+                })?;
+                query = apply_partial_rotary(&query, cos, sin, self.rotary_dim)?.contiguous()?;
+                key = apply_partial_rotary(&key, cos, sin, self.rotary_dim)?.contiguous()?;
+            } else {
+                let (cos_half, sin_half) = build_rope_cache(
+                    seq_len,
+                    self.rotary_dim,
+                    start_pos,
+                    rope_theta,
+                    x.device(),
+                    query.dtype(),
+                )?;
+                let cos = Tensor::cat(&[cos_half.clone(), cos_half], 1)?
+                    .unsqueeze(0)?
+                    .unsqueeze(0)?;
+                let sin = Tensor::cat(&[sin_half.clone(), sin_half], 1)?
+                    .unsqueeze(0)?
+                    .unsqueeze(0)?;
+                query = apply_partial_rotary(&query, &cos, &sin, self.rotary_dim)?.contiguous()?;
+                key = apply_partial_rotary(&key, &cos, &sin, self.rotary_dim)?.contiguous()?;
+            }
         }
 
-        let (k_all, v_all) = if let Some(layer_cache) = layer_cache {
+        let key = repeat_kv_bhsd(&key, n_rep)?.contiguous()?;
+        let value = repeat_kv_bhsd(&value, n_rep)?.contiguous()?;
+
+        let (key, value, paged_out) = if let Some(layer_cache) = layer_cache {
             match layer_cache {
-                Qwen35LayerCache::Full { k, v } => {
-                    let next_k = if let Some(prev) = k.as_ref() {
-                        Tensor::cat(&[prev.clone(), key.clone()], 2)?
+                Qwen35LayerCache::Full {
+                    k_pages,
+                    v_pages,
+                    page_size,
+                    quantization,
+                } => {
+                    let key_page = key.transpose(1, 2)?.contiguous()?;
+                    let value_page = value.transpose(1, 2)?.contiguous()?;
+                    append_to_pages(*page_size, k_pages, &key_page, *quantization)?;
+                    append_to_pages(*page_size, v_pages, &value_page, *quantization)?;
+
+                    if seq_len == 1 && start_pos > 0 {
+                        let query_page = query.transpose(1, 2)?.contiguous()?;
+                        let att_out = paged_decode_attention(
+                            &query_page,
+                            k_pages,
+                            v_pages,
+                            self.num_heads,
+                            self.head_dim,
+                        )?;
+                        let att_out = att_out.reshape((batch_size, seq_len, ()))?;
+                        (key, value, Some(att_out))
                     } else {
-                        key.clone()
-                    };
-                    let next_v = if let Some(prev) = v.as_ref() {
-                        Tensor::cat(&[prev.clone(), value.clone()], 2)?
-                    } else {
-                        value.clone()
-                    };
-                    *k = Some(next_k.clone());
-                    *v = Some(next_v.clone());
-                    (next_k, next_v)
+                        let key = materialize_pages(k_pages)?.transpose(1, 2)?.contiguous()?;
+                        let value = materialize_pages(v_pages)?.transpose(1, 2)?.contiguous()?;
+                        (key, value, None)
+                    }
                 }
                 _ => {
                     return Err(Error::InferenceError(
@@ -632,23 +729,66 @@ impl Qwen35FullAttention {
                 }
             }
         } else {
-            (key, value)
+            (key, value, None)
         };
 
-        let n_rep = self.num_heads / self.num_kv_heads;
-        let key = repeat_kv_bhsd(&k_all, n_rep)?.contiguous()?;
-        let value = repeat_kv_bhsd(&v_all, n_rep)?.contiguous()?;
+        if let Some(att_out) = paged_out {
+            let att_out = att_out.broadcast_mul(&ops::sigmoid(&gate)?)?;
+            return self.o_proj.forward(&att_out).map_err(Error::from);
+        }
+
+        let total_len = key.dim(2)?;
+        if seq_len == 1 {
+            let scale = 1.0f32 / (self.head_dim as f32).sqrt();
+            if let Ok(sdpa_out) = ops::sdpa(&query, &key, &value, None, false, scale, 1.0) {
+                let att_out =
+                    sdpa_out
+                        .transpose(1, 2)?
+                        .contiguous()?
+                        .reshape((batch_size, seq_len, ()))?;
+                let att_out = att_out.broadcast_mul(&ops::sigmoid(&gate)?)?;
+                return self.o_proj.forward(&att_out).map_err(Error::from);
+            }
+        }
+
+        if flash_attention_requested() && start_pos == 0 && total_len == seq_len {
+            if let Some(fused_out) =
+                try_fused_self_attention(&query, &key, &value, None, self.head_dim, true)?
+            {
+                let att_out =
+                    fused_out
+                        .transpose(1, 2)?
+                        .contiguous()?
+                        .reshape((batch_size, seq_len, ()))?;
+                let att_out = att_out.broadcast_mul(&ops::sigmoid(&gate)?)?;
+                return self.o_proj.forward(&att_out).map_err(Error::from);
+            }
+        }
 
         let mut att = query.matmul(&key.transpose(2, 3)?.contiguous()?)?;
         let scale =
             Tensor::new((self.head_dim as f32).sqrt(), x.device())?.to_dtype(att.dtype())?;
         att = att.broadcast_div(&scale)?;
 
-        let total_len = key.dim(2)?;
-        if seq_len > 1 || total_len > seq_len {
-            let mask = causal_mask(seq_len, total_len, start_pos, x.device(), att.dtype())?
-                .unsqueeze(1)?;
-            att = att.broadcast_add(&mask)?;
+        if seq_len > 1 {
+            let mask = if let Some(ctx) = full_attn_ctx {
+                if ctx.total_len_hint == total_len {
+                    ctx.mask.clone()
+                } else {
+                    Some(
+                        causal_mask(seq_len, total_len, start_pos, x.device(), att.dtype())?
+                            .unsqueeze(1)?,
+                    )
+                }
+            } else {
+                Some(
+                    causal_mask(seq_len, total_len, start_pos, x.device(), att.dtype())?
+                        .unsqueeze(1)?,
+                )
+            };
+            if let Some(mask) = mask {
+                att = att.broadcast_add(&mask)?;
+            }
         }
 
         let att = ops::softmax(&att.to_dtype(DType::F32)?, D::Minus1)?.to_dtype(query.dtype())?;
@@ -659,7 +799,7 @@ impl Qwen35FullAttention {
             .reshape((batch_size, seq_len, ()))?;
 
         let att_out = att_out.broadcast_mul(&ops::sigmoid(&gate)?)?;
-        Ok(self.o_proj.forward(&att_out)?)
+        self.o_proj.forward(&att_out).map_err(Error::from)
     }
 }
 
@@ -966,6 +1106,36 @@ impl Qwen35LinearAttention {
             )?
         };
 
+        if seq_len == 1 {
+            let q_t = query.squeeze(1)?;
+            let k_t = key.squeeze(1)?;
+            let v_t = value.squeeze(1)?;
+            let beta_t = beta.squeeze(1)?;
+            let g_t = g.squeeze(1)?;
+
+            let g_scale = g_t.unsqueeze(D::Minus1)?.unsqueeze(D::Minus1)?;
+            state = state.broadcast_mul(&g_scale)?;
+
+            let kv_mem = state
+                .broadcast_mul(&k_t.unsqueeze(D::Minus1)?)?
+                .sum(D::Minus2)
+                .map_err(Error::from)?;
+            let delta = v_t
+                .broadcast_sub(&kv_mem)?
+                .broadcast_mul(&beta_t.unsqueeze(D::Minus1)?)?;
+            let update = k_t
+                .unsqueeze(D::Minus1)?
+                .broadcast_mul(&delta.unsqueeze(D::Minus2)?)?;
+            state = state.broadcast_add(&update)?;
+
+            let out_t = state
+                .broadcast_mul(&q_t.unsqueeze(D::Minus1)?)?
+                .sum(D::Minus2)
+                .map_err(Error::from)?;
+            let output = out_t.unsqueeze(1)?.to_dtype(initial_dtype)?;
+            return Ok((output, state));
+        }
+
         let mut outputs = Vec::with_capacity(seq_len);
 
         for idx in 0..seq_len {
@@ -1053,12 +1223,15 @@ impl Qwen35Layer {
         start_pos: usize,
         rope_theta: f64,
         layer_cache: Option<&mut Qwen35LayerCache>,
+        full_attn_ctx: Option<&Qwen35FullAttentionContext>,
     ) -> Result<Tensor> {
         let residual = x;
         let x = self.input_layernorm.forward(x)?;
 
         let x = match &self.mixer {
-            Qwen35TokenMixer::Full(attn) => attn.forward(&x, start_pos, rope_theta, layer_cache)?,
+            Qwen35TokenMixer::Full(attn) => {
+                attn.forward(&x, start_pos, rope_theta, layer_cache, full_attn_ctx)?
+            }
             Qwen35TokenMixer::Linear(linear) => linear.forward(&x, layer_cache)?,
         };
 
@@ -1144,6 +1317,24 @@ impl Qwen35Model {
         cache: Option<&mut Qwen35Cache>,
     ) -> Result<Tensor> {
         let mut x = embeds.clone();
+        let seq_len = embeds.dim(1)?;
+        let full_attn_ctx = if self
+            .cfg
+            .layer_types
+            .iter()
+            .any(|layer| matches!(layer, LayerType::FullAttention))
+        {
+            Some(Qwen35FullAttentionContext::build(
+                seq_len,
+                start_pos,
+                self.cfg.rotary_dim(),
+                self.cfg.rope_theta,
+                embeds.device(),
+                embeds.dtype(),
+            )?)
+        } else {
+            None
+        };
 
         let mut cache = cache;
         for (idx, layer) in self.layers.iter().enumerate() {
@@ -1152,7 +1343,13 @@ impl Qwen35Model {
             } else {
                 None
             };
-            x = layer.forward(&x, start_pos, self.cfg.rope_theta, layer_cache)?;
+            x = layer.forward(
+                &x,
+                start_pos,
+                self.cfg.rope_theta,
+                layer_cache,
+                full_attn_ctx.as_ref(),
+            )?;
         }
 
         let x = self.norm.forward(&x)?;
@@ -1352,6 +1549,7 @@ impl Qwen35QuantizedFullAttention {
         start_pos: usize,
         rope_theta: f64,
         layer_cache: Option<&mut Qwen35LayerCache>,
+        full_attn_ctx: Option<&Qwen35FullAttentionContext>,
     ) -> Result<Tensor> {
         let (batch_size, seq_len, _) = x.dims3()?;
 
@@ -1383,41 +1581,73 @@ impl Qwen35QuantizedFullAttention {
         let mut key = key.transpose(1, 2)?.contiguous()?;
         let value = value.transpose(1, 2)?.contiguous()?;
 
+        let n_rep = self.num_heads / self.num_kv_heads;
         if self.rotary_dim > 0 {
-            let (cos_half, sin_half) = build_rope_cache(
-                seq_len,
-                self.rotary_dim,
-                start_pos,
-                rope_theta,
-                x.device(),
-                query.dtype(),
-            )?;
-            let cos = Tensor::cat(&[cos_half.clone(), cos_half], 1)?
-                .unsqueeze(0)?
-                .unsqueeze(0)?;
-            let sin = Tensor::cat(&[sin_half.clone(), sin_half], 1)?
-                .unsqueeze(0)?
-                .unsqueeze(0)?;
-            query = apply_partial_rotary(&query, &cos, &sin, self.rotary_dim)?.contiguous()?;
-            key = apply_partial_rotary(&key, &cos, &sin, self.rotary_dim)?.contiguous()?;
+            if let Some(ctx) = full_attn_ctx {
+                let cos = ctx.cos.as_ref().ok_or_else(|| {
+                    Error::InferenceError(
+                        "Qwen3.5 full-attention context is missing rotary cosine cache".to_string(),
+                    )
+                })?;
+                let sin = ctx.sin.as_ref().ok_or_else(|| {
+                    Error::InferenceError(
+                        "Qwen3.5 full-attention context is missing rotary sine cache".to_string(),
+                    )
+                })?;
+                query = apply_partial_rotary(&query, cos, sin, self.rotary_dim)?.contiguous()?;
+                key = apply_partial_rotary(&key, cos, sin, self.rotary_dim)?.contiguous()?;
+            } else {
+                let (cos_half, sin_half) = build_rope_cache(
+                    seq_len,
+                    self.rotary_dim,
+                    start_pos,
+                    rope_theta,
+                    x.device(),
+                    query.dtype(),
+                )?;
+                let cos = Tensor::cat(&[cos_half.clone(), cos_half], 1)?
+                    .unsqueeze(0)?
+                    .unsqueeze(0)?;
+                let sin = Tensor::cat(&[sin_half.clone(), sin_half], 1)?
+                    .unsqueeze(0)?
+                    .unsqueeze(0)?;
+                query = apply_partial_rotary(&query, &cos, &sin, self.rotary_dim)?.contiguous()?;
+                key = apply_partial_rotary(&key, &cos, &sin, self.rotary_dim)?.contiguous()?;
+            }
         }
 
-        let (k_all, v_all) = if let Some(layer_cache) = layer_cache {
+        let key = repeat_kv_bhsd(&key, n_rep)?.contiguous()?;
+        let value = repeat_kv_bhsd(&value, n_rep)?.contiguous()?;
+
+        let (key, value, paged_out) = if let Some(layer_cache) = layer_cache {
             match layer_cache {
-                Qwen35LayerCache::Full { k, v } => {
-                    let next_k = if let Some(prev) = k.as_ref() {
-                        Tensor::cat(&[prev.clone(), key.clone()], 2)?
+                Qwen35LayerCache::Full {
+                    k_pages,
+                    v_pages,
+                    page_size,
+                    quantization,
+                } => {
+                    let key_page = key.transpose(1, 2)?.contiguous()?;
+                    let value_page = value.transpose(1, 2)?.contiguous()?;
+                    append_to_pages(*page_size, k_pages, &key_page, *quantization)?;
+                    append_to_pages(*page_size, v_pages, &value_page, *quantization)?;
+
+                    if seq_len == 1 && start_pos > 0 {
+                        let query_page = query.transpose(1, 2)?.contiguous()?;
+                        let att_out = paged_decode_attention(
+                            &query_page,
+                            k_pages,
+                            v_pages,
+                            self.num_heads,
+                            self.head_dim,
+                        )?;
+                        let att_out = att_out.reshape((batch_size, seq_len, ()))?;
+                        (key, value, Some(att_out))
                     } else {
-                        key.clone()
-                    };
-                    let next_v = if let Some(prev) = v.as_ref() {
-                        Tensor::cat(&[prev.clone(), value.clone()], 2)?
-                    } else {
-                        value.clone()
-                    };
-                    *k = Some(next_k.clone());
-                    *v = Some(next_v.clone());
-                    (next_k, next_v)
+                        let key = materialize_pages(k_pages)?.transpose(1, 2)?.contiguous()?;
+                        let value = materialize_pages(v_pages)?.transpose(1, 2)?.contiguous()?;
+                        (key, value, None)
+                    }
                 }
                 _ => {
                     return Err(Error::InferenceError(
@@ -1427,23 +1657,66 @@ impl Qwen35QuantizedFullAttention {
                 }
             }
         } else {
-            (key, value)
+            (key, value, None)
         };
 
-        let n_rep = self.num_heads / self.num_kv_heads;
-        let key = repeat_kv_bhsd(&k_all, n_rep)?.contiguous()?;
-        let value = repeat_kv_bhsd(&v_all, n_rep)?.contiguous()?;
+        if let Some(att_out) = paged_out {
+            let att_out = att_out.broadcast_mul(&ops::sigmoid(&gate)?)?;
+            return self.o_proj.forward(&att_out).map_err(Error::from);
+        }
+
+        let total_len = key.dim(2)?;
+        if seq_len == 1 {
+            let scale = 1.0f32 / (self.head_dim as f32).sqrt();
+            if let Ok(sdpa_out) = ops::sdpa(&query, &key, &value, None, false, scale, 1.0) {
+                let att_out =
+                    sdpa_out
+                        .transpose(1, 2)?
+                        .contiguous()?
+                        .reshape((batch_size, seq_len, ()))?;
+                let att_out = att_out.broadcast_mul(&ops::sigmoid(&gate)?)?;
+                return self.o_proj.forward(&att_out).map_err(Error::from);
+            }
+        }
+
+        if flash_attention_requested() && start_pos == 0 && total_len == seq_len {
+            if let Some(fused_out) =
+                try_fused_self_attention(&query, &key, &value, None, self.head_dim, true)?
+            {
+                let att_out =
+                    fused_out
+                        .transpose(1, 2)?
+                        .contiguous()?
+                        .reshape((batch_size, seq_len, ()))?;
+                let att_out = att_out.broadcast_mul(&ops::sigmoid(&gate)?)?;
+                return self.o_proj.forward(&att_out).map_err(Error::from);
+            }
+        }
 
         let mut att = query.matmul(&key.transpose(2, 3)?.contiguous()?)?;
         let scale =
             Tensor::new((self.head_dim as f32).sqrt(), x.device())?.to_dtype(att.dtype())?;
         att = att.broadcast_div(&scale)?;
 
-        let total_len = key.dim(2)?;
-        if seq_len > 1 || total_len > seq_len {
-            let mask = causal_mask(seq_len, total_len, start_pos, x.device(), att.dtype())?
-                .unsqueeze(1)?;
-            att = att.broadcast_add(&mask)?;
+        if seq_len > 1 {
+            let mask = if let Some(ctx) = full_attn_ctx {
+                if ctx.total_len_hint == total_len {
+                    ctx.mask.clone()
+                } else {
+                    Some(
+                        causal_mask(seq_len, total_len, start_pos, x.device(), att.dtype())?
+                            .unsqueeze(1)?,
+                    )
+                }
+            } else {
+                Some(
+                    causal_mask(seq_len, total_len, start_pos, x.device(), att.dtype())?
+                        .unsqueeze(1)?,
+                )
+            };
+            if let Some(mask) = mask {
+                att = att.broadcast_add(&mask)?;
+            }
         }
 
         let att = ops::softmax(&att.to_dtype(DType::F32)?, D::Minus1)?.to_dtype(query.dtype())?;
@@ -1836,6 +2109,36 @@ impl Qwen35QuantizedLinearAttention {
             )?
         };
 
+        if seq_len == 1 {
+            let q_t = query.squeeze(1)?;
+            let k_t = key.squeeze(1)?;
+            let v_t = value.squeeze(1)?;
+            let beta_t = beta.squeeze(1)?;
+            let g_t = g.squeeze(1)?;
+
+            let g_scale = g_t.unsqueeze(D::Minus1)?.unsqueeze(D::Minus1)?;
+            state = state.broadcast_mul(&g_scale)?;
+
+            let kv_mem = state
+                .broadcast_mul(&k_t.unsqueeze(D::Minus1)?)?
+                .sum(D::Minus2)
+                .map_err(Error::from)?;
+            let delta = v_t
+                .broadcast_sub(&kv_mem)?
+                .broadcast_mul(&beta_t.unsqueeze(D::Minus1)?)?;
+            let update = k_t
+                .unsqueeze(D::Minus1)?
+                .broadcast_mul(&delta.unsqueeze(D::Minus2)?)?;
+            state = state.broadcast_add(&update)?;
+
+            let out_t = state
+                .broadcast_mul(&q_t.unsqueeze(D::Minus1)?)?
+                .sum(D::Minus2)
+                .map_err(Error::from)?;
+            let output = out_t.unsqueeze(1)?.to_dtype(initial_dtype)?;
+            return Ok((output, state));
+        }
+
         let mut outputs = Vec::with_capacity(seq_len);
         for idx in 0..seq_len {
             let q_t = query.narrow(1, idx, 1)?.squeeze(1)?;
@@ -1942,12 +2245,13 @@ impl Qwen35QuantizedLayer {
         start_pos: usize,
         rope_theta: f64,
         layer_cache: Option<&mut Qwen35LayerCache>,
+        full_attn_ctx: Option<&Qwen35FullAttentionContext>,
     ) -> Result<Tensor> {
         let residual = x;
         let x = self.input_layernorm.forward(x)?;
         let x = match &self.mixer {
             Qwen35QuantizedTokenMixer::Full(attn) => {
-                attn.forward(&x, start_pos, rope_theta, layer_cache)?
+                attn.forward(&x, start_pos, rope_theta, layer_cache, full_attn_ctx)?
             }
             Qwen35QuantizedTokenMixer::Linear(linear) => linear.forward(&x, layer_cache)?,
         };
@@ -2045,6 +2349,24 @@ impl Qwen35QuantizedModel {
         cache: Option<&mut Qwen35Cache>,
     ) -> Result<Tensor> {
         let mut x = embeds.clone();
+        let seq_len = embeds.dim(1)?;
+        let full_attn_ctx = if self
+            .cfg
+            .layer_types
+            .iter()
+            .any(|layer| matches!(layer, LayerType::FullAttention))
+        {
+            Some(Qwen35FullAttentionContext::build(
+                seq_len,
+                start_pos,
+                self.cfg.rotary_dim(),
+                self.cfg.rope_theta,
+                embeds.device(),
+                embeds.dtype(),
+            )?)
+        } else {
+            None
+        };
         let mut cache = cache;
         for (idx, layer) in self.layers.iter().enumerate() {
             let layer_cache = if let Some(cache_ref) = cache.as_deref_mut() {
@@ -2052,7 +2374,13 @@ impl Qwen35QuantizedModel {
             } else {
                 None
             };
-            x = layer.forward(&x, start_pos, self.cfg.rope_theta, layer_cache)?;
+            x = layer.forward(
+                &x,
+                start_pos,
+                self.cfg.rope_theta,
+                layer_cache,
+                full_attn_ctx.as_ref(),
+            )?;
         }
         let x = self.norm.forward(&x)?;
         self.lm_head.forward(&x).map_err(Error::from)
@@ -2090,6 +2418,60 @@ enum Qwen35TextBackend {
 struct PromptBuildOutput {
     ids: Vec<u32>,
     multimodal: Vec<Qwen35MultimodalInput>,
+}
+
+enum GgufReader {
+    Buffered(BufReader<fs::File>),
+    Mapped(Cursor<memmap2::Mmap>),
+}
+
+impl Read for GgufReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Buffered(reader) => reader.read(buf),
+            Self::Mapped(reader) => reader.read(buf),
+        }
+    }
+}
+
+impl Seek for GgufReader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::Buffered(reader) => reader.seek(pos),
+            Self::Mapped(reader) => reader.seek(pos),
+        }
+    }
+}
+
+fn gguf_mmap_enabled() -> bool {
+    std::env::var("IZWI_GGUF_MMAP")
+        .ok()
+        .map(|raw| {
+            !matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            )
+        })
+        .unwrap_or(true)
+}
+
+fn open_gguf_reader(path: &Path) -> Result<GgufReader> {
+    let file = fs::File::open(path)?;
+    if gguf_mmap_enabled() {
+        // SAFETY: the mapping is read-only and the underlying file descriptor
+        // remains valid for the lifetime of the mapping object.
+        match unsafe { MmapOptions::new().map(&file) } {
+            Ok(mmap) => return Ok(GgufReader::Mapped(Cursor::new(mmap))),
+            Err(err) => {
+                warn!(
+                    "Failed to memory-map GGUF file {}; falling back to buffered I/O: {}",
+                    path.display(),
+                    err
+                );
+            }
+        }
+    }
+    Ok(GgufReader::Buffered(BufReader::new(file)))
 }
 
 pub struct Qwen35ChatModel {
@@ -2190,7 +2572,7 @@ impl Qwen35ChatModel {
         gguf_path: &Path,
         device: DeviceProfile,
     ) -> Result<Self> {
-        let mut reader = BufReader::new(fs::File::open(gguf_path)?);
+        let mut reader = open_gguf_reader(gguf_path)?;
         let content = gguf_file::Content::read(&mut reader)
             .map_err(|e| Error::ModelLoadError(format!("Failed to parse GGUF header: {e}")))?;
         let config = parse_qwen35_gguf_config(&content)?;
@@ -2232,7 +2614,7 @@ impl Qwen35ChatModel {
     }
 
     fn load_gguf_dense(model_dir: &Path, gguf_path: &Path, device: DeviceProfile) -> Result<Self> {
-        let mut reader = BufReader::new(fs::File::open(gguf_path)?);
+        let mut reader = open_gguf_reader(gguf_path)?;
         let content = gguf_file::Content::read(&mut reader)
             .map_err(|e| Error::ModelLoadError(format!("Failed to parse GGUF header: {e}")))?;
         let config = parse_qwen35_gguf_config(&content)?;
@@ -3125,8 +3507,8 @@ fn strip_think_blocks(input: &str) -> String {
 }
 
 fn argmax(logits: &Tensor) -> Result<u32> {
-    let values = match logits.rank() {
-        1 => logits.to_dtype(DType::F32)?.to_vec1::<f32>()?,
+    let logits = match logits.rank() {
+        1 => logits.clone(),
         2 => {
             let (batch, _vocab) = logits.dims2()?;
             if batch != 1 {
@@ -3134,7 +3516,7 @@ fn argmax(logits: &Tensor) -> Result<u32> {
                     "Unexpected batched logits for argmax: expected batch=1, got {batch}"
                 )));
             }
-            logits.i(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?
+            logits.i(0)?
         }
         rank => {
             return Err(Error::InferenceError(format!(
@@ -3142,14 +3524,15 @@ fn argmax(logits: &Tensor) -> Result<u32> {
             )));
         }
     };
-
-    let (idx, _) = values
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .ok_or_else(|| Error::InferenceError("Empty logits".to_string()))?;
-
-    Ok(idx as u32)
+    let idx = logits.argmax(D::Minus1)?;
+    let idx = if idx.rank() == 0 {
+        idx
+    } else {
+        idx.squeeze(0)?
+    };
+    idx.to_dtype(DType::U32)?
+        .to_scalar::<u32>()
+        .map_err(Error::from)
 }
 
 fn text_delta(previous: &str, current: &str) -> String {

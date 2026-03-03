@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use candle_core::quantized::gguf_file;
-use candle_core::{DType, IndexOp, Tensor};
+use candle_core::{DType, IndexOp, Tensor, D};
 use candle_nn::VarBuilder;
 use candle_transformers::models::quantized_qwen3::ModelWeights as QuantizedQwen3Model;
 use serde::Deserialize;
@@ -557,8 +557,8 @@ fn parse_qwen3_config(config_str: &str) -> Result<Qwen3Config> {
 }
 
 fn argmax(logits: &Tensor) -> Result<u32> {
-    let values = match logits.rank() {
-        1 => logits.to_dtype(DType::F32)?.to_vec1::<f32>()?,
+    let logits = match logits.rank() {
+        1 => logits.clone(),
         2 => {
             let (batch, _vocab) = logits.dims2()?;
             if batch != 1 {
@@ -566,7 +566,7 @@ fn argmax(logits: &Tensor) -> Result<u32> {
                     "Unexpected batched logits for argmax: expected batch=1, got {batch}"
                 )));
             }
-            logits.i(0)?.to_dtype(DType::F32)?.to_vec1::<f32>()?
+            logits.i(0)?
         }
         rank => {
             return Err(Error::InferenceError(format!(
@@ -574,12 +574,15 @@ fn argmax(logits: &Tensor) -> Result<u32> {
             )))
         }
     };
-    let (idx, _) = values
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .ok_or_else(|| Error::InferenceError("Empty logits".to_string()))?;
-    Ok(idx as u32)
+    let idx = logits.argmax(D::Minus1)?;
+    let idx = if idx.rank() == 0 {
+        idx
+    } else {
+        idx.squeeze(0)?
+    };
+    idx.to_dtype(DType::U32)?
+        .to_scalar::<u32>()
+        .map_err(Error::from)
 }
 
 fn text_delta(previous: &str, current: &str) -> String {
