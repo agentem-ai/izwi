@@ -54,6 +54,12 @@ function getChatModelName(variant: string): string {
   if (variant === "Qwen3.5-9B") {
     return withQwen3Prefix("Chat 9B GGUF (Q4_K_M)", variant);
   }
+  if (variant === "LFM2.5-1.2B-Instruct-GGUF") {
+    return "LFM2.5 1.2B Instruct GGUF (Q4_K_M)";
+  }
+  if (variant === "LFM2.5-1.2B-Thinking-GGUF") {
+    return "LFM2.5 1.2B Thinking GGUF (Q4_K_M)";
+  }
   if (variant === "Gemma-3-1b-it") {
     return "Gemma 3 1B Instruct";
   }

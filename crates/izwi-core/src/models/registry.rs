@@ -12,6 +12,7 @@ use crate::model::ModelVariant;
 use crate::models::architectures::gemma3::chat::Gemma3ChatModel;
 use crate::models::architectures::kokoro::KokoroTtsModel;
 use crate::models::architectures::lfm2::audio::Lfm2AudioModel;
+use crate::models::architectures::lfm2::chat::Lfm2ChatModel;
 use crate::models::architectures::parakeet::asr::ParakeetAsrModel;
 use crate::models::architectures::qwen3::asr::{
     AsrDecodeState as Qwen3AsrDecodeState, AsrDecodeStep as Qwen3AsrDecodeStep,
@@ -144,6 +145,16 @@ fn load_sortformer_diarization_model(
     ))
 }
 
+fn load_lfm2_chat_model(
+    model_dir: &Path,
+    variant: ModelVariant,
+    device: DeviceProfile,
+) -> Result<NativeChatModel> {
+    Ok(NativeChatModel::Lfm2(Lfm2ChatModel::load(
+        model_dir, variant, device,
+    )?))
+}
+
 fn load_voxtral_model(
     model_dir: &Path,
     _variant: ModelVariant,
@@ -201,6 +212,11 @@ const CHAT_LOADER_REGISTRY: &[ChatLoaderRegistration] = &[
         name: "gemma_chat",
         family: ModelFamily::Gemma3Chat,
         loader: load_gemma_chat_model,
+    },
+    ChatLoaderRegistration {
+        name: "lfm2_chat",
+        family: ModelFamily::Lfm2Chat,
+        loader: load_lfm2_chat_model,
     },
 ];
 
@@ -460,6 +476,7 @@ pub enum NativeChatModel {
     Qwen3(Qwen3ChatModel),
     Qwen35(Qwen35ChatModel),
     Gemma3(Gemma3ChatModel),
+    Lfm2(Lfm2ChatModel),
 }
 
 pub enum NativeChatDecodeState {
@@ -497,6 +514,13 @@ impl NativeChatModel {
                     tokens_generated: output.tokens_generated,
                 })
             }
+            Self::Lfm2(model) => {
+                let output = model.generate(messages, max_new_tokens)?;
+                Ok(ChatGenerationOutput {
+                    text: output.text,
+                    tokens_generated: output.tokens_generated,
+                })
+            }
         }
     }
 
@@ -522,6 +546,13 @@ impl NativeChatModel {
                     tokens_generated: output.tokens_generated,
                 })
             }
+            Self::Lfm2(model) => {
+                let output = model.generate_with_callback(messages, max_new_tokens, on_delta)?;
+                Ok(ChatGenerationOutput {
+                    text: output.text,
+                    tokens_generated: output.tokens_generated,
+                })
+            }
         }
     }
 
@@ -530,6 +561,7 @@ impl NativeChatModel {
             Self::Qwen3(model) => model.supports_incremental_decode(),
             Self::Qwen35(model) => model.supports_incremental_decode(),
             Self::Gemma3(_) => false,
+            Self::Lfm2(model) => model.supports_incremental_decode(),
         }
     }
 
@@ -546,6 +578,9 @@ impl NativeChatModel {
                 model.start_decode(messages, max_new_tokens)?,
             )),
             Self::Gemma3(_) => Err(Error::InvalidInput(
+                "Incremental decode state is not available for this chat model".to_string(),
+            )),
+            Self::Lfm2(_) => Err(Error::InvalidInput(
                 "Incremental decode state is not available for this chat model".to_string(),
             )),
         }
