@@ -1303,7 +1303,7 @@ export function TranscriptionPlayground({
       option.statusLabel.toLowerCase().includes("downloading") ||
       option.statusLabel.toLowerCase().includes("loading")
     ) {
-      return "text-amber-500 bg-amber-500/10";
+      return "text-[var(--text-muted)] bg-amber-500/10";
     }
     if (option.statusLabel.toLowerCase().includes("error")) {
       return "text-destructive bg-destructive/10";
@@ -1420,7 +1420,7 @@ export function TranscriptionPlayground({
                 "text-xs",
                 selectedModelReady
                   ? "text-[var(--text-secondary)]"
-                  : "text-amber-500",
+                  : "text-[var(--text-muted)]",
               )}
             >
               {selectedModelReady

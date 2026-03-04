@@ -732,9 +732,7 @@ export function SpeechHistoryPanel({
               Loading history...
             </div>
           ) : records.length === 0 ? (
-            <div className="app-sidebar-empty">
-              {emptyMessage}
-            </div>
+            <div className="app-sidebar-empty">{emptyMessage}</div>
           ) : (
             <div className="flex flex-col gap-2.5">
               {records.map((record) => {
@@ -1059,7 +1057,7 @@ export function SpeechHistoryPanel({
                               className={cn(
                                 "mt-3 rounded-lg border px-3 py-2 text-xs flex items-center gap-2",
                                 downloadState === "downloading" &&
-                                  "border-amber-500/20 bg-amber-500/10 text-amber-500",
+                                  "border-amber-500/20 bg-amber-500/10 text-[var(--text-muted)]",
                                 downloadState === "success" &&
                                   "border-green-500/20 bg-green-500/10 text-green-500",
                                 downloadState === "error" &&

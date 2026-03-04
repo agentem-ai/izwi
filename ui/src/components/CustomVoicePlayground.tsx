@@ -553,7 +553,7 @@ export function CustomVoicePlayground({
       option.statusLabel.toLowerCase().includes("downloading") ||
       option.statusLabel.toLowerCase().includes("loading")
     ) {
-      return "text-amber-500 bg-amber-500/10 border-amber-500/20";
+      return "text-[var(--text-muted)] bg-amber-500/10 border-amber-500/20";
     }
     if (option.statusLabel.toLowerCase().includes("error")) {
       return "text-destructive bg-destructive/10 border-destructive/20";

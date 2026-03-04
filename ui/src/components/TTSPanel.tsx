@@ -167,7 +167,7 @@ export function TTSPanel({ selectedModel, onModelRequired }: TTSPanelProps) {
             {text.length} characters
           </span>
           {!selectedModel && (
-            <span className="text-xs font-medium text-amber-500">
+            <span className="text-xs font-medium text-[var(--text-muted)]">
               Load a model to generate speech
             </span>
           )}

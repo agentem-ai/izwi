@@ -581,7 +581,7 @@ export function ModelManager({
                       {displayName}
                     </span>
                     {isDisabled && (
-                      <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-500 rounded font-medium border border-amber-500/20">
+                      <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-[var(--text-muted)] rounded font-medium border border-amber-500/20">
                         {disabledModelLabel || "DISABLED"}
                       </span>
                     )}
@@ -678,7 +678,7 @@ export function ModelManager({
                     {/* Actions */}
                     <div className="flex flex-wrap items-center gap-2 pt-3 border-t">
                       {isDisabled && (
-                        <div className="text-xs font-medium text-amber-500 w-full mb-2">
+                        <div className="text-xs font-medium text-[var(--text-muted)] w-full mb-2">
                           This model is unavailable in this view.
                         </div>
                       )}
