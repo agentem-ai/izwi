@@ -2516,7 +2516,7 @@ export function VoicePage({
         return "bg-white/10 border-white/20 text-[var(--text-secondary)]";
       case "loading":
       case "downloading":
-        return "bg-amber-500/15 border-amber-500/40 text-amber-300";
+        return "bg-amber-500/15 border-amber-500/40 text-[var(--text-muted)]";
       case "downloaded":
         return "bg-white/10 border-white/20 text-[var(--text-secondary)]";
       case "error":
