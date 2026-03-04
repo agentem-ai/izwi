@@ -18,6 +18,7 @@ impl RuntimeService {
         match family {
             ModelFamily::Qwen3Asr
             | ModelFamily::ParakeetAsr
+            | ModelFamily::WhisperAsr
             | ModelFamily::Qwen3ForcedAligner
             | ModelFamily::SortformerDiarization
             | ModelFamily::Qwen3Chat

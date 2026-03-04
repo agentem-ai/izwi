@@ -13,3 +13,4 @@ pub mod qwen3;
 pub mod qwen35;
 pub mod sortformer;
 pub mod voxtral;
+pub mod whisper;

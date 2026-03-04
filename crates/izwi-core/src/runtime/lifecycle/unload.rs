@@ -8,7 +8,10 @@ impl RuntimeService {
     /// Unload a model from memory.
     pub async fn unload_model(&self, variant: ModelVariant) -> Result<()> {
         match variant.family() {
-            ModelFamily::Qwen3Asr | ModelFamily::ParakeetAsr | ModelFamily::Qwen3ForcedAligner => {
+            ModelFamily::Qwen3Asr
+            | ModelFamily::ParakeetAsr
+            | ModelFamily::WhisperAsr
+            | ModelFamily::Qwen3ForcedAligner => {
                 self.model_registry.unload_asr(variant).await;
             }
             ModelFamily::SortformerDiarization => {

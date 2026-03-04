@@ -76,16 +76,17 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
     id: "transcription",
     label: "Transcription",
     description:
-      "Speech-to-text with Qwen3-ASR, Parakeet-TDT, Voxtral, and LFM2 models",
+      "Speech-to-text with Qwen3-ASR, Whisper, Parakeet-TDT, Voxtral, and LFM2 models",
     icon: "FileText",
     modelFilter: (variant) =>
       variant.includes("Qwen3-ASR") ||
+      variant.includes("Whisper-Large-v3-Turbo") ||
       variant.includes("Parakeet-TDT") ||
       variant.includes("Voxtral") ||
       isLfmAudioVariant(variant),
     emptyStateTitle: "No ASR Model Loaded",
     emptyStateDescription:
-      "Download and load a Qwen3-ASR, Parakeet-TDT, Voxtral, or LFM2 model for speech transcription",
+      "Download and load a Qwen3-ASR, Whisper, Parakeet-TDT, Voxtral, or LFM2 model for speech transcription",
   },
   chat: {
     id: "chat",
