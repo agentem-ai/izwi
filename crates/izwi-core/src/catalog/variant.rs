@@ -14,6 +14,7 @@ pub enum ModelFamily {
     SortformerDiarization,
     Qwen3Chat,
     Qwen35Chat,
+    Lfm2Chat,
     Gemma3Chat,
     Qwen3ForcedAligner,
     Voxtral,
@@ -109,6 +110,7 @@ impl ModelVariant {
             Qwen306B | Qwen306B4Bit | Qwen306BGguf | Qwen317B | Qwen317B4Bit | Qwen317BGguf
             | Qwen34BGguf | Qwen38BGguf | Qwen314BGguf => ModelFamily::Qwen3Chat,
             Qwen3508B | Qwen352B | Qwen354B | Qwen359B => ModelFamily::Qwen35Chat,
+            Lfm2512BInstructGguf | Lfm2512BThinkingGguf => ModelFamily::Lfm2Chat,
             Gemma31BIt | Gemma34BIt => ModelFamily::Gemma3Chat,
             Qwen3ForcedAligner06B | Qwen3ForcedAligner06B4Bit => ModelFamily::Qwen3ForcedAligner,
             VoxtralMini4BRealtime2602 => ModelFamily::Voxtral,
@@ -122,9 +124,10 @@ impl ModelVariant {
                 ModelTask::Asr
             }
             ModelFamily::SortformerDiarization => ModelTask::Diarization,
-            ModelFamily::Qwen3Chat | ModelFamily::Qwen35Chat | ModelFamily::Gemma3Chat => {
-                ModelTask::Chat
-            }
+            ModelFamily::Qwen3Chat
+            | ModelFamily::Qwen35Chat
+            | ModelFamily::Lfm2Chat
+            | ModelFamily::Gemma3Chat => ModelTask::Chat,
             ModelFamily::Qwen3ForcedAligner => ModelTask::ForcedAlign,
             ModelFamily::Voxtral => ModelTask::AudioChat,
             ModelFamily::Lfm2Audio => ModelTask::AudioChat,
@@ -431,8 +434,42 @@ fn resolve_by_heuristic(normalized: &str) -> Option<ModelVariant> {
         }
     }
 
+    if let Some(lfm2_variant) = resolve_lfm2_chat_variant(normalized) {
+        return Some(lfm2_variant);
+    }
+
     if let Some(lfm2_variant) = resolve_lfm2_audio_variant(normalized) {
         return Some(lfm2_variant);
+    }
+
+    None
+}
+
+fn resolve_lfm2_chat_variant(normalized: &str) -> Option<ModelVariant> {
+    use ModelVariant::*;
+
+    if normalized.contains("audio") {
+        return None;
+    }
+
+    if !normalized.contains("lfm25") && !normalized.contains("lfm2dot5") {
+        return None;
+    }
+
+    if !(normalized.contains("12b") || normalized.contains("12")) {
+        return None;
+    }
+
+    if !normalized.contains("gguf") {
+        return None;
+    }
+
+    if normalized.contains("instruct") {
+        return Some(Lfm2512BInstructGguf);
+    }
+
+    if normalized.contains("thinking") {
+        return Some(Lfm2512BThinkingGguf);
     }
 
     None
@@ -692,6 +729,31 @@ mod tests {
     fn parse_qwen35_chat_4b_q4_gguf_file_alias() {
         let parsed = parse_chat_model_variant(Some("Qwen3.5-4B-Q4_K_M.gguf")).unwrap();
         assert_eq!(parsed, ModelVariant::Qwen354B);
+    }
+
+    #[test]
+    fn parse_lfm25_chat_instruct_repo() {
+        let parsed = parse_chat_model_variant(Some("LiquidAI/LFM2.5-1.2B-Instruct-GGUF")).unwrap();
+        assert_eq!(parsed, ModelVariant::Lfm2512BInstructGguf);
+        assert_eq!(parsed.family(), ModelFamily::Lfm2Chat);
+    }
+
+    #[test]
+    fn parse_lfm25_chat_thinking_repo() {
+        let parsed = parse_chat_model_variant(Some("LiquidAI/LFM2.5-1.2B-Thinking-GGUF")).unwrap();
+        assert_eq!(parsed, ModelVariant::Lfm2512BThinkingGguf);
+        assert_eq!(parsed.family(), ModelFamily::Lfm2Chat);
+    }
+
+    #[test]
+    fn parse_lfm25_chat_q4_gguf_file_alias() {
+        let parsed = parse_chat_model_variant(Some("LFM2.5-1.2B-Instruct-Q4_K_M.gguf")).unwrap();
+        assert_eq!(parsed, ModelVariant::Lfm2512BInstructGguf);
+    }
+
+    #[test]
+    fn parse_lfm25_non_gguf_repo_is_rejected_for_chat() {
+        assert!(parse_chat_model_variant(Some("LiquidAI/LFM2.5-1.2B-Instruct")).is_err());
     }
 
     #[test]

@@ -23,6 +23,7 @@ impl RuntimeService {
             | ModelFamily::SortformerDiarization
             | ModelFamily::Qwen3Chat
             | ModelFamily::Qwen35Chat
+            | ModelFamily::Lfm2Chat
             | ModelFamily::Gemma3Chat
             | ModelFamily::Voxtral => {
                 self.model_manager.mark_loaded(variant).await;

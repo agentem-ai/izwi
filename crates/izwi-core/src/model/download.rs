@@ -41,6 +41,14 @@ fn qwen_chat_gguf_filename(variant: ModelVariant) -> Option<&'static str> {
     }
 }
 
+fn lfm2_chat_gguf_filename(variant: ModelVariant) -> Option<&'static str> {
+    match variant {
+        ModelVariant::Lfm2512BInstructGguf => Some("LFM2.5-1.2B-Instruct-Q4_K_M.gguf"),
+        ModelVariant::Lfm2512BThinkingGguf => Some("LFM2.5-1.2B-Thinking-Q4_K_M.gguf"),
+        _ => None,
+    }
+}
+
 fn is_qwen35_chat_variant(variant: ModelVariant) -> bool {
     matches!(
         variant,
@@ -474,7 +482,10 @@ impl ModelDownloader {
             ModelFamily::SortformerDiarization => path
                 .join("diar_streaming_sortformer_4spk-v2.1.nemo")
                 .exists(),
-            ModelFamily::Qwen3Chat | ModelFamily::Qwen35Chat | ModelFamily::Gemma3Chat => {
+            ModelFamily::Qwen3Chat
+            | ModelFamily::Qwen35Chat
+            | ModelFamily::Lfm2Chat
+            | ModelFamily::Gemma3Chat => {
                 if variant.is_qwen_chat_gguf() {
                     let gguf_file =
                         qwen_chat_gguf_filename(variant).expect("checked by is_qwen_chat_gguf");
@@ -485,6 +496,16 @@ impl ModelDownloader {
                     };
                     path.join(gguf_file).exists()
                         && has_required_mmproj
+                        && path.join("tokenizer.json").exists()
+                        && path.join("tokenizer_config.json").exists()
+                } else if variant.is_lfm2_chat_gguf() {
+                    let gguf_file =
+                        lfm2_chat_gguf_filename(variant).expect("checked by is_lfm2_chat_gguf");
+                    path.join(gguf_file).exists()
+                        && path.join("chat_template.jinja").exists()
+                        && path.join("config.json").exists()
+                        && path.join("generation_config.json").exists()
+                        && path.join("special_tokens_map.json").exists()
                         && path.join("tokenizer.json").exists()
                         && path.join("tokenizer_config.json").exists()
                 } else {
@@ -1030,7 +1051,10 @@ impl ModelDownloader {
                 "privacy.md".to_string(),
                 "safety.md".to_string(),
             ],
-            ModelFamily::Qwen3Chat | ModelFamily::Qwen35Chat | ModelFamily::Gemma3Chat => {
+            ModelFamily::Qwen3Chat
+            | ModelFamily::Qwen35Chat
+            | ModelFamily::Lfm2Chat
+            | ModelFamily::Gemma3Chat => {
                 if variant.is_qwen_chat_gguf() {
                     let gguf_file =
                         qwen_chat_gguf_filename(variant).expect("checked by is_qwen_chat_gguf");
@@ -1045,6 +1069,18 @@ impl ModelDownloader {
                         files.push(QWEN35_MMPROJ_FILE.to_string());
                     }
                     return files;
+                } else if variant.is_lfm2_chat_gguf() {
+                    let gguf_file =
+                        lfm2_chat_gguf_filename(variant).expect("checked by is_lfm2_chat_gguf");
+                    return vec![
+                        gguf_file.to_string(),
+                        "chat_template.jinja".to_string(),
+                        "config.json".to_string(),
+                        "generation_config.json".to_string(),
+                        "special_tokens_map.json".to_string(),
+                        "tokenizer.json".to_string(),
+                        "tokenizer_config.json".to_string(),
+                    ];
                 }
                 let mut files = vec![
                     "config.json".to_string(),
@@ -1151,6 +1187,32 @@ impl ModelDownloader {
                         tokenizer_repo.to_string()
                     } else {
                         default_repo.clone()
+                    };
+
+                    ModelFileSpec {
+                        source_repo,
+                        source_file: file.clone(),
+                        local_file: file,
+                    }
+                })
+                .collect();
+        }
+
+        if variant.is_lfm2_chat_gguf() {
+            let tokenizer_repo = match variant {
+                ModelVariant::Lfm2512BInstructGguf => "LiquidAI/LFM2.5-1.2B-Instruct",
+                ModelVariant::Lfm2512BThinkingGguf => "LiquidAI/LFM2.5-1.2B-Thinking",
+                _ => variant.repo_id(),
+            };
+
+            return self
+                .get_model_files(variant)
+                .into_iter()
+                .map(|file| {
+                    let source_repo = if file.ends_with(".gguf") {
+                        default_repo.clone()
+                    } else {
+                        tokenizer_repo.to_string()
                     };
 
                     ModelFileSpec {
@@ -1355,6 +1417,10 @@ impl ModelDownloader {
                 2_740_937_888
             } else if file.contains("Qwen3.5-9B") {
                 5_680_522_464
+            } else if file.contains("LFM2.5-1.2B-Instruct") {
+                730_895_168
+            } else if file.contains("LFM2.5-1.2B-Thinking") {
+                730_895_360
             } else {
                 1_000_000_000
             }

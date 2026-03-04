@@ -293,6 +293,22 @@ export const MODEL_DETAILS: Record<
     capabilities: ["Text Chat", "GGUF", "Q4_K_M"],
     size: "5.3 GB",
   },
+  "LFM2.5-1.2B-Instruct-GGUF": {
+    shortName: "LFM2.5 1.2B Instruct",
+    fullName: "LFM2.5 1.2B Instruct (GGUF Q4_K_M)",
+    description: "On-device instruction chat model from Liquid AI",
+    category: "chat",
+    capabilities: ["Text Chat", "GGUF", "Q4_K_M"],
+    size: "0.68 GB",
+  },
+  "LFM2.5-1.2B-Thinking-GGUF": {
+    shortName: "LFM2.5 1.2B Thinking",
+    fullName: "LFM2.5 1.2B Thinking (GGUF Q4_K_M)",
+    description: "Reasoning-tuned on-device chat model from Liquid AI",
+    category: "chat",
+    capabilities: ["Text Chat", "GGUF", "Q4_K_M", "Thinking"],
+    size: "0.68 GB",
+  },
   "Gemma-3-1b-it": {
     shortName: "Gemma 3 1B",
     fullName: "Gemma 3 1B Instruct",
