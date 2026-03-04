@@ -210,40 +210,54 @@ export function Layout({
       {/* Sidebar */}
       <aside
         className={cn(
-          "w-[18rem] border-r border-border/70 flex flex-col fixed h-full z-50 bg-card/82 backdrop-blur-xl transition-all duration-300 shadow-[0_22px_56px_-42px_rgba(0,0,0,0.58)]",
+          "w-[16rem] border-r border-border/40 flex flex-col fixed h-full z-50 bg-background/95 backdrop-blur-xl transition-all duration-300",
           "lg:translate-x-0",
-          isSidebarCollapsed ? "lg:w-[88px]" : "lg:w-[18rem]",
-          mobileMenuOpen ? "translate-x-0" : "-translate-x-full",
+          isSidebarCollapsed ? "lg:w-[72px]" : "lg:w-[16rem]",
+          mobileMenuOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full",
         )}
       >
         {/* Logo - hidden on mobile since it's in the header */}
         <div
           className={cn(
-            "hidden lg:flex border-b border-border/70 bg-background/45",
+            "hidden lg:flex h-16 shrink-0",
             isSidebarCollapsed
-              ? "flex-col items-center gap-2 px-2 py-3"
-              : "items-center justify-between px-4 py-4",
+              ? "flex-col items-center justify-center gap-2"
+              : "items-center justify-between px-5",
           )}
         >
-          <div className="flex items-center gap-3">
-            <div className="relative w-9 h-9 rounded-xl overflow-hidden border border-border/80 shadow-sm flex-shrink-0 bg-background/75">
+          <div
+            className={cn(
+              "flex items-center gap-3",
+              isSidebarCollapsed && "hidden",
+            )}
+          >
+            <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-border/40 shadow-sm flex-shrink-0 bg-background">
               <img
                 src={appIconUrl}
                 alt="Izwi logo"
-                className="w-full h-full object-cover p-0.5 brightness-125 contrast-125"
+                className="w-full h-full object-cover p-0.5 brightness-110"
               />
             </div>
-            <div className={cn(isSidebarCollapsed && "hidden")}>
-              <h1 className="text-base font-semibold text-foreground tracking-tight">
+            <div>
+              <h1 className="text-base font-medium text-foreground tracking-tight">
                 Izwi
               </h1>
             </div>
           </div>
+          {isSidebarCollapsed && (
+            <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-border/40 shadow-sm flex-shrink-0 bg-background mb-2 mt-2">
+              <img
+                src={appIconUrl}
+                alt="Izwi logo"
+                className="w-full h-full object-cover p-0.5 brightness-110"
+              />
+            </div>
+          )}
           <Button
             variant="ghost"
             size="icon"
             onClick={() => setIsSidebarCollapsed((collapsed) => !collapsed)}
-            className="h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground"
+            className="h-8 w-8 rounded-md text-muted-foreground hover:text-foreground"
             title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
             <Menu className="w-4 h-4" />
@@ -251,11 +265,11 @@ export function Layout({
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 p-3 overflow-y-auto flex flex-col scrollbar-thin">
-          <div className="space-y-1.5">
+        <nav className="flex-1 px-3 py-4 overflow-y-auto flex flex-col scrollbar-thin gap-6">
+          <div className="space-y-1">
             <h4
               className={cn(
-                "px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-[0.18em]",
+                "px-3 text-[11px] font-medium text-muted-foreground mb-2",
                 isSidebarCollapsed && "sr-only",
               )}
             >
@@ -269,13 +283,13 @@ export function Layout({
                 onClick={() => handleNavClick(item.path)}
                 className={({ isActive }) =>
                   cn(
-                    "sidebar-link flex items-center rounded-xl border transition-all group",
+                    "sidebar-link flex items-center rounded-md border transition-all group",
                     isSidebarCollapsed
-                      ? "justify-center px-2.5 py-2.5"
-                      : "gap-3 px-3.5 py-2.5",
+                      ? "justify-center p-2"
+                      : "gap-3 px-3 py-2",
                     isActive
-                      ? "sidebar-link-active text-foreground font-medium shadow-sm"
-                      : "sidebar-link-idle text-muted-foreground",
+                      ? "sidebar-link-active text-foreground font-medium"
+                      : "sidebar-link-idle text-muted-foreground hover:text-foreground",
                   )
                 }
               >
@@ -283,13 +297,13 @@ export function Layout({
                   <>
                     <div
                       className={cn(
-                        "sidebar-link-icon p-1.5 rounded-lg transition-all flex items-center justify-center",
+                        "sidebar-link-icon flex items-center justify-center transition-colors",
                         isActive
                           ? "sidebar-link-icon-active"
-                          : "sidebar-link-icon-idle",
+                          : "sidebar-link-icon-idle group-hover:sidebar-link-icon-hover",
                       )}
                     >
-                      <item.icon className="w-[18px] h-[18px]" />
+                      <item.icon className="w-4 h-4" />
                     </div>
                     <div
                       className={cn(
@@ -299,16 +313,13 @@ export function Layout({
                     >
                       <div
                         className={cn(
-                          "text-sm truncate leading-none mb-1 sidebar-link-title",
+                          "text-sm truncate leading-none",
                           isActive
                             ? "sidebar-link-title-active"
-                            : "sidebar-link-title-idle",
+                            : "sidebar-link-title-idle group-hover:sidebar-link-title-hover",
                         )}
                       >
                         {item.label}
-                      </div>
-                      <div className="text-[11px] sidebar-link-description truncate leading-none">
-                        {item.description}
                       </div>
                     </div>
                   </>
@@ -317,10 +328,10 @@ export function Layout({
             ))}
           </div>
 
-          <div className="mt-5 pt-4 border-t border-border/70 space-y-1.5">
+          <div className="space-y-1">
             <h4
               className={cn(
-                "px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-[0.18em] mb-1",
+                "px-3 text-[11px] font-medium text-muted-foreground mb-2",
                 isSidebarCollapsed && "sr-only",
               )}
             >
@@ -334,13 +345,13 @@ export function Layout({
                 onClick={() => handleNavClick(item.path)}
                 className={({ isActive }) =>
                   cn(
-                    "sidebar-link flex items-center rounded-xl border transition-all group",
+                    "sidebar-link flex items-center rounded-md border transition-all group",
                     isSidebarCollapsed
-                      ? "justify-center px-2.5 py-2.5"
-                      : "gap-3 px-3.5 py-2.5",
+                      ? "justify-center p-2"
+                      : "gap-3 px-3 py-2",
                     isActive
-                      ? "sidebar-link-active text-foreground font-medium shadow-sm"
-                      : "sidebar-link-idle text-muted-foreground",
+                      ? "sidebar-link-active text-foreground font-medium"
+                      : "sidebar-link-idle text-muted-foreground hover:text-foreground",
                   )
                 }
               >
@@ -348,13 +359,13 @@ export function Layout({
                   <>
                     <div
                       className={cn(
-                        "sidebar-link-icon p-1.5 rounded-lg transition-all flex items-center justify-center",
+                        "sidebar-link-icon flex items-center justify-center transition-colors",
                         isActive
                           ? "sidebar-link-icon-active"
-                          : "sidebar-link-icon-idle",
+                          : "sidebar-link-icon-idle group-hover:sidebar-link-icon-hover",
                       )}
                     >
-                      <item.icon className="w-[18px] h-[18px]" />
+                      <item.icon className="w-4 h-4" />
                     </div>
                     <div
                       className={cn(
@@ -364,16 +375,13 @@ export function Layout({
                     >
                       <div
                         className={cn(
-                          "text-sm truncate leading-none mb-1 sidebar-link-title",
+                          "text-sm truncate leading-none",
                           isActive
                             ? "sidebar-link-title-active"
-                            : "sidebar-link-title-idle",
+                            : "sidebar-link-title-idle group-hover:sidebar-link-title-hover",
                         )}
                       >
                         {item.label}
-                      </div>
-                      <div className="text-[11px] sidebar-link-description truncate leading-none">
-                        {item.description}
                       </div>
                     </div>
                   </>
@@ -383,15 +391,7 @@ export function Layout({
           </div>
 
           {/* Bottom navigation section */}
-          <div className="mt-auto pt-4 space-y-1.5 border-t border-border/70">
-            <h4
-              className={cn(
-                "px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-[0.18em]",
-                isSidebarCollapsed && "sr-only",
-              )}
-            >
-              Admin
-            </h4>
+          <div className="mt-auto space-y-1 pt-4 border-t border-border/40">
             {BOTTOM_NAV_ITEMS.map((item) => (
               <NavLink
                 key={item.id}
@@ -400,13 +400,13 @@ export function Layout({
                 onClick={() => handleNavClick(item.path)}
                 className={({ isActive }) =>
                   cn(
-                    "sidebar-link flex items-center rounded-xl border transition-all group",
+                    "sidebar-link flex items-center rounded-md border transition-all group",
                     isSidebarCollapsed
-                      ? "justify-center px-2.5 py-2.5"
-                      : "gap-3 px-3.5 py-2.5",
+                      ? "justify-center p-2"
+                      : "gap-3 px-3 py-2",
                     isActive
-                      ? "sidebar-link-active text-foreground font-medium shadow-sm"
-                      : "sidebar-link-idle text-muted-foreground",
+                      ? "sidebar-link-active text-foreground font-medium"
+                      : "sidebar-link-idle text-muted-foreground hover:text-foreground",
                   )
                 }
               >
@@ -414,13 +414,13 @@ export function Layout({
                   <>
                     <div
                       className={cn(
-                        "sidebar-link-icon p-1.5 rounded-lg transition-all flex items-center justify-center",
+                        "sidebar-link-icon flex items-center justify-center transition-colors",
                         isActive
                           ? "sidebar-link-icon-active"
-                          : "sidebar-link-icon-idle",
+                          : "sidebar-link-icon-idle group-hover:sidebar-link-icon-hover",
                       )}
                     >
-                      <item.icon className="w-[18px] h-[18px]" />
+                      <item.icon className="w-4 h-4" />
                     </div>
                     <div
                       className={cn(
@@ -430,16 +430,13 @@ export function Layout({
                     >
                       <div
                         className={cn(
-                          "text-sm truncate leading-none mb-1 sidebar-link-title",
+                          "text-sm truncate leading-none",
                           isActive
                             ? "sidebar-link-title-active"
-                            : "sidebar-link-title-idle",
+                            : "sidebar-link-title-idle group-hover:sidebar-link-title-hover",
                         )}
                       >
                         {item.label}
-                      </div>
-                      <div className="text-[11px] sidebar-link-description truncate leading-none">
-                        {item.description}
                       </div>
                     </div>
                   </>
@@ -452,7 +449,7 @@ export function Layout({
         {/* Footer */}
         <div
           className={cn(
-            "border-t border-border/70 bg-background/45",
+            "border-t border-border/40 bg-background/50",
             isSidebarCollapsed ? "p-3" : "p-4",
           )}
         >
@@ -472,7 +469,7 @@ export function Layout({
             >
               <div
                 className={cn(
-                  "text-xs font-medium",
+                  "text-[11px] font-medium",
                   readyModelsCount > 0
                     ? "text-foreground"
                     : "text-muted-foreground",
@@ -483,23 +480,23 @@ export function Layout({
                 {isSidebarCollapsed ? (
                   <span
                     className={cn(
-                      "inline-flex w-2.5 h-2.5 rounded-full shadow-sm",
+                      "inline-flex w-2 h-2 rounded-full",
                       readyModelsCount > 0
-                        ? "bg-emerald-400"
+                        ? "bg-green-500"
                         : "bg-muted-foreground/30",
                     )}
                   />
                 ) : readyModelsCount > 0 ? (
                   <span className="flex items-center gap-2">
-                    <span className="relative flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-300 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500"></span>
                     </span>
                     {loadedText}
                   </span>
                 ) : (
                   <span className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-muted-foreground/30" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30" />
                     {loadedText}
                   </span>
                 )}
@@ -524,10 +521,10 @@ export function Layout({
                 href="https://github.com/agentem-ai/izwi"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="rounded-md p-1 text-muted-foreground hover:text-foreground transition-colors hover:bg-accent/55"
+                className="rounded-md p-1 text-muted-foreground hover:text-foreground transition-colors hover:bg-accent"
                 title="Izwi on GitHub"
               >
-                <Github className="w-4 h-4" />
+                <Github className="w-3.5 h-3.5" />
               </a>
             </div>
           </div>

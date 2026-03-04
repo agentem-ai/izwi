@@ -66,7 +66,7 @@ export function GenerationStats({
       initial={{ opacity: 0, y: 5 }}
       animate={{ opacity: 1, y: 0 }}
       className={clsx(
-        "flex flex-wrap items-center gap-3 px-3 py-2 rounded-lg bg-[#161616] border border-[#2a2a2a]",
+        "flex flex-wrap items-center gap-3 px-3 py-2 rounded-lg bg-[var(--bg-surface-2)] border border-[var(--border-muted)]",
         className
       )}
     >

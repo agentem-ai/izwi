@@ -25,7 +25,7 @@ export function ViewSwitcher({
   const views = Object.values(VIEW_CONFIGS).filter((v) => !v.disabled);
 
   return (
-    <div className="flex flex-col sm:flex-row gap-2 p-1 bg-[#0d0d0d] rounded-xl border border-[#2a2a2a]">
+    <div className="flex flex-col sm:flex-row gap-2 p-1 bg-[#0d0d0d] rounded-xl border border-[var(--border-muted)]">
       {views.map((view) => {
         const Icon = ICONS[view.icon as keyof typeof ICONS];
         const isActive = currentView === view.id;
@@ -39,14 +39,14 @@ export function ViewSwitcher({
             className={clsx(
               "relative flex-1 flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200",
               isActive
-                ? "bg-[#1a1a1a] border border-[#2a2a2a]"
-                : "hover:bg-[#161616] border border-transparent",
+                ? "bg-[var(--bg-surface-1)] border border-[var(--border-muted)]"
+                : "hover:bg-[var(--bg-surface-2)] border border-transparent",
             )}
           >
             {isActive && (
               <motion.div
                 layoutId="activeViewIndicator"
-                className="absolute inset-0 bg-[#1a1a1a] rounded-lg border border-[#2a2a2a]"
+                className="absolute inset-0 bg-[var(--bg-surface-1)] rounded-lg border border-[var(--border-muted)]"
                 transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
               />
             )}
@@ -57,7 +57,7 @@ export function ViewSwitcher({
                   "p-2 rounded-lg transition-colors",
                   isActive
                     ? "bg-white text-black"
-                    : "bg-[#1f1f1f] text-gray-400",
+                    : "bg-[var(--bg-surface-3)] text-gray-400",
                 )}
               >
                 <Icon className="w-4 h-4" />

@@ -151,7 +151,7 @@ export function VoicePlayground({
         <div className="relative">
           <button
             onClick={() => setShowSpeakerSelect(!showSpeakerSelect)}
-            className="flex w-36 sm:w-40 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#1f1f1f] text-sm"
+            className="flex w-36 sm:w-40 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[var(--bg-surface-1)] border border-[var(--border-muted)] hover:bg-[var(--bg-surface-3)] text-sm"
           >
             <Volume2 className="w-3.5 h-3.5 text-gray-500" />
             <span className="text-white flex-1 min-w-0 truncate text-left">{speaker}</span>
@@ -169,7 +169,7 @@ export function VoicePlayground({
                 initial={{ opacity: 0, y: -5 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -5 }}
-                className="absolute left-0 right-0 top-full mt-1 p-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] shadow-xl z-50"
+                className="absolute left-0 right-0 top-full mt-1 p-1 rounded bg-[var(--bg-surface-1)] border border-[var(--border-muted)] shadow-xl z-50"
               >
                 {SPEAKERS.map((s) => (
                   <button
@@ -213,7 +213,7 @@ export function VoicePlayground({
 
         {/* Voice Cloning Section (for Base models) */}
         {isBaseModel && (
-          <div className="p-3 rounded-lg bg-[#161616] border border-[#2a2a2a]">
+          <div className="p-3 rounded-lg bg-[var(--bg-surface-2)] border border-[var(--border-muted)]">
             <div className="flex items-center gap-2 mb-3">
               <User className="w-4 h-4 text-gray-500" />
               <span className="text-xs font-medium text-white">
@@ -314,7 +314,7 @@ export function VoicePlayground({
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
-            className="mt-4 p-3 rounded bg-[#1a1a1a] border border-[#2a2a2a]"
+            className="mt-4 p-3 rounded bg-[var(--bg-surface-1)] border border-[var(--border-muted)]"
           >
             <audio ref={audioRef} src={audioUrl} className="w-full" controls />
           </motion.div>
