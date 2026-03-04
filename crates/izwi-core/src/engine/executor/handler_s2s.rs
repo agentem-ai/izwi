@@ -76,6 +76,8 @@ impl NativeExecutor {
                     prompt_accounted: false,
                     last_tokens_generated: 0,
                     stream_sequence: 0,
+                    audio_frames_accum: Vec::new(),
+                    emitted_samples: 0,
                     audio_samples_accum: Vec::new(),
                 }
             };
@@ -113,11 +115,16 @@ impl NativeExecutor {
                 }
 
                 if let Some(frame) = step.audio_frame.as_ref() {
-                    let chunk_samples = Self::run_blocking(|| model.decode_audio_frame(frame))?;
+                    active_state.audio_frames_accum.push(frame.clone());
+                    // Decode over the accumulated frame prefix so streamed chunks stay
+                    // consistent with full-utterance decode.
+                    let all_samples = Self::run_blocking(|| {
+                        model.decode_audio_frames(&active_state.audio_frames_accum)
+                    })?;
+                    let chunk_samples =
+                        Self::next_audio_delta(&all_samples, &mut active_state.emitted_samples);
+                    active_state.audio_samples_accum = all_samples;
                     if !chunk_samples.is_empty() {
-                        active_state
-                            .audio_samples_accum
-                            .extend_from_slice(&chunk_samples);
                         Self::stream_audio(
                             tx,
                             &request.id,

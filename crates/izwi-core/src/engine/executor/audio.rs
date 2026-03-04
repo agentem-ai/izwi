@@ -90,9 +90,44 @@ impl NativeExecutor {
 
         Ok(assembler.finish())
     }
+
+    pub(super) fn next_audio_delta(all_samples: &[f32], emitted_samples: &mut usize) -> Vec<f32> {
+        let start = (*emitted_samples).min(all_samples.len());
+        let delta = all_samples[start..].to_vec();
+        *emitted_samples = all_samples.len();
+        delta
+    }
 }
 
 pub(super) fn decode_audio_base64_with_rate(audio_b64: &str) -> Result<(Vec<f32>, u32)> {
     let audio_bytes = base64_decode(audio_b64)?;
     decode_audio_bytes(&audio_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NativeExecutor;
+
+    #[test]
+    fn next_audio_delta_emits_only_new_tail_samples() {
+        let mut emitted = 0usize;
+        let all1 = vec![0.1f32, 0.2, 0.3];
+        let delta1 = NativeExecutor::next_audio_delta(&all1, &mut emitted);
+        assert_eq!(delta1, all1);
+        assert_eq!(emitted, 3);
+
+        let all2 = vec![0.1f32, 0.2, 0.3, 0.4, 0.5];
+        let delta2 = NativeExecutor::next_audio_delta(&all2, &mut emitted);
+        assert_eq!(delta2, vec![0.4, 0.5]);
+        assert_eq!(emitted, 5);
+    }
+
+    #[test]
+    fn next_audio_delta_handles_shorter_redecode_safely() {
+        let mut emitted = 5usize;
+        let all = vec![1.0f32, 2.0];
+        let delta = NativeExecutor::next_audio_delta(&all, &mut emitted);
+        assert!(delta.is_empty());
+        assert_eq!(emitted, 2);
+    }
 }
