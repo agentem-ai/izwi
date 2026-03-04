@@ -64,6 +64,7 @@ interface RouteModelModalProps {
 
 const PROVIDER_ORDER = [
   "Qwen",
+  "OpenAI",
   "Liquid AI",
   "Google",
   "NVIDIA",
@@ -100,6 +101,7 @@ function getProviderLabel(variant: string): string {
   if (variant.startsWith("Qwen3-") || variant.startsWith("Qwen3.5-")) {
     return "Qwen";
   }
+  if (variant.startsWith("Whisper-")) return "OpenAI";
   if (variant.startsWith("LFM2")) return "Liquid AI";
   if (variant.startsWith("Gemma-")) return "Google";
   if (

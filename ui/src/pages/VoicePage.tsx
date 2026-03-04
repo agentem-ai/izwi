@@ -220,6 +220,7 @@ function formatBytes(bytes: number): string {
 function isAsrVariant(variant: string): boolean {
   return (
     variant.includes("Qwen3-ASR") ||
+    variant.includes("Whisper-Large-v3-Turbo") ||
     variant.includes("Parakeet-TDT") ||
     variant.includes("Voxtral") ||
     isLfmAudioVariant(variant)
@@ -241,6 +242,10 @@ function formatModelVariantLabel(variant: string): string {
 
   if (normalized.startsWith("Parakeet-TDT-")) {
     return normalized.replace("Parakeet-TDT-", "Parakeet ");
+  }
+
+  if (normalized.startsWith("Whisper-Large-v3-Turbo")) {
+    return "Whisper Large v3 Turbo";
   }
 
   if (normalized.startsWith("Qwen3-TTS-12Hz-")) {

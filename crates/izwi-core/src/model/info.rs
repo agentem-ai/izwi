@@ -99,6 +99,13 @@ pub enum ModelVariant {
     /// Parakeet TDT 0.6B v3 ASR model (.nemo)
     #[serde(rename = "Parakeet-TDT-0.6B-v3", alias = "Parakeet-TDT-0.6B-v3-4bit")]
     ParakeetTdt06BV3,
+    /// Whisper Large v3 Turbo ASR model
+    #[serde(
+        rename = "Whisper-Large-v3-Turbo",
+        alias = "whisper-large-v3-turbo",
+        alias = "openai/whisper-large-v3-turbo"
+    )]
+    WhisperLargeV3Turbo,
     /// Streaming Sortformer 4-speaker diarization model (.nemo)
     #[serde(rename = "diar_streaming_sortformer_4spk-v2.1")]
     DiarStreamingSortformer4SpkV21,
@@ -213,6 +220,7 @@ impl ModelVariant {
             Self::Qwen3Asr17BBf16 => "mlx-community/Qwen3-ASR-1.7B-bf16",
             Self::ParakeetTdt06BV2 => "nvidia/parakeet-tdt-0.6b-v2",
             Self::ParakeetTdt06BV3 => "nvidia/parakeet-tdt-0.6b-v3",
+            Self::WhisperLargeV3Turbo => "openai/whisper-large-v3-turbo",
             Self::DiarStreamingSortformer4SpkV21 => "nvidia/diar_streaming_sortformer_4spk-v2.1",
             Self::Qwen306B => "Qwen/Qwen3-0.6B",
             Self::Qwen306B4Bit => "mlx-community/Qwen3-0.6B-4bit",
@@ -269,6 +277,7 @@ impl ModelVariant {
             Self::Qwen3Asr17BBf16 => "Qwen3-ASR 1.7B bf16",
             Self::ParakeetTdt06BV2 => "Parakeet TDT 0.6B v2",
             Self::ParakeetTdt06BV3 => "Parakeet TDT 0.6B v3",
+            Self::WhisperLargeV3Turbo => "Whisper Large v3 Turbo",
             Self::DiarStreamingSortformer4SpkV21 => "Streaming Sortformer 4spk v2.1",
             Self::Qwen306B => "Qwen3 0.6B",
             Self::Qwen306B4Bit => "Qwen3 0.6B 4-bit",
@@ -325,6 +334,7 @@ impl ModelVariant {
             Self::Qwen3Asr17BBf16 => "Qwen3-ASR-1.7B-bf16",
             Self::ParakeetTdt06BV2 => "Parakeet-TDT-0.6B-v2",
             Self::ParakeetTdt06BV3 => "Parakeet-TDT-0.6B-v3",
+            Self::WhisperLargeV3Turbo => "Whisper-Large-v3-Turbo",
             Self::DiarStreamingSortformer4SpkV21 => "diar_streaming_sortformer_4spk-v2.1",
             Self::Qwen306B => "Qwen3-0.6B",
             Self::Qwen306B4Bit => "Qwen3-0.6B-4bit",
@@ -381,6 +391,7 @@ impl ModelVariant {
             Self::Qwen3Asr17BBf16 => 4_080_710_353,     // ~3.80 GB
             Self::ParakeetTdt06BV2 => 4_926_457_088,    // ~4.59 GB
             Self::ParakeetTdt06BV3 => 10_036_761_167,   // ~9.35 GB
+            Self::WhisperLargeV3Turbo => 1_617_824_864, // ~1.51 GB (HF x-linked-size)
             Self::DiarStreamingSortformer4SpkV21 => 510_000_000, // ~0.47 GB (est)
             Self::Qwen306B => 1_520_000_000,            // ~1.42 GB (est)
             Self::Qwen306B4Bit => 900_000_000,          // ~0.84 GB (est)
@@ -436,6 +447,7 @@ impl ModelVariant {
             | Self::Qwen3Asr17BBf16 => 6.0,
             Self::ParakeetTdt06BV2 => 8.0,
             Self::ParakeetTdt06BV3 => 12.0,
+            Self::WhisperLargeV3Turbo => 4.0,
             Self::DiarStreamingSortformer4SpkV21 => 3.0,
             Self::Qwen306B => 3.0,
             Self::Qwen306B4Bit => 2.0,
@@ -477,7 +489,9 @@ impl ModelVariant {
     pub fn is_asr(&self) -> bool {
         matches!(
             self.family(),
-            crate::catalog::ModelFamily::Qwen3Asr | crate::catalog::ModelFamily::ParakeetAsr
+            crate::catalog::ModelFamily::Qwen3Asr
+                | crate::catalog::ModelFamily::ParakeetAsr
+                | crate::catalog::ModelFamily::WhisperAsr
         )
     }
 
@@ -662,6 +676,7 @@ impl ModelVariant {
             Self::Lfm2Audio15B | Self::Lfm25Audio15B => true,
             Self::VoxtralMini4BRealtime2602 => false,
             Self::ParakeetTdt06BV2 | Self::ParakeetTdt06BV3 => true,
+            Self::WhisperLargeV3Turbo => true,
             Self::DiarStreamingSortformer4SpkV21 => true,
             Self::Qwen3ForcedAligner06B => true,
             _ => !self.is_quantized(),
@@ -702,6 +717,7 @@ impl ModelVariant {
             Self::Qwen3Asr17BBf16,
             Self::ParakeetTdt06BV2,
             Self::ParakeetTdt06BV3,
+            Self::WhisperLargeV3Turbo,
             Self::DiarStreamingSortformer4SpkV21,
             Self::Qwen306B,
             Self::Qwen306B4Bit,

@@ -10,6 +10,7 @@ pub enum ModelFamily {
     KokoroTts,
     Qwen3Asr,
     ParakeetAsr,
+    WhisperAsr,
     SortformerDiarization,
     Qwen3Chat,
     Qwen35Chat,
@@ -103,6 +104,7 @@ impl ModelVariant {
             Qwen3Asr06B | Qwen3Asr06B4Bit | Qwen3Asr06B8Bit | Qwen3Asr06BBf16 | Qwen3Asr17B
             | Qwen3Asr17B4Bit | Qwen3Asr17B8Bit | Qwen3Asr17BBf16 => ModelFamily::Qwen3Asr,
             ParakeetTdt06BV2 | ParakeetTdt06BV3 => ModelFamily::ParakeetAsr,
+            WhisperLargeV3Turbo => ModelFamily::WhisperAsr,
             DiarStreamingSortformer4SpkV21 => ModelFamily::SortformerDiarization,
             Qwen306B | Qwen306B4Bit | Qwen306BGguf | Qwen317B | Qwen317B4Bit | Qwen317BGguf
             | Qwen34BGguf | Qwen38BGguf | Qwen314BGguf => ModelFamily::Qwen3Chat,
@@ -116,7 +118,9 @@ impl ModelVariant {
     pub fn primary_task(&self) -> ModelTask {
         match self.family() {
             ModelFamily::Qwen3Tts | ModelFamily::KokoroTts => ModelTask::Tts,
-            ModelFamily::Qwen3Asr | ModelFamily::ParakeetAsr => ModelTask::Asr,
+            ModelFamily::Qwen3Asr | ModelFamily::ParakeetAsr | ModelFamily::WhisperAsr => {
+                ModelTask::Asr
+            }
             ModelFamily::SortformerDiarization => ModelTask::Diarization,
             ModelFamily::Qwen3Chat | ModelFamily::Qwen35Chat | ModelFamily::Gemma3Chat => {
                 ModelTask::Chat
@@ -212,6 +216,11 @@ pub fn resolve_asr_model_variant(input: Option<&str>) -> ModelVariant {
             let normalized = normalize_identifier(raw);
             if normalized.contains("voxtral") {
                 VoxtralMini4BRealtime2602
+            } else if normalized.contains("whisper")
+                && normalized.contains("largev3")
+                && normalized.contains("turbo")
+            {
+                WhisperLargeV3Turbo
             } else if let Some(lfm2_variant) = resolve_lfm2_audio_variant(&normalized) {
                 lfm2_variant
             } else if normalized.contains("parakeet") {
@@ -266,6 +275,13 @@ fn resolve_by_heuristic(normalized: &str) -> Option<ModelVariant> {
             return Some(ParakeetTdt06BV3);
         }
         return Some(ParakeetTdt06BV2);
+    }
+
+    if normalized.contains("whisper")
+        && normalized.contains("largev3")
+        && normalized.contains("turbo")
+    {
+        return Some(WhisperLargeV3Turbo);
     }
 
     if normalized.contains("forcedaligner") {
@@ -566,6 +582,19 @@ mod tests {
     fn resolve_asr_accepts_parakeet() {
         let resolved = resolve_asr_model_variant(Some("nvidia/parakeet-tdt-0.6b-v2"));
         assert_eq!(resolved, ModelVariant::ParakeetTdt06BV2);
+    }
+
+    #[test]
+    fn parse_whisper_turbo_repo_alias() {
+        let parsed = parse_model_variant("openai/whisper-large-v3-turbo").unwrap();
+        assert_eq!(parsed, ModelVariant::WhisperLargeV3Turbo);
+        assert_eq!(parsed.family(), ModelFamily::WhisperAsr);
+    }
+
+    #[test]
+    fn resolve_asr_accepts_whisper_turbo() {
+        let resolved = resolve_asr_model_variant(Some("whisper-large-v3-turbo"));
+        assert_eq!(resolved, ModelVariant::WhisperLargeV3Turbo);
     }
 
     #[test]

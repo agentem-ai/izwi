@@ -308,6 +308,19 @@ const MODEL_DETAILS: Record<
     features: ["Text chat", "Instruction tuned", "Higher quality"],
     size: "8.0 GB",
   },
+  "Whisper-Large-v3-Turbo": {
+    shortName: "Whisper v3 Turbo",
+    fullName: "Whisper Large v3 Turbo",
+    description:
+      "OpenAI Whisper Turbo ASR optimized for fast multilingual offline transcription",
+    features: [
+      "Multilingual ASR",
+      "Offline transcription",
+      "Streaming deltas",
+      "Whisper.cpp-style decoding",
+    ],
+    size: "1.5 GB",
+  },
   "Qwen3-ASR-0.6B": {
     shortName: "ASR 0.6B",
     fullName: "Qwen3-ASR 0.6B",

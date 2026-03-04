@@ -36,6 +36,7 @@ type ProviderSection = { provider: string; models: ModelInfo[] };
 
 const PROVIDER_ORDER = [
   "Qwen",
+  "OpenAI",
   "Liquid AI",
   "Google",
   "NVIDIA",
@@ -308,6 +309,20 @@ export const MODEL_DETAILS: Record<
     capabilities: ["Text Chat", "Instruction Tuned"],
     size: "8.0 GB",
   },
+  "Whisper-Large-v3-Turbo": {
+    shortName: "Whisper v3 Turbo",
+    fullName: "Whisper Large v3 Turbo",
+    description:
+      "OpenAI Whisper Turbo model for fast multilingual local transcription",
+    category: "asr",
+    capabilities: [
+      "Transcription",
+      "Multilingual",
+      "Offline",
+      "Streaming deltas",
+    ],
+    size: "1.5 GB",
+  },
   // ASR 0.6B models
   "Qwen3-ASR-0.6B": {
     shortName: "ASR 0.6B",
@@ -497,6 +512,7 @@ function getProviderLabel(variant: string): string {
   if (variant.startsWith("Qwen3-") || variant.startsWith("Qwen3.5-")) {
     return "Qwen";
   }
+  if (variant.startsWith("Whisper-")) return "OpenAI";
   if (variant.startsWith("LFM2")) return "Liquid AI";
   if (variant.startsWith("Gemma-")) return "Google";
   if (

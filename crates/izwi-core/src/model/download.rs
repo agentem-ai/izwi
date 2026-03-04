@@ -464,6 +464,13 @@ impl ModelDownloader {
                     || path.join("tokenizer.vocab").exists();
                 has_config && has_model && has_tokenizer
             }
+            ModelFamily::WhisperAsr => {
+                path.join("config.json").exists()
+                    && path.join("generation_config.json").exists()
+                    && path.join("preprocessor_config.json").exists()
+                    && path.join("tokenizer.json").exists()
+                    && path.join("model.safetensors").exists()
+            }
             ModelFamily::SortformerDiarization => path
                 .join("diar_streaming_sortformer_4spk-v2.1.nemo")
                 .exists(),
@@ -1003,6 +1010,19 @@ impl ModelDownloader {
                     ]
                 }
             }
+            ModelFamily::WhisperAsr => vec![
+                "config.json".to_string(),
+                "generation_config.json".to_string(),
+                "preprocessor_config.json".to_string(),
+                "tokenizer.json".to_string(),
+                "tokenizer_config.json".to_string(),
+                "special_tokens_map.json".to_string(),
+                "vocab.json".to_string(),
+                "merges.txt".to_string(),
+                "normalizer.json".to_string(),
+                "added_tokens.json".to_string(),
+                "model.safetensors".to_string(),
+            ],
             ModelFamily::SortformerDiarization => vec![
                 "diar_streaming_sortformer_4spk-v2.1.nemo".to_string(),
                 "README.md".to_string(),
@@ -1351,6 +1371,7 @@ impl ModelDownloader {
                     | ModelVariant::Qwen3Tts12Hz17BCustomVoice
                     | ModelVariant::Qwen3Tts12Hz17BVoiceDesign => 3_850_000_000,
                     ModelVariant::Qwen3Asr06B => 1_800_000_000,
+                    ModelVariant::WhisperLargeV3Turbo => 1_617_824_864,
                     ModelVariant::Qwen306B => 1_520_000_000,
                     ModelVariant::Qwen306B4Bit => 800_000_000,
                     ModelVariant::Qwen317B4Bit => 1_115_000_000,

@@ -77,6 +77,7 @@ export function TranscriptionPage({
   const preferredModelOrder = [
     "Parakeet-TDT-0.6B-v3",
     "Parakeet-TDT-0.6B-v2",
+    "Whisper-Large-v3-Turbo",
     "LFM2.5-Audio-1.5B-4bit",
     "LFM2.5-Audio-1.5B",
     "LFM2-Audio-1.5B",

@@ -25,6 +25,9 @@ use crate::models::architectures::qwen35::chat::{
 };
 use crate::models::architectures::sortformer::diarization::SortformerDiarizerModel;
 use crate::models::architectures::voxtral::realtime::VoxtralRealtimeModel;
+use crate::models::architectures::whisper::asr::{
+    AsrTranscriptionOutput as WhisperAsrTranscriptionOutput, WhisperTurboAsrModel,
+};
 use crate::models::shared::chat::ChatMessage;
 use crate::models::shared::device::DeviceProfile;
 use crate::runtime::{DiarizationConfig, DiarizationResult};
@@ -89,6 +92,16 @@ fn load_parakeet_asr_model(
 ) -> Result<NativeAsrModel> {
     Ok(NativeAsrModel::Parakeet(ParakeetAsrModel::load(
         model_dir, variant, device,
+    )?))
+}
+
+fn load_whisper_asr_model(
+    model_dir: &Path,
+    _variant: ModelVariant,
+    device: DeviceProfile,
+) -> Result<NativeAsrModel> {
+    Ok(NativeAsrModel::WhisperTurbo(WhisperTurboAsrModel::load(
+        model_dir, device,
     )?))
 }
 
@@ -162,6 +175,11 @@ const ASR_LOADER_REGISTRY: &[AsrLoaderRegistration] = &[
         loader: load_parakeet_asr_model,
     },
     AsrLoaderRegistration {
+        name: "whisper_asr",
+        family: ModelFamily::WhisperAsr,
+        loader: load_whisper_asr_model,
+    },
+    AsrLoaderRegistration {
         name: "qwen_asr",
         family: ModelFamily::Qwen3Asr,
         loader: load_qwen_asr_model,
@@ -217,6 +235,7 @@ fn resolve_asr_loader_registration(
     let family = match variant.family() {
         ModelFamily::Qwen3Asr | ModelFamily::Qwen3ForcedAligner => ModelFamily::Qwen3Asr,
         ModelFamily::ParakeetAsr => ModelFamily::ParakeetAsr,
+        ModelFamily::WhisperAsr => ModelFamily::WhisperAsr,
         _ => return None,
     };
 
@@ -273,6 +292,7 @@ fn resolve_kokoro_loader_registration(
 pub enum NativeAsrModel {
     Qwen3(Qwen3AsrModel),
     Parakeet(ParakeetAsrModel),
+    WhisperTurbo(WhisperTurboAsrModel),
 }
 
 pub enum NativeAsrDecodeState {
@@ -322,6 +342,9 @@ impl NativeAsrModel {
             Self::Parakeet(model) => {
                 model.transcribe_with_callback(audio, sample_rate, language, on_delta)
             }
+            Self::WhisperTurbo(model) => {
+                model.transcribe_with_callback(audio, sample_rate, language, on_delta)
+            }
         }
     }
 
@@ -341,6 +364,11 @@ impl NativeAsrModel {
                 text: model.transcribe(audio, sample_rate, language)?,
                 language: language.map(|value| value.to_string()),
             }),
+            Self::WhisperTurbo(model) => {
+                let WhisperAsrTranscriptionOutput { text, language } =
+                    model.transcribe_with_details(audio, sample_rate, language)?;
+                Ok(NativeAsrTranscription { text, language })
+            }
         }
     }
 
@@ -356,6 +384,9 @@ impl NativeAsrModel {
             Self::Parakeet(_) => Err(Error::InvalidInput(
                 "Forced alignment is only available for Qwen3-ForcedAligner models".to_string(),
             )),
+            Self::WhisperTurbo(_) => Err(Error::InvalidInput(
+                "Forced alignment is only available for Qwen3-ForcedAligner models".to_string(),
+            )),
         }
     }
 
@@ -367,6 +398,7 @@ impl NativeAsrModel {
         match self {
             Self::Qwen3(model) => model.max_audio_seconds_hint(),
             Self::Parakeet(_) => None,
+            Self::WhisperTurbo(model) => model.max_audio_seconds_hint(),
         }
     }
 
@@ -385,6 +417,9 @@ impl NativeAsrModel {
                 max_new_tokens,
             )?)),
             Self::Parakeet(_) => Err(Error::InvalidInput(
+                "Incremental decode state is not available for this ASR model".to_string(),
+            )),
+            Self::WhisperTurbo(_) => Err(Error::InvalidInput(
                 "Incremental decode state is not available for this ASR model".to_string(),
             )),
         }
