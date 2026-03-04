@@ -2131,7 +2131,7 @@ export function ChatPlayground({
               animate={{ y: 0, opacity: 1, scale: 1 }}
               exit={{ y: 10, opacity: 0, scale: 0.98 }}
               transition={{ duration: 0.16 }}
-              className="mx-auto mt-[18vh] max-w-md rounded-xl border border-[var(--danger-border)] bg-[var(--bg-surface-1)] p-5"
+              className="mx-auto mt-[18vh] max-w-md rounded-xl border border-[var(--border-strong)] bg-[var(--bg-surface-1)] p-5"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start gap-3">

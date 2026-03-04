@@ -920,7 +920,7 @@ export function MyModelsPage({
           onClick={() => setDeleteModalVariant(null)}
         >
           <div
-            className="w-full max-w-md rounded-xl border border-[var(--danger-border)] bg-[var(--bg-surface-1)] p-5 shadow-xl"
+            className="w-full max-w-md rounded-xl border border-[var(--border-strong)] bg-[var(--bg-surface-1)] p-5 shadow-xl"
             onClick={(event) => event.stopPropagation()}
           >
             <h3 className="text-sm font-semibold text-[var(--text-primary)]">
