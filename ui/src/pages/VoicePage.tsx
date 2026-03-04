@@ -2624,6 +2624,7 @@ export function VoicePage({
     (!lfm2DirectMode &&
       (!selectedAsrModel || !selectedTextModel || !selectedTtsModel)) ||
     !hasRunnableConfig;
+  const showTranscriptPanel = runtimeStatus !== "idle" || transcript.length > 0;
 
   if (loading) {
     return (
@@ -2682,7 +2683,14 @@ export function VoicePage({
         )}
 
         {/* Central Orb / Main Visualizer */}
-        <div className="relative z-10 flex flex-col items-center justify-center mb-8">
+        <div
+          className={cn(
+            "relative z-10 flex flex-col items-center justify-center transition-transform duration-300",
+            showTranscriptPanel
+              ? "mb-16 -translate-y-16 sm:-translate-y-20"
+              : "mb-8",
+          )}
+        >
           <motion.div
             className="relative flex items-center justify-center"
             animate={{
@@ -2780,7 +2788,7 @@ export function VoicePage({
           </div>
         </div>
 
-        {(runtimeStatus !== "idle" || transcript.length > 0) && (
+        {showTranscriptPanel && (
           <div className="absolute inset-x-4 bottom-24 sm:bottom-28 z-10 mx-auto w-full max-w-3xl">
             <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)]/95 backdrop-blur p-3 sm:p-4 shadow-2xl">
               <div className="flex items-center justify-between gap-2 mb-2">
