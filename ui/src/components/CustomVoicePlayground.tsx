@@ -637,36 +637,36 @@ export function CustomVoicePlayground({
 
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr),320px] items-stretch xl:h-[calc(100dvh-11.75rem)]">
-      <div className="card p-4 flex min-h-0 flex-col">
+      <div className="card p-4 sm:p-6 flex min-h-0 flex-col">
         <div className="flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-thin">
           {/* Header */}
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-4">
             <div className="flex items-center gap-3">
-              <div className="p-2 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)]">
-                <Volume2 className="w-5 h-5 text-[var(--text-muted)]" />
+              <div className="p-2.5 rounded-lg bg-[var(--bg-surface-2)]">
+                <Volume2 className="w-5 h-5 text-[var(--text-primary)]" />
               </div>
               <div>
-                <h2 className="text-sm font-medium text-[var(--text-primary)]">
-                  Text to Speech
+                <h2 className="text-base font-semibold text-[var(--text-primary)]">
+                  Synthesis
                 </h2>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="relative">
+              <div className="relative w-full sm:w-auto">
                 <button
                   onClick={() => setShowSpeakerSelect(!showSpeakerSelect)}
-                  className="flex w-56 sm:w-64 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)] hover:bg-[var(--bg-surface-3)] text-sm"
+                  className="flex w-full sm:w-64 items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[var(--bg-surface-2)] border border-[var(--border-muted)] hover:border-[var(--border-strong)] transition-colors text-sm"
                 >
                   <div className="speaker-avatar w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium">
                     {speaker.charAt(0)}
                   </div>
-                  <span className="text-[var(--text-primary)] flex-1 min-w-0 truncate text-left">
+                  <span className="text-[var(--text-primary)] font-medium flex-1 min-w-0 truncate text-left">
                     {selectedSpeaker?.name || speaker}
                   </span>
                   <ChevronDown
                     className={cn(
-                      "w-3.5 h-3.5 text-[var(--text-subtle)] transition-transform",
+                      "w-4 h-4 text-[var(--text-muted)] transition-transform",
                       showSpeakerSelect && "rotate-180",
                     )}
                   />
@@ -675,10 +675,11 @@ export function CustomVoicePlayground({
                 <AnimatePresence>
                   {showSpeakerSelect && (
                     <motion.div
-                      initial={{ opacity: 0, y: -5 }}
+                      initial={{ opacity: 0, y: -4 }}
                       animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -5 }}
-                      className="absolute left-0 right-0 top-full mt-1 max-h-80 overflow-y-auto p-1 rounded bg-[var(--bg-surface-1)] border border-[var(--border-strong)] shadow-xl z-50"
+                      exit={{ opacity: 0, y: -4 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute left-0 right-0 top-full mt-2 max-h-80 overflow-y-auto p-1.5 rounded-xl bg-[var(--bg-surface-1)] border border-[var(--border-strong)] shadow-xl z-50"
                     >
                       {availableSpeakers.map((s) => (
                         <button
@@ -688,9 +689,9 @@ export function CustomVoicePlayground({
                             setShowSpeakerSelect(false);
                           }}
                           className={cn(
-                            "w-full px-3 py-2 rounded text-left transition-colors flex items-center gap-3",
+                            "w-full px-3 py-2.5 rounded-lg text-left transition-colors flex items-center gap-3 group",
                             speaker === s.id
-                              ? "bg-[var(--bg-surface-3)]"
+                              ? "bg-[var(--bg-surface-2)]"
                               : "hover:bg-[var(--bg-surface-2)]",
                           )}
                         >
@@ -703,16 +704,16 @@ export function CustomVoicePlayground({
                                 "text-sm font-medium",
                                 speaker === s.id
                                   ? "text-[var(--text-primary)]"
-                                  : "text-[var(--text-secondary)]",
+                                  : "text-[var(--text-primary)]",
                               )}
                             >
                               {s.name}
                             </div>
-                            <div className="text-[10px] text-[var(--text-subtle)] truncate">
+                            <div className="text-[11px] text-[var(--text-muted)] truncate group-hover:text-[var(--text-subtle)]">
                               {s.description}
                             </div>
                           </div>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface-3)] text-[var(--text-subtle)]">
+                          <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-[var(--bg-surface-3)] text-[var(--text-subtle)]">
                             {s.language}
                           </span>
                         </button>
@@ -724,36 +725,42 @@ export function CustomVoicePlayground({
             </div>
           </div>
 
-          <div className="mb-4 rounded-xl border border-[var(--border-strong)] bg-[var(--bg-surface-2)] p-4">
-            <div className="flex items-start justify-between gap-4">
+          <div className="mb-6 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4 sm:p-5">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
-                <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">
-                  Active Model
+                <div className="text-[11px] font-semibold text-[var(--text-subtle)] uppercase tracking-wider mb-2.5">
+                  Voice Model
                 </div>
-                {modelOptions.length > 0 && (
-                  <div className="mt-2">{renderModelSelector()}</div>
-                )}
+                {modelOptions.length > 0 && <div>{renderModelSelector()}</div>}
                 <div
                   className={cn(
-                    "mt-2 text-xs",
+                    "mt-2.5 flex items-center gap-1.5 text-xs font-medium",
                     selectedModelReady
-                      ? "text-[var(--text-primary)]"
-                      : "text-[var(--text-secondary)]",
+                      ? "text-green-500"
+                      : "text-[var(--text-muted)]",
                   )}
                 >
-                  {selectedModelReady
-                    ? "Loaded and ready"
-                    : "Open Models and load the selected TTS model"}
+                  {selectedModelReady ? (
+                    <>
+                      <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                      Ready for synthesis
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-1.5 h-1.5 rounded-full bg-[var(--text-muted)]" />
+                      Select a downloaded model to begin
+                    </>
+                  )}
                 </div>
               </div>
               {onOpenModelManager && (
-                <div className="shrink-0">
+                <div className="shrink-0 mt-2 sm:mt-0">
                   <button
                     onClick={handleOpenModels}
-                    className="btn btn-secondary text-xs"
+                    className="btn btn-secondary text-xs h-9 px-4 rounded-md"
                   >
                     <Settings2 className="w-4 h-4" />
-                    Models
+                    Manage
                   </button>
                 </div>
               )}
@@ -761,41 +768,41 @@ export function CustomVoicePlayground({
           </div>
 
           {/* Text input */}
-          <div className="space-y-3">
+          <div className="space-y-4">
             <div className="relative">
               <textarea
                 ref={textareaRef}
                 value={text}
                 onChange={(e) => setText(e.target.value)}
-                placeholder="Enter text to synthesize..."
-                rows={6}
+                placeholder="What would you like the voice to say?"
+                rows={5}
                 disabled={generating}
-                className="textarea text-sm"
+                className="textarea text-base py-4 leading-relaxed bg-[var(--bg-surface-1)]"
               />
-              <div className="absolute bottom-2 right-2">
-                <span className="text-xs text-[var(--text-subtle)]">
-                  {text.length}
+              <div className="absolute bottom-3 right-3 bg-[var(--bg-surface-1)] px-1">
+                <span className="text-[11px] font-medium text-[var(--text-muted)]">
+                  {text.length} characters
                 </span>
               </div>
             </div>
 
-            <div className="flex items-center justify-between rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface-2)] px-3 py-2">
+            <div className="flex items-center justify-between">
               {/* Instruct toggle */}
               <button
                 onClick={() => setShowInstruct(!showInstruct)}
-                className="flex items-center gap-2 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+                className="flex items-center gap-1.5 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
               >
-                <MessageSquare className="w-3.5 h-3.5" />
-                {showInstruct ? "Hide" : "Add"} speaking instructions
+                <MessageSquare className="w-4 h-4" />
+                {showInstruct ? "Hide instructions" : "Add style instructions"}
                 <ChevronDown
                   className={cn(
-                    "w-3 h-3 transition-transform",
+                    "w-3.5 h-3.5 transition-transform",
                     showInstruct && "rotate-180",
                   )}
                 />
               </button>
 
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label className="flex items-center gap-2 cursor-pointer group">
                 <input
                   type="checkbox"
                   checked={streamingEnabled}
@@ -803,8 +810,8 @@ export function CustomVoicePlayground({
                   className="app-checkbox w-4 h-4"
                   disabled={generating}
                 />
-                <span className="text-xs text-[var(--text-secondary)] flex items-center gap-1">
-                  <Radio className="w-3 h-3" />
+                <span className="text-sm font-medium text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] transition-colors flex items-center gap-1.5">
+                  <Radio className="w-3.5 h-3.5" />
                   Stream
                 </span>
               </label>
@@ -816,22 +823,20 @@ export function CustomVoicePlayground({
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
                   exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2 }}
                   className="overflow-hidden"
                 >
-                  <div className="p-3 rounded-lg bg-[var(--bg-surface-2)] border border-[var(--border-strong)]">
-                    <label className="block text-xs text-[var(--text-muted)] mb-1.5">
-                      Speaking Style Instructions
+                  <div className="p-4 rounded-xl bg-[var(--bg-surface-2)] border border-[var(--border-muted)] mt-2">
+                    <label className="block text-xs font-semibold text-[var(--text-primary)] mb-2 uppercase tracking-wide">
+                      Speaking Style
                     </label>
                     <input
                       type="text"
                       value={instruct}
                       onChange={(e) => setInstruct(e.target.value)}
                       placeholder="e.g., 'Speak with excitement' or 'Very calm and soothing'"
-                      className="input text-sm"
+                      className="input bg-[var(--bg-surface-1)]"
                     />
-                    <p className="text-[10px] text-[var(--text-secondary)] mt-1.5">
-                      Optional: Guide the emotional tone and speaking style
-                    </p>
                   </div>
                 </motion.div>
               )}
@@ -844,26 +849,33 @@ export function CustomVoicePlayground({
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
                   exit={{ opacity: 0, height: 0 }}
-                  className="p-2 rounded bg-red-950/50 border border-red-900/50 text-red-400 text-xs"
+                  className="overflow-hidden"
                 >
-                  {error}
+                  <div className="p-3 mt-2 rounded-lg bg-[var(--danger-bg)] border border-[var(--danger-border)] text-[var(--danger-text)] text-sm flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                    <p>{error}</p>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
 
             {isStreaming && (
-              <div className="p-2 rounded bg-[var(--bg-surface-2)] border border-[var(--border-strong)] text-[var(--text-secondary)] text-xs flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-secondary)] animate-pulse" />
-                Streaming audio chunks...
+              <div className="p-3 rounded-lg bg-[var(--bg-surface-2)] border border-[var(--border-muted)] text-[var(--text-primary)] text-sm flex items-center gap-3">
+                <div className="flex items-center gap-1 shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse delay-75" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse delay-150" />
+                </div>
+                Receiving audio stream...
               </div>
             )}
 
             {/* Actions */}
-            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap pt-2">
               <button
                 onClick={handleGenerate}
                 disabled={generating || !selectedModelReady}
-                className="btn btn-primary flex-1 min-h-[44px]"
+                className="btn btn-primary flex-1 h-11 text-sm font-semibold rounded-lg"
               >
                 {generating ? (
                   <>
@@ -871,7 +883,10 @@ export function CustomVoicePlayground({
                     {isStreaming ? "Streaming..." : "Generating..."}
                   </>
                 ) : (
-                  "Generate"
+                  <>
+                    <Volume2 className="w-4 h-4" />
+                    Generate Audio
+                  </>
                 )}
               </button>
 
@@ -879,7 +894,8 @@ export function CustomVoicePlayground({
                 <>
                   <button
                     onClick={handleStop}
-                    className="btn btn-secondary min-h-[44px] min-w-[44px]"
+                    className="btn btn-secondary h-11 w-11 p-0 rounded-lg shrink-0"
+                    title="Stop"
                   >
                     <Square className="w-4 h-4" />
                   </button>
@@ -888,9 +904,10 @@ export function CustomVoicePlayground({
                       onClick={handleDownload}
                       disabled={isDownloading}
                       className={cn(
-                        "btn btn-secondary min-h-[44px] min-w-[44px]",
+                        "btn btn-secondary h-11 w-11 p-0 rounded-lg shrink-0",
                         isDownloading && "opacity-75",
                       )}
+                      title="Download"
                     >
                       {isDownloading ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
@@ -901,7 +918,8 @@ export function CustomVoicePlayground({
                   )}
                   <button
                     onClick={handleReset}
-                    className="btn btn-ghost min-h-[44px] min-w-[44px]"
+                    className="btn btn-ghost h-11 w-11 p-0 rounded-lg shrink-0 border border-transparent hover:border-[var(--border-muted)]"
+                    title="Reset"
                   >
                     <RotateCcw className="w-4 h-4" />
                   </button>

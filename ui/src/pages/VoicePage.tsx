@@ -2529,16 +2529,16 @@ export function VoicePage({
   const getStatusClass = (status: ModelInfo["status"]) => {
     switch (status) {
       case "ready":
-        return "bg-white/10 border-white/20 text-gray-300";
+        return "bg-white/10 border-white/20 text-[var(--text-secondary)]";
       case "loading":
       case "downloading":
         return "bg-amber-500/15 border-amber-500/40 text-amber-300";
       case "downloaded":
-        return "bg-white/10 border-white/20 text-gray-300";
+        return "bg-white/10 border-white/20 text-[var(--text-secondary)]";
       case "error":
         return "bg-red-500/15 border-red-500/40 text-red-300";
       default:
-        return "bg-[#1c1c1c] border-[#2a2a2a] text-gray-500";
+        return "bg-[var(--bg-surface-2)] border-[var(--border-muted)] text-[var(--text-muted)]";
     }
   };
 
@@ -2576,7 +2576,7 @@ export function VoicePage({
             animate={{ rotate: 360 }}
             transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
           />
-          <p className="text-sm text-gray-400">Loading models...</p>
+          <p className="text-sm text-[var(--text-muted)]">Loading models...</p>
         </div>
       </PageShell>
     );
@@ -2633,7 +2633,7 @@ export function VoicePage({
                 ) : runtimeStatus === "listening" ? (
                   <Mic className="w-8 h-8 text-white" />
                 ) : (
-                  <MicOff className="w-8 h-8 text-gray-500" />
+                  <MicOff className="w-8 h-8 text-[var(--text-muted)]" />
                 )}
               </div>
               <div className="absolute -inset-2 rounded-full border border-white/10" />
@@ -2698,7 +2698,7 @@ export function VoicePage({
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-xs px-2 py-1 rounded bg-[#1a1a1a] border border-[#2a2a2a] text-gray-300">
+              <span className="text-xs px-2 py-1 rounded bg-[var(--bg-surface-1)] border border-[var(--border-muted)] text-[var(--text-secondary)]">
                 {statusLabel}
               </span>
               <span className="text-xs px-2 py-1 rounded border border-[var(--border-strong)] bg-[var(--bg-surface-3)] text-[var(--text-secondary)]">
@@ -2716,8 +2716,8 @@ export function VoicePage({
             {transcript.length === 0 ? (
               <div className="h-full flex items-center justify-center text-center">
                 <div>
-                  <p className="text-sm text-gray-400">No conversation yet.</p>
-                  <p className="text-xs text-gray-600 mt-1">
+                  <p className="text-sm text-[var(--text-muted)]">No conversation yet.</p>
+                  <p className="text-xs text-[var(--text-subtle)] mt-1">
                     Configure your voice stack and start a realtime session.
                   </p>
                 </div>
@@ -2738,13 +2738,13 @@ export function VoicePage({
                         "max-w-[85%] rounded-lg px-3 py-2.5 border text-sm whitespace-pre-wrap",
                         isUser
                           ? "bg-white text-black border-white"
-                          : "bg-[#171717] text-gray-200 border-[#2a2a2a]",
+                          : "bg-[var(--bg-surface-2)] text-[var(--text-primary)] border-[var(--border-muted)]",
                       )}
                     >
                       <div
                         className={clsx(
                           "text-[10px] mb-1 uppercase tracking-wide flex items-center justify-between gap-2",
-                          isUser ? "text-black/60" : "text-gray-500",
+                          isUser ? "text-black/60" : "text-[var(--text-muted)]",
                         )}
                       >
                         <span>{isUser ? "User" : "Assistant"}</span>
@@ -2793,12 +2793,12 @@ export function VoicePage({
               className="mx-auto max-w-5xl max-h-[90vh] overflow-hidden card"
               onClick={(event) => event.stopPropagation()}
             >
-              <div className="px-4 sm:px-5 py-4 border-b border-[#262626] flex items-center justify-between gap-3">
+              <div className="px-4 sm:px-5 py-4 border-b border-[var(--border-muted)] flex items-center justify-between gap-3">
                 <div>
                   <h2 className="text-base font-semibold text-white">
                     Voice Configuration
                   </h2>
-                  <p className="text-xs text-gray-500 mt-1">
+                  <p className="text-xs text-[var(--text-muted)] mt-1">
                     Configure realtime model stack and manage model lifecycle.
                   </p>
                 </div>
@@ -2819,7 +2819,7 @@ export function VoicePage({
                     <h3 className="text-sm font-medium text-white">
                       Runtime Profile
                     </h3>
-                    <span className="text-[11px] text-gray-500">
+                    <span className="text-[11px] text-[var(--text-muted)]">
                       Choose how inference is orchestrated.
                     </span>
                   </div>
@@ -2867,7 +2867,7 @@ export function VoicePage({
                         <h3 className="text-sm font-medium text-white">
                           Unified Models
                         </h3>
-                        <span className="text-[11px] text-gray-500">
+                        <span className="text-[11px] text-[var(--text-muted)]">
                           Choose LFM2 or LFM2.5.
                         </span>
                       </div>
@@ -2880,14 +2880,14 @@ export function VoicePage({
                           return (
                             <div
                               key={option.key}
-                              className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3 space-y-3"
+                              className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3 space-y-3"
                             >
                               <div className="flex items-start justify-between gap-2">
                                 <div className="min-w-0">
                                   <div className="text-sm font-medium text-white">
                                     {option.label}
                                   </div>
-                                  <div className="mt-0.5 text-xs text-gray-500 truncate">
+                                  <div className="mt-0.5 text-xs text-[var(--text-muted)] truncate">
                                     {model
                                       ? formatModelVariantLabel(model.variant)
                                       : "Model not available in current catalog"}
@@ -2898,13 +2898,13 @@ export function VoicePage({
                                     "text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap",
                                     model
                                       ? getStatusClass(model.status)
-                                      : "bg-[#1c1c1c] border-[#2a2a2a] text-gray-500",
+                                      : "bg-[var(--bg-surface-2)] border-[var(--border-muted)] text-[var(--text-muted)]",
                                   )}
                                 >
                                   {model ? getStatusLabel(model.status) : "Unavailable"}
                                 </span>
                               </div>
-                              <p className="text-xs text-gray-500">
+                              <p className="text-xs text-[var(--text-muted)]">
                                 {option.description}
                               </p>
                               <div className="flex flex-wrap items-center gap-2">
@@ -2948,13 +2948,13 @@ export function VoicePage({
                               </div>
                               {model?.status === "downloading" && progressMeta && (
                                 <div>
-                                  <div className="h-1.5 rounded bg-[#1f1f1f] overflow-hidden">
+                                  <div className="h-1.5 rounded bg-[var(--bg-surface-3)] overflow-hidden">
                                     <div
                                       className="h-full rounded bg-white transition-all duration-300"
                                       style={{ width: `${progressMeta.progress}%` }}
                                     />
                                   </div>
-                                  <div className="mt-1 text-[11px] text-gray-500">
+                                  <div className="mt-1 text-[11px] text-[var(--text-muted)]">
                                     Downloading {Math.round(progressMeta.progress)}%
                                     {progressMeta.progressValue &&
                                       progressMeta.progressValue.totalBytes > 0 && (
@@ -2986,7 +2986,7 @@ export function VoicePage({
                           <h3 className="text-sm font-medium text-white">
                             Modular Stack Models
                           </h3>
-                          <p className="text-[11px] text-gray-500 mt-1">
+                          <p className="text-[11px] text-[var(--text-muted)] mt-1">
                             Fixed stack: Parakeet-TDT-0.6B-v3, Qwen3-8B-GGUF,
                             Kokoro-82M.
                           </p>
@@ -3017,14 +3017,14 @@ export function VoicePage({
                           return (
                             <div
                               key={item.key}
-                              className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-2.5 space-y-2"
+                              className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-2.5 space-y-2"
                             >
                               <div className="flex items-start justify-between gap-2">
                                 <div className="min-w-0">
                                   <div className="text-sm font-medium text-white">
                                     {item.role}
                                   </div>
-                                  <div className="mt-0.5 text-xs text-gray-500 truncate">
+                                  <div className="mt-0.5 text-xs text-[var(--text-muted)] truncate">
                                     {model
                                       ? formatModelVariantLabel(model.variant)
                                       : item.requiredVariant}
@@ -3035,7 +3035,7 @@ export function VoicePage({
                                     "text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap",
                                     model
                                       ? getStatusClass(model.status)
-                                      : "bg-[#1c1c1c] border-[#2a2a2a] text-gray-500",
+                                      : "bg-[var(--bg-surface-2)] border-[var(--border-muted)] text-[var(--text-muted)]",
                                   )}
                                 >
                                   {model ? getStatusLabel(model.status) : "Unavailable"}
@@ -3101,13 +3101,13 @@ export function VoicePage({
 
                               {model?.status === "downloading" && progressMeta && (
                                 <div>
-                                  <div className="h-1.5 rounded bg-[#1f1f1f] overflow-hidden">
+                                  <div className="h-1.5 rounded bg-[var(--bg-surface-3)] overflow-hidden">
                                     <div
                                       className="h-full rounded bg-white transition-all duration-300"
                                       style={{ width: `${progressMeta.progress}%` }}
                                     />
                                   </div>
-                                  <div className="mt-1 text-[11px] text-gray-500">
+                                  <div className="mt-1 text-[11px] text-[var(--text-muted)]">
                                     Downloading {Math.round(progressMeta.progress)}%
                                     {progressMeta.progressValue &&
                                       progressMeta.progressValue.totalBytes > 0 && (
@@ -3135,14 +3135,14 @@ export function VoicePage({
                   )}
                 </section>
 
-                <section className="rounded-lg border border-[#2a2a2a] bg-[#151515] p-3">
+                <section className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3">
                   <details>
                     <summary className="cursor-pointer text-sm text-white">
                       Advanced Speech Detection
                     </summary>
                     <div className="mt-3 grid md:grid-cols-3 gap-4">
                       <div>
-                        <label className="text-xs text-gray-500">
+                        <label className="text-xs text-[var(--text-muted)]">
                           VAD Sensitivity ({vadThreshold.toFixed(3)})
                         </label>
                         <Slider
@@ -3161,7 +3161,7 @@ export function VoicePage({
                         />
                       </div>
                       <div>
-                        <label className="text-xs text-gray-500">
+                        <label className="text-xs text-[var(--text-muted)]">
                           End Silence (ms): {silenceDurationMs}
                         </label>
                         <Slider
@@ -3180,7 +3180,7 @@ export function VoicePage({
                         />
                       </div>
                       <div>
-                        <label className="text-xs text-gray-500">
+                        <label className="text-xs text-[var(--text-muted)]">
                           Minimum Speech (ms): {minSpeechMs}
                         </label>
                         <Slider

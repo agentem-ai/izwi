@@ -3,127 +3,125 @@
 @tailwind utilities;
 
 :root {
-  --bg-app: #0f1012;
-  --bg-surface-0: #121316;
-  --bg-surface-1: #17191d;
-  --bg-surface-2: #1d2025;
-  --bg-surface-3: #262a31;
-  --bg-surface-4: #30353e;
-  --border-muted: #24282e;
-  --border-strong: #2d323a;
-  --text-primary: #f3f4f6;
-  --text-secondary: #d4d7dd;
-  --text-muted: #9ca3af;
-  --text-subtle: #737a86;
-  --accent-solid: #f4f5f7;
-  --accent-soft: rgba(244, 245, 247, 0.12);
-  --text-on-accent: #16181c;
-  --danger-bg: rgba(244, 114, 182, 0.14);
-  --danger-bg-hover: rgba(244, 114, 182, 0.22);
-  --danger-border: rgba(244, 114, 182, 0.38);
-  --danger-text: #f9a8d4;
-  --status-positive-bg: rgba(52, 211, 153, 0.16);
-  --status-positive-border: rgba(74, 222, 128, 0.28);
-  --status-positive-text: #bbf7d0;
-  --status-positive-solid: #34d399;
-  --status-warning-bg: rgba(250, 204, 21, 0.16);
-  --status-warning-border: rgba(250, 204, 21, 0.34);
-  --status-warning-text: #fef08a;
-  --scroll-track: rgba(255, 255, 255, 0.06);
-  --scroll-thumb: rgba(156, 163, 175, 0.2);
-  --scroll-thumb-hover: rgba(156, 163, 175, 0.34);
+  --bg-app: #09090b;
+  --bg-surface-0: #09090b;
+  --bg-surface-1: #121214;
+  --bg-surface-2: #18181b;
+  --bg-surface-3: #27272a;
+  --bg-surface-4: #3f3f46;
+  --border-muted: #27272a;
+  --border-strong: #3f3f46;
+  --text-primary: #fafafa;
+  --text-secondary: #e4e4e7;
+  --text-muted: #a1a1aa;
+  --text-subtle: #71717a;
+  --accent-solid: #fafafa;
+  --accent-soft: rgba(250, 250, 250, 0.1);
+  --text-on-accent: #09090b;
+  --danger-bg: rgba(239, 68, 68, 0.15);
+  --danger-bg-hover: rgba(239, 68, 68, 0.25);
+  --danger-border: rgba(239, 68, 68, 0.3);
+  --danger-text: #f87171;
+  --status-positive-bg: rgba(34, 197, 94, 0.15);
+  --status-positive-border: rgba(34, 197, 94, 0.3);
+  --status-positive-text: #86efac;
+  --status-positive-solid: #22c55e;
+  --status-warning-bg: rgba(234, 179, 8, 0.15);
+  --status-warning-border: rgba(234, 179, 8, 0.3);
+  --status-warning-text: #fde047;
+  --scroll-track: transparent;
+  --scroll-thumb: rgba(255, 255, 255, 0.1);
+  --scroll-thumb-hover: rgba(255, 255, 255, 0.2);
   --sidebar-link-bg: transparent;
-  --sidebar-link-hover-bg: rgba(255, 255, 255, 0.04);
+  --sidebar-link-hover-bg: rgba(255, 255, 255, 0.05);
   --sidebar-link-active-bg: rgba(255, 255, 255, 0.08);
   --sidebar-link-border: transparent;
-  --sidebar-link-active-border: rgba(255, 255, 255, 0.16);
-  --sidebar-link-icon-bg: #23262c;
-  --sidebar-link-icon-color: #a3aab5;
-  --sidebar-link-icon-hover-bg: #2c3037;
-  --sidebar-link-icon-hover-color: #e5e7eb;
-  --sidebar-link-icon-active-bg: #f4f5f7;
-  --sidebar-link-icon-active-color: #181a1f;
-  --sidebar-link-title: #a9b0ba;
-  --sidebar-link-title-hover: #e5e7eb;
-  --sidebar-link-title-active: #f3f4f6;
-  --sidebar-link-description: #727984;
-  --checkbox-bg: #1f2228;
-  --checkbox-border: #4b5563;
-  --checkbox-checked-bg: #f3f4f6;
-  --checkbox-checked-border: #f3f4f6;
-  --checkbox-check: #111827;
-  --checkbox-hover-border: #6b7280;
-  --checkbox-focus-ring: rgba(156, 163, 175, 0.35);
-  --speaker-avatar-bg: #23262c;
-  --speaker-avatar-border: #2f343c;
-  --speaker-avatar-text: #e5e7eb;
-  --bg-glow-1: rgba(255, 255, 255, 0.03);
-  --bg-glow-2: rgba(255, 255, 255, 0.015);
-  --app-shadow-soft: 0 12px 36px rgba(0, 0, 0, 0.34);
-  --app-shadow-hard: 0 16px 44px rgba(0, 0, 0, 0.52);
-  --font-ui: "Manrope", "Plus Jakarta Sans", "Avenir Next", "Segoe UI Variable",
-    sans-serif;
-  --font-mono: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
+  --sidebar-link-active-border: rgba(255, 255, 255, 0.1);
+  --sidebar-link-icon-bg: transparent;
+  --sidebar-link-icon-color: #a1a1aa;
+  --sidebar-link-icon-hover-bg: transparent;
+  --sidebar-link-icon-hover-color: #fafafa;
+  --sidebar-link-icon-active-bg: transparent;
+  --sidebar-link-icon-active-color: #fafafa;
+  --sidebar-link-title: #a1a1aa;
+  --sidebar-link-title-hover: #fafafa;
+  --sidebar-link-title-active: #fafafa;
+  --sidebar-link-description: #71717a;
+  --checkbox-bg: #18181b;
+  --checkbox-border: #3f3f46;
+  --checkbox-checked-bg: #fafafa;
+  --checkbox-checked-border: #fafafa;
+  --checkbox-check: #09090b;
+  --checkbox-hover-border: #52525b;
+  --checkbox-focus-ring: rgba(250, 250, 250, 0.2);
+  --speaker-avatar-bg: #27272a;
+  --speaker-avatar-border: #3f3f46;
+  --speaker-avatar-text: #fafafa;
+  --bg-glow-1: rgba(255, 255, 255, 0.02);
+  --bg-glow-2: rgba(255, 255, 255, 0.01);
+  --app-shadow-soft: 0 4px 24px rgba(0, 0, 0, 0.4);
+  --app-shadow-hard: 0 8px 32px rgba(0, 0, 0, 0.6);
+  --font-ui: "Inter", "Manrope", "Plus Jakarta Sans", "Segoe UI Variable", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", monospace;
 }
 
 html.theme-light {
-  --bg-app: #f3f4f6;
+  --bg-app: #fcfcfc;
   --bg-surface-0: #ffffff;
-  --bg-surface-1: #fcfcfd;
-  --bg-surface-2: #f4f5f7;
-  --bg-surface-3: #eceef2;
-  --bg-surface-4: #e2e5eb;
-  --border-muted: #d8dce4;
-  --border-strong: #c2c8d2;
-  --text-primary: #17191d;
-  --text-secondary: #2a2f37;
-  --text-muted: #5f6673;
-  --text-subtle: #7e8694;
-  --accent-solid: #1f2937;
-  --accent-soft: rgba(31, 41, 55, 0.08);
-  --text-on-accent: #f9fafb;
-  --danger-bg: rgba(219, 39, 119, 0.1);
-  --danger-bg-hover: rgba(219, 39, 119, 0.16);
-  --danger-border: rgba(190, 24, 93, 0.28);
-  --danger-text: #be185d;
-  --status-positive-bg: rgba(22, 163, 74, 0.12);
-  --status-positive-border: rgba(22, 163, 74, 0.24);
-  --status-positive-text: #166534;
-  --status-positive-solid: #16a34a;
-  --status-warning-bg: rgba(202, 138, 4, 0.14);
-  --status-warning-border: rgba(202, 138, 4, 0.25);
-  --status-warning-text: #854d0e;
-  --scroll-track: rgba(17, 17, 17, 0.08);
-  --scroll-thumb: rgba(55, 65, 81, 0.2);
-  --scroll-thumb-hover: rgba(55, 65, 81, 0.34);
-  --sidebar-link-hover-bg: rgba(17, 17, 17, 0.04);
-  --sidebar-link-active-bg: rgba(17, 17, 17, 0.07);
-  --sidebar-link-active-border: rgba(17, 17, 17, 0.14);
-  --sidebar-link-icon-bg: #eef0f4;
-  --sidebar-link-icon-color: #666f7d;
-  --sidebar-link-icon-hover-bg: #e5e8ee;
-  --sidebar-link-icon-hover-color: #2f3641;
-  --sidebar-link-icon-active-bg: #1f2937;
-  --sidebar-link-icon-active-color: #f9fafb;
-  --sidebar-link-title: #4a5260;
-  --sidebar-link-title-hover: #2f3641;
-  --sidebar-link-title-active: #17191d;
-  --sidebar-link-description: #7d8592;
+  --bg-surface-1: #ffffff;
+  --bg-surface-2: #f4f4f5;
+  --bg-surface-3: #e4e4e7;
+  --bg-surface-4: #d4d4d8;
+  --border-muted: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --text-primary: #09090b;
+  --text-secondary: #27272a;
+  --text-muted: #71717a;
+  --text-subtle: #a1a1aa;
+  --accent-solid: #09090b;
+  --accent-soft: rgba(9, 9, 9, 0.05);
+  --text-on-accent: #fafafa;
+  --danger-bg: rgba(239, 68, 68, 0.1);
+  --danger-bg-hover: rgba(239, 68, 68, 0.15);
+  --danger-border: rgba(239, 68, 68, 0.2);
+  --danger-text: #dc2626;
+  --status-positive-bg: rgba(34, 197, 94, 0.1);
+  --status-positive-border: rgba(34, 197, 94, 0.2);
+  --status-positive-text: #16a34a;
+  --status-positive-solid: #22c55e;
+  --status-warning-bg: rgba(234, 179, 8, 0.1);
+  --status-warning-border: rgba(234, 179, 8, 0.2);
+  --status-warning-text: #ca8a04;
+  --scroll-track: transparent;
+  --scroll-thumb: rgba(0, 0, 0, 0.1);
+  --scroll-thumb-hover: rgba(0, 0, 0, 0.2);
+  --sidebar-link-hover-bg: rgba(0, 0, 0, 0.03);
+  --sidebar-link-active-bg: rgba(0, 0, 0, 0.05);
+  --sidebar-link-active-border: rgba(0, 0, 0, 0.1);
+  --sidebar-link-icon-bg: transparent;
+  --sidebar-link-icon-color: #71717a;
+  --sidebar-link-icon-hover-bg: transparent;
+  --sidebar-link-icon-hover-color: #09090b;
+  --sidebar-link-icon-active-bg: transparent;
+  --sidebar-link-icon-active-color: #09090b;
+  --sidebar-link-title: #3f3f46;
+  --sidebar-link-title-hover: #09090b;
+  --sidebar-link-title-active: #09090b;
+  --sidebar-link-description: #71717a;
   --checkbox-bg: #ffffff;
-  --checkbox-border: #a1a1aa;
-  --checkbox-checked-bg: #1f2937;
-  --checkbox-checked-border: #1f2937;
+  --checkbox-border: #d4d4d8;
+  --checkbox-checked-bg: #09090b;
+  --checkbox-checked-border: #09090b;
   --checkbox-check: #ffffff;
-  --checkbox-hover-border: #71717a;
-  --checkbox-focus-ring: rgba(113, 113, 122, 0.24);
-  --speaker-avatar-bg: #e5e7eb;
-  --speaker-avatar-border: #d1d5db;
-  --speaker-avatar-text: #17191d;
-  --bg-glow-1: rgba(17, 17, 17, 0.03);
-  --bg-glow-2: rgba(17, 17, 17, 0.015);
-  --app-shadow-soft: 0 14px 34px rgba(0, 0, 0, 0.12);
-  --app-shadow-hard: 0 18px 42px rgba(0, 0, 0, 0.18);
+  --checkbox-hover-border: #a1a1aa;
+  --checkbox-focus-ring: rgba(9, 9, 11, 0.15);
+  --speaker-avatar-bg: #f4f4f5;
+  --speaker-avatar-border: #e4e4e7;
+  --speaker-avatar-text: #09090b;
+  --bg-glow-1: rgba(0, 0, 0, 0.01);
+  --bg-glow-2: rgba(0, 0, 0, 0.005);
+  --app-shadow-soft: 0 4px 20px rgba(0, 0, 0, 0.05);
+  --app-shadow-hard: 0 8px 30px rgba(0, 0, 0, 0.08);
 }
 
 html,
@@ -134,23 +132,6 @@ body,
 
 body {
   background-color: var(--bg-app);
-  background-image:
-    radial-gradient(
-      860px 520px at -12% -18%,
-      var(--bg-glow-1) 0%,
-      transparent 62%
-    ),
-    radial-gradient(
-      720px 440px at 112% -24%,
-      var(--bg-glow-2) 0%,
-      transparent 65%
-    ),
-    linear-gradient(
-      180deg,
-      var(--bg-app) 0%,
-      var(--bg-surface-0) 48%,
-      var(--bg-app) 100%
-    );
   color: var(--text-primary);
   font-family: var(--font-ui);
   @apply antialiased;

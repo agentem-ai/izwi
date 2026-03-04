@@ -486,18 +486,19 @@ export function VoiceDesignPlayground({
             </div>
           </div>
 
-          <div className="space-y-4">
+          <div className="space-y-6">
             {/* Voice Description */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <label className="text-xs text-[var(--text-muted)] font-medium">
+                <label className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wide">
                   Voice Description
+                  <span className="text-red-500 ml-1">*</span>
                 </label>
                 <button
                   onClick={() => setShowPresets(!showPresets)}
-                  className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                  className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
                 >
-                  {showPresets ? "Hide" : "Show"} presets
+                  {showPresets ? "Hide presets" : "View presets"}
                 </button>
               </div>
 
@@ -509,17 +510,17 @@ export function VoiceDesignPlayground({
                     exit={{ opacity: 0, height: 0 }}
                     className="mb-3 overflow-hidden"
                   >
-                    <div className="grid grid-cols-2 gap-2 p-3 rounded-lg bg-[var(--bg-surface-1)] border border-[var(--border-muted)]">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 p-3 rounded-xl bg-[var(--bg-surface-1)] border border-[var(--border-muted)]">
                       {VOICE_DESIGN_PRESETS.map((preset) => (
                         <button
                           key={preset.name}
                           onClick={() => handlePresetSelect(preset.description)}
-                          className="p-2 rounded bg-[var(--bg-surface-2)] hover:bg-[var(--bg-surface-3)] border border-[var(--border-muted)] text-left transition-colors"
+                          className="p-3 rounded-lg bg-[var(--bg-surface-0)] hover:bg-[var(--bg-surface-2)] border border-[var(--border-muted)] hover:border-[var(--border-strong)] text-left transition-colors group"
                         >
-                          <div className="text-xs font-medium text-[var(--text-primary)] mb-1">
+                          <div className="text-sm font-semibold text-[var(--text-primary)] mb-1">
                             {preset.name}
                           </div>
-                          <div className="text-[10px] text-[var(--text-subtle)] line-clamp-2">
+                          <div className="text-[11px] text-[var(--text-secondary)] line-clamp-2 leading-relaxed group-hover:text-[var(--text-primary)] transition-colors">
                             {preset.description}
                           </div>
                         </button>
@@ -533,33 +534,34 @@ export function VoiceDesignPlayground({
                 value={voiceDescription}
                 onChange={(e) => setVoiceDescription(e.target.value)}
                 placeholder="Describe the voice you want to create... (e.g., 'A warm, friendly female voice with a slight British accent, speaking in a calm and reassuring tone')"
-                rows={3}
-                className="textarea text-sm"
+                rows={4}
+                className="textarea text-base py-4 leading-relaxed bg-[var(--bg-surface-0)]"
               />
-              <p className="text-[10px] text-[var(--text-secondary)] mt-1.5">
+              <p className="text-[11px] font-medium text-[var(--text-muted)] mt-2">
                 Describe voice characteristics like gender, age, tone, emotion,
-                accent, and speaking style
+                accent, and speaking style.
               </p>
             </div>
 
             {/* Text to speak */}
             <div>
-              <label className="block text-xs text-[var(--text-muted)] font-medium mb-2">
+              <label className="block text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wide mb-2">
                 Text to Speak
+                <span className="text-red-500 ml-1">*</span>
               </label>
               <div className="relative">
                 <textarea
                   ref={textareaRef}
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  placeholder="Enter the text you want to synthesize..."
+                  placeholder="Enter the text you want the designed voice to synthesize..."
                   rows={4}
                   disabled={generating}
-                  className="textarea text-sm"
+                  className="textarea text-base py-4 leading-relaxed bg-[var(--bg-surface-1)]"
                 />
-                <div className="absolute bottom-2 right-2">
-                  <span className="text-xs text-[var(--text-subtle)]">
-                    {text.length}
+                <div className="absolute bottom-3 right-3 bg-[var(--bg-surface-1)] px-1">
+                  <span className="text-[11px] font-medium text-[var(--text-muted)]">
+                    {text.length} characters
                   </span>
                 </div>
               </div>
@@ -572,19 +574,22 @@ export function VoiceDesignPlayground({
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
                   exit={{ opacity: 0, height: 0 }}
-                  className="p-2 rounded bg-red-950/50 border border-red-900/50 text-red-400 text-xs"
+                  className="overflow-hidden"
                 >
-                  {error}
+                  <div className="p-3 rounded-lg bg-[var(--danger-bg)] border border-[var(--danger-border)] text-sm text-[var(--danger-text)] flex items-start gap-2 mt-2">
+                    <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                    <p>{error}</p>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
 
             {/* Actions */}
-            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap pt-2">
               <button
                 onClick={handleGenerate}
                 disabled={generating || !selectedModelReady}
-                className="btn btn-primary flex-1 min-h-[44px]"
+                className="btn btn-primary flex-1 h-11 text-sm font-semibold rounded-lg"
               >
                 {generating ? (
                   <>
@@ -594,7 +599,7 @@ export function VoiceDesignPlayground({
                 ) : (
                   <>
                     <Wand2 className="w-4 h-4" />
-                    Generate
+                    Generate Audio
                   </>
                 )}
               </button>
@@ -603,7 +608,8 @@ export function VoiceDesignPlayground({
                 <>
                   <button
                     onClick={handleStop}
-                    className="btn btn-secondary min-h-[44px] min-w-[44px]"
+                    className="btn btn-secondary h-11 w-11 p-0 rounded-lg shrink-0"
+                    title="Stop playback"
                   >
                     <Square className="w-4 h-4" />
                   </button>
@@ -611,9 +617,10 @@ export function VoiceDesignPlayground({
                     onClick={handleDownload}
                     disabled={isDownloading}
                     className={clsx(
-                      "btn btn-secondary min-h-[44px] min-w-[44px]",
+                      "btn btn-secondary h-11 w-11 p-0 rounded-lg shrink-0",
                       isDownloading && "opacity-75",
                     )}
+                    title="Download audio"
                   >
                     {isDownloading ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
@@ -623,7 +630,8 @@ export function VoiceDesignPlayground({
                   </button>
                   <button
                     onClick={handleReset}
-                    className="btn btn-ghost min-h-[44px] min-w-[44px]"
+                    className="btn btn-ghost h-11 w-11 p-0 rounded-lg shrink-0 border border-transparent hover:border-[var(--border-muted)]"
+                    title="Reset form"
                   >
                     <RotateCcw className="w-4 h-4" />
                   </button>
@@ -637,30 +645,34 @@ export function VoiceDesignPlayground({
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
                   exit={{ opacity: 0, height: 0 }}
-                  className={clsx(
-                    "p-2 rounded border text-xs flex items-center gap-2",
-                    downloadState === "downloading" &&
-                      "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]",
-                    downloadState === "success" &&
-                      "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]",
-                    downloadState === "error" &&
-                      "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
-                  )}
+                  className="overflow-hidden mt-3"
                 >
-                  {downloadState === "downloading" ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : downloadState === "success" ? (
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                  ) : (
-                    <AlertCircle className="w-3.5 h-3.5" />
-                  )}
-                  {downloadMessage}
+                  <div
+                    className={clsx(
+                      "px-3 py-2.5 rounded-lg border text-xs font-medium flex items-center gap-2",
+                      downloadState === "downloading" &&
+                        "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]",
+                      downloadState === "success" &&
+                        "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]",
+                      downloadState === "error" &&
+                        "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
+                    )}
+                  >
+                    {downloadState === "downloading" ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : downloadState === "success" ? (
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                    ) : (
+                      <AlertCircle className="w-3.5 h-3.5" />
+                    )}
+                    {downloadMessage}
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
 
             {!selectedModelReady && (
-              <p className="text-xs text-[var(--text-secondary)]">
+              <p className="text-xs font-medium text-[var(--text-muted)] text-center pb-2">
                 Load a VoiceDesign model to create unique voices
               </p>
             )}
@@ -673,13 +685,13 @@ export function VoiceDesignPlayground({
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 10 }}
-                className="mt-4 space-y-3"
+                className="mt-6 space-y-4"
               >
-                <div className="p-3 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)]">
+                <div className="p-4 rounded-xl bg-[var(--bg-surface-2)] border border-[var(--border-strong)] shadow-sm">
                   <audio
                     ref={audioRef}
                     src={audioUrl}
-                    className="w-full"
+                    className="w-full h-11"
                     controls
                   />
                 </div>
@@ -687,71 +699,96 @@ export function VoiceDesignPlayground({
                   <GenerationStats stats={generationStats} type="tts" />
                 )}
                 {latestRecord && (
-                  <div className="p-3 rounded bg-[var(--bg-surface-1)] border border-[var(--border-muted)] space-y-2">
+                  <div className="p-4 rounded-xl bg-[var(--bg-surface-1)] border border-[var(--border-muted)] space-y-4">
                     <div className="flex items-center justify-between gap-2">
-                      <div className="text-xs font-medium text-[var(--text-primary)]">
+                      <div className="text-sm font-semibold text-[var(--text-primary)]">
                         Save for Voice Cloning
                       </div>
-                      <span className="text-[10px] text-[var(--text-subtle)]">
-                        Reuse this voice on /voice-clone
+                      <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-[var(--bg-surface-2)] text-[var(--text-muted)]">
+                        Reuse on /voice-clone
                       </span>
                     </div>
-                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr),auto]">
-                      <input
-                        value={saveVoiceName}
-                        onChange={(event) =>
-                          setSaveVoiceName(event.target.value)
-                        }
-                        placeholder="Voice name (e.g., Support Voice)"
-                        className="input text-sm"
-                        disabled={savingVoice}
-                      />
-                      <button
-                        onClick={handleSaveVoice}
-                        disabled={savingVoice}
-                        className="btn btn-secondary min-h-[40px] sm:min-w-[140px]"
-                      >
-                        {savingVoice ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            Saving...
-                          </>
-                        ) : (
-                          <>
-                            <BookmarkPlus className="w-4 h-4" />
-                            Save Voice
-                          </>
-                        )}
-                      </button>
+
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1.5">
+                          Voice Name
+                        </label>
+                        <input
+                          value={saveVoiceName}
+                          onChange={(event) =>
+                            setSaveVoiceName(event.target.value)
+                          }
+                          placeholder="e.g. Support Voice"
+                          className="input h-10 text-sm bg-[var(--bg-surface-0)] border-[var(--border-muted)] w-full"
+                          disabled={savingVoice}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1.5">
+                          Reference Transcript
+                        </label>
+                        <textarea
+                          value={saveReferenceText}
+                          onChange={(event) =>
+                            setSaveReferenceText(event.target.value)
+                          }
+                          rows={2}
+                          className="textarea text-sm bg-[var(--bg-surface-0)] border-[var(--border-muted)] w-full"
+                          disabled={savingVoice}
+                          placeholder="Reference transcript for cloning"
+                        />
+                        <p className="text-[10px] text-[var(--text-subtle)] mt-1.5">
+                          Keep this transcript exactly aligned with the
+                          generated audio sample.
+                        </p>
+                      </div>
+
+                      <div className="flex justify-end pt-2">
+                        <button
+                          onClick={handleSaveVoice}
+                          disabled={savingVoice || !saveVoiceName.trim()}
+                          className="btn btn-secondary h-10 px-5 gap-2 border-[var(--border-muted)]"
+                        >
+                          {savingVoice ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              Saving...
+                            </>
+                          ) : (
+                            <>
+                              <BookmarkPlus className="w-4 h-4" />
+                              Save Profile
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
-                    <textarea
-                      value={saveReferenceText}
-                      onChange={(event) =>
-                        setSaveReferenceText(event.target.value)
-                      }
-                      rows={2}
-                      className="textarea text-sm"
-                      disabled={savingVoice}
-                      placeholder="Reference transcript for cloning"
-                    />
-                    <p className="text-[10px] text-[var(--text-subtle)]">
-                      Keep this transcript aligned with the generated audio
-                      sample.
-                    </p>
+
                     <AnimatePresence>
                       {saveVoiceStatus && (
                         <motion.div
                           initial={{ opacity: 0, height: 0 }}
                           animate={{ opacity: 1, height: "auto" }}
                           exit={{ opacity: 0, height: 0 }}
-                          className={clsx(
-                            "p-2 rounded border text-xs",
-                            saveVoiceStatus.tone === "success"
-                              ? "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]"
-                              : "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
-                          )}
+                          className="overflow-hidden"
                         >
-                          {saveVoiceStatus.message}
+                          <div
+                            className={clsx(
+                              "mt-2 p-3 rounded-lg border text-xs font-medium flex items-center gap-2",
+                              saveVoiceStatus.tone === "success"
+                                ? "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]"
+                                : "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
+                            )}
+                          >
+                            {saveVoiceStatus.tone === "success" ? (
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                            ) : (
+                              <AlertCircle className="w-3.5 h-3.5" />
+                            )}
+                            {saveVoiceStatus.message}
+                          </div>
                         </motion.div>
                       )}
                     </AnimatePresence>

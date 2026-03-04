@@ -312,34 +312,34 @@ export function VoiceClonePlayground({
 
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr),320px] items-stretch xl:h-[calc(100dvh-11.75rem)]">
-      <div className="card p-4 flex min-h-0 flex-col">
+      <div className="card p-4 sm:p-6 flex min-h-0 flex-col">
         <div className="flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-thin">
           {/* Header */}
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-4">
             <div className="flex items-center gap-3">
-              <div className="p-2 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)]">
-                <Users className="w-5 h-5 text-[var(--text-muted)]" />
+              <div className="p-2.5 rounded-lg bg-[var(--bg-surface-2)]">
+                <Users className="w-5 h-5 text-[var(--text-primary)]" />
               </div>
               <div>
-                <h2 className="text-sm font-medium text-[var(--text-primary)]">
+                <h2 className="text-base font-semibold text-[var(--text-primary)]">
                   Voice Cloning
                 </h2>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="relative">
+              <div className="relative w-full sm:w-auto">
                 <button
                   onClick={() => setShowLanguageSelect(!showLanguageSelect)}
-                  className="flex w-52 sm:w-56 items-center justify-between gap-2 px-3 py-1.5 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)] hover:bg-[var(--bg-surface-3)] text-sm"
+                  className="flex w-full sm:w-56 items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[var(--bg-surface-2)] border border-[var(--border-muted)] hover:border-[var(--border-strong)] transition-colors text-sm"
                 >
-                  <Globe className="w-3.5 h-3.5 text-[var(--text-subtle)]" />
-                  <span className="text-[var(--text-primary)] flex-1 min-w-0 truncate text-left">
+                  <Globe className="w-4 h-4 text-[var(--text-muted)]" />
+                  <span className="text-[var(--text-primary)] font-medium flex-1 min-w-0 truncate text-left">
                     {LANGUAGES.find((l) => l.id === language)?.name || language}
                   </span>
                   <ChevronDown
                     className={clsx(
-                      "w-3.5 h-3.5 text-[var(--text-subtle)] transition-transform",
+                      "w-4 h-4 text-[var(--text-muted)] transition-transform",
                       showLanguageSelect && "rotate-180",
                     )}
                   />
@@ -348,10 +348,11 @@ export function VoiceClonePlayground({
                 <AnimatePresence>
                   {showLanguageSelect && (
                     <motion.div
-                      initial={{ opacity: 0, y: -5 }}
+                      initial={{ opacity: 0, y: -4 }}
                       animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -5 }}
-                      className="absolute left-0 right-0 top-full mt-1 max-h-64 overflow-y-auto p-1 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)] shadow-xl z-50"
+                      exit={{ opacity: 0, y: -4 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute left-0 right-0 top-full mt-2 max-h-64 overflow-y-auto p-1.5 rounded-xl bg-[var(--bg-surface-1)] border border-[var(--border-strong)] shadow-xl z-50"
                     >
                       {LANGUAGES.map((lang) => (
                         <button
@@ -361,10 +362,10 @@ export function VoiceClonePlayground({
                             setShowLanguageSelect(false);
                           }}
                           className={clsx(
-                            "w-full px-2 py-1.5 rounded text-left text-sm transition-colors",
+                            "w-full px-3 py-2.5 rounded-lg text-left text-sm font-medium transition-colors",
                             language === lang.id
-                              ? "bg-[var(--bg-surface-3)] text-[var(--text-primary)]"
-                              : "hover:bg-[var(--bg-surface-3)] text-[var(--text-secondary)]",
+                              ? "bg-[var(--bg-surface-2)] text-[var(--text-primary)]"
+                              : "hover:bg-[var(--bg-surface-2)] text-[var(--text-secondary)]",
                           )}
                         >
                           {lang.name}
@@ -377,52 +378,58 @@ export function VoiceClonePlayground({
             </div>
           </div>
 
-          <div className="mb-4 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
-            <div className="flex items-start justify-between gap-4">
+          <div className="mb-6 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4 sm:p-5">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
-                <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">
+                <div className="text-[11px] font-semibold text-[var(--text-subtle)] uppercase tracking-wider mb-2.5">
                   Active Model
                 </div>
-                {modelOptions.length > 0 && (
-                  <div className="mt-2">{renderModelSelector()}</div>
-                )}
+                {modelOptions.length > 0 && <div>{renderModelSelector()}</div>}
                 <div
                   className={clsx(
-                    "mt-2 text-xs",
+                    "mt-2.5 flex items-center gap-1.5 text-xs font-medium",
                     selectedModelReady
-                      ? "text-[var(--text-secondary)]"
-                      : "text-amber-400",
+                      ? "text-green-500"
+                      : "text-[var(--text-muted)]",
                   )}
                 >
-                  {selectedModelReady
-                    ? "Loaded and ready"
-                    : "Open Models and load a Base model"}
+                  {selectedModelReady ? (
+                    <>
+                      <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                      Ready for cloning
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-1.5 h-1.5 rounded-full bg-[var(--text-muted)]" />
+                      Select a downloaded model to begin
+                    </>
+                  )}
                 </div>
               </div>
               {onOpenModelManager && (
-                <div className="shrink-0">
+                <div className="shrink-0 mt-2 sm:mt-0">
                   <button
                     onClick={handleOpenModels}
-                    className="btn btn-secondary text-xs"
+                    className="btn btn-secondary text-xs h-9 px-4 rounded-md"
                   >
                     <Settings2 className="w-4 h-4" />
-                    Models
+                    Manage
                   </button>
                 </div>
               )}
             </div>
           </div>
 
-          <div className="space-y-4">
+          <div className="space-y-6">
             {/* Voice Reference Section */}
-            <div className="p-3 rounded-lg bg-[var(--bg-surface-1)] border border-[var(--border-muted)]">
-              <div className="flex items-center gap-2 mb-3">
+            <div className="p-4 sm:p-5 rounded-xl bg-[var(--bg-surface-1)] border border-[var(--border-muted)]">
+              <div className="flex items-center gap-2 mb-4">
                 <Users className="w-4 h-4 text-[var(--text-muted)]" />
-                <span className="text-xs font-medium text-[var(--text-primary)]">
+                <span className="text-sm font-semibold text-[var(--text-primary)]">
                   Voice Reference
                 </span>
                 {isVoiceReady && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface-3)] text-[var(--text-secondary)] border border-[var(--border-muted)]">
+                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-green-500/10 text-green-500 border border-green-500/20 ml-2">
                     Ready
                   </span>
                 )}
@@ -435,7 +442,7 @@ export function VoiceClonePlayground({
 
             {/* Text to speak */}
             <div>
-              <label className="block text-xs text-[var(--text-muted)] font-medium mb-2">
+              <label className="block text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wide mb-2">
                 Text to Speak
               </label>
               <div className="relative">
@@ -446,11 +453,11 @@ export function VoiceClonePlayground({
                   placeholder="Enter the text you want to synthesize with the cloned voice..."
                   rows={5}
                   disabled={generating}
-                  className="textarea text-sm"
+                  className="textarea text-base py-4 leading-relaxed bg-[var(--bg-surface-1)]"
                 />
-                <div className="absolute bottom-2 right-2">
-                  <span className="text-xs text-[var(--text-subtle)]">
-                    {text.length}
+                <div className="absolute bottom-3 right-3 bg-[var(--bg-surface-1)] px-1">
+                  <span className="text-[11px] font-medium text-[var(--text-muted)]">
+                    {text.length} characters
                   </span>
                 </div>
               </div>
@@ -463,19 +470,22 @@ export function VoiceClonePlayground({
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
                   exit={{ opacity: 0, height: 0 }}
-                  className="p-2 rounded bg-red-950/50 border border-red-900/50 text-red-400 text-xs"
+                  className="overflow-hidden"
                 >
-                  {error}
+                  <div className="p-3 rounded-lg bg-[var(--danger-bg)] border border-[var(--danger-border)] text-sm text-[var(--danger-text)] flex items-start gap-2 mt-2">
+                    <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                    <p>{error}</p>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
 
             {/* Actions */}
-            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+            <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap pt-2">
               <button
                 onClick={handleGenerate}
                 disabled={generating || !selectedModelReady || !isVoiceReady}
-                className="btn btn-primary flex-1 min-h-[44px]"
+                className="btn btn-primary flex-1 h-11 text-sm font-semibold rounded-lg"
               >
                 {generating ? (
                   <>
@@ -485,7 +495,7 @@ export function VoiceClonePlayground({
                 ) : (
                   <>
                     <Users className="w-4 h-4" />
-                    Generate
+                    Generate Audio
                   </>
                 )}
               </button>
@@ -494,7 +504,8 @@ export function VoiceClonePlayground({
                 <>
                   <button
                     onClick={handleStop}
-                    className="btn btn-secondary min-h-[44px] min-w-[44px]"
+                    className="btn btn-secondary h-11 w-11 p-0 rounded-lg shrink-0"
+                    title="Stop playback"
                   >
                     <Square className="w-4 h-4" />
                   </button>
@@ -502,9 +513,10 @@ export function VoiceClonePlayground({
                     onClick={handleDownload}
                     disabled={isDownloading}
                     className={clsx(
-                      "btn btn-secondary min-h-[44px] min-w-[44px]",
+                      "btn btn-secondary h-11 w-11 p-0 rounded-lg shrink-0",
                       isDownloading && "opacity-75",
                     )}
+                    title="Download audio"
                   >
                     {isDownloading ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
@@ -514,7 +526,8 @@ export function VoiceClonePlayground({
                   </button>
                   <button
                     onClick={handleReset}
-                    className="btn btn-ghost min-h-[44px] min-w-[44px]"
+                    className="btn btn-ghost h-11 w-11 p-0 rounded-lg shrink-0 border border-transparent hover:border-[var(--border-muted)]"
+                    title="Reset form"
                   >
                     <RotateCcw className="w-4 h-4" />
                   </button>
@@ -528,36 +541,40 @@ export function VoiceClonePlayground({
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
                   exit={{ opacity: 0, height: 0 }}
-                  className={clsx(
-                    "p-2 rounded border text-xs flex items-center gap-2",
-                    downloadState === "downloading" &&
-                      "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]",
-                    downloadState === "success" &&
-                      "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]",
-                    downloadState === "error" &&
-                      "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
-                  )}
+                  className="overflow-hidden mt-3"
                 >
-                  {downloadState === "downloading" ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : downloadState === "success" ? (
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                  ) : (
-                    <AlertCircle className="w-3.5 h-3.5" />
-                  )}
-                  {downloadMessage}
+                  <div
+                    className={clsx(
+                      "px-3 py-2.5 rounded-lg border text-xs font-medium flex items-center gap-2",
+                      downloadState === "downloading" &&
+                        "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]",
+                      downloadState === "success" &&
+                        "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]",
+                      downloadState === "error" &&
+                        "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
+                    )}
+                  >
+                    {downloadState === "downloading" ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : downloadState === "success" ? (
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                    ) : (
+                      <AlertCircle className="w-3.5 h-3.5" />
+                    )}
+                    {downloadMessage}
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
 
             {!selectedModelReady && (
-              <p className="text-xs text-[var(--text-secondary)]">
+              <p className="text-xs font-medium text-[var(--text-muted)] text-center pb-2">
                 Load a Base model to clone voices
               </p>
             )}
 
             {selectedModelReady && !isVoiceReady && (
-              <p className="text-xs text-[var(--text-secondary)]">
+              <p className="text-xs font-medium text-[var(--text-muted)] text-center pb-2">
                 Upload, record, or select a saved voice sample to get started
               </p>
             )}
@@ -570,13 +587,13 @@ export function VoiceClonePlayground({
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 10 }}
-                className="mt-4 space-y-3"
+                className="mt-6 space-y-4"
               >
-                <div className="p-3 rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)]">
+                <div className="p-4 rounded-xl bg-[var(--bg-surface-2)] border border-[var(--border-strong)] shadow-sm">
                   <audio
                     ref={audioRef}
                     src={audioUrl}
-                    className="w-full"
+                    className="w-full h-11"
                     controls
                   />
                 </div>
