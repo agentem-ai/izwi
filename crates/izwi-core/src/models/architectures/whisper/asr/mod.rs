@@ -241,12 +241,11 @@ impl WhisperTurboAsrModel {
         let mut generated_tokens = Vec::<u32>::new();
         let mut assembled = String::new();
 
-        let max_steps = self
-            .generation
-            .max_length
-            .unwrap_or(DEFAULT_MAX_NEW_TOKENS)
-            .min(self.config.max_target_positions)
-            .max(1);
+        let max_steps = decode_step_budget(
+            prompt.len(),
+            self.config.max_target_positions,
+            self.generation.max_length.unwrap_or(DEFAULT_MAX_NEW_TOKENS),
+        )?;
 
         for step_idx in 0..max_steps {
             let tokens_t = Tensor::new(prompt.as_slice(), &self.device.device)?.unsqueeze(0)?;
@@ -546,6 +545,42 @@ fn text_delta(previous: &str, current: &str) -> String {
         .take_while(|(left, right)| left == right)
         .count();
     current.chars().skip(common).collect()
+}
+
+fn decode_step_budget(
+    prompt_len: usize,
+    max_target_positions: usize,
+    generation_max_length: usize,
+) -> Result<usize> {
+    if max_target_positions == 0 || prompt_len >= max_target_positions {
+        return Err(Error::InvalidInput(format!(
+            "Whisper decode prompt length {} exceeds decoder context {}",
+            prompt_len, max_target_positions
+        )));
+    }
+
+    let prompt_budget = max_target_positions - prompt_len;
+
+    // Whisper decoder positional embeddings are bounded by max_target_positions.
+    // Keep generated tokens within remaining context budget to avoid narrow() overflow.
+    Ok(generation_max_length.max(1).min(prompt_budget))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_step_budget;
+
+    #[test]
+    fn decode_step_budget_clamps_generation_to_remaining_context() {
+        let budget = decode_step_budget(4, 448, 448).expect("budget");
+        assert_eq!(budget, 444);
+    }
+
+    #[test]
+    fn decode_step_budget_rejects_prompt_overflow() {
+        assert!(decode_step_budget(448, 448, 448).is_err());
+        assert!(decode_step_budget(449, 448, 448).is_err());
+    }
 }
 
 fn resample_linear(audio: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
