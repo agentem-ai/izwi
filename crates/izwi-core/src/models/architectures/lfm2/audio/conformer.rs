@@ -498,17 +498,18 @@ fn build_rel_positional_embedding(
     device: &candle_core::Device,
 ) -> Result<Tensor> {
     let total = seq_len.saturating_mul(2).saturating_sub(1);
-    let start = -(seq_len as isize - 1);
     let half = d_model / 2;
     let mut out = vec![0f32; total * d_model];
 
     for p in 0..total {
-        let pos = (start + p as isize) as f32;
-        for i in 0..half {
-            let exponent = (2.0 * (i / 2) as f32) / d_model as f32;
+        // Match NeMo/Liquid relative-position order: [L-1, ..., 0, ..., -(L-1)].
+        let pos = (seq_len.saturating_sub(1) as isize - p as isize) as f32;
+        for pair in 0..half {
+            // Pair `pair` maps to even index `2*pair` in classic sinusoidal embeddings.
+            let exponent = (2.0 * pair as f32) / d_model as f32;
             let inv = 1.0f32 / 10_000f32.powf(exponent);
             let angle = pos * inv;
-            let base = i * 2;
+            let base = pair * 2;
             if base < d_model {
                 out[p * d_model + base] = angle.sin();
             }
@@ -519,4 +520,43 @@ fn build_rel_positional_embedding(
     }
 
     Tensor::from_vec(out, (total, d_model), device).map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_rel_positional_embedding;
+
+    #[test]
+    fn rel_positional_embedding_uses_descending_positions() {
+        let device = candle_core::Device::Cpu;
+        let seq_len = 3usize;
+        let d_model = 8usize;
+        let emb = build_rel_positional_embedding(seq_len, d_model, &device)
+            .unwrap()
+            .to_vec2::<f32>()
+            .unwrap();
+
+        // Expected relative positions: [2, 1, 0, -1, -2].
+        let expected_positions = [2f32, 1.0, 0.0, -1.0, -2.0];
+        for (row, pos) in emb.iter().zip(expected_positions.iter()) {
+            let angle = *pos; // first pair has inv_freq=1.0
+            assert!((row[0] - angle.sin()).abs() < 1e-6);
+            assert!((row[1] - angle.cos()).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn rel_positional_embedding_uses_distinct_frequency_pairs() {
+        let device = candle_core::Device::Cpu;
+        let emb = build_rel_positional_embedding(4, 8, &device)
+            .unwrap()
+            .to_vec2::<f32>()
+            .unwrap();
+
+        // At non-zero position, pair-0 and pair-1 should use different frequencies.
+        // If exponent indexing is wrong, these can collapse to equal values.
+        let row = &emb[0]; // position +3
+        assert!((row[0] - row[2]).abs() > 1e-4);
+        assert!((row[1] - row[3]).abs() > 1e-4);
+    }
 }
