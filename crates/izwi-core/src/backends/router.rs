@@ -97,3 +97,32 @@ impl BackendRouter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::ModelVariant;
+
+    #[test]
+    fn preference_maps_to_expected_default_backend() {
+        assert_eq!(
+            BackendRouter::from_preference(BackendPreference::Cpu).default_backend(),
+            ExecutionBackend::CandleNative
+        );
+        assert_eq!(
+            BackendRouter::from_preference(BackendPreference::Metal).default_backend(),
+            ExecutionBackend::CandleMetal
+        );
+        assert_eq!(
+            BackendRouter::from_preference(BackendPreference::Cuda).default_backend(),
+            ExecutionBackend::CandleCuda
+        );
+    }
+
+    #[test]
+    fn select_uses_router_default_backend() {
+        let router = BackendRouter::from_preference(BackendPreference::Cpu);
+        let plan = router.select(ModelVariant::Qwen3Tts12Hz06BBase);
+        assert_eq!(plan.backend, ExecutionBackend::CandleNative);
+    }
+}

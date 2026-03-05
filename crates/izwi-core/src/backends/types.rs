@@ -87,3 +87,36 @@ impl ExecutionBackend {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_backend_preference_variants() {
+        assert_eq!(BackendPreference::parse("auto"), Some(BackendPreference::Auto));
+        assert_eq!(BackendPreference::parse("cpu"), Some(BackendPreference::Cpu));
+        assert_eq!(BackendPreference::parse("metal"), Some(BackendPreference::Metal));
+        assert_eq!(BackendPreference::parse("mps"), Some(BackendPreference::Metal));
+        assert_eq!(BackendPreference::parse("cuda"), Some(BackendPreference::Cuda));
+        assert_eq!(BackendPreference::parse("gpu"), Some(BackendPreference::Cuda));
+    }
+
+    #[test]
+    fn parse_backend_preference_rejects_unknown_values() {
+        assert_eq!(BackendPreference::parse(""), None);
+        assert_eq!(BackendPreference::parse("unknown"), None);
+    }
+
+    #[test]
+    fn execution_backend_round_trips_via_kind() {
+        for backend in [
+            ExecutionBackend::CandleNative,
+            ExecutionBackend::CandleMetal,
+            ExecutionBackend::CandleCuda,
+            ExecutionBackend::MlxNative,
+        ] {
+            assert_eq!(ExecutionBackend::from_kind(backend.kind()), backend);
+        }
+    }
+}
