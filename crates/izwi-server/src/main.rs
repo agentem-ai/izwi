@@ -49,9 +49,7 @@ struct BindConfig {
 async fn main() -> anyhow::Result<()> {
     let args = ServerArgs::parse();
 
-    if let Some(backend) = args.backend.as_deref() {
-        std::env::set_var("IZWI_BACKEND", backend.trim().to_ascii_lowercase());
-    }
+    apply_backend_override(&args);
 
     // Initialize logging
     tracing_subscriber::registry()
@@ -93,6 +91,12 @@ async fn main() -> anyhow::Result<()> {
     server.await?;
 
     Ok(())
+}
+
+fn apply_backend_override(args: &ServerArgs) {
+    if let Some(backend) = args.backend.as_deref() {
+        std::env::set_var("IZWI_BACKEND", backend.trim().to_ascii_lowercase());
+    }
 }
 
 fn resolve_bind_config(args: ServerArgs) -> BindConfig {
@@ -196,10 +200,24 @@ mod tests {
     fn clear_bind_env() {
         std::env::remove_var("IZWI_HOST");
         std::env::remove_var("IZWI_PORT");
+        std::env::remove_var("IZWI_BACKEND");
     }
 
     fn parse(args: &[&str]) -> ServerArgs {
         ServerArgs::try_parse_from(args).expect("arguments should parse")
+    }
+
+    #[test]
+    fn backend_flag_overrides_environment() {
+        let _guard = env_lock();
+        clear_bind_env();
+        std::env::set_var("IZWI_BACKEND", "cpu");
+
+        let args = parse(&["izwi-server", "--backend", "cuda"]);
+        apply_backend_override(&args);
+
+        assert_eq!(std::env::var("IZWI_BACKEND").unwrap(), "cuda");
+        clear_bind_env();
     }
 
     #[test]

@@ -26,3 +26,20 @@ impl BackendCapabilities {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_backend_is_always_compiled() {
+        let caps = BackendCapabilities::detect();
+        assert!(caps.is_compiled_for(BackendKind::Cpu));
+    }
+
+    #[test]
+    fn mlx_backend_is_reported_unavailable() {
+        let caps = BackendCapabilities::detect();
+        assert!(!caps.is_compiled_for(BackendKind::Mlx));
+    }
+}

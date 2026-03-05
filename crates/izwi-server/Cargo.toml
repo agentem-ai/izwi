@@ -9,6 +9,10 @@ license.workspace = true
 name = "izwi-server"
 path = "src/main.rs"
 
+[features]
+default = []
+cuda = ["izwi-core/cuda"]
+
 [dependencies]
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -40,7 +44,7 @@ dirs = { workspace = true }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-izwi-core = { path = "../izwi-core", features = ["metal", "accelerate"] }
+izwi-core = { path = "../izwi-core", default-features = false, features = ["metal", "accelerate"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-izwi-core = { path = "../izwi-core" }
+izwi-core = { path = "../izwi-core", default-features = false }

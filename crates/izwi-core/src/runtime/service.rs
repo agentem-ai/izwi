@@ -15,7 +15,9 @@ use tokio::task::yield_now;
 use tracing::{debug, error, info_span};
 
 use crate::audio::{AudioCodec, AudioEncoder, StreamingConfig};
-use crate::backends::{BackendKind, BackendPreference, BackendRouter, ExecutionBackend};
+use crate::backends::{
+    BackendKind, BackendPreference, BackendRouter, DeviceKind, ExecutionBackend,
+};
 use crate::config::EngineConfig;
 use crate::engine::{
     Engine as CoreEngine, EngineCoreConfig, EngineCoreRequest, EngineOutput, StreamingOutput,
@@ -320,6 +322,32 @@ impl Drop for PendingRequestGuard {
 }
 
 impl RuntimeService {
+    fn ensure_requested_backend_available(
+        preference: BackendPreference,
+        detected: DeviceKind,
+    ) -> Result<()> {
+        let matched = match preference {
+            BackendPreference::Auto => true,
+            BackendPreference::Cpu => detected == DeviceKind::Cpu,
+            BackendPreference::Metal => detected == DeviceKind::Metal,
+            BackendPreference::Cuda => detected == DeviceKind::Cuda,
+        };
+
+        if matched {
+            return Ok(());
+        }
+
+        Err(Error::InferenceError(format!(
+            "Requested backend `{}` is not available on this runtime (detected `{}`)",
+            preference.as_str(),
+            match detected {
+                DeviceKind::Cpu => "cpu",
+                DeviceKind::Metal => "metal",
+                DeviceKind::Cuda => "cuda",
+            }
+        )))
+    }
+
     /// Create a new inference engine.
     pub fn new(config: EngineConfig) -> Result<Self> {
         configure_runtime_threading(config.num_threads.max(1));
@@ -331,6 +359,7 @@ impl RuntimeService {
             BackendPreference::Metal => DeviceSelector::detect_with_preference(Some("metal"))?,
             BackendPreference::Cuda => DeviceSelector::detect_with_preference(Some("cuda"))?,
         };
+        Self::ensure_requested_backend_available(config.backend, device.kind)?;
         let selected_backend_kind = if device.kind.is_metal() {
             BackendKind::Metal
         } else if device.kind.is_cuda() {
