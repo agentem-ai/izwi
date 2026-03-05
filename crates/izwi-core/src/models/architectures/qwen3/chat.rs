@@ -236,14 +236,7 @@ impl Qwen3ChatModel {
         }
 
         let tokenizer = ChatTokenizer::load(model_dir, None)?;
-        let backend = if device.kind.is_metal() {
-            BackendKind::Metal
-        } else if device.kind.is_cuda() {
-            BackendKind::Cuda
-        } else {
-            BackendKind::Cpu
-        };
-        let mut reader = open_gguf_reader(&gguf_path, backend)?;
+        let mut reader = open_gguf_reader(&gguf_path, BackendKind::from(device.kind))?;
         let content = gguf_file::Content::read(&mut reader)
             .map_err(|e| Error::ModelLoadError(format!("Failed to parse GGUF header: {e}")))?;
         let text_model = QuantizedQwen3Model::from_gguf(content, &mut reader, &device.device)

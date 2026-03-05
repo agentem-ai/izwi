@@ -1,3 +1,4 @@
+use candle_core::Device;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
@@ -6,8 +7,8 @@ use std::path::Path;
 use memmap2::{Mmap, MmapOptions};
 use tracing::{debug, warn};
 
-use crate::error::Result;
 use super::types::BackendKind;
+use crate::error::Result;
 
 /// GGUF file loading mode for memory mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -39,6 +40,16 @@ impl GgufMmapMode {
             Self::On => "on",
             Self::Off => "off",
         }
+    }
+}
+
+pub fn backend_kind_for_device(device: &Device) -> BackendKind {
+    if device.is_metal() {
+        BackendKind::Metal
+    } else if device.is_cuda() {
+        BackendKind::Cuda
+    } else {
+        BackendKind::Cpu
     }
 }
 
@@ -206,6 +217,11 @@ mod tests {
         );
 
         std::env::remove_var("IZWI_GGUF_MMAP");
+    }
+
+    #[test]
+    fn backend_kind_for_device_maps_cpu() {
+        assert_eq!(backend_kind_for_device(&Device::Cpu), BackendKind::Cpu);
     }
 
     #[test]

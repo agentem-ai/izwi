@@ -2714,16 +2714,6 @@ struct PromptBuildOutput {
     assistant_prefix_start: usize,
 }
 
-fn backend_kind_for_device_profile(device: &DeviceProfile) -> BackendKind {
-    if device.kind.is_metal() {
-        BackendKind::Metal
-    } else if device.kind.is_cuda() {
-        BackendKind::Cuda
-    } else {
-        BackendKind::Cpu
-    }
-}
-
 fn env_flag_enabled(name: &str, default: bool) -> bool {
     std::env::var(name)
         .ok()
@@ -2950,7 +2940,7 @@ impl Qwen35ChatModel {
         gguf_path: &Path,
         device: DeviceProfile,
     ) -> Result<Self> {
-        let mut reader = open_gguf_reader(gguf_path, backend_kind_for_device_profile(&device))?;
+        let mut reader = open_gguf_reader(gguf_path, BackendKind::from(device.kind))?;
         let content = gguf_file::Content::read(&mut reader)
             .map_err(|e| Error::ModelLoadError(format!("Failed to parse GGUF header: {e}")))?;
         let config = parse_qwen35_gguf_config(&content)?;
@@ -3003,7 +2993,7 @@ impl Qwen35ChatModel {
     }
 
     fn load_gguf_dense(model_dir: &Path, gguf_path: &Path, device: DeviceProfile) -> Result<Self> {
-        let mut reader = open_gguf_reader(gguf_path, backend_kind_for_device_profile(&device))?;
+        let mut reader = open_gguf_reader(gguf_path, BackendKind::from(device.kind))?;
         let content = gguf_file::Content::read(&mut reader)
             .map_err(|e| Error::ModelLoadError(format!("Failed to parse GGUF header: {e}")))?;
         let config = parse_qwen35_gguf_config(&content)?;
