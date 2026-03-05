@@ -73,7 +73,7 @@ izwi tts "hello from izwi cli" \
 ```bash
 izwi serve
 izwi serve --mode desktop
-izwi serve --host 0.0.0.0 --port 8080 --metal
+izwi serve --host 0.0.0.0 --port 8080 --backend metal
 izwi serve --dev
 ```
 
@@ -178,7 +178,7 @@ IZWI_HOST=0.0.0.0
 IZWI_PORT=8080
 IZWI_SERVE_MODE=server
 IZWI_MODELS_DIR=/path/to/models
-IZWI_USE_METAL=1
+IZWI_BACKEND=metal
 IZWI_NUM_THREADS=8
 IZWI_MAX_BATCH_SIZE=8
 IZWI_MAX_CONCURRENT=100

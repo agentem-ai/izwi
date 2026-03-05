@@ -1,6 +1,6 @@
 //! Izwi TTS Server - HTTP API for Qwen3-TTS inference
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::time::Duration;
 use tokio::signal;
 use tracing::{info, warn};
@@ -35,8 +35,27 @@ struct ServerArgs {
     port: Option<u16>,
 
     /// Backend preference (`auto`, `cpu`, `metal`, `cuda`)
-    #[arg(long)]
-    backend: Option<String>,
+    #[arg(long, value_enum, env = "IZWI_BACKEND")]
+    backend: Option<BackendArg>,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum BackendArg {
+    Auto,
+    Cpu,
+    Metal,
+    Cuda,
+}
+
+impl BackendArg {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Cpu => "cpu",
+            Self::Metal => "metal",
+            Self::Cuda => "cuda",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,8 +113,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn apply_backend_override(args: &ServerArgs) {
-    if let Some(backend) = args.backend.as_deref() {
-        std::env::set_var("IZWI_BACKEND", backend.trim().to_ascii_lowercase());
+    if let Some(backend) = args.backend.as_ref() {
+        std::env::set_var("IZWI_BACKEND", backend.as_str());
     }
 }
 
@@ -218,6 +237,12 @@ mod tests {
 
         assert_eq!(std::env::var("IZWI_BACKEND").unwrap(), "cuda");
         clear_bind_env();
+    }
+
+    #[test]
+    fn invalid_backend_value_is_rejected() {
+        let result = ServerArgs::try_parse_from(["izwi-server", "--backend", "invalid"]);
+        assert!(result.is_err(), "invalid backend should fail argument parsing");
     }
 
     #[test]
