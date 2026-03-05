@@ -1,5 +1,6 @@
 use crate::catalog::{InferenceBackendHint, ModelVariant};
 
+use super::device::DeviceSelector;
 use super::types::{BackendPreference, ExecutionBackend};
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,10 @@ impl Default for BackendRouter {
 }
 
 impl BackendRouter {
+    pub fn with_default(default_backend: ExecutionBackend) -> Self {
+        Self { default_backend }
+    }
+
     pub fn from_env_with_default(default_backend: ExecutionBackend) -> Self {
         let override_backend = std::env::var("IZWI_BACKEND")
             .ok()
@@ -44,9 +49,7 @@ impl BackendRouter {
                     })
             });
 
-        Self {
-            default_backend: override_backend.unwrap_or(default_backend),
-        }
+        Self::with_default(override_backend.unwrap_or(default_backend))
     }
 
     pub fn from_env() -> Self {
@@ -54,18 +57,28 @@ impl BackendRouter {
     }
 
     pub fn from_preference(preference: BackendPreference) -> Self {
-        Self {
-            default_backend: Self::backend_for_preference(preference),
-        }
+        Self::with_default(Self::backend_for_preference(preference))
     }
 
     fn backend_for_preference(preference: BackendPreference) -> ExecutionBackend {
         match preference {
-            BackendPreference::Auto => ExecutionBackend::CandleNative,
+            BackendPreference::Auto => Self::detect_auto_backend(),
             BackendPreference::Cpu => ExecutionBackend::CandleNative,
             BackendPreference::Metal => ExecutionBackend::CandleMetal,
             BackendPreference::Cuda => ExecutionBackend::CandleCuda,
         }
+    }
+
+    fn detect_auto_backend() -> ExecutionBackend {
+        if let Ok(profile) = DeviceSelector::detect() {
+            if profile.kind.is_metal() {
+                return ExecutionBackend::CandleMetal;
+            }
+            if profile.kind.is_cuda() {
+                return ExecutionBackend::CandleCuda;
+            }
+        }
+        ExecutionBackend::CandleNative
     }
 
     pub fn default_backend(&self) -> ExecutionBackend {
@@ -128,6 +141,17 @@ mod tests {
         let router = BackendRouter::from_preference(BackendPreference::Cpu);
         let plan = router.select(ModelVariant::Qwen3Tts12Hz06BBase);
         assert_eq!(plan.backend, ExecutionBackend::CandleNative);
+    }
+
+    #[test]
+    fn auto_preference_selects_supported_backend() {
+        let backend = BackendRouter::from_preference(BackendPreference::Auto).default_backend();
+        assert!(matches!(
+            backend,
+            ExecutionBackend::CandleNative
+                | ExecutionBackend::CandleMetal
+                | ExecutionBackend::CandleCuda
+        ));
     }
 
     #[test]

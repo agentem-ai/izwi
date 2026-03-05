@@ -400,7 +400,7 @@ impl RuntimeService {
 
         Ok(Self {
             config,
-            backend_router: BackendRouter::from_env_with_default(default_backend),
+            backend_router: BackendRouter::with_default(default_backend),
             model_manager,
             model_registry,
             tokenizer: RwLock::new(None),
