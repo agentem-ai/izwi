@@ -93,16 +93,16 @@ This installs `izwi`, `izwi-server`, and `izwi-desktop` to `~/.local/bin`.
 
 ## Apple Silicon Optimization
 
-Izwi automatically uses Metal acceleration on Apple Silicon Macs. To explicitly enable it:
+Izwi automatically selects the best backend on Apple Silicon Macs. To explicitly force Metal:
 
 ```bash
-izwi serve --metal
+izwi serve --backend metal
 ```
 
 Or set the environment variable:
 
 ```bash
-export IZWI_USE_METAL=1
+export IZWI_BACKEND=metal
 izwi serve
 ```
 

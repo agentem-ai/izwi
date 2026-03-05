@@ -13,7 +13,7 @@ pub struct ServeArgs {
     pub port: u16,
     pub models_dir: Option<PathBuf>,
     pub max_batch_size: usize,
-    pub metal: bool,
+    pub backend: String,
     pub threads: Option<usize>,
     pub max_concurrent: usize,
     pub timeout: u64,
@@ -43,14 +43,7 @@ pub async fn execute(args: ServeArgs) -> Result<()> {
     println!("  Max batch:      {}", args.max_batch_size);
     println!("  Max concurrent: {}", args.max_concurrent);
     println!("  Timeout:        {}s", args.timeout);
-    println!(
-        "  Metal GPU:      {}",
-        if args.metal || cfg!(target_os = "macos") {
-            "enabled"
-        } else {
-            "disabled"
-        }
-    );
+    println!("  Backend:        {}", args.backend);
     println!("  Log level:      {}", args.log_level);
 
     set_server_env(&args);
@@ -165,10 +158,7 @@ fn set_server_env(args: &ServeArgs) {
     std::env::set_var("IZWI_MAX_CONCURRENT", args.max_concurrent.to_string());
     std::env::set_var("IZWI_TIMEOUT", args.timeout.to_string());
     std::env::set_var("IZWI_SERVE_MODE", serve_mode_label(&args.mode));
-
-    if args.metal || cfg!(target_os = "macos") {
-        std::env::set_var("IZWI_USE_METAL", "1");
-    }
+    std::env::set_var("IZWI_BACKEND", args.backend.trim().to_ascii_lowercase());
 
     if let Some(threads) = args.threads {
         std::env::set_var("IZWI_NUM_THREADS", threads.to_string());

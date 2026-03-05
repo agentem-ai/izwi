@@ -159,7 +159,7 @@ izwi pull <model-name>
 
 macOS (Metal):
 ```bash
-izwi serve --metal
+izwi serve --backend metal
 ```
 
 Linux/Windows (CUDA):
@@ -249,7 +249,7 @@ sw_vers  # Should be 12.0+
 
 **Enable Metal:**
 ```bash
-izwi serve --metal
+izwi serve --backend metal
 ```
 
 ### CUDA not detected (Linux/Windows)

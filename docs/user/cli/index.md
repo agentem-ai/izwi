@@ -143,7 +143,7 @@ izwi tts --help
 | `IZWI_HOST` | Server host |
 | `IZWI_PORT` | Server port |
 | `IZWI_MODELS_DIR` | Models directory |
-| `IZWI_USE_METAL` | Enable Metal acceleration |
+| `IZWI_BACKEND` | Backend preference (`auto`, `cpu`, `metal`, `cuda`) |
 | `IZWI_MAX_BATCH_SIZE` | Maximum batch size |
 | `IZWI_MAX_CONCURRENT` | Maximum concurrent requests |
 | `IZWI_TIMEOUT` | Request timeout (seconds) |

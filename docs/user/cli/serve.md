@@ -32,7 +32,7 @@ Launches the HTTP API server that powers all Izwi functionality. The server prov
 | `-p, --port <PORT>` | Port to listen on | `8080` |
 | `-m, --models-dir <PATH>` | Models directory | Platform default |
 | `--max-batch-size <N>` | Maximum batch size | `8` |
-| `--metal` | Enable Metal GPU (macOS) | — |
+| `--backend <BACKEND>` | Backend preference: `auto`, `cpu`, `metal`, `cuda` | `auto` |
 | `-t, --threads <N>` | Number of CPU threads | Auto |
 | `--max-concurrent <N>` | Max concurrent requests | `100` |
 | `--timeout <SECONDS>` | Request timeout | `300` |
@@ -87,10 +87,10 @@ izwi serve
 izwi serve --port 9000
 ```
 
-### With Metal acceleration (macOS)
+### With Metal backend (macOS)
 
 ```bash
-izwi serve --metal
+izwi serve --backend metal
 ```
 
 ### Custom models directory
@@ -125,7 +125,7 @@ izwi serve --cors --log-level debug
 | `IZWI_HOST` | `--host` |
 | `IZWI_PORT` | `--port` |
 | `IZWI_MODELS_DIR` | `--models-dir` |
-| `IZWI_USE_METAL` | `--metal` |
+| `IZWI_BACKEND` | `--backend` |
 | `IZWI_MAX_BATCH_SIZE` | `--max-batch-size` |
 | `IZWI_NUM_THREADS` | `--threads` |
 | `IZWI_MAX_CONCURRENT` | `--max-concurrent` |

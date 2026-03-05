@@ -110,9 +110,9 @@ pub enum Commands {
         #[arg(long, default_value = "8", env = "IZWI_MAX_BATCH_SIZE")]
         max_batch_size: usize,
 
-        /// Enable Metal GPU acceleration (macOS only)
-        #[arg(long, env = "IZWI_USE_METAL")]
-        metal: bool,
+        /// Backend preference (`auto`, `cpu`, `metal`, `cuda`)
+        #[arg(long, value_enum, default_value = "auto", env = "IZWI_BACKEND")]
+        backend: Backend,
 
         /// Number of CPU threads
         #[arg(short, long, env = "IZWI_NUM_THREADS")]
@@ -583,6 +583,25 @@ pub enum ServeMode {
     Web,
 }
 
+#[derive(Clone, ValueEnum)]
+pub enum Backend {
+    Auto,
+    Cpu,
+    Metal,
+    Cuda,
+}
+
+impl Backend {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Cpu => "cpu",
+            Self::Metal => "metal",
+            Self::Cuda => "cuda",
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -607,7 +626,7 @@ async fn main() -> Result<()> {
             port,
             models_dir,
             max_batch_size,
-            metal,
+            backend,
             threads,
             max_concurrent,
             timeout,
@@ -622,7 +641,7 @@ async fn main() -> Result<()> {
                 port,
                 models_dir,
                 max_batch_size,
-                metal,
+                backend: backend.as_str().to_string(),
                 threads,
                 max_concurrent,
                 timeout,

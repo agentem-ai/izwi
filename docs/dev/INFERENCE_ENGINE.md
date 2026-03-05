@@ -461,7 +461,7 @@ All engine parameters are centralised in `EngineCoreConfig` (`engine/config.rs`)
 | `num_cpu_blocks` | `usize` | auto | CPU KV block count |
 | `num_gpu_blocks` | `usize` | auto | GPU KV block count |
 | `enable_chunked_prefill` | `bool` | `true` | Chunked prefill |
-| `use_metal` | `bool` | `true` on macOS | Enable Metal backend |
+| `backend` | `enum` | `auto` | Backend preference (`auto`, `cpu`, `metal`, `cuda`) |
 | `unified_memory_fraction` | `f32` | 0.85 | Metal memory budget |
 | `scheduling_policy` | `SchedulingPolicy` | `Fcfs` | Scheduler policy |
 | `enable_kv_quantization` | `bool` | `false` | Int8 KV quantization |

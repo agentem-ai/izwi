@@ -33,6 +33,10 @@ struct ServerArgs {
     /// Port to listen on
     #[arg(short, long)]
     port: Option<u16>,
+
+    /// Backend preference (`auto`, `cpu`, `metal`, `cuda`)
+    #[arg(long)]
+    backend: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +48,10 @@ struct BindConfig {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = ServerArgs::parse();
+
+    if let Some(backend) = args.backend.as_deref() {
+        std::env::set_var("IZWI_BACKEND", backend.trim().to_ascii_lowercase());
+    }
 
     // Initialize logging
     tracing_subscriber::registry()
