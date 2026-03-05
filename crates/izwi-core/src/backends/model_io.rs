@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::path::Path;
 
+use memmap2::{Mmap, MmapOptions};
+use tracing::{debug, warn};
+
+use crate::error::Result;
 use super::types::BackendKind;
 
 /// GGUF file loading mode for memory mapping.
@@ -64,10 +71,105 @@ pub fn gguf_mmap_enabled(mode: GgufMmapMode, kind: BackendKind) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GgufReaderKind {
+    Buffered,
+    Mapped,
+}
+
+pub enum GgufReader {
+    Buffered(BufReader<fs::File>),
+    Mapped(Cursor<Mmap>),
+}
+
+impl GgufReader {
+    pub fn kind(&self) -> GgufReaderKind {
+        match self {
+            Self::Buffered(_) => GgufReaderKind::Buffered,
+            Self::Mapped(_) => GgufReaderKind::Mapped,
+        }
+    }
+}
+
+impl Read for GgufReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Buffered(reader) => reader.read(buf),
+            Self::Mapped(reader) => reader.read(buf),
+        }
+    }
+}
+
+impl Seek for GgufReader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::Buffered(reader) => reader.seek(pos),
+            Self::Mapped(reader) => reader.seek(pos),
+        }
+    }
+}
+
+pub fn open_gguf_reader(path: &Path, backend: BackendKind) -> Result<GgufReader> {
+    open_gguf_reader_with_mode(path, None, backend)
+}
+
+pub fn open_gguf_reader_with_mode(
+    path: &Path,
+    configured_mode: Option<GgufMmapMode>,
+    backend: BackendKind,
+) -> Result<GgufReader> {
+    let mode = resolve_gguf_mmap_mode(configured_mode);
+    let mmap_enabled = gguf_mmap_enabled(mode, backend);
+    let file = fs::File::open(path)?;
+
+    debug!(
+        "Opening GGUF file {} (backend={}, mmap_mode={}, mmap_enabled={})",
+        path.display(),
+        backend.as_str(),
+        mode.as_str(),
+        mmap_enabled
+    );
+
+    if mmap_enabled {
+        // SAFETY: the mapping is read-only and the underlying file descriptor
+        // remains valid for the lifetime of the mapping object.
+        match unsafe { MmapOptions::new().map(&file) } {
+            Ok(mmap) => return Ok(GgufReader::Mapped(Cursor::new(mmap))),
+            Err(err) => {
+                warn!(
+                    "Failed to memory-map GGUF file {}; falling back to buffered I/O: {}",
+                    path.display(),
+                    err
+                );
+            }
+        }
+    }
+
+    Ok(GgufReader::Buffered(BufReader::new(file)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use crate::env_test_lock;
+
+    fn temp_test_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock drift")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "izwi-gguf-reader-{name}-{}-{ts}.bin",
+            std::process::id()
+        ));
+        let mut file = File::create(&path).expect("create temp file");
+        file.write_all(bytes).expect("write temp file");
+        path
+    }
 
     #[test]
     fn parse_mode_supports_aliases() {
@@ -111,5 +213,56 @@ mod tests {
         for backend in [BackendKind::Cpu, BackendKind::Metal, BackendKind::Cuda] {
             assert!(gguf_mmap_enabled(GgufMmapMode::Auto, backend));
         }
+    }
+
+    #[test]
+    fn open_reader_uses_buffered_mode_when_explicitly_disabled() {
+        let _guard = env_test_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("IZWI_GGUF_MMAP");
+
+        let path = temp_test_file("buffered", b"GGUF-test-payload");
+        let reader = open_gguf_reader_with_mode(&path, Some(GgufMmapMode::Off), BackendKind::Cpu)
+            .expect("open reader");
+        assert_eq!(reader.kind(), GgufReaderKind::Buffered);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn open_reader_supports_read_and_seek() {
+        let _guard = env_test_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("IZWI_GGUF_MMAP");
+
+        let path = temp_test_file("seek", b"0123456789");
+        let mut reader =
+            open_gguf_reader_with_mode(&path, Some(GgufMmapMode::Off), BackendKind::Cpu)
+                .expect("open reader");
+
+        let mut head = [0u8; 4];
+        reader.read_exact(&mut head).expect("read head");
+        assert_eq!(&head, b"0123");
+
+        reader.seek(SeekFrom::Start(6)).expect("seek");
+        let mut tail = [0u8; 2];
+        reader.read_exact(&mut tail).expect("read tail");
+        assert_eq!(&tail, b"67");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn open_reader_on_mode_returns_mapped_or_safe_fallback() {
+        let _guard = env_test_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("IZWI_GGUF_MMAP");
+
+        let path = temp_test_file("mapped", b"GGUF");
+        let reader = open_gguf_reader_with_mode(&path, Some(GgufMmapMode::On), BackendKind::Cpu)
+            .expect("open reader");
+        assert!(matches!(
+            reader.kind(),
+            GgufReaderKind::Mapped | GgufReaderKind::Buffered
+        ));
+
+        let _ = std::fs::remove_file(path);
     }
 }
