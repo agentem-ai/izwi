@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+use super::types::BackendKind;
 use crate::error::Result;
 use crate::models::shared::memory::metal::{metal_pool_for_device, MetalMemoryPool};
 
@@ -32,6 +33,16 @@ impl DeviceKind {
 
     pub fn is_cuda(&self) -> bool {
         matches!(self, DeviceKind::Cuda)
+    }
+}
+
+impl From<DeviceKind> for BackendKind {
+    fn from(kind: DeviceKind) -> Self {
+        match kind {
+            DeviceKind::Cpu => BackendKind::Cpu,
+            DeviceKind::Metal => BackendKind::Metal,
+            DeviceKind::Cuda => BackendKind::Cuda,
+        }
     }
 }
 
@@ -332,6 +343,13 @@ mod tests {
             }
             DeviceKind::Cuda => assert!(profile.device.is_cuda()),
         }
+    }
+
+    #[test]
+    fn test_device_kind_maps_to_backend_kind() {
+        assert_eq!(BackendKind::from(DeviceKind::Cpu), BackendKind::Cpu);
+        assert_eq!(BackendKind::from(DeviceKind::Metal), BackendKind::Metal);
+        assert_eq!(BackendKind::from(DeviceKind::Cuda), BackendKind::Cuda);
     }
 
     #[test]

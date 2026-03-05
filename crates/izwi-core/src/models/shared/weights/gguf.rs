@@ -14,6 +14,7 @@ use candle_nn::VarBuilder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::backends::{backend_kind_for_device, open_gguf_reader, BackendKind};
 use crate::error::{Error, Result};
 
 /// Information about a GGUF model file.
@@ -42,10 +43,12 @@ pub struct GgufLoader {
 impl GgufLoader {
     /// Create a new GGUF loader from a file path.
     pub fn from_path(path: &Path) -> Result<Self> {
-        let file = std::fs::File::open(path)
-            .map_err(|e| Error::ModelLoadError(format!("Failed to open GGUF file: {}", e)))?;
+        Self::from_path_with_backend(path, BackendKind::Cpu)
+    }
 
-        let mut reader = std::io::BufReader::new(file);
+    pub fn from_path_with_backend(path: &Path, backend: BackendKind) -> Result<Self> {
+        let mut reader = open_gguf_reader(path, backend)
+            .map_err(|e| Error::ModelLoadError(format!("Failed to open GGUF file: {}", e)))?;
         let content = GgufContent::read(&mut reader)
             .map_err(|e| Error::ModelLoadError(format!("Failed to parse GGUF file: {}", e)))?;
 
@@ -104,9 +107,8 @@ impl GgufLoader {
     /// Delegates to Candle's `Content::tensor`, which fully supports
     /// all GGUF dtypes (F32/F16 and quantized families like Q4_K/Q5_K).
     pub fn load_qtensor(&self, name: &str, device: &Device) -> Result<QTensor> {
-        let file = std::fs::File::open(&self.path)
+        let mut reader = open_gguf_reader(&self.path, backend_kind_for_device(device))
             .map_err(|e| Error::ModelLoadError(format!("Failed to reopen GGUF file: {}", e)))?;
-        let mut reader = std::io::BufReader::new(file);
 
         self.content.tensor(&mut reader, name, device).map_err(|e| {
             Error::ModelLoadError(format!("Failed to load tensor '{}' from GGUF: {}", name, e))
@@ -286,7 +288,7 @@ pub fn var_builder_from_gguf(
     dtype: DType,
     device: &Device,
 ) -> Result<VarBuilder<'static>> {
-    let loader = GgufLoader::from_path(path)?;
+    let loader = GgufLoader::from_path_with_backend(path, backend_kind_for_device(device))?;
 
     // Load all tensors into a HashMap
     let mut tensors: HashMap<String, Tensor> = HashMap::new();

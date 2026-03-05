@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{BufReader, Cursor};
+use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -10,6 +10,7 @@ use candle_nn::{ops, Linear, Module};
 use image::codecs::gif::GifDecoder;
 use image::{imageops, AnimationDecoder, DynamicImage, RgbImage};
 
+use crate::backends::{open_gguf_reader, BackendKind};
 use crate::error::{Error, Result};
 use crate::models::shared::chat::{Qwen35MultimodalInput, Qwen35MultimodalKind};
 use crate::models::shared::device::DeviceProfile;
@@ -186,7 +187,7 @@ impl Qwen35VisionRuntime {
         dtype: DType,
         expected_projection_dim: usize,
     ) -> Result<Self> {
-        let mut reader = BufReader::new(fs::File::open(mmproj_path)?);
+        let mut reader = open_gguf_reader(mmproj_path, BackendKind::from(device.kind))?;
         let content = gguf_file::Content::read(&mut reader).map_err(|e| {
             Error::ModelLoadError(format!(
                 "Failed to parse Qwen3.5 mmproj GGUF {}: {e}",
@@ -833,7 +834,7 @@ fn from_hex(ch: u8) -> Option<u8> {
 
 fn load_linear(
     content: &gguf_file::Content,
-    reader: &mut BufReader<fs::File>,
+    reader: &mut (impl Read + Seek),
     device: &DeviceProfile,
     dtype: DType,
     weight_name: &str,
@@ -846,7 +847,7 @@ fn load_linear(
 
 fn load_gguf_tensor(
     content: &gguf_file::Content,
-    reader: &mut BufReader<fs::File>,
+    reader: &mut (impl Read + Seek),
     device: &DeviceProfile,
     dtype: DType,
     name: &str,
