@@ -27,7 +27,10 @@ impl BackendRouter {
             .ok()
             .as_deref()
             .and_then(BackendPreference::parse)
-            .map(Self::backend_for_preference)
+            .and_then(|preference| match preference {
+                BackendPreference::Auto => None,
+                _ => Some(Self::backend_for_preference(preference)),
+            })
             .or_else(|| {
                 std::env::var("IZWI_USE_METAL")
                     .ok()
@@ -102,6 +105,7 @@ impl BackendRouter {
 mod tests {
     use super::*;
     use crate::catalog::ModelVariant;
+    use crate::env_test_lock;
 
     #[test]
     fn preference_maps_to_expected_default_backend() {
@@ -124,5 +128,17 @@ mod tests {
         let router = BackendRouter::from_preference(BackendPreference::Cpu);
         let plan = router.select(ModelVariant::Qwen3Tts12Hz06BBase);
         assert_eq!(plan.backend, ExecutionBackend::CandleNative);
+    }
+
+    #[test]
+    fn env_auto_keeps_runtime_default_backend() {
+        let _guard = env_test_lock().lock().expect("env lock poisoned");
+        std::env::set_var("IZWI_BACKEND", "auto");
+        std::env::remove_var("IZWI_USE_METAL");
+
+        let router = BackendRouter::from_env_with_default(ExecutionBackend::CandleMetal);
+        assert_eq!(router.default_backend(), ExecutionBackend::CandleMetal);
+
+        std::env::remove_var("IZWI_BACKEND");
     }
 }

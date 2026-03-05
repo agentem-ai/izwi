@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use super::scheduler::SchedulingPolicy;
 use super::types::ModelType;
-use crate::backends::{BackendKind, BackendPreference};
+use crate::backends::{BackendKind, BackendPreference, DeviceSelector};
 
 /// Configuration for the engine core.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,17 +172,26 @@ fn default_num_codebooks() -> usize {
 fn default_streaming_chunk_size() -> usize {
     4800
 } // 200ms at 24kHz
+
+fn detect_auto_backend_kind() -> BackendKind {
+    if let Ok(profile) = DeviceSelector::detect() {
+        if profile.kind.is_metal() {
+            return BackendKind::Metal;
+        }
+        if profile.kind.is_cuda() {
+            return BackendKind::Cuda;
+        }
+        return BackendKind::Cpu;
+    }
+
+    BackendKind::Cpu
+}
+
 fn default_backend_kind() -> BackendKind {
     if let Ok(raw) = std::env::var("IZWI_BACKEND") {
         if let Some(preference) = BackendPreference::parse(&raw) {
             return match preference {
-                BackendPreference::Auto => {
-                    if cfg!(target_os = "macos") {
-                        BackendKind::Metal
-                    } else {
-                        BackendKind::Cpu
-                    }
-                }
+                BackendPreference::Auto => detect_auto_backend_kind(),
                 BackendPreference::Cpu => BackendKind::Cpu,
                 BackendPreference::Metal => BackendKind::Metal,
                 BackendPreference::Cuda => BackendKind::Cuda,
@@ -190,11 +199,7 @@ fn default_backend_kind() -> BackendKind {
         }
     }
 
-    if cfg!(target_os = "macos") {
-        BackendKind::Metal
-    } else {
-        BackendKind::Cpu
-    }
+    detect_auto_backend_kind()
 }
 fn default_num_threads() -> usize {
     std::thread::available_parallelism()
