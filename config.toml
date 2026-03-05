@@ -20,8 +20,8 @@ chunk_size = 128
 # Data type for KV cache (float16, float32)
 kv_cache_dtype = "float16"
 
-# Enable Metal GPU acceleration (Apple Silicon)
-use_metal = true
+# Backend preference: auto, cpu, metal, cuda
+backend = "auto"
 
 # Number of threads for CPU operations
 num_threads = 8

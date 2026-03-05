@@ -123,7 +123,7 @@ dir = "/path/to/models"
 
 [inference]
 max_batch_size = 8
-use_metal = true
+backend = "auto"
 ```
 
 ### File Locations
