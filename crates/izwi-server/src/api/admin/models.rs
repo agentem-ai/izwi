@@ -149,8 +149,8 @@ pub async fn delete_model(
     let variant = parse_variant(&variant)?;
     info!("Deleting model: {}", variant);
 
-    // First unload if loaded
-    let _ = state.runtime.model_manager().unload_model(variant).await;
+    // First unload via runtime path so registry/executor/cache cleanup runs.
+    state.runtime.unload_model(variant).await?;
 
     // Delete the model files
     state.runtime.model_manager().delete_model(variant).await?;
