@@ -22,8 +22,8 @@ use preprocessor::{resample_audio, Lfm2AudioPreprocessor};
 use tokenizer::{ChatState, Lfm2Tokenizer, LfmModality};
 use tracing::info;
 
+use crate::backends::DeviceProfile;
 use crate::error::{Error, Result};
-use crate::models::shared::device::DeviceProfile;
 
 pub const LFM2_DEFAULT_S2S_PROMPT: &str = "Respond with interleaved text and audio.";
 
@@ -170,11 +170,7 @@ impl Lfm2AudioModel {
                 .map_err(|e| Error::ModelLoadError(format!("Invalid LFM2 config.json: {e}")))?;
 
         let dtype = match device.kind {
-            crate::models::shared::device::DeviceKind::Cuda
-                if device.capabilities.supports_bf16 =>
-            {
-                DType::BF16
-            }
+            crate::backends::DeviceKind::Cuda if device.capabilities.supports_bf16 => DType::BF16,
             _ => DType::F32,
         };
 

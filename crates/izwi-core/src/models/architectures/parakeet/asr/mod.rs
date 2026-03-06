@@ -11,9 +11,9 @@ use candle_nn::{
     ModuleT, VarBuilder,
 };
 
+use crate::backends::DeviceProfile;
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
-use crate::models::shared::device::DeviceProfile;
 use crate::models::shared::weights::mlx;
 use crate::tokenizer::Tokenizer;
 

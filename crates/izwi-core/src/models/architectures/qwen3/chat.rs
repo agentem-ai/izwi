@@ -13,12 +13,12 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::info;
 
+use crate::backends::DeviceProfile;
 use crate::backends::{open_gguf_reader, BackendKind};
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::architectures::qwen3::core::{Qwen3Cache, Qwen3Config, Qwen3Model};
 use crate::models::shared::chat::{ChatMessage, ChatRole};
-use crate::models::shared::device::DeviceProfile;
 use crate::tokenizer::Tokenizer;
 
 #[derive(Debug, Clone)]

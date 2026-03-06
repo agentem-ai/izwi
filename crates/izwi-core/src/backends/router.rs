@@ -41,16 +41,6 @@ impl BackendRouter {
             .ok()
             .as_deref()
             .and_then(BackendPreference::parse)
-            .or_else(|| {
-                std::env::var("IZWI_USE_METAL").ok().and_then(|raw| {
-                    let value = raw.trim().to_ascii_lowercase();
-                    if matches!(value.as_str(), "1" | "true" | "yes" | "on") {
-                        Some(BackendPreference::Metal)
-                    } else {
-                        None
-                    }
-                })
-            })
     }
 
     pub fn resolve_context(
@@ -201,7 +191,6 @@ mod tests {
     fn env_auto_keeps_runtime_default_backend() {
         let _guard = env_test_lock().lock().expect("env lock poisoned");
         std::env::set_var("IZWI_BACKEND", "auto");
-        std::env::remove_var("IZWI_USE_METAL");
 
         let router = BackendRouter::from_env_with_default(ExecutionBackend::CandleMetal);
         assert!(matches!(

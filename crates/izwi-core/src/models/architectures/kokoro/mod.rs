@@ -23,8 +23,8 @@ use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
 use tracing::info;
 
+use crate::backends::DeviceProfile;
 use crate::error::{Error, Result};
-use crate::models::shared::device::DeviceProfile;
 
 use self::phonemizer::EspeakPhonemizer;
 use self::prosody::{
@@ -557,7 +557,7 @@ fn inspect_and_validate_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::shared::device::{DeviceKind, DeviceSelector};
+    use crate::backends::{DeviceKind, DeviceSelector};
     use rustfft::num_complex::Complex32;
     use rustfft::FftPlanner;
     use std::path::Path;

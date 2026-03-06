@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::{info, warn};
 
+use crate::backends::DeviceProfile;
 use crate::backends::{open_gguf_reader, BackendKind};
 use crate::error::{Error, Result};
 use crate::models::architectures::qwen3::core::{build_rope_cache, causal_mask};
@@ -33,7 +34,6 @@ use crate::models::shared::chat::{
     parse_qwen35_tools_control_content, ChatMessage, ChatRole, Qwen35MultimodalInput,
     Qwen35MultimodalKind,
 };
-use crate::models::shared::device::DeviceProfile;
 use crate::models::shared::weights::mlx;
 use crate::tokenizer::Tokenizer;
 
@@ -4735,11 +4735,11 @@ fn find_single_safetensor(model_dir: &Path) -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backends::DeviceSelector;
     use crate::models::shared::chat::{
         qwen35_multimodal_control_content, qwen35_thinking_control_content, Qwen35MultimodalInput,
         Qwen35MultimodalKind,
     };
-    use crate::models::shared::device::DeviceSelector;
     use serde_json::json;
     use std::sync::MutexGuard;
 

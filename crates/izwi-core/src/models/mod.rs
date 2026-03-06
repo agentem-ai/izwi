@@ -9,5 +9,4 @@ pub mod architectures;
 pub mod registry;
 pub mod shared;
 
-pub use crate::backends::DeviceSelector;
 pub use registry::ModelRegistry;
