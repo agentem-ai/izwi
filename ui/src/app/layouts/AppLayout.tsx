@@ -16,11 +16,12 @@ import {
   Sun,
   Moon,
 } from "lucide-react";
+import { APP_ICON_URL, APP_VERSION } from "@/shared/config/runtime";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
-const appIconUrl = `/app-icon.png?v=${Date.now()}`;
-const APP_VERSION = `v${__APP_VERSION__}`;
+const appIconUrl = APP_ICON_URL;
+const APP_VERSION_LABEL = `v${APP_VERSION}`;
 
 interface LayoutProps {
   error: string | null;
@@ -515,7 +516,7 @@ export function AppLayout({
                 )}
                 title={`App version ${APP_VERSION}`}
               >
-                {APP_VERSION}
+                  {APP_VERSION_LABEL}
               </div>
               <a
                 href="https://github.com/agentem-ai/izwi"
