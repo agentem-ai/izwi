@@ -1,4 +1,4 @@
-const APP_ICON_URL = `/app-icon.png?v=${__APP_VERSION__}`;
+import { APP_ICON_URL } from "@/shared/config/runtime";
 
 function setLinkHref(rel: string, href: string) {
   const link =

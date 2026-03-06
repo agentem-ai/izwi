@@ -1,11 +1,6 @@
-const tauriServerUrl =
-  typeof window !== "undefined"
-    ? ((window as { __IZWI_SERVER_URL__?: string }).__IZWI_SERVER_URL__ ?? null)
-    : null;
+import { API_BASE_URL } from "@/shared/config/runtime";
 
-export const API_BASE = tauriServerUrl
-  ? `${tauriServerUrl.replace(/\/$/, "")}/v1`
-  : "/v1";
+export const API_BASE = API_BASE_URL;
 
 export class ApiHttpClient {
   readonly baseUrl: string;
