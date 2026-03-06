@@ -7,13 +7,13 @@ use candle_nn::{Module, VarBuilder};
 use tracing::info;
 
 use crate::audio::{MelConfig, MelSpectrogram};
+use crate::backends::DeviceProfile;
 use crate::error::{Error, Result};
 use crate::models::architectures::qwen3::core::Qwen3Cache;
 use crate::models::architectures::voxtral::lm::VoxtralLM;
 use crate::models::shared::attention::flash::{
     flash_attention_requested, try_fused_self_attention,
 };
-use crate::models::shared::device::DeviceProfile;
 
 use super::audio::{AudioLanguageAdapter, TimeEmbedding};
 use super::config::VoxtralConfig;

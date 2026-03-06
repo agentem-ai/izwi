@@ -10,10 +10,10 @@ use candle_nn::{ops, Linear, Module};
 use image::codecs::gif::GifDecoder;
 use image::{imageops, AnimationDecoder, DynamicImage, RgbImage};
 
+use crate::backends::DeviceProfile;
 use crate::backends::{open_gguf_reader, BackendKind};
 use crate::error::{Error, Result};
 use crate::models::shared::chat::{Qwen35MultimodalInput, Qwen35MultimodalKind};
-use crate::models::shared::device::DeviceProfile;
 
 const DEFAULT_TARGET_GRID: usize = 24;
 const MAX_MEDIA_BYTES: usize = 64 * 1024 * 1024;

@@ -5,6 +5,5 @@
 
 pub mod attention;
 pub mod chat;
-pub mod device;
 pub mod memory;
 pub mod weights;

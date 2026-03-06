@@ -11,11 +11,11 @@ use candle_transformers::models::quantized_lfm2::ModelWeights as QuantizedLfm2Mo
 use serde::Deserialize;
 use tracing::info;
 
+use crate::backends::DeviceProfile;
 use crate::backends::{open_gguf_reader, BackendKind};
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::shared::chat::{ChatMessage, ChatRole};
-use crate::models::shared::device::DeviceProfile;
 use crate::tokenizer::Tokenizer;
 
 #[derive(Debug, Clone)]

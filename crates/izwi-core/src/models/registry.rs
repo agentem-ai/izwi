@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::{OnceCell, RwLock};
 use tracing::info;
 
+use crate::backends::DeviceProfile;
 use crate::catalog::ModelFamily;
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
@@ -31,7 +32,6 @@ use crate::models::architectures::whisper::asr::{
     AsrTranscriptionOutput as WhisperAsrTranscriptionOutput, WhisperTurboAsrModel,
 };
 use crate::models::shared::chat::ChatMessage;
-use crate::models::shared::device::DeviceProfile;
 use crate::runtime::{DiarizationConfig, DiarizationResult};
 
 type AsrLoaderFn = fn(&Path, ModelVariant, DeviceProfile) -> Result<NativeAsrModel>;

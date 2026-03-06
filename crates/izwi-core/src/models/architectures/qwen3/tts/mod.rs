@@ -23,9 +23,9 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
+use crate::backends::DeviceProfile;
 use crate::error::{Error, Result};
 use crate::models::shared::attention::paged::{default_kv_page_size, KvCacheQuantization};
-use crate::models::shared::device::DeviceProfile;
 
 const NEWLINE_TOKEN_ID: u32 = 198;
 

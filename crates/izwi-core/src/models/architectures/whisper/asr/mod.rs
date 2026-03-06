@@ -22,8 +22,8 @@ use serde::Deserialize;
 use tracing::info;
 
 use crate::audio::{MelConfig, MelSpectrogram};
+use crate::backends::DeviceProfile;
 use crate::error::{Error, Result};
-use crate::models::shared::device::DeviceProfile;
 use crate::tokenizer::Tokenizer;
 
 const SAMPLE_RATE: u32 = whisper::SAMPLE_RATE as u32;

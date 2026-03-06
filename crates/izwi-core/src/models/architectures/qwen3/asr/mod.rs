@@ -13,9 +13,9 @@ use serde::Deserialize;
 use tracing::{debug, info, warn};
 
 use crate::audio::{MelConfig, MelSpectrogram};
+use crate::backends::{DeviceKind, DeviceProfile};
 use crate::error::{Error, Result};
 use crate::models::architectures::qwen3::core::{Qwen3Cache, Qwen3Model};
-use crate::models::shared::device::{DeviceKind, DeviceProfile};
 
 use audio::AudioTower;
 use config::Qwen3AsrConfig;
@@ -1610,7 +1610,7 @@ mod tests {
     use candle_core::DType;
     use std::path::PathBuf;
 
-    use crate::models::shared::device::DeviceSelector;
+    use crate::backends::DeviceSelector;
 
     #[test]
     fn collect_stop_token_ids_deduplicates_alt_eos() {
