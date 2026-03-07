@@ -18,6 +18,7 @@ use crate::models::shared::chat::{Qwen35MultimodalInput, Qwen35MultimodalKind};
 const DEFAULT_TARGET_GRID: usize = 24;
 const MAX_MEDIA_BYTES: usize = 64 * 1024 * 1024;
 const ROTARY_THETA: f32 = 10_000.0;
+const DEFAULT_VIDEO_MAX_FRAMES: usize = 8;
 
 #[derive(Debug, Clone)]
 struct VisionConfig {
@@ -414,18 +415,49 @@ impl Qwen35VisionRuntime {
         &self.source_path
     }
 
-    pub(crate) fn llm_grid_thw(&self, _media: &Qwen35MultimodalInput) -> (usize, usize, usize) {
-        // The current projector folds the paired frames into channel space before the LLM,
-        // so the language model receives one temporal step and a spatially merged 2D grid.
+    pub(crate) fn llm_grid_hw(&self) -> (usize, usize) {
         (
-            1,
             self.config.target_grid / self.config.spatial_merge_size,
             self.config.target_grid / self.config.spatial_merge_size,
         )
     }
 
-    pub(crate) fn encode_media(&self, media: &Qwen35MultimodalInput) -> Result<Tensor> {
-        let (frame0, frame1) = self.decode_frames(media)?;
+    pub(crate) fn encode_media(&self, media: &Qwen35MultimodalInput) -> Result<(Tensor, usize)> {
+        match media.kind {
+            Qwen35MultimodalKind::Image => {
+                let bytes = load_media_source_bytes(&media.source)?;
+                let image = decode_image(&bytes, &media.source)?;
+                let resized = resize_image(&image, self.config.target_image_size() as u32);
+                Ok((self.encode_frame_pair(&resized, &resized)?, 1))
+            }
+            Qwen35MultimodalKind::Video => {
+                let bytes = load_media_source_bytes(&media.source)?;
+                let frames = decode_video_frames(&bytes, &media.source)?;
+                let sampled = sample_video_frames(&frames, qwen35_video_max_frames());
+                let temporal_steps = sampled_video_temporal_steps(sampled.len());
+                let mut embeddings = Vec::with_capacity(temporal_steps);
+
+                for pair in sampled.chunks(2) {
+                    let frame0 = resize_image(&pair[0], self.config.target_image_size() as u32);
+                    let frame1 = resize_image(
+                        pair.get(1).unwrap_or(&pair[0]),
+                        self.config.target_image_size() as u32,
+                    );
+                    embeddings.push(self.encode_frame_pair(&frame0, &frame1)?);
+                }
+
+                let embeddings = if embeddings.len() == 1 {
+                    embeddings.pop().expect("single embedding present")
+                } else {
+                    let refs: Vec<&Tensor> = embeddings.iter().collect();
+                    Tensor::cat(&refs, 0)?
+                };
+                Ok((embeddings, temporal_steps))
+            }
+        }
+    }
+
+    fn encode_frame_pair(&self, frame0: &RgbImage, frame1: &RgbImage) -> Result<Tensor> {
         let patches = self.patchify_pair(&frame0, &frame1)?;
         let hidden = self.forward_vision(&patches)?;
         let merged = hidden.reshape((
@@ -465,28 +497,6 @@ impl Qwen35VisionRuntime {
             x = block.forward(&x, &self.rotary_cos, &self.rotary_sin)?;
         }
         self.post_ln.forward(&x)
-    }
-
-    fn decode_frames(&self, media: &Qwen35MultimodalInput) -> Result<(RgbImage, RgbImage)> {
-        let bytes = load_media_source_bytes(&media.source)?;
-        match media.kind {
-            Qwen35MultimodalKind::Image => {
-                let image = decode_image(&bytes, &media.source)?;
-                let resized = resize_image(&image, self.config.target_image_size() as u32);
-                Ok((resized.clone(), resized))
-            }
-            Qwen35MultimodalKind::Video => {
-                let frames = decode_video_frames(&bytes, &media.source)?;
-                let first = frames.first().ok_or_else(|| {
-                    Error::InferenceError("Video source produced no decodable frames".to_string())
-                })?;
-                let second = frames.get(1).unwrap_or(first);
-                Ok((
-                    resize_image(first, self.config.target_image_size() as u32),
-                    resize_image(second, self.config.target_image_size() as u32),
-                ))
-            }
-        }
     }
 
     fn patchify_pair(&self, frame0: &RgbImage, frame1: &RgbImage) -> Result<Tensor> {
@@ -582,10 +592,14 @@ fn decode_video_frames(bytes: &[u8], source: &str) -> Result<Vec<RgbImage>> {
         return Ok(out);
     }
 
-    extract_video_frames_with_ffmpeg(bytes, source)
+    extract_video_frames_with_ffmpeg(bytes, source, qwen35_video_max_frames())
 }
 
-fn extract_video_frames_with_ffmpeg(bytes: &[u8], source: &str) -> Result<Vec<RgbImage>> {
+fn extract_video_frames_with_ffmpeg(
+    bytes: &[u8],
+    source: &str,
+    max_frames: usize,
+) -> Result<Vec<RgbImage>> {
     let temp_root = std::env::temp_dir().join(format!("izwi-qwen35-mm-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&temp_root)?;
 
@@ -599,15 +613,20 @@ fn extract_video_frames_with_ffmpeg(bytes: &[u8], source: &str) -> Result<Vec<Rg
                 .to_string(),
         )
     })?;
+    let sample_fps = resolve_ffprobe_binary()
+        .as_deref()
+        .and_then(|ffprobe| probe_video_duration(ffprobe, &input_path))
+        .and_then(|duration_secs| sample_video_fps(duration_secs, max_frames));
 
-    let output = Command::new(&ffmpeg)
-        .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-i")
-        .arg(&input_path)
+    let mut command = Command::new(&ffmpeg);
+    command.arg("-hide_banner").arg("-loglevel").arg("error");
+    command.arg("-i").arg(&input_path);
+    if let Some(sample_fps) = sample_fps {
+        command.arg("-vf").arg(format!("fps={sample_fps:.6}"));
+    }
+    let output = command
         .arg("-frames:v")
-        .arg("2")
+        .arg(max_frames.max(1).to_string())
         .arg(&pattern)
         .output()
         .map_err(|e| {
@@ -653,8 +672,92 @@ fn extract_video_frames_with_ffmpeg(bytes: &[u8], source: &str) -> Result<Vec<Rg
     Ok(frames)
 }
 
+fn qwen35_video_max_frames() -> usize {
+    std::env::var("IZWI_QWEN35_VIDEO_MAX_FRAMES")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_VIDEO_MAX_FRAMES)
+}
+
+fn sampled_video_temporal_steps(frame_count: usize) -> usize {
+    frame_count.div_ceil(2)
+}
+
+fn sample_video_frames(frames: &[RgbImage], max_frames: usize) -> Vec<RgbImage> {
+    if frames.len() <= max_frames {
+        return frames.to_vec();
+    }
+    sample_video_frame_indices(frames.len(), max_frames)
+        .into_iter()
+        .map(|idx| frames[idx].clone())
+        .collect()
+}
+
+fn sample_video_frame_indices(total_frames: usize, max_frames: usize) -> Vec<usize> {
+    if total_frames == 0 || max_frames == 0 {
+        return Vec::new();
+    }
+    if total_frames <= max_frames {
+        return (0..total_frames).collect();
+    }
+
+    let last_index = total_frames - 1;
+    let mut indices = Vec::with_capacity(max_frames);
+    for sample_idx in 0..max_frames {
+        let idx = ((sample_idx * last_index) + (max_frames - 1) / 2) / (max_frames - 1);
+        if indices.last().copied() != Some(idx) {
+            indices.push(idx);
+        }
+    }
+    if indices.last().copied() != Some(last_index) {
+        if indices.len() == max_frames {
+            indices.pop();
+        }
+        indices.push(last_index);
+    }
+    indices
+}
+
+fn sample_video_fps(duration_secs: f64, max_frames: usize) -> Option<f64> {
+    if !duration_secs.is_finite() || duration_secs <= 0.0 || max_frames == 0 {
+        return None;
+    }
+    Some((max_frames as f64 / duration_secs).max(0.01))
+}
+
+fn probe_video_duration(ffprobe: &Path, input_path: &Path) -> Option<f64> {
+    let output = Command::new(ffprobe)
+        .arg("-v")
+        .arg("error")
+        .arg("-show_entries")
+        .arg("format=duration")
+        .arg("-of")
+        .arg("default=noprint_wrappers=1:nokey=1")
+        .arg(input_path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    output
+        .stdout
+        .split(|byte| *byte == b'\n' || *byte == b'\r')
+        .find_map(|line| std::str::from_utf8(line).ok())
+        .and_then(|line| line.trim().parse::<f64>().ok())
+        .filter(|duration| *duration > 0.0)
+}
+
 fn resolve_ffmpeg_binary() -> Option<PathBuf> {
-    for var in ["IZWI_QWEN35_FFMPEG_PATH", "IZWI_FFMPEG_PATH"] {
+    resolve_media_binary(["IZWI_QWEN35_FFMPEG_PATH", "IZWI_FFMPEG_PATH"], "ffmpeg")
+}
+
+fn resolve_ffprobe_binary() -> Option<PathBuf> {
+    resolve_media_binary(["IZWI_QWEN35_FFPROBE_PATH", "IZWI_FFPROBE_PATH"], "ffprobe")
+}
+
+fn resolve_media_binary<const N: usize>(env_vars: [&str; N], binary_name: &str) -> Option<PathBuf> {
+    for var in env_vars {
         if let Ok(raw) = std::env::var(var) {
             let trimmed = raw.trim();
             if !trimmed.is_empty() {
@@ -665,7 +768,7 @@ fn resolve_ffmpeg_binary() -> Option<PathBuf> {
 
     if let Some(path_env) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path_env) {
-            let candidate = dir.join("ffmpeg");
+            let candidate = dir.join(binary_name);
             if candidate.is_file() {
                 return Some(candidate);
             }
@@ -673,10 +776,10 @@ fn resolve_ffmpeg_binary() -> Option<PathBuf> {
     }
 
     for candidate in [
-        "/opt/homebrew/bin/ffmpeg",
-        "/usr/local/bin/ffmpeg",
-        "/usr/bin/ffmpeg",
-        "/bin/ffmpeg",
+        format!("/opt/homebrew/bin/{binary_name}"),
+        format!("/usr/local/bin/{binary_name}"),
+        format!("/usr/bin/{binary_name}"),
+        format!("/bin/{binary_name}"),
     ] {
         let path = PathBuf::from(candidate);
         if path.is_file() {
@@ -687,9 +790,9 @@ fn resolve_ffmpeg_binary() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             for candidate in [
-                parent.join("ffmpeg"),
-                parent.join("../Resources/ffmpeg"),
-                parent.join("../Resources/bin/ffmpeg"),
+                parent.join(binary_name),
+                parent.join(format!("../Resources/{binary_name}")),
+                parent.join(format!("../Resources/bin/{binary_name}")),
             ] {
                 if candidate.is_file() {
                     return Some(candidate);
@@ -769,6 +872,55 @@ fn decode_data_url(url: &str) -> Result<Vec<u8>> {
         )));
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use image::Rgb;
+
+    use super::{
+        sample_video_fps, sample_video_frame_indices, sample_video_frames,
+        sampled_video_temporal_steps,
+    };
+
+    #[test]
+    fn sample_video_frame_indices_cover_start_and_end_when_bounded() {
+        let indices = sample_video_frame_indices(12, 5);
+        assert_eq!(indices.len(), 5);
+        assert_eq!(indices[0], 0);
+        assert_eq!(indices.last().copied(), Some(11));
+        assert!(indices.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn sample_video_frames_preserve_budget_and_clip_coverage() {
+        let frames = (0..10)
+            .map(|idx| image::RgbImage::from_pixel(1, 1, Rgb([idx as u8, 0, 0])))
+            .collect::<Vec<_>>();
+        let sampled = sample_video_frames(&frames, 4);
+        let sampled_values = sampled
+            .iter()
+            .map(|frame| frame.get_pixel(0, 0).0[0])
+            .collect::<Vec<_>>();
+        assert_eq!(sampled.len(), 4);
+        assert_eq!(sampled_values.first().copied(), Some(0));
+        assert_eq!(sampled_values.last().copied(), Some(9));
+    }
+
+    #[test]
+    fn sampled_video_temporal_steps_round_up_odd_frame_counts() {
+        assert_eq!(sampled_video_temporal_steps(1), 1);
+        assert_eq!(sampled_video_temporal_steps(2), 1);
+        assert_eq!(sampled_video_temporal_steps(3), 2);
+        assert_eq!(sampled_video_temporal_steps(8), 4);
+    }
+
+    #[test]
+    fn sample_video_fps_scales_requested_budget_across_duration() {
+        let fps = sample_video_fps(4.0, 8).expect("sample fps");
+        assert!((fps - 2.0).abs() < f64::EPSILON);
+        assert!(sample_video_fps(0.0, 8).is_none());
+    }
 }
 
 fn fetch_remote_media(url: &str) -> Result<Vec<u8>> {
