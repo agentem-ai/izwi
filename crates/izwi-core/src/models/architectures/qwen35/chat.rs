@@ -2698,6 +2698,7 @@ impl Qwen35QuantizedLayer {
 
 struct Qwen35QuantizedModel {
     embed_tokens: Embedding,
+    activation_dtype: DType,
     layers: Vec<Qwen35QuantizedLayer>,
     norm: Qwen35RmsNorm,
     lm_head: QMatMul,
@@ -2713,6 +2714,7 @@ impl Qwen35QuantizedModel {
         cfg: Qwen35TextConfig,
         cache_scope: Option<&str>,
     ) -> Result<Self> {
+        let embed_dtype = select_qwen35_gguf_quantized_embedding_dtype(dtype, device);
         let embed_q = content
             .tensor(reader, "token_embd.weight", &device.device)
             .map_err(|e| {
@@ -2720,11 +2722,12 @@ impl Qwen35QuantizedModel {
                     "Failed to load GGUF tensor `token_embd.weight`: {e}"
                 ))
             })?;
-        let embed_weight = dequantize_qtensor_to_dtype(&embed_q, device, dtype).map_err(|e| {
-            Error::ModelLoadError(format!(
-                "Failed to dequantize GGUF tensor `token_embd.weight`: {e}"
-            ))
-        })?;
+        let embed_weight =
+            dequantize_qtensor_to_dtype(&embed_q, device, embed_dtype).map_err(|e| {
+                Error::ModelLoadError(format!(
+                    "Failed to dequantize GGUF tensor `token_embd.weight`: {e}"
+                ))
+            })?;
         let embed_tokens = Embedding::new(embed_weight, cfg.hidden_size);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
@@ -2761,6 +2764,7 @@ impl Qwen35QuantizedModel {
 
         Ok(Self {
             embed_tokens,
+            activation_dtype: dtype,
             layers,
             norm,
             lm_head,
@@ -2789,7 +2793,8 @@ impl Qwen35QuantizedModel {
     }
 
     fn embeddings(&self, input_ids: &Tensor) -> Result<Tensor> {
-        self.embed_tokens.forward(input_ids).map_err(Error::from)
+        let embeds = self.embed_tokens.forward(input_ids)?;
+        promote_qwen35_quantized_embeddings(&embeds, self.activation_dtype)
     }
 
     fn forward_with_embeds(
@@ -2808,7 +2813,7 @@ impl Qwen35QuantizedModel {
         cache: Option<&mut Qwen35Cache>,
         position_ids: Option<&Tensor>,
     ) -> Result<Tensor> {
-        let mut x = embeds.clone();
+        let mut x = promote_qwen35_quantized_embeddings(embeds, self.activation_dtype)?;
         let seq_len = embeds.dim(1)?;
         let full_attn_ctx = if self
             .cfg
@@ -4875,6 +4880,25 @@ fn select_qwen35_gguf_quantized_dtype(
     }
 }
 
+fn select_qwen35_gguf_quantized_embedding_dtype(
+    activation_dtype: DType,
+    device: &DeviceProfile,
+) -> DType {
+    if device.kind.is_metal() {
+        DType::F16
+    } else {
+        activation_dtype
+    }
+}
+
+fn promote_qwen35_quantized_embeddings(embeds: &Tensor, activation_dtype: DType) -> Result<Tensor> {
+    if embeds.dtype() == activation_dtype {
+        Ok(embeds.clone())
+    } else {
+        embeds.to_dtype(activation_dtype).map_err(Error::from)
+    }
+}
+
 fn load_gguf_tensor<R: std::io::Read + std::io::Seek>(
     content: &gguf_file::Content,
     reader: &mut R,
@@ -5311,6 +5335,35 @@ mod tests {
         };
 
         assert_eq!(qwen35_sampling_strategy(&config), Sampling::ArgMax);
+    }
+
+    #[test]
+    fn qwen35_quantized_embedding_dtype_prefers_f16_storage_on_metal() {
+        let metal_profile = DeviceProfile {
+            device: candle_core::Device::Cpu,
+            kind: crate::backends::DeviceKind::Metal,
+            capabilities: crate::backends::DeviceCapabilities::default(),
+            memory_pool: None,
+        };
+        let cpu_profile = DeviceProfile::cpu();
+
+        assert_eq!(
+            select_qwen35_gguf_quantized_embedding_dtype(DType::F32, &metal_profile),
+            DType::F16
+        );
+        assert_eq!(
+            select_qwen35_gguf_quantized_embedding_dtype(DType::F16, &cpu_profile),
+            DType::F16
+        );
+    }
+
+    #[test]
+    fn qwen35_quantized_embeddings_promote_to_activation_dtype() {
+        let device = candle_core::Device::Cpu;
+        let embeds = Tensor::zeros((1, 2, 4), DType::F16, &device).expect("build embeds");
+        let promoted =
+            promote_qwen35_quantized_embeddings(&embeds, DType::F32).expect("promote embeds");
+        assert_eq!(promoted.dtype(), DType::F32);
     }
 
     #[test]
