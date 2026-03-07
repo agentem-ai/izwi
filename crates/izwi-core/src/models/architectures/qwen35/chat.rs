@@ -82,6 +82,12 @@ struct VisionGridThw {
 }
 
 #[derive(Clone)]
+struct VisualEmbeddingCacheEntry {
+    embeddings: Tensor,
+    grid: VisionGridThw,
+}
+
+#[derive(Clone)]
 struct PrefixCacheEntry {
     ids: Vec<u32>,
     cache: Qwen35Cache,
@@ -117,12 +123,12 @@ impl PrefixCacheStore {
 
 #[derive(Default)]
 struct VisualEmbeddingCache {
-    entries: HashMap<String, Tensor>,
+    entries: HashMap<String, VisualEmbeddingCacheEntry>,
     order: VecDeque<String>,
 }
 
 impl VisualEmbeddingCache {
-    fn get(&mut self, key: &str) -> Option<Tensor> {
+    fn get(&mut self, key: &str) -> Option<VisualEmbeddingCacheEntry> {
         let value = self.entries.get(key)?.clone();
         if let Some(idx) = self.order.iter().position(|existing| existing == key) {
             self.order.remove(idx);
@@ -131,7 +137,7 @@ impl VisualEmbeddingCache {
         Some(value)
     }
 
-    fn insert(&mut self, key: String, value: Tensor, capacity: usize) {
+    fn insert(&mut self, key: String, value: VisualEmbeddingCacheEntry, capacity: usize) {
         if capacity == 0 {
             self.entries.clear();
             self.order.clear();
@@ -3721,7 +3727,7 @@ impl Qwen35ChatModel {
         &self,
         runtime: &Qwen35VisionRuntime,
         media: &Qwen35MultimodalInput,
-    ) -> Result<Tensor> {
+    ) -> Result<VisualEmbeddingCacheEntry> {
         let capacity = qwen35_mm_embed_cache_size();
         let kind = match media.kind {
             Qwen35MultimodalKind::Image => "image",
@@ -3742,7 +3748,16 @@ impl Qwen35ChatModel {
             }
         }
 
-        let encoded = runtime.encode_media(media)?;
+        let (embeddings, temporal_steps) = runtime.encode_media(media)?;
+        let (grid_h, grid_w) = runtime.llm_grid_hw();
+        let encoded = VisualEmbeddingCacheEntry {
+            embeddings,
+            grid: VisionGridThw {
+                t: temporal_steps,
+                h: grid_h,
+                w: grid_w,
+            },
+        };
         if capacity > 0 {
             if let Ok(mut guard) = self.vision_embed_cache.lock() {
                 guard.insert(key, encoded.clone(), capacity);
@@ -3961,9 +3976,9 @@ impl Qwen35ChatModel {
         let mut visual_embeds = Vec::with_capacity(multimodal.len());
         let mut vision_grids = Vec::with_capacity(multimodal.len());
         for media in multimodal {
-            visual_embeds.push(self.encode_media_with_cache(runtime.as_ref(), media)?);
-            let (t, h, w) = runtime.llm_grid_thw(media);
-            vision_grids.push(VisionGridThw { t, h, w });
+            let encoded = self.encode_media_with_cache(runtime.as_ref(), media)?;
+            vision_grids.push(encoded.grid);
+            visual_embeds.push(encoded.embeddings);
         }
 
         let mut merged = Vec::with_capacity(placeholder_positions.len() * 2 + 1);
@@ -5711,8 +5726,14 @@ mod tests {
     fn visual_embedding_cache_respects_capacity() {
         let device = candle_core::Device::Cpu;
         let mut cache = VisualEmbeddingCache::default();
-        let a = Tensor::zeros((1, 2), DType::F32, &device).expect("tensor a");
-        let b = Tensor::ones((1, 2), DType::F32, &device).expect("tensor b");
+        let a = VisualEmbeddingCacheEntry {
+            embeddings: Tensor::zeros((1, 2), DType::F32, &device).expect("tensor a"),
+            grid: VisionGridThw { t: 1, h: 1, w: 2 },
+        };
+        let b = VisualEmbeddingCacheEntry {
+            embeddings: Tensor::ones((1, 2), DType::F32, &device).expect("tensor b"),
+            grid: VisionGridThw { t: 1, h: 1, w: 2 },
+        };
 
         cache.insert("a".to_string(), a, 1);
         assert!(cache.get("a").is_some());
