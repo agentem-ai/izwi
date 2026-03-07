@@ -1,7 +1,6 @@
 //! Shared paged-KV helpers for decode-time attention.
 
 use candle_core::{DType, Tensor, D};
-use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
 
@@ -54,7 +53,6 @@ pub enum KvPage {
         values: Tensor,
         scale: f32,
         target_dtype: DType,
-        dense_cache: Arc<Mutex<Option<Tensor>>>,
     },
 }
 
@@ -68,7 +66,6 @@ impl KvPage {
                     values,
                     scale,
                     target_dtype,
-                    dense_cache: Arc::new(Mutex::new(None)),
                 })
             }
         }
@@ -88,19 +85,7 @@ impl KvPage {
                 values,
                 scale,
                 target_dtype,
-                dense_cache,
-            } => {
-                if let Ok(guard) = dense_cache.lock() {
-                    if let Some(cached) = guard.as_ref() {
-                        return Ok(cached.clone());
-                    }
-                }
-                let dense = dequantize_tensor_int8(values, *scale, *target_dtype)?;
-                if let Ok(mut guard) = dense_cache.lock() {
-                    *guard = Some(dense.clone());
-                }
-                Ok(dense)
-            }
+            } => dequantize_tensor_int8(values, *scale, *target_dtype),
         }
     }
 }
