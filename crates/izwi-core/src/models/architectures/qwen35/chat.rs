@@ -630,6 +630,45 @@ impl Qwen35FullAttentionContext {
     }
 }
 
+fn prepare_qwen35_full_attention_kv(
+    key: &Tensor,
+    value: &Tensor,
+    query: &Tensor,
+    batch_size: usize,
+    seq_len: usize,
+    start_pos: usize,
+    num_heads: usize,
+    head_dim: usize,
+    k_pages: &mut Vec<KvPage>,
+    v_pages: &mut Vec<KvPage>,
+    page_size: usize,
+    quantization: KvCacheQuantization,
+) -> Result<(Tensor, Tensor, Option<Tensor>)> {
+    if seq_len > 1 && start_pos == 0 && k_pages.is_empty() && v_pages.is_empty() {
+        let key_page = key.transpose(1, 2)?.contiguous()?;
+        let value_page = value.transpose(1, 2)?.contiguous()?;
+        append_to_pages(page_size, k_pages, &key_page, quantization)?;
+        append_to_pages(page_size, v_pages, &value_page, quantization)?;
+        return Ok((key.clone(), value.clone(), None));
+    }
+
+    let key_page = key.transpose(1, 2)?.contiguous()?;
+    let value_page = value.transpose(1, 2)?.contiguous()?;
+    append_to_pages(page_size, k_pages, &key_page, quantization)?;
+    append_to_pages(page_size, v_pages, &value_page, quantization)?;
+
+    if seq_len == 1 && start_pos > 0 {
+        let query_page = query.transpose(1, 2)?.contiguous()?;
+        let att_out = paged_decode_attention(&query_page, k_pages, v_pages, num_heads, head_dim)?;
+        let att_out = att_out.reshape((batch_size, seq_len, ()))?;
+        return Ok((key.clone(), value.clone(), Some(att_out)));
+    }
+
+    let key = materialize_pages(k_pages)?.transpose(1, 2)?.contiguous()?;
+    let value = materialize_pages(v_pages)?.transpose(1, 2)?.contiguous()?;
+    Ok((key, value, None))
+}
+
 struct Qwen35RmsNorm {
     weight: Tensor,
     eps: f64,
@@ -908,29 +947,20 @@ impl Qwen35FullAttention {
                     v_pages,
                     page_size,
                     quantization,
-                } => {
-                    let key_page = key.transpose(1, 2)?.contiguous()?;
-                    let value_page = value.transpose(1, 2)?.contiguous()?;
-                    append_to_pages(*page_size, k_pages, &key_page, *quantization)?;
-                    append_to_pages(*page_size, v_pages, &value_page, *quantization)?;
-
-                    if seq_len == 1 && start_pos > 0 {
-                        let query_page = query.transpose(1, 2)?.contiguous()?;
-                        let att_out = paged_decode_attention(
-                            &query_page,
-                            k_pages,
-                            v_pages,
-                            self.num_heads,
-                            self.head_dim,
-                        )?;
-                        let att_out = att_out.reshape((batch_size, seq_len, ()))?;
-                        (key, value, Some(att_out))
-                    } else {
-                        let key = materialize_pages(k_pages)?.transpose(1, 2)?.contiguous()?;
-                        let value = materialize_pages(v_pages)?.transpose(1, 2)?.contiguous()?;
-                        (key, value, None)
-                    }
-                }
+                } => prepare_qwen35_full_attention_kv(
+                    &key,
+                    &value,
+                    &query,
+                    batch_size,
+                    seq_len,
+                    start_pos,
+                    self.num_heads,
+                    self.head_dim,
+                    k_pages,
+                    v_pages,
+                    *page_size,
+                    *quantization,
+                )?,
                 _ => {
                     return Err(Error::InferenceError(
                         "Qwen3.5 full-attention layer received a linear-attention cache entry"
@@ -1890,29 +1920,20 @@ impl Qwen35QuantizedFullAttention {
                     v_pages,
                     page_size,
                     quantization,
-                } => {
-                    let key_page = key.transpose(1, 2)?.contiguous()?;
-                    let value_page = value.transpose(1, 2)?.contiguous()?;
-                    append_to_pages(*page_size, k_pages, &key_page, *quantization)?;
-                    append_to_pages(*page_size, v_pages, &value_page, *quantization)?;
-
-                    if seq_len == 1 && start_pos > 0 {
-                        let query_page = query.transpose(1, 2)?.contiguous()?;
-                        let att_out = paged_decode_attention(
-                            &query_page,
-                            k_pages,
-                            v_pages,
-                            self.num_heads,
-                            self.head_dim,
-                        )?;
-                        let att_out = att_out.reshape((batch_size, seq_len, ()))?;
-                        (key, value, Some(att_out))
-                    } else {
-                        let key = materialize_pages(k_pages)?.transpose(1, 2)?.contiguous()?;
-                        let value = materialize_pages(v_pages)?.transpose(1, 2)?.contiguous()?;
-                        (key, value, None)
-                    }
-                }
+                } => prepare_qwen35_full_attention_kv(
+                    &key,
+                    &value,
+                    &query,
+                    batch_size,
+                    seq_len,
+                    start_pos,
+                    self.num_heads,
+                    self.head_dim,
+                    k_pages,
+                    v_pages,
+                    *page_size,
+                    *quantization,
+                )?,
                 _ => {
                     return Err(Error::InferenceError(
                         "Qwen3.5 full-attention layer received a linear-attention cache entry"
@@ -5076,6 +5097,79 @@ mod tests {
     fn does_not_flag_short_sequences_as_loop() {
         let ids: Vec<u32> = (1..30).collect();
         assert!(!has_token_repetition_loop(&ids));
+    }
+
+    #[test]
+    fn prepare_qwen35_full_attention_kv_initial_prefill_keeps_dense_tensors() {
+        let device = candle_core::Device::Cpu;
+        let batch_size = 1usize;
+        let seq_len = 4usize;
+        let num_heads = 2usize;
+        let head_dim = 8usize;
+        let key = Tensor::randn(
+            0.0f32,
+            1.0f32,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )
+        .expect("key");
+        let value = Tensor::randn(
+            0.0f32,
+            1.0f32,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )
+        .expect("value");
+        let query = Tensor::randn(
+            0.0f32,
+            1.0f32,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )
+        .expect("query");
+        let mut k_pages = Vec::new();
+        let mut v_pages = Vec::new();
+
+        let (prepared_key, prepared_value, paged_out) = prepare_qwen35_full_attention_kv(
+            &key,
+            &value,
+            &query,
+            batch_size,
+            seq_len,
+            0,
+            num_heads,
+            head_dim,
+            &mut k_pages,
+            &mut v_pages,
+            2,
+            KvCacheQuantization::Int8,
+        )
+        .expect("prepare kv");
+
+        assert!(paged_out.is_none());
+        assert_eq!(k_pages.len(), 2);
+        assert_eq!(v_pages.len(), 2);
+
+        let key_diff = key
+            .broadcast_sub(&prepared_key)
+            .expect("key diff")
+            .abs()
+            .expect("key abs")
+            .max_all()
+            .expect("key max")
+            .to_scalar::<f32>()
+            .expect("key scalar");
+        let value_diff = value
+            .broadcast_sub(&prepared_value)
+            .expect("value diff")
+            .abs()
+            .expect("value abs")
+            .max_all()
+            .expect("value max")
+            .to_scalar::<f32>()
+            .expect("value scalar");
+        assert!(key_diff <= f32::EPSILON, "key diff was {key_diff}");
+        assert!(value_diff <= f32::EPSILON, "value diff was {value_diff}");
     }
 
     #[test]
