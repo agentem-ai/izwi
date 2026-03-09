@@ -347,7 +347,7 @@ export function ChatPlayground({
       return;
     }
 
-    const minHeight = hasConversation ? 72 : 88;
+    const minHeight = hasConversation ? 56 : 72;
     const maxHeight = hasConversation ? 104 : 140;
 
     textareaRef.current.style.height = "0px";
@@ -1449,7 +1449,7 @@ export function ChatPlayground({
         ) : (
           <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
             <div className="relative flex-1 min-h-0">
-              <div className="h-full overflow-y-auto px-4 sm:px-6 pb-64 pt-3 scrollbar-thin">
+              <div className="h-full overflow-y-auto px-4 sm:px-6 pb-48 pt-3 scrollbar-thin">
                 {messagesLoading ? (
                   <div className="max-w-4xl mx-auto p-4 text-center text-xs text-muted-foreground flex items-center justify-center gap-2">
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -1692,7 +1692,7 @@ export function ChatPlayground({
                 )}
               </div>
 
-              <div className="absolute bottom-0 left-0 right-0 z-30 bg-[var(--bg-app)] px-4 pb-6 pt-4 sm:px-6 pointer-events-none">
+              <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 bg-[var(--bg-app)] px-4 pb-4 pt-4 sm:px-6">
                 <div className="max-w-4xl mx-auto pointer-events-auto">
                   <AnimatePresence>
                     {error && (
@@ -1707,28 +1707,29 @@ export function ChatPlayground({
                     )}
                   </AnimatePresence>
 
-                  {stats && !isStreaming && (
-                    <div className="mb-3 text-[11px] font-medium text-muted-foreground flex items-center justify-center gap-3">
-                      <span className="bg-muted px-2 py-0.5 rounded-md border border-[var(--border-muted)] shadow-sm">
-                        {stats.tokens_generated} tokens
-                      </span>
-                      <span className="bg-muted px-2 py-0.5 rounded-md border border-[var(--border-muted)] shadow-sm">
-                        {Math.round(stats.generation_time_ms)} ms
-                      </span>
-                      <span className="bg-muted px-2 py-0.5 rounded-md border border-[var(--border-muted)] shadow-sm">
-                        {Math.round(
-                          stats.tokens_generated /
-                            (stats.generation_time_ms / 1000),
-                        )}{" "}
-                        t/s
-                      </span>
-                    </div>
-                  )}
-
                   {renderComposer(false)}
                 </div>
               </div>
             </div>
+
+            {stats && !isStreaming && (
+              <div className="px-4 pb-2 pt-3 sm:px-6">
+                <div className="mx-auto flex max-w-4xl items-center justify-center gap-3 text-[11px] font-medium text-muted-foreground">
+                  <span className="rounded-md border border-[var(--border-muted)] bg-muted px-2 py-0.5 shadow-sm">
+                    {stats.tokens_generated} tokens
+                  </span>
+                  <span className="rounded-md border border-[var(--border-muted)] bg-muted px-2 py-0.5 shadow-sm">
+                    {Math.round(stats.generation_time_ms)} ms
+                  </span>
+                  <span className="rounded-md border border-[var(--border-muted)] bg-muted px-2 py-0.5 shadow-sm">
+                    {Math.round(
+                      stats.tokens_generated / (stats.generation_time_ms / 1000),
+                    )}{" "}
+                    t/s
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

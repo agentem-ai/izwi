@@ -80,6 +80,10 @@ describe("ChatPlayground", () => {
     const sendButton = screen.getByRole("button", { name: "Send message" });
     expect(sendButton).toBeInTheDocument();
     expect(sendButton).not.toHaveTextContent(/\bSend\b/i);
+
+    await waitFor(() =>
+      expect(screen.getByRole("textbox")).toHaveStyle({ height: "72px" }),
+    );
   });
 
   it("shows the active thread title below the selector without the old conversation header", async () => {
@@ -149,5 +153,10 @@ describe("ChatPlayground", () => {
     expect(
       screen.queryByText("Using Qwen3 Chat 0.6B GGUF"),
     ).not.toBeInTheDocument();
+
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    const tokensStat = screen.getByText("12 tokens");
+    const position = sendButton.compareDocumentPosition(tokensStat);
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 });
