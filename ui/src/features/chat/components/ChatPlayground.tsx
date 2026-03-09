@@ -119,6 +119,7 @@ export function ChatPlayground({
   const titleGenerationInFlightRef = useRef<Set<string>>(new Set());
   const streamAbortRef = useRef<AbortController | null>(null);
   const listEndRef = useRef<HTMLDivElement | null>(null);
+  const streamingThinkingRef = useRef<HTMLDivElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const mediaInputRef = useRef<HTMLInputElement | null>(null);
@@ -332,6 +333,14 @@ export function ChatPlayground({
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [visibleMessages, isStreaming, activeThreadId]);
+
+  useEffect(() => {
+    if (!isStreaming || !streamingThinkingRef.current) {
+      return;
+    }
+    streamingThinkingRef.current.scrollTop =
+      streamingThinkingRef.current.scrollHeight;
+  }, [isStreaming, messages]);
 
   useEffect(() => {
     const onPointerDown = (event: MouseEvent) => {
@@ -1551,7 +1560,10 @@ export function ChatPlayground({
                                         <Loader2 className="w-3 h-3 animate-spin text-primary" />
                                         Thinking
                                       </div>
-                                      <div className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed">
+                                      <div
+                                        ref={streamingThinkingRef}
+                                        className="h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-[var(--border-muted)]/70 bg-background/60 px-2.5 py-2 font-mono text-[11px] leading-relaxed scrollbar-thin sm:h-48"
+                                      >
                                         {parsed.thinking}
                                       </div>
                                     </div>
@@ -1601,7 +1613,7 @@ export function ChatPlayground({
                                     parsed.hasThink &&
                                     !showStreamingThinking &&
                                     isThoughtExpanded && (
-                                      <div className="mt-2 rounded-lg bg-muted/30 border border-[var(--border-muted)] px-3 py-2 text-xs whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted-foreground">
+                                      <div className="mt-2 h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-[var(--border-muted)] bg-muted/30 px-3 py-2 text-xs font-mono text-[11px] leading-relaxed text-muted-foreground scrollbar-thin sm:h-48">
                                         {parsed.thinking}
                                       </div>
                                     )}
