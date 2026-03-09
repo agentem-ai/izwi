@@ -944,7 +944,7 @@ export function ChatPlayground({
       className={cn(
         "relative z-40 inline-block",
         placement === "header"
-          ? "w-full max-w-full sm:w-[320px]"
+          ? "w-full max-w-[320px]"
           : "w-[240px] max-w-[calc(100vw-9rem)] sm:w-[300px]",
       )}
       ref={modelMenuRef}
@@ -1208,17 +1208,12 @@ export function ChatPlayground({
         onChange={handleSelectMedia}
         className="hidden"
       />
-      <div className="mb-0 flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <h1 className="app-page-title text-[var(--text-primary)] tracking-tight">
-            Chat
-          </h1>
-          <div className="mt-3 max-w-full sm:max-w-[320px]">
-            {renderModelSelector("header")}
-          </div>
+      <div className="mb-0 flex items-center gap-3 overflow-x-auto pb-1">
+        <div className="min-w-[220px] flex-1">
+          {renderModelSelector("header")}
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-2 pt-1">
+        <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
           <RouteHistoryDrawer
             title="Chat History"
             countLabel={`${threads.length} ${threads.length === 1 ? "thread" : "threads"}`}
