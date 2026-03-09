@@ -80,6 +80,9 @@ describe("ChatPlayground", () => {
     const sendButton = screen.getByRole("button", { name: "Send message" });
     expect(sendButton).toBeInTheDocument();
     expect(sendButton).not.toHaveTextContent(/\bSend\b/i);
+    expect(
+      screen.getByRole("button", { name: "Image/video upload is available only for Qwen3.5 models" }),
+    ).toBeDisabled();
 
     await waitFor(() =>
       expect(screen.getByRole("textbox")).toHaveStyle({ height: "72px" }),
@@ -158,5 +161,60 @@ describe("ChatPlayground", () => {
     const tokensStat = screen.getByText("12 tokens");
     const position = sendButton.compareDocumentPosition(tokensStat);
     expect(position & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
+  it("keeps the history drawer open while opening the delete confirmation", async () => {
+    const thread = {
+      id: "thread-1",
+      title: "Royal families in Europe",
+      model_id: "Qwen3-0.6B-GGUF",
+      created_at: 1,
+      updated_at: 2,
+      last_message_preview: "How many ruling royal families are there in Europe?",
+      message_count: 2,
+    };
+
+    apiMocks.listChatThreads.mockResolvedValue([thread]);
+
+    render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPlayground
+          selectedModel="Qwen3-0.6B-GGUF"
+          selectedModelReady={true}
+          supportsThinking={true}
+          modelLabel="Qwen3 Chat 0.6B GGUF"
+          modelOptions={[
+            {
+              value: "Qwen3-0.6B-GGUF",
+              label: "Qwen3 Chat 0.6B GGUF",
+              statusLabel: "Ready",
+              isReady: true,
+            },
+          ]}
+          onSelectModel={vi.fn()}
+          onOpenModelManager={vi.fn()}
+          onModelRequired={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(apiMocks.listChatThreads).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: /History/ }));
+
+    expect(await screen.findByText("Chat History")).toBeInTheDocument();
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Delete Royal families in Europe" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete Royal families in Europe" }),
+    );
+
+    expect(await screen.findByText("Delete chat thread?")).toBeInTheDocument();
+    expect(screen.getByText("Chat History")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("Royal families in Europe").length,
+    ).toBeGreaterThan(0);
   });
 });

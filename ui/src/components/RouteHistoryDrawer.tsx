@@ -27,6 +27,8 @@ interface RouteHistoryDrawerProps {
   headerActions?: ReactNode | ((controls: RouteHistoryDrawerControls) => ReactNode);
   children: ReactNode | ((controls: RouteHistoryDrawerControls) => ReactNode);
   bodyClassName?: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 export function RouteHistoryDrawer({
@@ -40,8 +42,19 @@ export function RouteHistoryDrawer({
   headerActions,
   children,
   bodyClassName,
+  open,
+  onOpenChange,
 }: RouteHistoryDrawerProps) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlled = typeof open === "boolean";
+  const resolvedOpen = isControlled ? open : internalOpen;
+
+  const setDrawerOpen = (nextOpen: boolean) => {
+    if (!isControlled) {
+      setInternalOpen(nextOpen);
+    }
+    onOpenChange?.(nextOpen);
+  };
 
   const triggerBadge = useMemo(() => {
     if (typeof triggerCount !== "number" || Number.isNaN(triggerCount)) {
@@ -54,14 +67,16 @@ export function RouteHistoryDrawer({
   }, [triggerCount]);
 
   const drawerBody =
-    typeof children === "function" ? children({ close: () => setOpen(false) }) : children;
+    typeof children === "function"
+      ? children({ close: () => setDrawerOpen(false) })
+      : children;
   const drawerHeaderActions =
     typeof headerActions === "function"
-      ? headerActions({ close: () => setOpen(false) })
+      ? headerActions({ close: () => setDrawerOpen(false) })
       : headerActions;
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
+    <Sheet open={resolvedOpen} onOpenChange={setDrawerOpen}>
       <SheetTrigger asChild>
         {trigger ?? (
           <Button
