@@ -29,7 +29,12 @@ import { useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { RouteHistoryDrawer } from "@/components/RouteHistoryDrawer";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_THREAD_TITLE,
@@ -1758,70 +1763,63 @@ export function ChatPlayground({
         )}
       </div>
 
-      <AnimatePresence>
-        {deleteTargetThread && (
-          <motion.div
-            className="fixed inset-0 z-[60] bg-black/75 p-4 backdrop-blur-sm"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={closeDeleteThreadConfirm}
-          >
-            <motion.div
-              initial={{ y: 10, opacity: 0, scale: 0.98 }}
-              animate={{ y: 0, opacity: 1, scale: 1 }}
-              exit={{ y: 10, opacity: 0, scale: 0.98 }}
-              transition={{ duration: 0.16 }}
-              className="mx-auto mt-[18vh] max-w-md rounded-xl border border-[var(--border-strong)] bg-[var(--bg-surface-1)] p-5"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <div className="flex items-start gap-3">
-                <div className="mt-0.5 rounded-full border border-[var(--danger-border)] bg-[var(--danger-bg)] p-2 text-[var(--danger-text)]">
-                  <AlertTriangle className="h-4 w-4" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                    Delete chat thread?
-                  </h3>
-                  <p className="mt-1 text-sm text-[var(--text-muted)]">
-                    This permanently removes the selected conversation and all
-                    of its messages.
-                  </p>
-                  <p className="mt-2 truncate text-xs text-[var(--text-subtle)]">
-                    {displayThreadTitle(deleteTargetThread.title)}
-                  </p>
-                </div>
+      <Dialog
+        open={!!deleteTargetThread}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeDeleteThreadConfirm();
+          }
+        }}
+      >
+        {deleteTargetThread ? (
+          <DialogContent className="max-w-md border-[var(--border-strong)] bg-[var(--bg-surface-1)] p-5">
+            <DialogTitle className="sr-only">Delete chat thread?</DialogTitle>
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-full border border-[var(--danger-border)] bg-[var(--danger-bg)] p-2 text-[var(--danger-text)]">
+                <AlertTriangle className="h-4 w-4" />
               </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                  Delete chat thread?
+                </h3>
+                <DialogDescription className="mt-1 text-sm text-[var(--text-muted)]">
+                  This permanently removes the selected conversation and all of
+                  its messages.
+                </DialogDescription>
+                <p className="mt-2 truncate text-xs text-[var(--text-subtle)]">
+                  {displayThreadTitle(deleteTargetThread.title)}
+                </p>
+              </div>
+            </div>
 
-              <div className="mt-5 flex items-center justify-end gap-2">
-                <Button
-                  onClick={closeDeleteThreadConfirm}
-                  variant="outline"
-                  size="sm"
-                  className={cn("h-8", chatSecondaryButtonClass)}
-                  disabled={deleteThreadPending}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  onClick={confirmDeleteThread}
-                  variant="destructive"
-                  size="sm"
-                  className="h-8 gap-1.5"
-                  disabled={deleteThreadPending}
-                >
-                  {deleteThreadPending ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-3.5 w-3.5" />
-                  )}
-                  Delete thread
-                </Button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button
+                onClick={closeDeleteThreadConfirm}
+                variant="outline"
+                size="sm"
+                className={cn("h-8", chatSecondaryButtonClass)}
+                disabled={deleteThreadPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={confirmDeleteThread}
+                variant="destructive"
+                size="sm"
+                className="h-8 gap-1.5"
+                disabled={deleteThreadPending}
+              >
+                {deleteThreadPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
+                Delete thread
+              </Button>
+            </div>
+          </DialogContent>
+        ) : null}
+      </Dialog>
 
       <Dialog
         open={!!imagePreview}
