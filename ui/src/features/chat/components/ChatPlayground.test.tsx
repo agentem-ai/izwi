@@ -163,7 +163,7 @@ describe("ChatPlayground", () => {
     expect(position & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
-  it("keeps the history drawer open while opening the delete confirmation", async () => {
+  it("lets the delete confirmation buttons work while the history drawer stays open", async () => {
     const thread = {
       id: "thread-1",
       title: "Royal families in Europe",
@@ -175,6 +175,7 @@ describe("ChatPlayground", () => {
     };
 
     apiMocks.listChatThreads.mockResolvedValue([thread]);
+    apiMocks.deleteChatThread.mockResolvedValue(undefined);
 
     render(
       <MemoryRouter initialEntries={["/chat"]}>
@@ -211,10 +212,39 @@ describe("ChatPlayground", () => {
       screen.getByRole("button", { name: "Delete Royal families in Europe" }),
     );
 
-    expect(await screen.findByText("Delete chat thread?")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Cancel" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Chat History")).toBeInTheDocument();
     expect(
       screen.getAllByText("Royal families in Europe").length,
     ).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(screen.queryByText("Delete chat thread?")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("Chat History")).toBeInTheDocument();
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Delete Royal families in Europe" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete Royal families in Europe" }),
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Delete thread" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete thread" }));
+
+    await waitFor(() =>
+      expect(apiMocks.deleteChatThread).toHaveBeenCalledWith("thread-1"),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Delete chat thread?")).not.toBeInTheDocument(),
+    );
   });
 });

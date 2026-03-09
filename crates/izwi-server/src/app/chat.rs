@@ -72,6 +72,11 @@ pub fn max_new_tokens(
         ModelVariant::Gemma31BIt => 4096,
         ModelVariant::Lfm2512BInstructGguf => 4096,
         ModelVariant::Lfm2512BThinkingGguf => 4096,
+        ModelVariant::Qwen306BGguf => 4096,
+        ModelVariant::Qwen317BGguf => 4096,
+        ModelVariant::Qwen34BGguf => 4096,
+        ModelVariant::Qwen38BGguf => 4096,
+        ModelVariant::Qwen314BGguf => 4096,
         ModelVariant::Qwen3508B => 4096,
         ModelVariant::Qwen352B => 4096,
         ModelVariant::Qwen354B => 4096,
@@ -262,5 +267,18 @@ mod tests {
         assert_eq!(params.top_k, 20);
         assert_eq!(params.presence_penalty, 0.25);
         assert_eq!(params.max_tokens, 32);
+    }
+
+    #[test]
+    fn qwen3_chat_models_default_to_4096_max_tokens() {
+        for variant in [
+            ModelVariant::Qwen306BGguf,
+            ModelVariant::Qwen317BGguf,
+            ModelVariant::Qwen34BGguf,
+            ModelVariant::Qwen38BGguf,
+            ModelVariant::Qwen314BGguf,
+        ] {
+            assert_eq!(max_new_tokens(variant, None, None), 4096);
+        }
     }
 }
