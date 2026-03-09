@@ -1212,7 +1212,7 @@ export function ChatPlayground({
               isPreparingThread ||
               (!isStreaming && !input.trim() && mediaItems.length === 0)
             }
-            variant={isStreaming ? "destructive" : "default"}
+            variant="default"
             size="icon"
             title={
               isStreaming
@@ -1228,10 +1228,7 @@ export function ChatPlayground({
                   ? "Starting chat"
                   : "Send message"
             }
-            className={cn(
-              "h-9 w-9 shrink-0",
-              !isStreaming && "chat-send-button shadow-none",
-            )}
+            className="chat-send-button h-9 w-9 shrink-0 shadow-none"
           >
             {isStreaming ? (
               <Square className="w-3.5 h-3.5" />
