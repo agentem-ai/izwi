@@ -1786,7 +1786,7 @@ export function ChatPlayground({
                   This permanently removes the selected conversation and all of
                   its messages.
                 </DialogDescription>
-                <p className="mt-2 truncate text-xs text-[var(--text-subtle)]">
+                <p className="mt-2 max-w-full whitespace-normal break-words text-xs text-[var(--text-subtle)] [overflow-wrap:anywhere]">
                   {displayThreadTitle(deleteTargetThread.title)}
                 </p>
               </div>
