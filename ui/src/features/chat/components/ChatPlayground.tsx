@@ -105,6 +105,7 @@ export function ChatPlayground({
   const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(
     null,
   );
+  const [isHistoryDrawerOpen, setIsHistoryDrawerOpen] = useState(false);
   const [deleteTargetThreadId, setDeleteTargetThreadId] = useState<
     string | null
   >(null);
@@ -165,6 +166,12 @@ export function ChatPlayground({
   const renderModelId = activeThread?.model_id ?? selectedModel;
   const implicitOpenThinkTagModel =
     supportsImplicitOpenThinkTagParsing(renderModelId);
+  const chatSecondaryButtonClass =
+    "rounded-lg border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] shadow-none hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-3)] hover:text-[var(--text-primary)]";
+  const chatSecondaryButtonActiveClass =
+    "rounded-lg border-[var(--border-strong)] bg-[var(--bg-surface-3)] text-[var(--text-primary)] shadow-none";
+  const chatAccentButtonClass =
+    "rounded-lg bg-[var(--accent-solid)] text-[var(--text-on-accent)] shadow-none hover:opacity-90";
 
   const setActiveThreadInUrl = useCallback(
     (threadId: string | null, replace = false) => {
@@ -579,6 +586,16 @@ export function ChatPlayground({
     void handleDeleteThread(deleteTargetThreadId);
   }, [deleteTargetThreadId, handleDeleteThread]);
 
+  const handleHistoryDrawerOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen && deleteTargetThreadId) {
+        return;
+      }
+      setIsHistoryDrawerOpen(nextOpen);
+    },
+    [deleteTargetThreadId],
+  );
+
   const removeMediaItem = useCallback(
     (id: string) => {
       setMediaItems((previous) => {
@@ -976,8 +993,8 @@ export function ChatPlayground({
         className={cn(
           "h-9 w-full justify-between rounded-lg border px-3 text-xs font-medium shadow-none",
           selectedOption?.isReady
-            ? "chat-model-selector-btn-ready"
-            : "chat-model-selector-btn-idle",
+            ? chatSecondaryButtonActiveClass
+            : chatSecondaryButtonClass,
         )}
       >
         <span className="flex-1 min-w-0 truncate text-left">
@@ -1162,7 +1179,7 @@ export function ChatPlayground({
                 ? "Attach image or video"
                 : "Image/video upload is available only for Qwen3.5 models"
             }
-            className="h-8 w-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] shadow-none hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-3)] hover:text-[var(--text-primary)]"
+            className={cn("h-8 w-8", chatSecondaryButtonClass)}
           >
             <Plus className="w-4 h-4" />
           </Button>
@@ -1170,7 +1187,7 @@ export function ChatPlayground({
             variant="outline"
             size="sm"
             onClick={handleOpenModels}
-            className="chat-models-button h-8 gap-1.5 border text-xs shadow-none"
+            className={cn("h-8 gap-1.5 border text-xs", chatSecondaryButtonClass)}
           >
             <Settings2 className="w-3.5 h-3.5" />
             Models
@@ -1184,8 +1201,8 @@ export function ChatPlayground({
               className={cn(
                 "h-8 gap-1.5 border text-xs shadow-none",
                 thinkingEnabledForModel
-                  ? "chat-thinking-mode-btn-on"
-                  : "chat-thinking-mode-btn-off",
+                  ? chatSecondaryButtonActiveClass
+                  : chatSecondaryButtonClass,
               )}
               title={
                 thinkingEnabledForModel
@@ -1227,7 +1244,7 @@ export function ChatPlayground({
                   ? "Starting chat"
                   : "Send message"
             }
-            className="chat-send-button h-9 w-9 shrink-0 shadow-none"
+            className={cn("h-9 w-9 shrink-0", chatAccentButtonClass)}
           >
             {isStreaming ? (
               <Square className="w-3.5 h-3.5" />
@@ -1271,12 +1288,14 @@ export function ChatPlayground({
           <RouteHistoryDrawer
             title="Chat History"
             countLabel={`${threads.length} ${threads.length === 1 ? "thread" : "threads"}`}
+            open={isHistoryDrawerOpen}
+            onOpenChange={handleHistoryDrawerOpenChange}
             trigger={
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-9 gap-2 rounded-lg border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] shadow-none hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-3)] hover:text-[var(--text-primary)]"
+                className={cn("h-9 gap-2", chatSecondaryButtonClass)}
               >
                 <History className="h-4 w-4" />
                 <span>History</span>
@@ -1346,6 +1365,10 @@ export function ChatPlayground({
                                 {formatThreadTimestamp(thread.updated_at)}
                               </span>
                               <button
+                                type="button"
+                                onPointerDown={(event) => {
+                                  event.stopPropagation();
+                                }}
                                 onClick={(event) => {
                                   event.preventDefault();
                                   event.stopPropagation();
@@ -1356,11 +1379,12 @@ export function ChatPlayground({
                                 }}
                                 disabled={isStreaming || isPreparingThread}
                                 className={cn(
-                                  "app-sidebar-delete-btn",
+                                  "app-sidebar-delete-btn relative z-10",
                                   (isStreaming || isPreparingThread) &&
                                     "opacity-50",
                                 )}
                                 title="Delete chat"
+                                aria-label={`Delete ${displayThreadTitle(thread.title)}`}
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -1389,7 +1413,7 @@ export function ChatPlayground({
           <Button
             type="button"
             size="sm"
-            className="h-9 gap-2 rounded-lg bg-[var(--accent-solid)] text-[var(--text-on-accent)] shadow-none hover:opacity-90"
+            className={cn("h-9 gap-2", chatAccentButtonClass)}
             onClick={() => void handleCreateThread()}
             disabled={isEmptyChatWorkspace || isStreaming || isPreparingThread}
           >
@@ -1770,16 +1794,20 @@ export function ChatPlayground({
               </div>
 
               <div className="mt-5 flex items-center justify-end gap-2">
-                <button
+                <Button
                   onClick={closeDeleteThreadConfirm}
-                  className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-3)] disabled:opacity-50"
+                  variant="outline"
+                  size="sm"
+                  className={cn("h-8", chatSecondaryButtonClass)}
                   disabled={deleteThreadPending}
                 >
                   Cancel
-                </button>
-                <button
+                </Button>
+                <Button
                   onClick={confirmDeleteThread}
-                  className="flex items-center gap-1.5 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-1.5 text-xs font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)] disabled:opacity-50"
+                  variant="destructive"
+                  size="sm"
+                  className="h-8 gap-1.5"
                   disabled={deleteThreadPending}
                 >
                   {deleteThreadPending ? (
@@ -1788,7 +1816,7 @@ export function ChatPlayground({
                     <Trash2 className="h-3.5 w-3.5" />
                   )}
                   Delete thread
-                </button>
+                </Button>
               </div>
             </motion.div>
           </motion.div>

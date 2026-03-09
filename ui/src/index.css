@@ -914,65 +914,6 @@ html.theme-light [class*="bg-[linear-gradient(180deg,#1d1e21,#17181b)]"] {
   color: #6b7280;
 }
 
-.chat-models-button {
-  color: #e5e7eb;
-  border-color: #34363a;
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.chat-models-button:hover {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: #4a4c52;
-}
-
-.chat-thinking-mode-btn-on {
-  color: #e5e7eb;
-  border-color: #4a4c52;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.chat-thinking-mode-btn-on:hover {
-  background: rgba(255, 255, 255, 0.13);
-  border-color: #5a606c;
-}
-
-.chat-thinking-mode-btn-off {
-  color: #9ca3af;
-  border-color: #2f3136;
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.chat-thinking-mode-btn-off:hover {
-  color: #d1d5db;
-  background: rgba(255, 255, 255, 0.05);
-  border-color: #4a4c52;
-}
-
-.chat-send-button {
-  background: #ffffff;
-  color: #17191d;
-}
-
-.chat-send-button:not(:disabled):hover {
-  filter: brightness(0.95);
-}
-
-.chat-model-selector-btn-ready {
-  border-color: rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.1);
-  color: #d1d5db;
-}
-
-.chat-model-selector-btn-idle {
-  border-color: rgba(255, 255, 255, 0.2);
-  background: #1a1a1a;
-  color: #d1d5db;
-}
-
-.chat-model-selector-btn-idle:hover {
-  border-color: rgba(255, 255, 255, 0.3);
-}
-
 .chat-model-menu {
   border-color: #2a2a2a;
   background: #1a1a1a;
@@ -1181,61 +1122,6 @@ html.theme-light .chat-composer-input {
 
 html.theme-light .chat-composer-input::placeholder {
   color: #6b7280;
-}
-
-html.theme-light .chat-models-button {
-  color: #1f2937;
-  border-color: #d1d5db;
-  background: rgba(17, 17, 17, 0.03);
-}
-
-html.theme-light .chat-models-button:hover {
-  background: rgba(17, 17, 17, 0.06);
-  border-color: #9ca3af;
-}
-
-html.theme-light .chat-thinking-mode-btn-on {
-  color: #17191d;
-  border-color: #9ca3af;
-  background: rgba(17, 17, 17, 0.12);
-}
-
-html.theme-light .chat-thinking-mode-btn-on:hover {
-  background: rgba(17, 17, 17, 0.18);
-  border-color: #6b7280;
-}
-
-html.theme-light .chat-thinking-mode-btn-off {
-  color: #6b7280;
-  border-color: #d1d5db;
-  background: rgba(17, 17, 17, 0.04);
-}
-
-html.theme-light .chat-thinking-mode-btn-off:hover {
-  color: #374151;
-  background: rgba(17, 17, 17, 0.08);
-  border-color: #9ca3af;
-}
-
-html.theme-light .chat-send-button {
-  background: #1f2937;
-  color: #f9fafb;
-}
-
-html.theme-light .chat-model-selector-btn-ready {
-  border-color: #d2d6dd;
-  background: #eff1f4;
-  color: #374151;
-}
-
-html.theme-light .chat-model-selector-btn-idle {
-  border-color: #d1d5db;
-  background: #ffffff;
-  color: #374151;
-}
-
-html.theme-light .chat-model-selector-btn-idle:hover {
-  border-color: #9ca3af;
 }
 
 html.theme-light .chat-model-menu {
