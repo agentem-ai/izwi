@@ -644,21 +644,21 @@ export function DiarizationHistoryPanel({
               exit={{ y: 18, opacity: 0, scale: 0.985 }}
               transition={{ duration: 0.18 }}
               onClick={(event) => event.stopPropagation()}
-              className="mx-auto flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] shadow-2xl"
+              className="mx-auto flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] shadow-2xl"
             >
-              <div className="flex items-center justify-between gap-3 border-b border-[var(--border-muted)] px-4 py-4 sm:px-6">
+              <div className="flex items-center justify-between gap-3 border-b border-[var(--border-muted)] px-4 py-3.5 sm:px-5 sm:py-4">
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
                     Diarization Record
                   </p>
                   <div className="mt-1 flex items-center gap-3">
-                    <h2 className="truncate text-xl font-bold text-[var(--text-primary)] tracking-tight">
+                    <h2 className="truncate text-[1.95rem] font-semibold leading-none text-[var(--text-primary)] tracking-[-0.03em]">
                       {selectedHistorySummary?.audio_filename ||
                         selectedHistorySummary?.model_id ||
                         "Diarization transcript"}
                     </h2>
                   </div>
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <div className="mt-2.5 flex flex-wrap items-center gap-2">
                     <span className="text-xs text-[var(--text-muted)]">
                       {selectedHistorySummary
                         ? formatCreatedAt(selectedHistorySummary.created_at)
@@ -667,17 +667,17 @@ export function DiarizationHistoryPanel({
                     {activeHistoryRecord ? (
                       <>
                         <span className="text-[var(--text-subtle)]">•</span>
-                        <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--text-secondary)]">
+                        <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[10px] font-medium tracking-[0.08em] text-[var(--text-secondary)]">
                           {formatAudioDuration(
                             activeHistoryRecord.duration_secs,
                           )}
                         </span>
-                        <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--text-secondary)]">
+                        <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[10px] font-medium tracking-[0.08em] text-[var(--text-secondary)]">
                           {activeHistoryRecord.corrected_speaker_count ??
                             activeHistoryRecord.speaker_count}{" "}
                           speakers
                         </span>
-                        <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--text-secondary)] truncate max-w-[200px]">
+                        <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[10px] font-medium tracking-[0.02em] text-[var(--text-secondary)] truncate max-w-[220px]">
                           {activeHistoryRecord.model_id || "Unknown model"}
                         </span>
                       </>
@@ -690,7 +690,7 @@ export function DiarizationHistoryPanel({
                       onClick={() =>
                         openDeleteRecordConfirm(activeHistoryRecord.id)
                       }
-                      className="inline-flex items-center gap-1 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-2.5 py-1.5 text-xs text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
+                      className="inline-flex h-8 items-center gap-1 rounded-full border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 text-[11px] font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
                       title="Delete this record"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -699,7 +699,7 @@ export function DiarizationHistoryPanel({
                   )}
                   <button
                     onClick={() => openAdjacentHistoryRecord("newer")}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40"
                     disabled={!canOpenNewerHistory}
                     title="Open newer record"
                   >
@@ -707,7 +707,7 @@ export function DiarizationHistoryPanel({
                   </button>
                   <button
                     onClick={() => openAdjacentHistoryRecord("older")}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40"
                     disabled={!canOpenOlderHistory}
                     title="Open older record"
                   >
@@ -736,42 +736,39 @@ export function DiarizationHistoryPanel({
                     </div>
                   </div>
                 ) : activeHistoryRecord ? (
-                  <div className="p-4 sm:p-5">
+                  <div className="p-3 sm:p-4">
                     <Tabs
                       value={recordWorkspaceTab}
                       onValueChange={setRecordWorkspaceTab}
-                      className="space-y-4"
+                      className="space-y-3"
                     >
-                      <TabsList className="inline-flex w-auto justify-start rounded-full bg-[var(--bg-surface-1)] p-1 border border-[var(--border-muted)]">
-                        <TabsTrigger
-                          value="transcript"
-                          className="rounded-full px-4 text-xs"
-                        >
-                          Transcript
-                        </TabsTrigger>
-                        <TabsTrigger
-                          value="speakers"
-                          className="rounded-full px-4 text-xs"
-                        >
-                          Speakers
-                        </TabsTrigger>
-                        <TabsTrigger
-                          value="quality"
-                          className="rounded-full px-4 text-xs"
-                        >
-                          Quality
-                        </TabsTrigger>
-                      </TabsList>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <TabsList className="inline-flex w-auto justify-start rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-0.5">
+                          <TabsTrigger
+                            value="transcript"
+                            className="h-8 rounded-full px-3.5 text-[12px] font-medium"
+                          >
+                            Transcript
+                          </TabsTrigger>
+                          <TabsTrigger
+                            value="speakers"
+                            className="h-8 rounded-full px-3.5 text-[12px] font-medium"
+                          >
+                            Speakers
+                          </TabsTrigger>
+                          <TabsTrigger
+                            value="quality"
+                            className="h-8 rounded-full px-3.5 text-[12px] font-medium"
+                          >
+                            Quality
+                          </TabsTrigger>
+                        </TabsList>
 
-                      <TabsContent
-                        value="transcript"
-                        className="mt-2 space-y-4"
-                      >
-                        <div className="flex justify-end mb-2">
+                        {recordWorkspaceTab === "transcript" ? (
                           <div className="flex items-center gap-2">
                             <button
                               onClick={() => void handleCopyHistoryTranscript()}
-                              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-2)] hover:text-[var(--text-primary)] disabled:opacity-45 shadow-sm"
+                              className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-[12px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-2)] hover:text-[var(--text-primary)] disabled:opacity-45"
                               disabled={!normalizedActiveTranscript}
                             >
                               {historyTranscriptCopied ? (
@@ -793,7 +790,7 @@ export function DiarizationHistoryPanel({
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                className="h-8 border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-xs font-medium text-[var(--text-secondary)] shadow-sm hover:bg-[var(--bg-surface-2)]"
+                                className="h-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-[12px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-2)]"
                                 disabled={!normalizedActiveTranscript}
                               >
                                 <Download className="w-3.5 h-3.5 mr-1.5" />
@@ -801,7 +798,13 @@ export function DiarizationHistoryPanel({
                               </Button>
                             </DiarizationExportDialog>
                           </div>
-                        </div>
+                        ) : null}
+                      </div>
+
+                      <TabsContent
+                        value="transcript"
+                        className="mt-0 space-y-3"
+                      >
                         <DiarizationReviewWorkspace
                           record={activeHistoryRecord}
                           audioUrl={selectedHistoryAudioUrl}
