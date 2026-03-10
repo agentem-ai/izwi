@@ -83,6 +83,9 @@ describe("ChatPlayground", () => {
     expect(
       screen.getByRole("button", { name: "Image/video upload is available only for Qwen3.5 models" }),
     ).toBeDisabled();
+    expect(screen.getByTestId("chat-composer-actions")).not.toHaveClass(
+      "border-t",
+    );
 
     await waitFor(() =>
       expect(screen.getByRole("textbox")).toHaveStyle({ height: "72px" }),

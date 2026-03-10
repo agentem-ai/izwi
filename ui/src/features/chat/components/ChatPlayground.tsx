@@ -177,6 +177,10 @@ export function ChatPlayground({
     "rounded-lg border-[var(--border-strong)] bg-[var(--bg-surface-3)] text-[var(--text-primary)] shadow-none";
   const chatAccentButtonClass =
     "rounded-lg bg-[var(--accent-solid)] text-[var(--text-on-accent)] shadow-none hover:opacity-90";
+  const chatComposerIconButtonClass =
+    "chat-composer-icon-button rounded-full border-transparent bg-transparent text-[var(--text-muted)] shadow-none hover:bg-[var(--bg-surface-2)] hover:text-[var(--text-primary)]";
+  const chatComposerSendButtonClass =
+    "chat-composer-send-button rounded-full border-transparent text-[var(--text-primary)] shadow-none";
 
   const setActiveThreadInUrl = useCallback(
     (threadId: string | null, replace = false) => {
@@ -1066,7 +1070,7 @@ export function ChatPlayground({
   const renderComposer = (centered = false) => (
     <div
       className={cn(
-        "chat-composer-body relative overflow-visible rounded-xl border shadow-none",
+        "chat-composer-body relative overflow-visible border shadow-none",
         centered
           ? "chat-composer-shell-centered mx-auto max-w-3xl"
           : "chat-composer-shell-docked",
@@ -1158,14 +1162,17 @@ export function ChatPlayground({
                 ? "Model selected but not loaded. Open Models to load it."
                 : "Ask anything..."
         }
-        className="chat-composer-input w-full resize-none bg-transparent px-4 pt-4 pb-3 text-[0.9375rem] focus:outline-none placeholder:text-[var(--text-muted)]"
+        className="chat-composer-input w-full resize-none bg-transparent px-5 pt-5 pb-2 text-[0.9375rem] focus:outline-none placeholder:text-[var(--text-muted)]"
         disabled={isStreaming || isPreparingThread}
       />
 
-      <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-3 pt-1 border-t border-[var(--border-muted)]/30 mt-1">
-        <div className="flex items-center gap-2 flex-wrap">
+      <div
+        data-testid="chat-composer-actions"
+        className="chat-composer-actions flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 pb-4 pt-2"
+      >
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Button
-            variant="outline"
+            variant="ghost"
             size="icon"
             onClick={() => mediaInputRef.current?.click()}
             disabled={
@@ -1184,7 +1191,7 @@ export function ChatPlayground({
                 ? "Attach image or video"
                 : "Image/video upload is available only for Qwen3.5 models"
             }
-            className={cn("h-8 w-8", chatSecondaryButtonClass)}
+            className={cn("h-9 w-9", chatComposerIconButtonClass)}
           >
             <Plus className="w-4 h-4" />
           </Button>
@@ -1226,7 +1233,7 @@ export function ChatPlayground({
           )}
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap sm:flex-nowrap">
+        <div className="ml-auto flex items-center justify-end">
           <Button
             onClick={isStreaming ? stopStreaming : () => void sendMessage()}
             disabled={
@@ -1247,9 +1254,9 @@ export function ChatPlayground({
                 ? "Cancel response"
                 : isPreparingThread
                   ? "Starting chat"
-                  : "Send message"
+                : "Send message"
             }
-            className={cn("h-9 w-9 shrink-0", chatAccentButtonClass)}
+            className={cn("h-10 w-10 shrink-0", chatComposerSendButtonClass)}
           >
             {isStreaming ? (
               <Square className="w-3.5 h-3.5" />
