@@ -324,7 +324,7 @@ async fn create_record(
     if req.stream.unwrap_or(false) {
         if route_kind != SpeechRouteKind::TextToSpeech {
             return Err(ApiError::bad_request(
-                "Streaming is currently supported only on /text-to-speech",
+                "Streaming is currently supported only on text-to-speech generation resources",
             ));
         }
         return stream_record_creation(state, ctx, req, route_kind, variant, model_id, input_text)

@@ -205,7 +205,7 @@ pub async fn create_record(
 
     if parsed.stream {
         return Err(ApiError::bad_request(
-            "Streaming diarization is not supported on /v1/diarization/records",
+            "Streaming diarization is not supported on persisted diarization resources",
         ));
     }
 
