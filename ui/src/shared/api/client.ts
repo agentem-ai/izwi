@@ -48,6 +48,7 @@ const audioMethodNames = [
   "deleteSavedVoice",
   "listTranscriptionRecords",
   "getTranscriptionRecord",
+  "updateTranscriptionRecord",
   "createTranscriptionRecord",
   "createTranscriptionRecordStream",
   "transcriptionRecordAudioUrl",

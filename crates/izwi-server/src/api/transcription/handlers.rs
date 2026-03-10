@@ -14,16 +14,23 @@ use axum::{
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tracing::warn;
 
 use crate::api::request_context::RequestContext;
+use crate::api::transcription::support::{
+    build_segments, build_transcript_text, build_words,
+};
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::transcription_store::{
     NewTranscriptionRecord, StoredTranscriptionAudio, TranscriptionRecord,
-    TranscriptionRecordSummary,
+    TranscriptionRecordSummary, TranscriptionSegmentRecord,
+    TranscriptionWordRecord,
 };
+use izwi_core::RuntimeService;
 
 const HISTORY_LIST_LIMIT: usize = 200;
+const DEFAULT_ALIGNER_MODEL_ID: &str = "Qwen3-ForcedAligner-0.6B";
 
 #[derive(Debug, Serialize)]
 pub struct TranscriptionRecordListResponse {
@@ -36,12 +43,20 @@ pub struct DeleteTranscriptionRecordResponse {
     pub deleted: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateTranscriptionRecordRequest {
+    pub transcription: String,
+    #[serde(default)]
+    pub segments: Vec<TranscriptionSegmentRecord>,
+}
+
 #[derive(Debug, Default)]
 struct ParsedTranscriptionCreateRequest {
     audio_bytes: Vec<u8>,
     audio_mime_type: Option<String>,
     audio_filename: Option<String>,
     model_id: Option<String>,
+    aligner_model_id: Option<String>,
     language: Option<String>,
     stream: bool,
 }
@@ -53,6 +68,8 @@ struct JsonCreateRequest {
     model: Option<String>,
     #[serde(default)]
     model_id: Option<String>,
+    #[serde(default, alias = "aligner_model")]
+    aligner_model_id: Option<String>,
     #[serde(default)]
     language: Option<String>,
     #[serde(default)]
@@ -110,6 +127,22 @@ pub async fn get_record(
         .map_err(map_store_error)?
         .ok_or_else(|| ApiError::not_found("Transcription record not found"))?;
 
+    Ok(Json(record))
+}
+
+pub async fn update_record(
+    State(state): State<AppState>,
+    Path(record_id): Path<String>,
+    Json(req): Json<UpdateTranscriptionRecordRequest>,
+) -> Result<Json<TranscriptionRecord>, ApiError> {
+    let updated = state
+        .transcription_store
+        .update_record(record_id, req.transcription, req.segments)
+        .await
+        .map_err(map_store_error)?;
+
+    let record =
+        updated.ok_or_else(|| ApiError::not_found("Transcription record not found"))?;
     Ok(Json(record))
 }
 
@@ -178,12 +211,24 @@ pub async fn create_record(
     } else {
         None
     };
+    let language = output.language.or(parsed.language.clone());
+    let raw_transcription = output.text;
+    let (aligner_model_id, words, segments, transcription) = build_record_artifacts(
+        state.runtime.as_ref(),
+        parsed.audio_bytes.as_slice(),
+        raw_transcription.as_str(),
+        language.as_deref(),
+        parsed.aligner_model_id.as_deref(),
+        output.duration_secs,
+    )
+    .await;
 
     let record = state
         .transcription_store
         .create_record(NewTranscriptionRecord {
             model_id: parsed.model_id,
-            language: output.language.or(parsed.language),
+            aligner_model_id,
+            language,
             duration_secs: Some(output.duration_secs as f64),
             processing_time_ms: elapsed_ms,
             rtf,
@@ -192,7 +237,10 @@ pub async fn create_record(
                 .unwrap_or_else(|| "audio/wav".to_string()),
             audio_filename: parsed.audio_filename,
             audio_bytes: parsed.audio_bytes,
-            transcription: output.text,
+            raw_transcription,
+            transcription,
+            words,
+            segments,
         })
         .await
         .map_err(map_store_error)?;
@@ -207,6 +255,7 @@ async fn create_record_stream(
 ) -> Result<Response, ApiError> {
     let timeout = Duration::from_secs(state.request_timeout_secs);
     let model_id = parsed.model_id;
+    let aligner_model_id = parsed.aligner_model_id;
     let requested_language = parsed.language;
     let audio_mime_type = parsed
         .audio_mime_type
@@ -273,18 +322,34 @@ async fn create_record_stream(
                 } else {
                     None
                 };
+                let language = output.language.or(requested_language.clone());
+                let raw_transcription = output.text;
+                let (resolved_aligner_model_id, words, segments, transcription) =
+                    build_record_artifacts(
+                        runtime.as_ref(),
+                        audio_bytes.as_slice(),
+                        raw_transcription.as_str(),
+                        language.as_deref(),
+                        aligner_model_id.as_deref(),
+                        output.duration_secs,
+                    )
+                    .await;
 
                 match transcription_store
                     .create_record(NewTranscriptionRecord {
                         model_id: model_id.clone(),
-                        language: output.language.or(requested_language.clone()),
+                        aligner_model_id: resolved_aligner_model_id,
+                        language,
                         duration_secs: Some(output.duration_secs as f64),
                         processing_time_ms: elapsed_ms,
                         rtf,
                         audio_mime_type,
                         audio_filename,
                         audio_bytes,
-                        transcription: output.text,
+                        raw_transcription,
+                        transcription,
+                        words,
+                        segments,
                     })
                     .await
                 {
@@ -375,6 +440,7 @@ async fn parse_create_request(req: Request) -> Result<ParsedTranscriptionCreateR
             audio_mime_type: Some("audio/wav".to_string()),
             audio_filename: None,
             model_id,
+            aligner_model_id: payload.aligner_model_id,
             language: payload.language,
             stream: payload.stream.unwrap_or(false),
         });
@@ -425,6 +491,16 @@ async fn parse_create_request(req: Request) -> Result<ParsedTranscriptionCreateR
                     })?;
                     if !text.trim().is_empty() {
                         out.model_id = Some(text.trim().to_string());
+                    }
+                }
+                "aligner_model" | "aligner_model_id" => {
+                    let text = field.text().await.map_err(|e| {
+                        ApiError::bad_request(format!(
+                            "Failed reading multipart '{name}' field: {e}"
+                        ))
+                    })?;
+                    if !text.trim().is_empty() {
+                        out.aligner_model_id = Some(text.trim().to_string());
                     }
                 }
                 "language" => {
@@ -517,6 +593,51 @@ fn audio_response(audio: StoredTranscriptionAudio) -> Response {
             .body(Body::empty())
             .unwrap_or_else(|_| Response::new(Body::empty()))
     })
+}
+
+async fn build_record_artifacts(
+    runtime: &RuntimeService,
+    audio_bytes: &[u8],
+    raw_transcription: &str,
+    language: Option<&str>,
+    aligner_model_id: Option<&str>,
+    duration_secs: f32,
+) -> (
+    Option<String>,
+    Vec<TranscriptionWordRecord>,
+    Vec<TranscriptionSegmentRecord>,
+    String,
+) {
+    let normalized_text = raw_transcription.trim().to_string();
+    if normalized_text.is_empty() {
+        return (None, Vec::new(), Vec::new(), String::new());
+    }
+
+    let resolved_aligner = aligner_model_id
+        .map(|value| value.to_string())
+        .or_else(|| Some(DEFAULT_ALIGNER_MODEL_ID.to_string()));
+
+    let words = match runtime
+        .force_align_bytes_with_model_and_language(
+            audio_bytes,
+            normalized_text.as_str(),
+            language,
+            aligner_model_id,
+        )
+        .await
+    {
+        Ok(aligned_words) => build_words(&aligned_words),
+        Err(err) => {
+            warn!("Failed to align transcription output: {err}");
+            Vec::new()
+        }
+    };
+
+    let segments = build_segments(&words, normalized_text.as_str(), duration_secs);
+    let transcription = build_transcript_text(&segments, normalized_text.as_str());
+    let aligner = if words.is_empty() { None } else { resolved_aligner };
+
+    (aligner, words, segments, transcription)
 }
 
 fn map_store_error(err: anyhow::Error) -> ApiError {

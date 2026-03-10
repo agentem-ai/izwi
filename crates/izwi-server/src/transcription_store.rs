@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Context};
 use rusqlite::{params, Connection, OptionalExtension, Row};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task;
@@ -16,6 +16,7 @@ pub struct TranscriptionRecordSummary {
     pub id: String,
     pub created_at: u64,
     pub model_id: Option<String>,
+    pub aligner_model_id: Option<String>,
     pub language: Option<String>,
     pub duration_secs: Option<f64>,
     pub processing_time_ms: f64,
@@ -24,6 +25,24 @@ pub struct TranscriptionRecordSummary {
     pub audio_filename: Option<String>,
     pub transcription_preview: String,
     pub transcription_chars: usize,
+    pub segment_count: usize,
+    pub word_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptionWordRecord {
+    pub word: String,
+    pub start_secs: f32,
+    pub end_secs: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptionSegmentRecord {
+    pub start_secs: f32,
+    pub end_secs: f32,
+    pub text: String,
+    pub word_start: usize,
+    pub word_end: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,13 +50,17 @@ pub struct TranscriptionRecord {
     pub id: String,
     pub created_at: u64,
     pub model_id: Option<String>,
+    pub aligner_model_id: Option<String>,
     pub language: Option<String>,
     pub duration_secs: Option<f64>,
     pub processing_time_ms: f64,
     pub rtf: Option<f64>,
     pub audio_mime_type: String,
     pub audio_filename: Option<String>,
+    pub raw_transcription: String,
     pub transcription: String,
+    pub words: Vec<TranscriptionWordRecord>,
+    pub segments: Vec<TranscriptionSegmentRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +73,7 @@ pub struct StoredTranscriptionAudio {
 #[derive(Debug, Clone)]
 pub struct NewTranscriptionRecord {
     pub model_id: Option<String>,
+    pub aligner_model_id: Option<String>,
     pub language: Option<String>,
     pub duration_secs: Option<f64>,
     pub processing_time_ms: f64,
@@ -57,7 +81,10 @@ pub struct NewTranscriptionRecord {
     pub audio_mime_type: String,
     pub audio_filename: Option<String>,
     pub audio_bytes: Vec<u8>,
+    pub raw_transcription: String,
     pub transcription: String,
+    pub words: Vec<TranscriptionWordRecord>,
+    pub segments: Vec<TranscriptionSegmentRecord>,
 }
 
 #[derive(Clone)]
@@ -87,6 +114,7 @@ impl TranscriptionStore {
                 id TEXT PRIMARY KEY,
                 created_at INTEGER NOT NULL,
                 model_id TEXT NULL,
+                aligner_model_id TEXT NULL,
                 language TEXT NULL,
                 duration_secs REAL NULL,
                 processing_time_ms REAL NOT NULL,
@@ -94,7 +122,10 @@ impl TranscriptionStore {
                 audio_mime_type TEXT NOT NULL,
                 audio_filename TEXT NULL,
                 audio_storage_path TEXT NOT NULL,
-                transcription TEXT NOT NULL
+                raw_transcription TEXT NULL,
+                transcription TEXT NOT NULL,
+                transcription_words_json TEXT NOT NULL DEFAULT '[]',
+                transcription_segments_json TEXT NOT NULL DEFAULT '[]'
             );
 
             CREATE INDEX IF NOT EXISTS idx_transcription_records_created_at
@@ -102,6 +133,31 @@ impl TranscriptionStore {
             "#,
         )
         .context("Failed to initialize transcription database schema")?;
+
+        ensure_column(
+            &conn,
+            "transcription_records",
+            "aligner_model_id",
+            "TEXT NULL",
+        )?;
+        ensure_column(
+            &conn,
+            "transcription_records",
+            "raw_transcription",
+            "TEXT NULL",
+        )?;
+        ensure_column(
+            &conn,
+            "transcription_records",
+            "transcription_words_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        ensure_column(
+            &conn,
+            "transcription_records",
+            "transcription_segments_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
 
         Ok(Self {
             db_path,
@@ -123,13 +179,16 @@ impl TranscriptionStore {
                     id,
                     created_at,
                     model_id,
+                    aligner_model_id,
                     language,
                     duration_secs,
                     processing_time_ms,
                     rtf,
                     audio_mime_type,
                     audio_filename,
-                    transcription
+                    transcription,
+                    transcription_words_json,
+                    transcription_segments_json
                 FROM transcription_records
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?1
@@ -137,19 +196,24 @@ impl TranscriptionStore {
             )?;
 
             let rows = stmt.query_map(params![list_limit], |row| {
-                let transcription: String = row.get(9)?;
+                let transcription: String = row.get(10)?;
+                let words = parse_words_json(row.get::<_, String>(11)?);
+                let segments = parse_segments_json(row.get::<_, String>(12)?);
                 Ok(TranscriptionRecordSummary {
                     id: row.get(0)?,
                     created_at: i64_to_u64(row.get(1)?),
                     model_id: row.get(2)?,
-                    language: row.get(3)?,
-                    duration_secs: row.get(4)?,
-                    processing_time_ms: row.get(5)?,
-                    rtf: row.get(6)?,
-                    audio_mime_type: row.get(7)?,
-                    audio_filename: row.get(8)?,
+                    aligner_model_id: row.get(3)?,
+                    language: row.get(4)?,
+                    duration_secs: row.get(5)?,
+                    processing_time_ms: row.get(6)?,
+                    rtf: row.get(7)?,
+                    audio_mime_type: row.get(8)?,
+                    audio_filename: row.get(9)?,
                     transcription_preview: transcription_preview(&transcription),
                     transcription_chars: transcription.chars().count(),
+                    segment_count: segments.len(),
+                    word_count: words.len(),
                 })
             })?;
 
@@ -226,6 +290,8 @@ impl TranscriptionStore {
             let record_id = format!("txr_{}", uuid::Uuid::new_v4().simple());
 
             let model_id = sanitize_optional_text(record.model_id.as_deref(), 160);
+            let aligner_model_id =
+                sanitize_optional_text(record.aligner_model_id.as_deref(), 160);
             let language = sanitize_optional_text(record.language.as_deref(), 80);
             let duration_secs = record.duration_secs.filter(|v| v.is_finite() && *v >= 0.0);
             let processing_time_ms = if record.processing_time_ms.is_finite() {
@@ -236,7 +302,10 @@ impl TranscriptionStore {
             let rtf = record.rtf.filter(|v| v.is_finite() && *v >= 0.0);
             let audio_mime_type = sanitize_audio_mime_type(record.audio_mime_type.as_str());
             let audio_filename = sanitize_optional_text(record.audio_filename.as_deref(), 260);
+            let raw_transcription = sanitize_transcription_text(&record.raw_transcription);
             let transcription = record.transcription.trim().to_string();
+            let words_json = serialize_words_json(&record.words)?;
+            let segments_json = serialize_segments_json(&record.segments)?;
 
             if record.audio_bytes.is_empty() {
                 return Err(anyhow!("Audio payload cannot be empty"));
@@ -258,6 +327,7 @@ impl TranscriptionStore {
                     id,
                     created_at,
                     model_id,
+                    aligner_model_id,
                     language,
                     duration_secs,
                     processing_time_ms,
@@ -265,14 +335,18 @@ impl TranscriptionStore {
                     audio_mime_type,
                     audio_filename,
                     audio_storage_path,
-                    transcription
+                    raw_transcription,
+                    transcription,
+                    transcription_words_json,
+                    transcription_segments_json
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                 "#,
                 params![
                     &record_id,
                     now,
                     model_id,
+                    aligner_model_id,
                     language,
                     duration_secs,
                     processing_time_ms,
@@ -280,7 +354,10 @@ impl TranscriptionStore {
                     audio_mime_type,
                     audio_filename,
                     audio_storage_path,
-                    transcription
+                    raw_transcription,
+                    transcription,
+                    words_json,
+                    segments_json
                 ],
             ) {
                 let _ = storage_layout::delete_media_file(
@@ -324,6 +401,37 @@ impl TranscriptionStore {
         .await
     }
 
+    pub async fn update_record(
+        &self,
+        record_id: String,
+        transcription: String,
+        segments: Vec<TranscriptionSegmentRecord>,
+    ) -> anyhow::Result<Option<TranscriptionRecord>> {
+        self.run_blocking(move |db_path| {
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
+            let normalized_transcription = sanitize_transcription_text(&transcription);
+            let normalized_segments = sanitize_segments(segments);
+            let segments_json = serialize_segments_json(&normalized_segments)?;
+
+            let changed = conn.execute(
+                r#"
+                UPDATE transcription_records
+                SET transcription = ?2,
+                    transcription_segments_json = ?3
+                WHERE id = ?1
+                "#,
+                params![&record_id, normalized_transcription, segments_json],
+            )?;
+
+            if changed == 0 {
+                return Ok(None);
+            }
+
+            fetch_record_without_audio(&conn, &record_id)
+        })
+        .await
+    }
+
     async fn run_blocking<F, T>(&self, task_fn: F) -> anyhow::Result<T>
     where
         F: FnOnce(PathBuf) -> anyhow::Result<T> + Send + 'static,
@@ -347,13 +455,17 @@ fn fetch_record_without_audio(
                 id,
                 created_at,
                 model_id,
+                aligner_model_id,
                 language,
                 duration_secs,
                 processing_time_ms,
                 rtf,
                 audio_mime_type,
                 audio_filename,
-                transcription
+                raw_transcription,
+                transcription,
+                transcription_words_json,
+                transcription_segments_json
             FROM transcription_records
             WHERE id = ?1
             "#,
@@ -369,13 +481,17 @@ fn map_transcription_record(row: &Row<'_>) -> rusqlite::Result<TranscriptionReco
         id: row.get(0)?,
         created_at: i64_to_u64(row.get(1)?),
         model_id: row.get(2)?,
-        language: row.get(3)?,
-        duration_secs: row.get(4)?,
-        processing_time_ms: row.get(5)?,
-        rtf: row.get(6)?,
-        audio_mime_type: row.get(7)?,
-        audio_filename: row.get(8)?,
-        transcription: row.get(9)?,
+        aligner_model_id: row.get(3)?,
+        language: row.get(4)?,
+        duration_secs: row.get(5)?,
+        processing_time_ms: row.get(6)?,
+        rtf: row.get(7)?,
+        audio_mime_type: row.get(8)?,
+        audio_filename: row.get(9)?,
+        raw_transcription: row.get(10)?,
+        transcription: row.get(11)?,
+        words: parse_words_json(row.get::<_, String>(12)?),
+        segments: parse_segments_json(row.get::<_, String>(13)?),
     })
 }
 
@@ -398,6 +514,88 @@ fn sanitize_optional_text(raw: Option<&str>, max_chars: usize) -> Option<String>
     } else {
         Some(truncate_string(&normalized, max_chars))
     }
+}
+
+fn sanitize_transcription_text(raw: &str) -> String {
+    raw.trim()
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn sanitize_segments(
+    segments: Vec<TranscriptionSegmentRecord>,
+) -> Vec<TranscriptionSegmentRecord> {
+    segments
+        .into_iter()
+        .filter_map(|segment| {
+            let text = sanitize_transcription_text(&segment.text);
+            if text.is_empty() {
+                return None;
+            }
+
+            let start_secs = if segment.start_secs.is_finite() && segment.start_secs >= 0.0 {
+                segment.start_secs
+            } else {
+                0.0
+            };
+            let end_secs = if segment.end_secs.is_finite() && segment.end_secs > start_secs {
+                segment.end_secs
+            } else {
+                start_secs + 0.1
+            };
+
+            Some(TranscriptionSegmentRecord {
+                start_secs,
+                end_secs,
+                text,
+                word_start: segment.word_start,
+                word_end: segment.word_end.max(segment.word_start),
+            })
+        })
+        .collect()
+}
+
+fn parse_words_json(raw: String) -> Vec<TranscriptionWordRecord> {
+    serde_json::from_str(raw.as_str()).unwrap_or_default()
+}
+
+fn parse_segments_json(raw: String) -> Vec<TranscriptionSegmentRecord> {
+    serde_json::from_str(raw.as_str()).unwrap_or_default()
+}
+
+fn serialize_words_json(words: &[TranscriptionWordRecord]) -> anyhow::Result<String> {
+    serde_json::to_string(words).context("Failed to serialize transcription words")
+}
+
+fn serialize_segments_json(
+    segments: &[TranscriptionSegmentRecord],
+) -> anyhow::Result<String> {
+    serde_json::to_string(segments).context("Failed to serialize transcription segments")
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> anyhow::Result<()> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(pragma.as_str())?;
+    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+
+    for existing in columns {
+        if existing? == column {
+            return Ok(());
+        }
+    }
+
+    let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
+    conn.execute(alter.as_str(), [])?;
+    Ok(())
 }
 
 fn sanitize_audio_mime_type(raw: &str) -> String {

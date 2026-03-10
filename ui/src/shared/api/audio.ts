@@ -228,6 +228,7 @@ export interface ASRTranscribeRequest {
   audio_file?: Blob;
   audio_filename?: string;
   model_id?: string;
+  aligner_model_id?: string;
   language?: string;
 }
 
@@ -245,6 +246,7 @@ export interface TranscriptionRecordSummary {
   id: string;
   created_at: number;
   model_id: string | null;
+  aligner_model_id: string | null;
   language: string | null;
   duration_secs: number | null;
   processing_time_ms: number;
@@ -253,19 +255,39 @@ export interface TranscriptionRecordSummary {
   audio_filename: string | null;
   transcription_preview: string;
   transcription_chars: number;
+  segment_count: number;
+  word_count: number;
+}
+
+export interface TranscriptionWord {
+  word: string;
+  start: number;
+  end: number;
+}
+
+export interface TranscriptionSegment {
+  start: number;
+  end: number;
+  text: string;
+  word_start: number;
+  word_end: number;
 }
 
 export interface TranscriptionRecord {
   id: string;
   created_at: number;
   model_id: string | null;
+  aligner_model_id: string | null;
   language: string | null;
   duration_secs: number | null;
   processing_time_ms: number;
   rtf: number | null;
   audio_mime_type: string;
   audio_filename: string | null;
+  raw_transcription: string;
   transcription: string;
+  words: TranscriptionWord[];
+  segments: TranscriptionSegment[];
 }
 
 export interface TranscriptionRecordCreateRequest {
@@ -273,7 +295,98 @@ export interface TranscriptionRecordCreateRequest {
   audio_file?: Blob;
   audio_filename?: string;
   model_id?: string;
+  aligner_model_id?: string;
   language?: string;
+}
+
+export interface TranscriptionRecordUpdateRequest {
+  transcription: string;
+  segments: TranscriptionSegment[];
+}
+
+function normalizeTranscriptionWord(raw: unknown): TranscriptionWord {
+  const value =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    word: String(value.word ?? ""),
+    start: Number(value.start ?? value.start_secs ?? 0),
+    end: Number(value.end ?? value.end_secs ?? 0),
+  };
+}
+
+function normalizeTranscriptionSegment(raw: unknown): TranscriptionSegment {
+  const value =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    start: Number(value.start ?? value.start_secs ?? 0),
+    end: Number(value.end ?? value.end_secs ?? 0),
+    text: String(value.text ?? ""),
+    word_start: Number(value.word_start ?? 0),
+    word_end: Number(value.word_end ?? 0),
+  };
+}
+
+function normalizeTranscriptionSummary(raw: unknown): TranscriptionRecordSummary {
+  const value =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    id: String(value.id ?? ""),
+    created_at: Number(value.created_at ?? 0),
+    model_id: typeof value.model_id === "string" ? value.model_id : null,
+    aligner_model_id:
+      typeof value.aligner_model_id === "string" ? value.aligner_model_id : null,
+    language: typeof value.language === "string" ? value.language : null,
+    duration_secs:
+      typeof value.duration_secs === "number" ? value.duration_secs : null,
+    processing_time_ms:
+      typeof value.processing_time_ms === "number" ? value.processing_time_ms : 0,
+    rtf: typeof value.rtf === "number" ? value.rtf : null,
+    audio_mime_type: String(value.audio_mime_type ?? "audio/wav"),
+    audio_filename:
+      typeof value.audio_filename === "string" ? value.audio_filename : null,
+    transcription_preview: String(value.transcription_preview ?? ""),
+    transcription_chars:
+      typeof value.transcription_chars === "number" ? value.transcription_chars : 0,
+    segment_count:
+      typeof value.segment_count === "number" ? value.segment_count : 0,
+    word_count: typeof value.word_count === "number" ? value.word_count : 0,
+  };
+}
+
+function normalizeTranscriptionRecord(raw: unknown): TranscriptionRecord {
+  const value =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const rawWords = Array.isArray(value.words) ? value.words : [];
+  const rawSegments = Array.isArray(value.segments) ? value.segments : [];
+
+  return {
+    id: String(value.id ?? ""),
+    created_at: Number(value.created_at ?? 0),
+    model_id: typeof value.model_id === "string" ? value.model_id : null,
+    aligner_model_id:
+      typeof value.aligner_model_id === "string" ? value.aligner_model_id : null,
+    language: typeof value.language === "string" ? value.language : null,
+    duration_secs:
+      typeof value.duration_secs === "number" ? value.duration_secs : null,
+    processing_time_ms:
+      typeof value.processing_time_ms === "number" ? value.processing_time_ms : 0,
+    rtf: typeof value.rtf === "number" ? value.rtf : null,
+    audio_mime_type: String(value.audio_mime_type ?? "audio/wav"),
+    audio_filename:
+      typeof value.audio_filename === "string" ? value.audio_filename : null,
+    raw_transcription: String(
+      value.raw_transcription ??
+        value.transcription ??
+        "",
+    ),
+    transcription: String(value.transcription ?? ""),
+    words: rawWords.map(normalizeTranscriptionWord).filter(
+      (word) => word.word.trim().length > 0 && word.end > word.start,
+    ),
+    segments: rawSegments.map(normalizeTranscriptionSegment).filter(
+      (segment) => segment.text.trim().length > 0 && segment.end > segment.start,
+    ),
+  };
 }
 
 type TranscriptionRecordStreamEvent =
@@ -1023,15 +1136,57 @@ export class AudioApiClient {
 
   async listTranscriptionRecords(): Promise<TranscriptionRecordSummary[]> {
     const payload = await this.http.request<{
-      records: TranscriptionRecordSummary[];
+      records: unknown[];
     }>("/transcription/records");
-    return payload.records ?? [];
+    return (payload.records ?? []).map(normalizeTranscriptionSummary);
   }
 
   async getTranscriptionRecord(recordId: string): Promise<TranscriptionRecord> {
-    return this.http.request(
+    const payload = await this.http.request(
       `/transcription/records/${encodeURIComponent(recordId)}`,
     );
+    return normalizeTranscriptionRecord(payload);
+  }
+
+  async updateTranscriptionRecord(
+    recordId: string,
+    request: TranscriptionRecordUpdateRequest,
+  ): Promise<TranscriptionRecord> {
+    const path = `/transcription/records/${encodeURIComponent(recordId)}`;
+    const body = JSON.stringify({
+      transcription: request.transcription,
+      segments: request.segments.map((segment) => ({
+        start_secs: segment.start,
+        end_secs: segment.end,
+        text: segment.text,
+        word_start: segment.word_start,
+        word_end: segment.word_end,
+      })),
+    });
+
+    const sendUpdate = (method: "PATCH" | "PUT") =>
+      fetch(this.http.url(path), {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+
+    let response = await sendUpdate("PATCH");
+
+    if (response.status === 405) {
+      response = await sendUpdate("PUT");
+    }
+
+    if (!response.ok) {
+      throw await this.http.createError(
+        response,
+        "Failed to save transcription corrections",
+      );
+    }
+
+    return normalizeTranscriptionRecord(await response.json());
   }
 
   async createTranscriptionRecord(
@@ -1045,7 +1200,7 @@ export class AudioApiClient {
       throw await this.http.createError(response, "Transcription failed");
     }
 
-    return response.json();
+    return normalizeTranscriptionRecord(await response.json());
   }
 
   createTranscriptionRecordStream(
@@ -1085,7 +1240,7 @@ export class AudioApiClient {
                 callbacks.onDelta?.(event.delta);
                 break;
               case "final":
-                callbacks.onFinal?.(event.record);
+                callbacks.onFinal?.(normalizeTranscriptionRecord(event.record));
                 break;
               case "error":
                 callbacks.onError?.(event.error);
@@ -1600,6 +1755,9 @@ export class AudioApiClient {
       if (request.model_id) {
         form.append("model", request.model_id);
       }
+      if (request.aligner_model_id) {
+        form.append("aligner_model", request.aligner_model_id);
+      }
       if (request.language) {
         form.append("language", request.language);
       }
@@ -1670,6 +1828,7 @@ export class AudioApiClient {
       body: JSON.stringify({
         audio_base64: request.audio_base64,
         model: request.model_id,
+        aligner_model: request.aligner_model_id,
         language: request.language,
         stream,
       }),

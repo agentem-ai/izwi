@@ -16,6 +16,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::info;
 
+use crate::api::transcription::support::{
+    build_segments, build_words, format_srt, format_vtt,
+};
 use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -45,6 +48,24 @@ struct VerboseJsonTranscriptionResponse {
     duration: f32,
     processing_time_ms: f64,
     rtf: Option<f64>,
+    words: Vec<VerboseJsonWordResponse>,
+    segments: Vec<VerboseJsonSegmentResponse>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct VerboseJsonWordResponse {
+    word: String,
+    start: f32,
+    end: f32,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct VerboseJsonSegmentResponse {
+    start: f32,
+    end: f32,
+    text: String,
+    word_start: usize,
+    word_end: usize,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -105,6 +126,20 @@ pub async fn transcriptions(
     } else {
         None
     };
+    let resolved_language = output.language.clone().or(req.language.clone());
+    let needs_timestamps = matches!(response_format.as_str(), "verbose_json" | "srt" | "vtt");
+    let (words, segments) = if needs_timestamps {
+        build_alignment_details(
+            &state,
+            &audio_base64,
+            output.text.as_str(),
+            resolved_language.as_deref(),
+            output.duration_secs,
+        )
+        .await
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     match response_format.as_str() {
         "json" => Ok(Response::builder()
@@ -118,10 +153,28 @@ pub async fn transcriptions(
             .body(Body::from(
                 serde_json::to_string(&VerboseJsonTranscriptionResponse {
                     text: output.text,
-                    language: output.language,
+                    language: resolved_language,
                     duration: output.duration_secs,
                     processing_time_ms: elapsed_ms,
                     rtf,
+                    words: words
+                        .iter()
+                        .map(|word| VerboseJsonWordResponse {
+                            word: word.word.clone(),
+                            start: word.start_secs,
+                            end: word.end_secs,
+                        })
+                        .collect(),
+                    segments: segments
+                        .iter()
+                        .map(|segment| VerboseJsonSegmentResponse {
+                            start: segment.start_secs,
+                            end: segment.end_secs,
+                            text: segment.text.clone(),
+                            word_start: segment.word_start,
+                            word_end: segment.word_end,
+                        })
+                        .collect(),
                 })
                 .unwrap(),
             ))
@@ -132,11 +185,19 @@ pub async fn transcriptions(
             .unwrap()),
         "srt" => Ok(Response::builder()
             .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Body::from(format_srt(&output.text, output.duration_secs)))
+            .body(Body::from(format_srt(
+                &segments,
+                output.text.as_str(),
+                output.duration_secs,
+            )))
             .unwrap()),
         "vtt" => Ok(Response::builder()
             .header(header::CONTENT_TYPE, "text/vtt; charset=utf-8")
-            .body(Body::from(format_vtt(&output.text, output.duration_secs)))
+            .body(Body::from(format_vtt(
+                &segments,
+                output.text.as_str(),
+                output.duration_secs,
+            )))
             .unwrap()),
         other => Err(ApiError::bad_request(format!(
             "Unsupported response_format: {}. Supported: json, verbose_json, text, srt, vtt",
@@ -472,37 +533,35 @@ Ensure `Content-Type` includes a valid boundary (let your HTTP client set it aut
     ))
 }
 
-fn format_srt(text: &str, duration_secs: f32) -> String {
-    format!(
-        "1\n{} --> {}\n{}\n",
-        secs_to_srt(0.0),
-        secs_to_srt(duration_secs.max(0.1)),
-        text.trim()
-    )
-}
+async fn build_alignment_details(
+    state: &AppState,
+    audio_base64: &str,
+    text: &str,
+    language: Option<&str>,
+    duration_secs: f32,
+) -> (
+    Vec<crate::transcription_store::TranscriptionWordRecord>,
+    Vec<crate::transcription_store::TranscriptionSegmentRecord>,
+) {
+    if text.trim().is_empty() {
+        return (Vec::new(), Vec::new());
+    }
 
-fn format_vtt(text: &str, duration_secs: f32) -> String {
-    format!(
-        "WEBVTT\n\n{} --> {}\n{}\n",
-        secs_to_vtt(0.0),
-        secs_to_vtt(duration_secs.max(0.1)),
-        text.trim()
-    )
-}
-
-fn secs_to_srt(secs: f32) -> String {
-    let total_ms = (secs.max(0.0) * 1000.0).round() as u64;
-    let ms = total_ms % 1000;
-    let total_sec = total_ms / 1000;
-    let s = total_sec % 60;
-    let total_min = total_sec / 60;
-    let m = total_min % 60;
-    let h = total_min / 60;
-    format!("{h:02}:{m:02}:{s:02},{ms:03}")
-}
-
-fn secs_to_vtt(secs: f32) -> String {
-    secs_to_srt(secs).replace(',', ".")
+    let words = match state
+        .runtime
+        .force_align_with_model_and_language(
+            audio_base64,
+            text,
+            language,
+            None,
+        )
+        .await
+    {
+        Ok(aligned_words) => build_words(&aligned_words),
+        Err(_) => Vec::new(),
+    };
+    let segments = build_segments(&words, text, duration_secs);
+    (words, segments)
 }
 
 #[cfg(test)]
@@ -511,8 +570,15 @@ mod tests {
 
     #[test]
     fn renders_srt_and_vtt() {
-        let srt = format_srt("hello", 1.23);
-        let vtt = format_vtt("hello", 1.23);
+        let segments = vec![crate::transcription_store::TranscriptionSegmentRecord {
+            start_secs: 0.0,
+            end_secs: 1.23,
+            text: "hello".to_string(),
+            word_start: 0,
+            word_end: 1,
+        }];
+        let srt = format_srt(&segments, "hello", 1.23);
+        let vtt = format_vtt(&segments, "hello", 1.23);
         assert!(srt.contains("-->"));
         assert!(vtt.starts_with("WEBVTT"));
     }

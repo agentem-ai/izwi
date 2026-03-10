@@ -53,9 +53,8 @@ pub async fn execute(args: TranscribeArgs, server: &str) -> Result<()> {
     }
 
     if word_timestamps {
-        eprintln!(
-            "Warning: word-level timestamps are not yet supported by the server and will be ignored."
-        );
+        request_body["timestamp_granularities"] =
+            serde_json::json!(["word", "segment"]);
     }
 
     let client = http::client(Some(std::time::Duration::from_secs(300)))?;

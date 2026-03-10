@@ -253,6 +253,7 @@ export function summarizeRecord(
     id: record.id,
     created_at: record.created_at,
     model_id: record.model_id,
+    aligner_model_id: record.aligner_model_id,
     language: record.language,
     duration_secs: record.duration_secs,
     processing_time_ms: record.processing_time_ms,
@@ -261,6 +262,8 @@ export function summarizeRecord(
     audio_filename: record.audio_filename,
     transcription_preview: buildTranscriptPreview(record.transcription),
     transcription_chars: Array.from(record.transcription).length,
+    segment_count: record.segments.length,
+    word_count: record.words.length,
   };
 }
 

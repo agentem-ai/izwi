@@ -36,17 +36,23 @@ describe("transcription playground support", () => {
         id: "record-1",
         created_at: 123,
         model_id: "Parakeet-TDT-0.6B-v3",
+        aligner_model_id: "ctc_forced_aligner",
         language: "English",
         duration_secs: 12.3,
         processing_time_ms: 45,
         rtf: 0.2,
         audio_mime_type: "audio/wav",
         audio_filename: "clip.wav",
+        raw_transcription: " Hello   world ",
         transcription: " Hello   world ",
+        words: [],
+        segments: [],
       }),
     ).toMatchObject({
       transcription_preview: "Hello world",
       transcription_chars: 15,
+      segment_count: 0,
+      word_count: 0,
     });
   });
 

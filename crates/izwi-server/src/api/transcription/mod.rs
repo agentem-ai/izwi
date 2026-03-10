@@ -2,6 +2,7 @@
 
 mod handlers;
 mod realtime;
+pub(crate) mod support;
 
 use axum::{extract::DefaultBodyLimit, routing::get, Router};
 
@@ -20,7 +21,10 @@ pub fn router() -> Router<AppState> {
         .merge(realtime::router())
         .route(
             "/transcription/records/:record_id",
-            get(handlers::get_record).delete(handlers::delete_record),
+            get(handlers::get_record)
+                .patch(handlers::update_record)
+                .put(handlers::update_record)
+                .delete(handlers::delete_record),
         )
         .route(
             "/transcription/records/:record_id/audio",
