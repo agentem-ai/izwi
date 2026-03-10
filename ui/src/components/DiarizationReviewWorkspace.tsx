@@ -3,7 +3,6 @@ import { Loader2, Pause, Play, SkipBack, SkipForward } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Slider } from "@/components/ui/slider";
 import type { DiarizationRecord } from "../api";
 import {
   speakerSummariesFromRecord,
@@ -262,16 +261,16 @@ export function DiarizationReviewWorkspace({
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0 flex items-center gap-2">
-                        <div className="truncate text-sm font-semibold text-[var(--text-primary)]">
+                        <div className="truncate text-xs font-semibold text-[var(--text-primary)]">
                           {entry.speaker}
                         </div>
-                        <div className="text-[12px] text-[var(--text-muted)]">
+                        <div className="text-[11px] text-[var(--text-muted)]">
                           {formatClockTime(entry.start)}
                         </div>
                       </div>
                       {active ? (
                         <span
-                          className="rounded-md px-2 py-1 text-[10px] font-semibold"
+                          className="rounded-md px-1.5 py-0.5 text-[10px] font-semibold"
                           style={{
                             color: accent.solid,
                             backgroundColor: accent.soft,
@@ -281,7 +280,7 @@ export function DiarizationReviewWorkspace({
                         </span>
                       ) : null}
                     </div>
-                    <p className="mt-2 text-base leading-relaxed text-[var(--text-secondary)]">
+                    <p className="mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">
                       {entry.text}
                     </p>
                   </button>
@@ -436,14 +435,16 @@ export function DiarizationReviewWorkspace({
                   : null}
               </div>
 
-              <Slider
+              <input
+                type="range"
                 min={0}
                 max={viewerDuration || 0}
                 step={0.05}
-                value={[Math.min(currentTime, viewerDuration || 0)]}
-                onValueChange={(values) => seek(values[0] ?? 0)}
+                value={Math.min(currentTime, viewerDuration || 0)}
+                onChange={(event) => seek(Number(event.target.value))}
+                aria-label="Seek audio timeline"
                 disabled={!audioUrl || viewerDuration <= 0}
-                className="cursor-pointer z-10 relative [&_[role=slider]]:h-4 [&_[role=slider]]:w-4 [&_[role=slider]]:border-[var(--text-primary)] [&_[role=slider]]:bg-[var(--text-primary)] [&_[role=slider]]:shadow-md [&_[data-orientation=horizontal]]:h-8 [&_.bg-primary]:bg-[var(--text-primary)]/20 [&_.bg-primary\/20]:bg-transparent"
+                className="relative z-10 h-8 w-full cursor-pointer appearance-none bg-transparent accent-[var(--text-primary)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-45 [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-none [&::-moz-range-thumb]:bg-[var(--text-primary)] [&::-moz-range-thumb]:shadow-md [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:-mt-1.5 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-none [&::-webkit-slider-thumb]:bg-[var(--text-primary)] [&::-webkit-slider-thumb]:shadow-md"
               />
             </div>
 

@@ -355,7 +355,7 @@ fn is_safe_extension(ext: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
 }
 
-fn resolve_media_path(media_root: &Path, relative_path: &str) -> anyhow::Result<PathBuf> {
+pub fn resolve_media_path(media_root: &Path, relative_path: &str) -> anyhow::Result<PathBuf> {
     let candidate = Path::new(relative_path);
     if candidate.is_absolute() {
         return Err(anyhow!(

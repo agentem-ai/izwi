@@ -96,6 +96,14 @@ describe("DiarizationReviewWorkspace", () => {
 
     fireEvent.loadedMetadata(audio!);
 
+    const timeline = screen.getByRole("slider", {
+      name: "Seek audio timeline",
+    });
+    fireEvent.change(timeline, {
+      target: { value: "4.25" },
+    });
+    expect(audio!.currentTime).toBe(4.25);
+
     const secondRow = screen.getByText("Follow up.").closest("button");
     expect(secondRow).not.toBeNull();
 
