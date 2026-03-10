@@ -18,11 +18,9 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, type DiarizationRecord } from "../api";
-import {
-  formattedTranscriptFromResult,
-  transcriptEntriesFromResult,
-} from "../utils/diarizationTranscript";
+import { formattedTranscriptFromResult } from "../utils/diarizationTranscript";
 import { DiarizationHistoryPanel } from "./DiarizationHistoryPanel";
+import { DiarizationReviewWorkspace } from "./DiarizationReviewWorkspace";
 import { DiarizationSpeakerManager } from "./DiarizationSpeakerManager";
 
 function revokeObjectUrlIfNeeded(url: string | null): void {
@@ -379,18 +377,6 @@ export function DiarizationPlayground({
     setIsProcessing(false);
   };
 
-  const transcriptEntries = useMemo(
-    () =>
-      latestRecord
-        ? transcriptEntriesFromResult(latestRecord)
-        : transcriptEntriesFromResult({
-            utterances: [],
-            transcript: speakerTranscript,
-            raw_transcript: speakerTranscript,
-          }),
-    [latestRecord, speakerTranscript],
-  );
-
   const asText = useMemo(() => speakerTranscript.trim(), [speakerTranscript]);
 
   const handleCopy = async () => {
@@ -652,7 +638,10 @@ export function DiarizationPlayground({
             <div className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3">
               Latest input
             </div>
-            <audio src={audioUrl} controls className="w-full h-10" />
+            <p className="text-sm leading-relaxed text-[var(--text-secondary)]">
+              Audio is loaded into the review workspace. Use the transcript timeline
+              and playback controls there to validate who spoke when.
+            </p>
           </div>
         )}
 
@@ -718,32 +707,12 @@ export function DiarizationPlayground({
               </TabsList>
 
               <TabsContent value="transcript" className="mt-0 space-y-4">
-                {transcriptEntries.length > 0 ? (
-                  <div className="space-y-4">
-                    {transcriptEntries.map((entry, index) => (
-                      <div
-                        key={`${entry.speaker}-${entry.start}-${entry.end}-${index}`}
-                        className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-5 shadow-sm"
-                      >
-                        <div className="flex items-center justify-between gap-3 mb-3">
-                          <div className="flex items-center gap-2.5">
-                            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[var(--bg-surface-2)] border border-[var(--border-strong)] text-[10px] font-semibold text-[var(--text-primary)] shadow-sm">
-                              {entry.speaker?.charAt(0) ?? "S"}
-                            </div>
-                            <span className="text-sm font-semibold text-[var(--text-primary)]">
-                              {entry.speaker}
-                            </span>
-                          </div>
-                          <span className="text-[11px] font-medium text-[var(--text-secondary)] bg-[var(--bg-surface-2)] px-2 py-0.5 rounded-md border border-[var(--border-muted)]">
-                            {entry.start.toFixed(2)}s - {entry.end.toFixed(2)}s
-                          </span>
-                        </div>
-                        <p className="text-base text-[var(--text-secondary)] whitespace-pre-wrap break-words leading-relaxed selection:bg-[var(--accent-soft)]">
-                          {entry.text}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
+                {latestRecord ? (
+                  <DiarizationReviewWorkspace
+                    record={latestRecord}
+                    audioUrl={audioUrl}
+                    emptyMessage="Run diarization to review speaker turns."
+                  />
                 ) : (
                   <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-5 sm:p-6 shadow-sm">
                     <pre className="text-base text-[var(--text-secondary)] whitespace-pre-wrap break-words leading-relaxed font-sans selection:bg-[var(--accent-soft)]">

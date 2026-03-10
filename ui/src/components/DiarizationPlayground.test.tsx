@@ -131,7 +131,7 @@ describe("DiarizationPlayground speaker corrections", () => {
       },
     });
 
-    expect(await scope.findByText("SPEAKER_00")).toBeInTheDocument();
+    expect((await scope.findAllByText("SPEAKER_00")).length).toBeGreaterThan(0);
 
     activateTab(scope, "Speakers");
     expect(await scope.findByText("Speaker Corrections")).toBeInTheDocument();
@@ -154,6 +154,6 @@ describe("DiarizationPlayground speaker corrections", () => {
     await apiMocks.updateDiarizationRecord.mock.results[0]?.value;
 
     activateTab(scope, "Transcript");
-    expect(await scope.findByText("Alice")).toBeInTheDocument();
+    expect((await scope.findAllByText("Alice")).length).toBeGreaterThan(0);
   });
 });

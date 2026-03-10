@@ -310,6 +310,6 @@ describe("History panels", () => {
     await apiMocks.updateDiarizationRecord.mock.results[0]?.value;
 
     activateTab(scope, "Transcript");
-    expect(await scope.findByText("Alice")).toBeInTheDocument();
+    expect((await scope.findAllByText("Alice")).length).toBeGreaterThan(0);
   });
 });
