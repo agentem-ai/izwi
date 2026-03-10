@@ -261,7 +261,7 @@ describe("DiarizationPlayground speaker corrections", () => {
       },
     });
 
-    await scope.findByText("Review Playback");
+    await scope.findByText("Talk Time");
 
     activateTab(scope, "Quality");
     fireEvent.change(scope.getByLabelText("Min speakers"), {

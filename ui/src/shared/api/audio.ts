@@ -1188,12 +1188,35 @@ export class AudioApiClient {
     recordId: string,
     request: DiarizationRecordUpdateRequest,
   ): Promise<DiarizationRecord> {
-    return this.http.request(`/diarization/records/${encodeURIComponent(recordId)}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        speaker_name_overrides: request.speaker_name_overrides,
-      }),
+    const path = `/diarization/records/${encodeURIComponent(recordId)}`;
+    const body = JSON.stringify({
+      speaker_name_overrides: request.speaker_name_overrides,
     });
+
+    const sendUpdate = (method: "PATCH" | "PUT") =>
+      fetch(this.http.url(path), {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+
+    let response = await sendUpdate("PATCH");
+
+    // Some embedded-webview stacks still reject PATCH for local API calls.
+    if (response.status === 405) {
+      response = await sendUpdate("PUT");
+    }
+
+    if (!response.ok) {
+      throw await this.http.createError(
+        response,
+        "Failed to save speaker corrections",
+      );
+    }
+
+    return response.json();
   }
 
   async rerunDiarizationRecord(

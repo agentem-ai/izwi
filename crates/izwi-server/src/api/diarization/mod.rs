@@ -20,6 +20,7 @@ pub fn router() -> Router<AppState> {
             "/diarization/records/:record_id",
             get(handlers::get_record)
                 .patch(handlers::update_record)
+                .put(handlers::update_record)
                 .delete(handlers::delete_record),
         )
         .route(

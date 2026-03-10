@@ -646,45 +646,45 @@ export function DiarizationHistoryPanel({
               onClick={(event) => event.stopPropagation()}
               className="mx-auto flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] shadow-2xl"
             >
-              <div className="flex items-center justify-between gap-3 border-b border-[var(--border-muted)] px-4 py-3 sm:px-6">
+              <div className="flex items-center justify-between gap-3 border-b border-[var(--border-muted)] px-4 py-4 sm:px-6">
                 <div className="min-w-0 flex-1">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--text-subtle)]">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-subtle)]">
                     Diarization Record
                   </p>
                   <div className="mt-1 flex items-center gap-3">
-                    <h3 className="truncate text-base font-semibold text-[var(--text-primary)]">
+                    <h2 className="truncate text-xl font-bold text-[var(--text-primary)] tracking-tight">
                       {selectedHistorySummary?.audio_filename ||
                         selectedHistorySummary?.model_id ||
                         "Diarization transcript"}
-                    </h3>
+                    </h2>
                   </div>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                    <p className="text-xs text-[var(--text-muted)]">
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-[var(--text-muted)]">
                       {selectedHistorySummary
                         ? formatCreatedAt(selectedHistorySummary.created_at)
                         : "No record selected"}
-                    </p>
+                    </span>
                     {activeHistoryRecord ? (
                       <>
                         <span className="text-[var(--text-subtle)]">•</span>
-                        <span className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                        <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--text-secondary)]">
                           {formatAudioDuration(
                             activeHistoryRecord.duration_secs,
                           )}
                         </span>
-                        <span className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                        <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--text-secondary)]">
                           {activeHistoryRecord.corrected_speaker_count ??
                             activeHistoryRecord.speaker_count}{" "}
                           speakers
                         </span>
-                        <span className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)] truncate max-w-[150px]">
+                        <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--text-secondary)] truncate max-w-[200px]">
                           {activeHistoryRecord.model_id || "Unknown model"}
                         </span>
                       </>
                     ) : null}
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex items-center gap-2 shrink-0 self-start">
                   {activeHistoryRecord && (
                     <button
                       onClick={() =>
@@ -715,7 +715,7 @@ export function DiarizationHistoryPanel({
                   </button>
                   <button
                     onClick={closeHistoryModal}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
                     title="Close"
                   >
                     <X className="w-4 h-4" />
@@ -742,24 +742,36 @@ export function DiarizationHistoryPanel({
                       onValueChange={setRecordWorkspaceTab}
                       className="space-y-4"
                     >
-                      <TabsList className="w-full justify-start bg-[var(--bg-surface-1)]">
-                        <TabsTrigger value="transcript">Transcript</TabsTrigger>
-                        <TabsTrigger value="speakers">Speakers</TabsTrigger>
-                        <TabsTrigger value="quality">Quality</TabsTrigger>
+                      <TabsList className="inline-flex w-auto justify-start rounded-full bg-[var(--bg-surface-1)] p-1 border border-[var(--border-muted)]">
+                        <TabsTrigger
+                          value="transcript"
+                          className="rounded-full px-4 text-xs"
+                        >
+                          Transcript
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="speakers"
+                          className="rounded-full px-4 text-xs"
+                        >
+                          Speakers
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="quality"
+                          className="rounded-full px-4 text-xs"
+                        >
+                          Quality
+                        </TabsTrigger>
                       </TabsList>
 
                       <TabsContent
                         value="transcript"
-                        className="mt-0 space-y-4"
+                        className="mt-2 space-y-4"
                       >
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <h4 className="text-sm font-medium text-[var(--text-primary)]">
-                            Transcript
-                          </h4>
+                        <div className="flex justify-end mb-2">
                           <div className="flex items-center gap-2">
                             <button
                               onClick={() => void handleCopyHistoryTranscript()}
-                              className="inline-flex items-center gap-1 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-45"
+                              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-2)] hover:text-[var(--text-primary)] disabled:opacity-45 shadow-sm"
                               disabled={!normalizedActiveTranscript}
                             >
                               {historyTranscriptCopied ? (
@@ -781,16 +793,15 @@ export function DiarizationHistoryPanel({
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                className="h-8 border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2.5 text-xs text-[var(--text-secondary)]"
+                                className="h-8 border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-xs font-medium text-[var(--text-secondary)] shadow-sm hover:bg-[var(--bg-surface-2)]"
                                 disabled={!normalizedActiveTranscript}
                               >
-                                <Download className="w-3.5 h-3.5" />
+                                <Download className="w-3.5 h-3.5 mr-1.5" />
                                 Export
                               </Button>
                             </DiarizationExportDialog>
                           </div>
                         </div>
-
                         <DiarizationReviewWorkspace
                           record={activeHistoryRecord}
                           audioUrl={selectedHistoryAudioUrl}
