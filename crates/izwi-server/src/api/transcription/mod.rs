@@ -9,21 +9,35 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     const AUDIO_UPLOAD_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+    const CANONICAL_COLLECTION: &str = "/transcriptions";
+    const LEGACY_COLLECTION: &str = "/transcription/records";
+    const CANONICAL_MEMBER: &str = "/transcriptions/:record_id";
+    const LEGACY_MEMBER: &str = "/transcription/records/:record_id";
+    const CANONICAL_AUDIO: &str = "/transcriptions/:record_id/audio";
+    const LEGACY_AUDIO: &str = "/transcription/records/:record_id/audio";
 
     Router::new()
         .route(
-            "/transcription/records",
+            CANONICAL_COLLECTION,
+            get(handlers::list_records)
+                .post(handlers::create_record)
+                .layer(DefaultBodyLimit::max(AUDIO_UPLOAD_LIMIT_BYTES)),
+        )
+        .route(
+            LEGACY_COLLECTION,
             get(handlers::list_records)
                 .post(handlers::create_record)
                 .layer(DefaultBodyLimit::max(AUDIO_UPLOAD_LIMIT_BYTES)),
         )
         .merge(realtime::router())
         .route(
-            "/transcription/records/:record_id",
+            CANONICAL_MEMBER,
             get(handlers::get_record).delete(handlers::delete_record),
         )
         .route(
-            "/transcription/records/:record_id/audio",
-            get(handlers::get_record_audio),
+            LEGACY_MEMBER,
+            get(handlers::get_record).delete(handlers::delete_record),
         )
+        .route(CANONICAL_AUDIO, get(handlers::get_record_audio))
+        .route(LEGACY_AUDIO, get(handlers::get_record_audio))
 }
