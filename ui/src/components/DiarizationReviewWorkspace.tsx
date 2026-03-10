@@ -228,13 +228,13 @@ export function DiarizationReviewWorkspace({
         className="hidden"
       />
 
-      <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr),280px] pb-24">
-        <div className="space-y-6">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr),248px] pb-20">
+        <div className="space-y-5">
           <div>
-            <h3 className="text-sm font-medium text-[var(--text-primary)] mb-4">
+            <h3 className="mb-3 text-[13px] font-semibold tracking-wide text-[var(--text-primary)]">
               Transcript
             </h3>
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {transcriptEntries.map((entry, index) => {
                 const active = index === activeEntryIndex;
                 const speakerIndex = speakerSummaries.findIndex(
@@ -249,7 +249,7 @@ export function DiarizationReviewWorkspace({
                     key={`${entry.speaker}-${entry.start}-${entry.end}-${index}`}
                     type="button"
                     onClick={() => seek(entry.start)}
-                    className="w-full rounded-xl border p-4 text-left transition-colors"
+                    className="w-full rounded-lg border px-3.5 py-3 text-left transition-colors"
                     data-active={active ? "true" : "false"}
                     style={{
                       backgroundColor: active ? accent.soft : "transparent",
@@ -261,16 +261,16 @@ export function DiarizationReviewWorkspace({
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0 flex items-center gap-2">
-                        <div className="truncate text-xs font-semibold text-[var(--text-primary)]">
+                        <div className="truncate text-[13px] font-semibold text-[var(--text-primary)]">
                           {entry.speaker}
                         </div>
-                        <div className="text-[11px] text-[var(--text-muted)]">
+                        <div className="text-[11px] font-medium text-[var(--text-muted)]">
                           {formatClockTime(entry.start)}
                         </div>
                       </div>
                       {active ? (
                         <span
-                          className="rounded-md px-1.5 py-0.5 text-[10px] font-semibold"
+                          className="rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em]"
                           style={{
                             color: accent.solid,
                             backgroundColor: accent.soft,
@@ -280,7 +280,7 @@ export function DiarizationReviewWorkspace({
                         </span>
                       ) : null}
                     </div>
-                    <p className="mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">
+                    <p className="mt-1.5 text-[15px] leading-7 text-[var(--text-secondary)]">
                       {entry.text}
                     </p>
                   </button>
@@ -290,12 +290,12 @@ export function DiarizationReviewWorkspace({
           </div>
         </div>
 
-        <div className="space-y-6">
+        <div className="space-y-5">
           <div>
-            <h3 className="text-sm font-medium text-[var(--text-primary)] mb-4">
+            <h3 className="mb-3 text-[13px] font-semibold tracking-wide text-[var(--text-primary)]">
               Talk Time
             </h3>
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {speakerSummaries.map((summary, index) => {
                 const accent = speakerAccent(index);
                 const share =
@@ -308,7 +308,7 @@ export function DiarizationReviewWorkspace({
                 return (
                   <div
                     key={summary.displaySpeaker}
-                    className="rounded-xl border p-3 transition-colors"
+                    className="rounded-lg border px-3 py-2.5 transition-colors"
                     style={{
                       backgroundColor: isCurrentSpeaker
                         ? accent.soft
@@ -323,13 +323,13 @@ export function DiarizationReviewWorkspace({
                         <div className="truncate text-sm font-semibold text-[var(--text-primary)]">
                           {summary.displaySpeaker}
                         </div>
-                        <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+                        <div className="mt-1 text-[11px] leading-5 text-[var(--text-muted)]">
                           {summary.utteranceCount} turns • {summary.wordCount}{" "}
                           words
                         </div>
                       </div>
                       <div className="text-right">
-                        <div className="text-sm font-semibold text-[var(--text-primary)]">
+                        <div className="text-base font-semibold text-[var(--text-primary)]">
                           {formatDurationLabel(summary.totalDuration)}
                         </div>
                         <div className="text-[11px] text-[var(--text-muted)]">
@@ -337,7 +337,7 @@ export function DiarizationReviewWorkspace({
                         </div>
                       </div>
                     </div>
-                    <div className="mt-3 h-2 rounded-full bg-[var(--bg-surface-2)]">
+                    <div className="mt-2.5 h-1.5 rounded-full bg-[var(--bg-surface-2)]">
                       <div
                         className="h-full rounded-full"
                         style={{
@@ -354,15 +354,15 @@ export function DiarizationReviewWorkspace({
         </div>
       </div>
 
-      <div className="sticky bottom-0 -mx-4 -mb-4 mt-auto border-t border-[var(--border-muted)] bg-[var(--bg-surface-0)]/95 p-4 backdrop-blur sm:-mx-5 sm:-mb-5 sm:px-6 sm:py-4">
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-4">
+      <div className="sticky bottom-0 -mx-4 -mb-4 mt-auto border-t border-[var(--border-muted)] bg-[var(--bg-surface-0)]/95 p-3 backdrop-blur sm:-mx-5 sm:-mb-5 sm:px-5 sm:py-3">
+        <div className="flex flex-col gap-2.5">
+          <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <Button
                 type="button"
                 variant="outline"
                 size="icon"
-                className="h-9 w-9 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] hover:bg-[var(--bg-surface-2)]"
+                className="h-8 w-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] hover:bg-[var(--bg-surface-2)]"
                 onClick={() => skip(-10)}
                 disabled={!audioUrl}
                 title="Rewind 10 seconds"
@@ -372,21 +372,21 @@ export function DiarizationReviewWorkspace({
               <Button
                 type="button"
                 size="icon"
-                className="h-10 w-10 rounded-full bg-[var(--text-primary)] text-[var(--bg-surface-0)] hover:bg-[var(--text-secondary)] shadow-md"
+                className="h-9 w-9 rounded-full bg-[var(--text-primary)] text-[var(--bg-surface-0)] hover:bg-[var(--text-secondary)] shadow-md"
                 onClick={() => void togglePlayback()}
                 disabled={!audioUrl}
               >
                 {isPlaying ? (
-                  <Pause className="h-5 w-5" fill="currentColor" />
+                  <Pause className="h-4 w-4" fill="currentColor" />
                 ) : (
-                  <Play className="h-5 w-5 ml-0.5" fill="currentColor" />
+                  <Play className="ml-0.5 h-4 w-4" fill="currentColor" />
                 )}
               </Button>
               <Button
                 type="button"
                 variant="outline"
                 size="icon"
-                className="h-9 w-9 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] hover:bg-[var(--bg-surface-2)]"
+                className="h-8 w-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] hover:bg-[var(--bg-surface-2)]"
                 onClick={() => skip(10)}
                 disabled={!audioUrl}
                 title="Forward 10 seconds"
@@ -395,15 +395,15 @@ export function DiarizationReviewWorkspace({
               </Button>
             </div>
 
-            <div className="text-sm font-medium text-[var(--text-primary)] font-mono tabular-nums tracking-tight">
+            <div className="font-mono text-[13px] font-medium tabular-nums tracking-tight text-[var(--text-primary)]">
               {formatClockTime(currentTime)}{" "}
               <span className="text-[var(--text-muted)] font-normal">
                 / {formatClockTime(viewerDuration)}
               </span>
             </div>
 
-            <div className="flex-1 mx-2 relative flex items-center h-10 group">
-              <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-8 pointer-events-none overflow-hidden rounded bg-[var(--bg-surface-2)]/50">
+            <div className="group relative mx-1.5 flex h-9 flex-1 items-center">
+              <div className="pointer-events-none absolute inset-x-0 top-1/2 h-7 -translate-y-1/2 overflow-hidden rounded bg-[var(--bg-surface-2)]/50">
                 {viewerDuration > 0
                   ? transcriptEntries.map((entry, index) => {
                       const left = (entry.start / viewerDuration) * 100;
@@ -444,17 +444,17 @@ export function DiarizationReviewWorkspace({
                 onChange={(event) => seek(Number(event.target.value))}
                 aria-label="Seek audio timeline"
                 disabled={!audioUrl || viewerDuration <= 0}
-                className="relative z-10 h-8 w-full cursor-pointer appearance-none bg-transparent accent-[var(--text-primary)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-45 [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-none [&::-moz-range-thumb]:bg-[var(--text-primary)] [&::-moz-range-thumb]:shadow-md [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:-mt-1.5 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-none [&::-webkit-slider-thumb]:bg-[var(--text-primary)] [&::-webkit-slider-thumb]:shadow-md"
+                className="relative z-10 h-7 w-full cursor-pointer appearance-none bg-transparent accent-[var(--text-primary)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-45 [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-none [&::-moz-range-thumb]:bg-[var(--text-primary)] [&::-moz-range-thumb]:shadow-md [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:-mt-1 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-none [&::-webkit-slider-thumb]:bg-[var(--text-primary)] [&::-webkit-slider-thumb]:shadow-md"
               />
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="text-sm font-semibold min-w-[80px] text-right truncate text-[var(--text-primary)]">
+              <div className="min-w-[68px] truncate text-right text-[13px] font-semibold text-[var(--text-primary)]">
                 {activeSpeaker ?? ""}
               </div>
 
               <select
-                className="h-8 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2 text-xs text-[var(--text-primary)] outline-none"
+                className="h-7 rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 text-[11px] font-medium text-[var(--text-primary)] outline-none"
                 value={playbackRate}
                 onChange={(e) => updatePlaybackRate(Number(e.target.value))}
               >
@@ -468,7 +468,7 @@ export function DiarizationReviewWorkspace({
           </div>
 
           {audioError ? (
-            <div className="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-sm text-[var(--danger-text)]">
+            <div className="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
               {audioError}
             </div>
           ) : null}

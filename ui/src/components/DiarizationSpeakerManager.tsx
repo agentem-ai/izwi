@@ -147,39 +147,39 @@ export function DiarizationSpeakerManager({
   }, [drafts, mergeSourceSpeaker, rawSummaries]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <Card className="border-[var(--border-muted)] bg-[var(--bg-surface-1)]">
-        <CardHeader className="pb-4">
-          <CardTitle className="text-sm text-[var(--text-primary)]">
+        <CardHeader className="space-y-1 pb-3">
+          <CardTitle className="text-[15px] font-semibold tracking-[-0.01em] text-[var(--text-primary)]">
             Speaker Corrections
           </CardTitle>
-          <CardDescription className="text-[var(--text-muted)]">
+          <CardDescription className="text-sm leading-6 text-[var(--text-muted)]">
             Rename raw labels or merge multiple detected speakers into one display name.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 py-3">
-              <div className="text-[11px] uppercase tracking-wider text-[var(--text-subtle)]">
+        <CardContent className="space-y-3">
+          <div className="grid gap-2.5 sm:grid-cols-3">
+            <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 py-2.5">
+              <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--text-subtle)]">
                 Detected
               </div>
-              <div className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
+              <div className="mt-1 text-[1.5rem] font-semibold leading-none text-[var(--text-primary)]">
                 {record.speaker_count}
               </div>
             </div>
-            <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 py-3">
-              <div className="text-[11px] uppercase tracking-wider text-[var(--text-subtle)]">
+            <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 py-2.5">
+              <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--text-subtle)]">
                 Corrected
               </div>
-              <div className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
+              <div className="mt-1 text-[1.5rem] font-semibold leading-none text-[var(--text-primary)]">
                 {correctedCount}
               </div>
             </div>
-            <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 py-3">
-              <div className="text-[11px] uppercase tracking-wider text-[var(--text-subtle)]">
+            <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 py-2.5">
+              <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--text-subtle)]">
                 Overrides
               </div>
-              <div className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
+              <div className="mt-1 text-[1.5rem] font-semibold leading-none text-[var(--text-primary)]">
                 {Object.keys(currentOverrides).length}
               </div>
             </div>
@@ -187,7 +187,7 @@ export function DiarizationSpeakerManager({
 
           <Separator className="bg-[var(--border-muted)]" />
 
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             {rawSummaries.length > 0 ? (
               rawSummaries.map((summary) => {
                 const currentDisplaySpeaker =
@@ -198,21 +198,21 @@ export function DiarizationSpeakerManager({
                 return (
                   <div
                     key={summary.rawSpeaker}
-                    className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-4"
+                    className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-3.5"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2 py-1 text-[11px] font-semibold text-[var(--text-secondary)]">
+                          <span className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2.5 py-0.5 text-[10px] font-semibold tracking-[0.08em] text-[var(--text-secondary)]">
                             {summary.rawSpeaker}
                           </span>
                           {isMerged ? (
-                            <span className="rounded-md border border-[var(--accent-solid)]/35 bg-[var(--accent-soft)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)]">
+                            <span className="rounded-full border border-[var(--accent-solid)]/35 bg-[var(--accent-soft)] px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--text-primary)]">
                               merged
                             </span>
                           ) : null}
                         </div>
-                        <div className="mt-2 text-xs text-[var(--text-muted)]">
+                        <div className="mt-1.5 text-[11px] leading-5 text-[var(--text-muted)]">
                           {summary.utteranceCount} utterances · {summary.wordCount} words ·{" "}
                           {formatDuration(summary.totalDuration)}
                         </div>
@@ -232,10 +232,10 @@ export function DiarizationSpeakerManager({
                       </Button>
                     </div>
 
-                    <div className="mt-4 space-y-2">
+                    <div className="mt-3 space-y-1.5">
                       <Label
                         htmlFor={`speaker-name-${summary.rawSpeaker}`}
-                        className="text-xs uppercase tracking-wider text-[var(--text-subtle)]"
+                        className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-subtle)]"
                       >
                         Display name
                       </Label>
@@ -249,14 +249,14 @@ export function DiarizationSpeakerManager({
                               [summary.rawSpeaker]: event.target.value,
                             }))
                           }
-                          className="border-[var(--border-muted)] bg-[var(--bg-surface-1)]"
+                          className="h-9 border-[var(--border-muted)] bg-[var(--bg-surface-1)] text-sm"
                           placeholder={summary.rawSpeaker}
                         />
                         <Button
                           type="button"
                           variant="ghost"
                           size="sm"
-                          className="h-10 shrink-0 border border-transparent text-[var(--text-secondary)] hover:border-[var(--border-muted)] hover:bg-[var(--bg-surface-2)]"
+                          className="h-9 shrink-0 border border-transparent px-3 text-[12px] font-medium text-[var(--text-secondary)] hover:border-[var(--border-muted)] hover:bg-[var(--bg-surface-2)]"
                           onClick={() =>
                             setDrafts((current) => ({
                               ...current,
@@ -280,7 +280,7 @@ export function DiarizationSpeakerManager({
           </div>
 
           {error ? (
-            <div className="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-sm text-[var(--danger-text)]">
+            <div className="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
               {error}
             </div>
           ) : null}
@@ -290,7 +290,7 @@ export function DiarizationSpeakerManager({
               type="button"
               variant="outline"
               size="sm"
-              className="h-9 border-[var(--border-muted)] bg-[var(--bg-surface-0)] text-[var(--text-secondary)]"
+              className="h-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 text-[12px] font-medium text-[var(--text-secondary)]"
               onClick={() =>
                 setDrafts(
                   Object.fromEntries(
@@ -308,7 +308,7 @@ export function DiarizationSpeakerManager({
             <Button
               type="button"
               size="sm"
-              className="h-9 gap-1.5"
+              className="h-8 rounded-full gap-1.5 px-3 text-[12px] font-medium"
               onClick={() => void onSave(currentOverrides)}
               disabled={isSaving || !hasDraftChanges}
             >
@@ -333,23 +333,23 @@ export function DiarizationSpeakerManager({
         }}
       >
         {mergeSourceSpeaker ? (
-          <DialogContent className="max-w-md border-[var(--border-strong)] bg-[var(--bg-surface-0)]">
+          <DialogContent className="max-w-md border-[var(--border-strong)] bg-[var(--bg-surface-0)] p-5">
             <DialogHeader>
-              <DialogTitle className="text-base text-[var(--text-primary)]">
+              <DialogTitle className="text-[15px] font-semibold text-[var(--text-primary)]">
                 Merge speaker label
               </DialogTitle>
-              <DialogDescription className="text-[var(--text-muted)]">
+              <DialogDescription className="text-sm leading-6 text-[var(--text-muted)]">
                 Assign <strong>{mergeSourceSpeaker}</strong> to another speaker name without
                 changing the original diarization output.
               </DialogDescription>
             </DialogHeader>
 
             <div className="space-y-2">
-              <Label className="text-xs uppercase tracking-wider text-[var(--text-subtle)]">
+              <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-subtle)]">
                 Merge into
               </Label>
               <Select value={mergeTargetSpeaker} onValueChange={setMergeTargetSpeaker}>
-                <SelectTrigger className="border-[var(--border-muted)] bg-[var(--bg-surface-1)]">
+                <SelectTrigger className="h-9 border-[var(--border-muted)] bg-[var(--bg-surface-1)] text-sm">
                   <SelectValue placeholder="Select a target speaker" />
                 </SelectTrigger>
                 <SelectContent>
@@ -367,7 +367,7 @@ export function DiarizationSpeakerManager({
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-9 border-[var(--border-muted)] bg-[var(--bg-surface-1)]"
+                className="h-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-[12px] font-medium"
                 onClick={() => {
                   setMergeSourceSpeaker(null);
                   setMergeTargetSpeaker("");
@@ -379,7 +379,7 @@ export function DiarizationSpeakerManager({
               <Button
                 type="button"
                 size="sm"
-                className="h-9 gap-1.5"
+                className="h-8 rounded-full gap-1.5 px-3 text-[12px] font-medium"
                 onClick={() => {
                   if (!mergeSourceSpeaker || !mergeTargetSpeaker) {
                     return;
