@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -9,10 +9,6 @@ import {
   Copy,
   Download,
   Loader2,
-  Pause,
-  Play,
-  SkipBack,
-  SkipForward,
   Trash2,
   X,
 } from "lucide-react";
@@ -20,6 +16,13 @@ import clsx from "clsx";
 
 import { RouteHistoryDrawer } from "@/components/RouteHistoryDrawer";
 import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -37,6 +40,7 @@ import {
   previewTranscript,
   transcriptEntriesFromRecord,
 } from "../utils/diarizationTranscript";
+import { DiarizationReviewWorkspace } from "./DiarizationReviewWorkspace";
 import { DiarizationSpeakerManager } from "./DiarizationSpeakerManager";
 
 interface DiarizationHistoryPanelProps {
@@ -74,15 +78,6 @@ function formatAudioDuration(durationSecs: number | null): string {
   const minutes = Math.floor(durationSecs / 60);
   const seconds = Math.floor(durationSecs % 60);
   return `${minutes}m ${seconds}s`;
-}
-
-function formatClockTime(totalSeconds: number): string {
-  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
-    return "0:00";
-  }
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.floor(totalSeconds % 60);
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
 function summarizeRecord(record: DiarizationRecord): DiarizationRecordSummary {
@@ -134,13 +129,6 @@ export function DiarizationHistoryPanel({
   >(null);
   const [isHistoryDrawerOpen, setIsHistoryDrawerOpen] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
-  const [historyCurrentTime, setHistoryCurrentTime] = useState(0);
-  const [historyDuration, setHistoryDuration] = useState(0);
-  const [historyIsPlaying, setHistoryIsPlaying] = useState(false);
-  const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1);
-  const [historyAudioError, setHistoryAudioError] = useState<string | null>(
-    null,
-  );
   const [historyTranscriptCopied, setHistoryTranscriptCopied] = useState(false);
   const [recordWorkspaceTab, setRecordWorkspaceTab] = useState("transcript");
   const [speakerUpdatePending, setSpeakerUpdatePending] = useState(false);
@@ -154,8 +142,6 @@ export function DiarizationHistoryPanel({
   const [deleteRecordError, setDeleteRecordError] = useState<string | null>(
     null,
   );
-
-  const historyAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const mergeHistorySummary = useCallback(
     (summary: DiarizationRecordSummary) => {
@@ -367,17 +353,6 @@ export function DiarizationHistoryPanel({
     };
   }, [isHistoryModalOpen]);
 
-  useEffect(() => {
-    if (isHistoryModalOpen) {
-      return;
-    }
-    const audio = historyAudioRef.current;
-    if (audio) {
-      audio.pause();
-    }
-    setHistoryIsPlaying(false);
-  }, [isHistoryModalOpen]);
-
   const selectedHistorySummary = useMemo(
     () =>
       selectedHistoryRecordId
@@ -426,13 +401,6 @@ export function DiarizationHistoryPanel({
         : -1,
     [historyRecords, selectedHistoryRecordId],
   );
-  const historyViewerDuration =
-    historyDuration > 0
-      ? historyDuration
-      : activeHistoryRecord?.duration_secs &&
-          activeHistoryRecord.duration_secs > 0
-        ? activeHistoryRecord.duration_secs
-        : 0;
   const canOpenNewerHistory = selectedHistoryIndex > 0;
   const canOpenOlderHistory =
     selectedHistoryIndex >= 0 &&
@@ -461,74 +429,8 @@ export function DiarizationHistoryPanel({
     [historyRecords, selectedHistoryIndex],
   );
 
-  const toggleHistoryPlayback = useCallback(async () => {
-    const audio = historyAudioRef.current;
-    if (!audio) {
-      return;
-    }
-    try {
-      if (audio.paused) {
-        await audio.play();
-      } else {
-        audio.pause();
-      }
-    } catch {
-      setHistoryAudioError("Unable to start playback for this audio.");
-    }
-  }, []);
-
-  const seekHistoryAudio = useCallback(
-    (nextTime: number) => {
-      const audio = historyAudioRef.current;
-      if (!audio) {
-        return;
-      }
-      const duration = Number.isFinite(audio.duration)
-        ? audio.duration
-        : historyViewerDuration;
-      const clamped = Math.max(0, Math.min(nextTime, duration || 0));
-      audio.currentTime = clamped;
-      setHistoryCurrentTime(clamped);
-    },
-    [historyViewerDuration],
-  );
-
-  const skipHistoryAudio = useCallback(
-    (deltaSeconds: number) => {
-      const audio = historyAudioRef.current;
-      if (!audio) {
-        return;
-      }
-      const duration = Number.isFinite(audio.duration)
-        ? audio.duration
-        : historyViewerDuration;
-      const next = Math.max(
-        0,
-        Math.min(audio.currentTime + deltaSeconds, duration || 0),
-      );
-      audio.currentTime = next;
-      setHistoryCurrentTime(next);
-    },
-    [historyViewerDuration],
-  );
-
-  const handleHistoryRateChange = useCallback((rate: number) => {
-    const audio = historyAudioRef.current;
-    if (!audio) {
-      return;
-    }
-    audio.playbackRate = rate;
-    setHistoryPlaybackRate(rate);
-  }, []);
-
   const normalizedActiveTranscript = useMemo(
     () => (activeHistoryRecord ? formattedTranscriptFromRecord(activeHistoryRecord) : ""),
-    [activeHistoryRecord],
-  );
-
-  const activeEntries = useMemo(
-    () =>
-      activeHistoryRecord ? transcriptEntriesFromRecord(activeHistoryRecord) : [],
     [activeHistoryRecord],
   );
 
@@ -587,17 +489,6 @@ export function DiarizationHistoryPanel({
   );
 
   useEffect(() => {
-    const audio = historyAudioRef.current;
-    if (audio) {
-      audio.pause();
-      audio.currentTime = 0;
-      audio.playbackRate = 1;
-    }
-    setHistoryCurrentTime(0);
-    setHistoryDuration(0);
-    setHistoryIsPlaying(false);
-    setHistoryPlaybackRate(1);
-    setHistoryAudioError(null);
     setHistoryTranscriptCopied(false);
     setRecordWorkspaceTab("transcript");
     setSpeakerUpdateError(null);
@@ -821,143 +712,37 @@ export function DiarizationHistoryPanel({
                         </span>
                       </div>
 
-                      <audio
-                        ref={historyAudioRef}
-                        src={selectedHistoryAudioUrl ?? undefined}
-                        preload="metadata"
-                        onLoadedMetadata={(event) => {
-                          const durationSeconds = Number.isFinite(
-                            event.currentTarget.duration,
-                          )
-                            ? event.currentTarget.duration
-                            : 0;
-                          setHistoryDuration(durationSeconds);
-                          setHistoryAudioError(null);
-                        }}
-                        onTimeUpdate={(event) => {
-                          setHistoryCurrentTime(
-                            event.currentTarget.currentTime,
-                          );
-                        }}
-                        onPlay={() => setHistoryIsPlaying(true)}
-                        onPause={() => setHistoryIsPlaying(false)}
-                        onRateChange={(event) =>
-                          setHistoryPlaybackRate(
-                            event.currentTarget.playbackRate,
-                          )
-                        }
-                        onError={() =>
-                          setHistoryAudioError(
-                            "Unable to load audio for this diarization record.",
-                          )
-                        }
-                        className="hidden"
-                      />
-
-                      <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3">
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => void toggleHistoryPlayback()}
-                            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-45"
-                            disabled={!selectedHistoryAudioUrl}
-                            title={historyIsPlaying ? "Pause" : "Play"}
-                          >
-                            {historyIsPlaying ? (
-                              <Pause className="w-4 h-4" />
-                            ) : (
-                              <Play className="w-4 h-4" />
-                            )}
-                          </button>
-                          <button
-                            onClick={() => skipHistoryAudio(-10)}
-                            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-45"
-                            disabled={!selectedHistoryAudioUrl}
-                            title="Back 10 seconds"
-                          >
-                            <SkipBack className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => skipHistoryAudio(10)}
-                            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-45"
-                            disabled={!selectedHistoryAudioUrl}
-                            title="Forward 10 seconds"
-                          >
-                            <SkipForward className="w-4 h-4" />
-                          </button>
-                          <div className="ml-auto text-[11px] text-[var(--text-muted)]">
-                            {formatClockTime(historyCurrentTime)} /{" "}
-                            {formatClockTime(historyViewerDuration)}
+                      <Card className="border-[var(--border-muted)] bg-[var(--bg-surface-1)] shadow-none">
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-sm text-[var(--text-primary)]">
+                            Review Workspace
+                          </CardTitle>
+                          <CardDescription className="text-[var(--text-muted)]">
+                            Use the transcript tab to scrub the recording, inspect the
+                            speaker timeline, and validate corrected speaker turns.
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-3 text-sm text-[var(--text-secondary)]">
+                          <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 py-3">
+                            <div className="text-[11px] uppercase tracking-wider text-[var(--text-subtle)]">
+                              Saved audio
+                            </div>
+                            <div className="mt-1 font-medium text-[var(--text-primary)]">
+                              {activeHistoryRecord.audio_filename || "Attached to this record"}
+                            </div>
                           </div>
-                        </div>
-
-                        <div className="mt-3">
-                          <input
-                            type="range"
-                            min={0}
-                            max={historyViewerDuration || 0}
-                            step={0.05}
-                            value={Math.min(
-                              historyCurrentTime,
-                              historyViewerDuration || 0,
-                            )}
-                            onChange={(event) =>
-                              seekHistoryAudio(Number(event.target.value))
-                            }
-                            className="w-full accent-[var(--accent-solid)]"
-                            disabled={
-                              !selectedHistoryAudioUrl ||
-                              historyViewerDuration <= 0
-                            }
-                          />
-                        </div>
-
-                        <div className="mt-3 flex items-center gap-2">
-                          <label className="text-[11px] text-[var(--text-subtle)]">
-                            Speed
-                          </label>
-                          <select
-                            value={historyPlaybackRate}
-                            onChange={(event) =>
-                              handleHistoryRateChange(
-                                Number(event.target.value),
-                              )
-                            }
-                            className="h-8 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2 text-xs text-[var(--text-secondary)] focus:outline-none focus:ring-1 focus:ring-[var(--border-strong)]"
-                          >
-                            <option value={0.75}>0.75x</option>
-                            <option value={1}>1.0x</option>
-                            <option value={1.25}>1.25x</option>
-                            <option value={1.5}>1.5x</option>
-                            <option value={2}>2.0x</option>
-                          </select>
-                          {selectedHistoryAudioUrl && (
-                            <a
-                              href={selectedHistoryAudioUrl}
-                              download={
-                                activeHistoryRecord.audio_filename ||
-                                `${activeHistoryRecord.id}.wav`
-                              }
-                              className="ml-auto inline-flex items-center gap-1 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                              Audio
-                            </a>
-                          )}
-                        </div>
-                      </div>
-
-                      <AnimatePresence>
-                        {historyAudioError && (
-                          <motion.div
-                            initial={{ opacity: 0, height: 0 }}
-                            animate={{ opacity: 1, height: "auto" }}
-                            exit={{ opacity: 0, height: 0 }}
-                            className="mt-3 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]"
-                          >
-                            {historyAudioError}
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
+                          <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 py-3">
+                            <div className="text-[11px] uppercase tracking-wider text-[var(--text-subtle)]">
+                              Review flow
+                            </div>
+                            <p className="mt-1 leading-relaxed">
+                              Click any timeline block or transcript row to jump to that
+                              moment, then switch to the speakers tab if a label needs
+                              correction.
+                            </p>
+                          </div>
+                        </CardContent>
+                      </Card>
                     </>
                   ) : (
                     <div className="h-full min-h-[220px] flex items-center justify-center text-sm text-[var(--text-subtle)] text-center">
@@ -1012,41 +797,15 @@ export function DiarizationHistoryPanel({
                         </div>
                       </div>
 
-                      <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-3 min-h-[320px]">
-                        {selectedHistoryLoading ? (
-                          <div className="h-[320px] flex items-center justify-center gap-2 text-sm text-[var(--text-muted)]">
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            Loading transcript...
-                          </div>
-                        ) : activeEntries.length > 0 ? (
-                          <div className="space-y-2">
-                            {activeEntries.map((entry, index) => (
-                              <div
-                                key={`${entry.speaker}-${entry.start}-${entry.end}-${index}`}
-                                className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] p-3"
-                              >
-                                <div className="flex items-center justify-between gap-2 mb-1">
-                                  <span className="text-xs font-medium text-[var(--text-primary)]">
-                                    {entry.speaker}
-                                  </span>
-                                  <span className="text-[11px] text-[var(--text-subtle)]">
-                                    {entry.start.toFixed(2)}s -{" "}
-                                    {entry.end.toFixed(2)}s
-                                  </span>
-                                </div>
-                                <p className="text-sm text-[var(--text-secondary)] whitespace-pre-wrap break-words">
-                                  {entry.text}
-                                </p>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-sm text-[var(--text-secondary)] whitespace-pre-wrap leading-relaxed">
-                            {normalizedActiveTranscript ||
-                              "No transcript text available for this record."}
-                          </p>
-                        )}
-                      </div>
+                      <DiarizationReviewWorkspace
+                        record={activeHistoryRecord}
+                        audioUrl={selectedHistoryAudioUrl}
+                        loading={selectedHistoryLoading}
+                        emptyMessage={
+                          normalizedActiveTranscript ||
+                          "No transcript text available for this record."
+                        }
+                      />
                     </TabsContent>
 
                     <TabsContent value="speakers" className="mt-0">
