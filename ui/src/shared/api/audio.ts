@@ -647,8 +647,38 @@ export class AudioApiClient {
     return abortController;
   }
 
-  private speechHistoryRoutePrefix(route: SpeechHistoryRoute): string {
-    return `/${route}`;
+  private speechHistoryCollectionPath(route: SpeechHistoryRoute): string {
+    switch (route) {
+      case "text-to-speech":
+        return "/text-to-speech-generations";
+      case "voice-design":
+        return "/voice-design-generations";
+      case "voice-cloning":
+        return "/voice-clone-generations";
+    }
+  }
+
+  private speechHistoryRecordPath(
+    route: SpeechHistoryRoute,
+    recordId: string,
+  ): string {
+    return `${this.speechHistoryCollectionPath(route)}/${encodeURIComponent(recordId)}`;
+  }
+
+  private transcriptionCollectionPath(): string {
+    return "/transcriptions";
+  }
+
+  private transcriptionRecordPath(recordId: string): string {
+    return `${this.transcriptionCollectionPath()}/${encodeURIComponent(recordId)}`;
+  }
+
+  private diarizationCollectionPath(): string {
+    return "/diarizations";
+  }
+
+  private diarizationRecordPath(recordId: string): string {
+    return `${this.diarizationCollectionPath()}/${encodeURIComponent(recordId)}`;
   }
 
   private buildSpeechHistoryRecordCreateBody(
@@ -677,7 +707,7 @@ export class AudioApiClient {
   ): Promise<SpeechHistoryRecordSummary[]> {
     const payload = await this.http.request<{
       records: SpeechHistoryRecordSummary[];
-    }>(`${this.speechHistoryRoutePrefix(route)}/records`);
+    }>(this.speechHistoryCollectionPath(route));
     return payload.records ?? [];
   }
 
@@ -685,9 +715,7 @@ export class AudioApiClient {
     route: SpeechHistoryRoute,
     recordId: string,
   ): Promise<SpeechHistoryRecord> {
-    return this.http.request(
-      `${this.speechHistoryRoutePrefix(route)}/records/${encodeURIComponent(recordId)}`,
-    );
+    return this.http.request(this.speechHistoryRecordPath(route, recordId));
   }
 
   async createSpeechHistoryRecord(
@@ -695,7 +723,7 @@ export class AudioApiClient {
     request: SpeechHistoryRecordCreateRequest,
   ): Promise<SpeechHistoryRecord> {
     const response = await fetch(
-      this.http.url(`${this.speechHistoryRoutePrefix(route)}/records`),
+      this.http.url(this.speechHistoryCollectionPath(route)),
       {
         method: "POST",
         headers: {
@@ -724,7 +752,7 @@ export class AudioApiClient {
     const startStream = async () => {
       try {
         const response = await fetch(
-          this.http.url(`${this.speechHistoryRoutePrefix(route)}/records`),
+          this.http.url(this.speechHistoryCollectionPath(route)),
           {
             method: "POST",
             headers: {
@@ -811,7 +839,7 @@ export class AudioApiClient {
     options?: { download?: boolean },
   ): string {
     const base = this.http.url(
-      `${this.speechHistoryRoutePrefix(route)}/records/${encodeURIComponent(recordId)}/audio`,
+      `${this.speechHistoryRecordPath(route, recordId)}/audio`,
     );
     if (options?.download) {
       return `${base}?download=true`;
@@ -869,10 +897,9 @@ export class AudioApiClient {
     route: SpeechHistoryRoute,
     recordId: string,
   ): Promise<{ id: string; deleted: boolean }> {
-    return this.http.request(
-      `${this.speechHistoryRoutePrefix(route)}/records/${encodeURIComponent(recordId)}`,
-      { method: "DELETE" },
-    );
+    return this.http.request(this.speechHistoryRecordPath(route, recordId), {
+      method: "DELETE",
+    });
   }
 
   async listTextToSpeechRecords(): Promise<SpeechHistoryRecordSummary[]> {
@@ -1024,22 +1051,23 @@ export class AudioApiClient {
   async listTranscriptionRecords(): Promise<TranscriptionRecordSummary[]> {
     const payload = await this.http.request<{
       records: TranscriptionRecordSummary[];
-    }>("/transcription/records");
+    }>(this.transcriptionCollectionPath());
     return payload.records ?? [];
   }
 
   async getTranscriptionRecord(recordId: string): Promise<TranscriptionRecord> {
-    return this.http.request(
-      `/transcription/records/${encodeURIComponent(recordId)}`,
-    );
+    return this.http.request(this.transcriptionRecordPath(recordId));
   }
 
   async createTranscriptionRecord(
     request: TranscriptionRecordCreateRequest,
   ): Promise<TranscriptionRecord> {
-    const response = await fetch(this.http.url("/transcription/records"), {
-      ...this.buildTranscriptionRecordRequestInit(request, false),
-    });
+    const response = await fetch(
+      this.http.url(this.transcriptionCollectionPath()),
+      {
+        ...this.buildTranscriptionRecordRequestInit(request, false),
+      },
+    );
 
     if (!response.ok) {
       throw await this.http.createError(response, "Transcription failed");
@@ -1056,10 +1084,13 @@ export class AudioApiClient {
 
     const startStream = async () => {
       try {
-        const response = await fetch(this.http.url("/transcription/records"), {
-          ...this.buildTranscriptionRecordRequestInit(request, true),
-          signal: abortController.signal,
-        });
+        const response = await fetch(
+          this.http.url(this.transcriptionCollectionPath()),
+          {
+            ...this.buildTranscriptionRecordRequestInit(request, true),
+            signal: abortController.signal,
+          },
+        );
 
         if (!response.ok) {
           callbacks.onError?.(
@@ -1118,20 +1149,15 @@ export class AudioApiClient {
   }
 
   transcriptionRecordAudioUrl(recordId: string): string {
-    return this.http.url(
-      `/transcription/records/${encodeURIComponent(recordId)}/audio`,
-    );
+    return this.http.url(`${this.transcriptionRecordPath(recordId)}/audio`);
   }
 
   async deleteTranscriptionRecord(
     recordId: string,
   ): Promise<{ id: string; deleted: boolean }> {
-    return this.http.request(
-      `/transcription/records/${encodeURIComponent(recordId)}`,
-      {
-        method: "DELETE",
-      },
-    );
+    return this.http.request(this.transcriptionRecordPath(recordId), {
+      method: "DELETE",
+    });
   }
 
   async asrStatus(): Promise<ASRStatusResponse> {
@@ -1176,19 +1202,19 @@ export class AudioApiClient {
   async listDiarizationRecords(): Promise<DiarizationRecordSummary[]> {
     const payload = await this.http.request<{
       records: DiarizationRecordSummary[];
-    }>("/diarization/records");
+    }>(this.diarizationCollectionPath());
     return payload.records ?? [];
   }
 
   async getDiarizationRecord(recordId: string): Promise<DiarizationRecord> {
-    return this.http.request(`/diarization/records/${encodeURIComponent(recordId)}`);
+    return this.http.request(this.diarizationRecordPath(recordId));
   }
 
   async updateDiarizationRecord(
     recordId: string,
     request: DiarizationRecordUpdateRequest,
   ): Promise<DiarizationRecord> {
-    const path = `/diarization/records/${encodeURIComponent(recordId)}`;
+    const path = this.diarizationRecordPath(recordId);
     const body = JSON.stringify({
       speaker_name_overrides: request.speaker_name_overrides,
     });
@@ -1224,7 +1250,7 @@ export class AudioApiClient {
     request: DiarizationRecordRerunRequest,
   ): Promise<DiarizationRecord> {
     return this.http.request(
-      `/diarization/records/${encodeURIComponent(recordId)}/rerun`,
+      `${this.diarizationRecordPath(recordId)}/reruns`,
       {
         method: "POST",
         body: JSON.stringify({
@@ -1241,7 +1267,7 @@ export class AudioApiClient {
   async createDiarizationRecord(
     request: DiarizationRecordCreateRequest,
   ): Promise<DiarizationRecord> {
-    const response = await fetch(this.http.url("/diarization/records"), {
+    const response = await fetch(this.http.url(this.diarizationCollectionPath()), {
       ...this.buildDiarizationRecordRequestInit(request),
     });
 
@@ -1253,15 +1279,13 @@ export class AudioApiClient {
   }
 
   diarizationRecordAudioUrl(recordId: string): string {
-    return this.http.url(
-      `/diarization/records/${encodeURIComponent(recordId)}/audio`,
-    );
+    return this.http.url(`${this.diarizationRecordPath(recordId)}/audio`);
   }
 
   async deleteDiarizationRecord(
     recordId: string,
   ): Promise<{ id: string; deleted: boolean }> {
-    return this.http.request(`/diarization/records/${encodeURIComponent(recordId)}`, {
+    return this.http.request(this.diarizationRecordPath(recordId), {
       method: "DELETE",
     });
   }

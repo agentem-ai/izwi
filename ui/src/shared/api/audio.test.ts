@@ -79,12 +79,12 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "http://localhost/v1/diarization/records/diar-1",
+      "http://localhost/v1/diarizations/diar-1",
       expect.objectContaining({ method: "PATCH" }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "http://localhost/v1/diarization/records/diar-1",
+      "http://localhost/v1/diarizations/diar-1",
       expect.objectContaining({ method: "PUT" }),
     );
   });

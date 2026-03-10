@@ -401,7 +401,7 @@ export function DiarizationPage({
         isOpen={isModelModalOpen}
         onClose={closeModelModal}
         title="Diarization Models"
-        description="Manage pipeline models for /v1/diarization/records."
+        description="Manage pipeline models for /v1/diarizations."
         models={pipelineModels}
         sections={pipelineModelGroups}
         canUseModel={isDiarizationVariant}
