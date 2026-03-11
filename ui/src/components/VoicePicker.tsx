@@ -50,13 +50,27 @@ export function VoicePicker({
   return (
     <div className={cn("grid gap-4 md:grid-cols-2 xl:grid-cols-3", className)}>
       {items.map((item) => {
-        const card = (
+        return (
           <Card
+            key={item.id}
             className={cn(
               "h-full border-border/75 bg-card/90 transition-colors",
-              item.selected && "border-primary/60 shadow-[0_18px_40px_-34px_hsl(var(--primary)/0.9)]",
+              item.selected &&
+                "border-primary/60 shadow-[0_18px_40px_-34px_hsl(var(--primary)/0.9)]",
               item.onSelect && "cursor-pointer hover:border-primary/40",
             )}
+            role={item.onSelect ? "button" : undefined}
+            tabIndex={item.onSelect ? 0 : undefined}
+            onClick={item.onSelect}
+            onKeyDown={(event) => {
+              if (!item.onSelect) {
+                return;
+              }
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                item.onSelect();
+              }
+            }}
           >
             <CardContent className="flex h-full flex-col gap-4 p-5">
               <div className="space-y-2">
@@ -101,6 +115,7 @@ export function VoicePicker({
                     src={item.previewUrl}
                     controls
                     preload="none"
+                    onClick={(event) => event.stopPropagation()}
                     className="h-10 w-full"
                   />
                 ) : item.previewMessage ? (
@@ -110,28 +125,16 @@ export function VoicePicker({
                 ) : null}
 
                 {item.actions ? (
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div
+                    className="flex flex-wrap items-center gap-2"
+                    onClick={(event) => event.stopPropagation()}
+                  >
                     {item.actions}
                   </div>
                 ) : null}
               </div>
             </CardContent>
           </Card>
-        );
-
-        if (!item.onSelect) {
-          return <div key={item.id}>{card}</div>;
-        }
-
-        return (
-          <button
-            key={item.id}
-            type="button"
-            onClick={item.onSelect}
-            className="text-left"
-          >
-            {card}
-          </button>
         );
       })}
     </div>
