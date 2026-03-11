@@ -263,4 +263,69 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
       "http://localhost/v1/voice-clone-generations/clone-1/audio",
     );
   });
+
+  it("posts TTS projects to the canonical projects collection", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "ttsp-1",
+          created_at: 1,
+          updated_at: 1,
+          name: "Narration",
+          source_filename: "script.txt",
+          source_text: "Hello world.",
+          model_id: "Qwen3-TTS-0.6B-CustomVoice",
+          voice_mode: "built_in",
+          speaker: "Vivian",
+          saved_voice_id: null,
+          speed: 1,
+          segments: [],
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        },
+      ),
+    );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AudioApiClient(new ApiHttpClient("http://localhost/v1"));
+    await client.createTtsProject({
+      name: "Narration",
+      source_filename: "script.txt",
+      source_text: "Hello world.",
+      model_id: "Qwen3-TTS-0.6B-CustomVoice",
+      voice_mode: "built_in",
+      speaker: "Vivian",
+      speed: 1,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost/v1/tts-projects",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "Narration",
+          source_filename: "script.txt",
+          source_text: "Hello world.",
+          model_id: "Qwen3-TTS-0.6B-CustomVoice",
+          voice_mode: "built_in",
+          speaker: "Vivian",
+          saved_voice_id: undefined,
+          speed: 1,
+        }),
+      }),
+    );
+  });
+
+  it("builds canonical TTS project export urls", () => {
+    const client = new AudioApiClient(new ApiHttpClient("http://localhost/v1"));
+
+    expect(client.ttsProjectAudioUrl("ttsp-1")).toBe(
+      "http://localhost/v1/tts-projects/ttsp-1/audio",
+    );
+  });
 });

@@ -218,6 +218,76 @@ export interface SavedVoiceCreateRequest {
   source_record_id?: string;
 }
 
+export type TtsProjectVoiceMode = "built_in" | "saved";
+
+export interface TtsProjectSummary {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  name: string;
+  source_filename: string | null;
+  model_id: string | null;
+  voice_mode: TtsProjectVoiceMode;
+  speaker: string | null;
+  saved_voice_id: string | null;
+  speed: number | null;
+  segment_count: number;
+  rendered_segment_count: number;
+  total_chars: number;
+}
+
+export interface TtsProjectSegmentRecord {
+  id: string;
+  project_id: string;
+  position: number;
+  text: string;
+  input_chars: number;
+  speech_record_id: string | null;
+  updated_at: number;
+  generation_time_ms: number | null;
+  audio_duration_secs: number | null;
+  audio_filename: string | null;
+}
+
+export interface TtsProjectRecord {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  name: string;
+  source_filename: string | null;
+  source_text: string;
+  model_id: string | null;
+  voice_mode: TtsProjectVoiceMode;
+  speaker: string | null;
+  saved_voice_id: string | null;
+  speed: number | null;
+  segments: TtsProjectSegmentRecord[];
+}
+
+export interface TtsProjectCreateRequest {
+  name?: string;
+  source_filename?: string;
+  source_text: string;
+  model_id: string;
+  voice_mode?: TtsProjectVoiceMode;
+  speaker?: string;
+  saved_voice_id?: string;
+  speed?: number;
+}
+
+export interface TtsProjectUpdateRequest {
+  name?: string;
+  model_id?: string;
+  voice_mode?: TtsProjectVoiceMode;
+  speaker?: string;
+  saved_voice_id?: string;
+  speed?: number;
+}
+
+export interface TtsProjectSegmentUpdateRequest {
+  text: string;
+}
+
 export interface STTRequest {
   audio_base64: string;
   model_id?: string;
@@ -708,6 +778,18 @@ export class AudioApiClient {
     return `${this.diarizationCollectionPath()}/${encodeURIComponent(recordId)}`;
   }
 
+  private ttsProjectsCollectionPath(): string {
+    return "/tts-projects";
+  }
+
+  private ttsProjectPath(projectId: string): string {
+    return `${this.ttsProjectsCollectionPath()}/${encodeURIComponent(projectId)}`;
+  }
+
+  private ttsProjectSegmentPath(projectId: string, segmentId: string): string {
+    return `${this.ttsProjectPath(projectId)}/segments/${encodeURIComponent(segmentId)}`;
+  }
+
   private buildSpeechHistoryRecordCreateBody(
     request: SpeechHistoryRecordCreateRequest,
     stream: boolean,
@@ -1072,6 +1154,98 @@ export class AudioApiClient {
     voiceId: string,
   ): Promise<{ id: string; deleted: boolean }> {
     return this.http.request(`/voices/${encodeURIComponent(voiceId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async listTtsProjects(): Promise<TtsProjectSummary[]> {
+    const payload = await this.http.request<{ projects: TtsProjectSummary[] }>(
+      this.ttsProjectsCollectionPath(),
+    );
+    return payload.projects ?? [];
+  }
+
+  async createTtsProject(
+    request: TtsProjectCreateRequest,
+  ): Promise<TtsProjectRecord> {
+    return this.http.request(this.ttsProjectsCollectionPath(), {
+      method: "POST",
+      body: JSON.stringify({
+        name: request.name,
+        source_filename: request.source_filename,
+        source_text: request.source_text,
+        model_id: request.model_id,
+        voice_mode: request.voice_mode,
+        speaker: request.speaker,
+        saved_voice_id: request.saved_voice_id,
+        speed: request.speed,
+      }),
+    });
+  }
+
+  async getTtsProject(projectId: string): Promise<TtsProjectRecord> {
+    return this.http.request(this.ttsProjectPath(projectId));
+  }
+
+  async updateTtsProject(
+    projectId: string,
+    request: TtsProjectUpdateRequest,
+  ): Promise<TtsProjectRecord> {
+    return this.http.request(this.ttsProjectPath(projectId), {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: request.name,
+        model_id: request.model_id,
+        voice_mode: request.voice_mode,
+        speaker: request.speaker,
+        saved_voice_id: request.saved_voice_id,
+        speed: request.speed,
+      }),
+    });
+  }
+
+  async updateTtsProjectSegment(
+    projectId: string,
+    segmentId: string,
+    request: TtsProjectSegmentUpdateRequest,
+  ): Promise<TtsProjectRecord> {
+    return this.http.request(this.ttsProjectSegmentPath(projectId, segmentId), {
+      method: "PATCH",
+      body: JSON.stringify({
+        text: request.text,
+      }),
+    });
+  }
+
+  async renderTtsProjectSegment(
+    projectId: string,
+    segmentId: string,
+  ): Promise<TtsProjectRecord> {
+    return this.http.request(
+      `${this.ttsProjectSegmentPath(projectId, segmentId)}/render`,
+      {
+        method: "POST",
+      },
+    );
+  }
+
+  ttsProjectAudioUrl(
+    projectId: string,
+    options?: { download?: boolean },
+  ): string {
+    const base = this.http.url(
+      `${this.ttsProjectPath(projectId)}/audio`,
+    );
+    if (options?.download) {
+      return `${base}?download=true`;
+    }
+    return base;
+  }
+
+  async deleteTtsProject(
+    projectId: string,
+  ): Promise<{ id: string; deleted: boolean }> {
+    return this.http.request(this.ttsProjectPath(projectId), {
       method: "DELETE",
     });
   }
