@@ -337,8 +337,44 @@ async fn create_record(
             .await;
     }
 
+    let record = synthesize_record_internal(&state, &ctx, req, route_kind, variant, model_id, input_text)
+        .await?;
+
+    Ok(Json(record).into_response())
+}
+
+pub(crate) async fn synthesize_record(
+    state: &AppState,
+    ctx: &RequestContext,
+    req: CreateSpeechHistoryRecordRequest,
+    route_kind: SpeechRouteKind,
+) -> Result<SpeechHistoryRecord, ApiError> {
+    let mut req = normalize_create_request(req);
+    let model_id = required_trimmed(req.model_id.as_deref(), "model_id")?;
+    let input_text = required_trimmed(req.text.as_deref(), "text")?;
+
+    validate_reference_voice_selection(&req)?;
+    req = resolve_saved_voice_selection(state, req).await?;
+    validate_route_requirements(route_kind, &req)?;
+
+    let variant = parse_tts_model_variant(model_id.as_str())
+        .map_err(|err| ApiError::bad_request(format!("Unsupported TTS model: {err}")))?;
+    state.runtime.load_model(variant).await?;
+
+    synthesize_record_internal(state, ctx, req, route_kind, variant, model_id, input_text).await
+}
+
+async fn synthesize_record_internal(
+    state: &AppState,
+    ctx: &RequestContext,
+    req: CreateSpeechHistoryRecordRequest,
+    route_kind: SpeechRouteKind,
+    variant: ModelVariant,
+    model_id: String,
+    input_text: String,
+) -> Result<SpeechHistoryRecord, ApiError> {
     let generation_request =
-        build_generation_request(req.clone(), ctx.correlation_id, input_text.clone(), false);
+        build_generation_request(req.clone(), ctx.correlation_id.clone(), input_text.clone(), false);
     let planned_request_count =
         expand_generation_requests_for_long_form(&generation_request, variant).len();
 
@@ -365,7 +401,7 @@ async fn create_record(
             .await
             .map_err(|err| ApiError::internal(format!("Audio encoding failed: {err}")))??;
 
-    let record = state
+    state
         .speech_history_store
         .create_record(NewSpeechHistoryRecord {
             route_kind,
@@ -386,9 +422,7 @@ async fn create_record(
             audio_bytes: encoded_audio,
         })
         .await
-        .map_err(map_store_error)?;
-
-    Ok(Json(record).into_response())
+        .map_err(map_store_error)
 }
 
 async fn stream_record_creation(

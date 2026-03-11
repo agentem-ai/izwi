@@ -7,6 +7,8 @@ use axum::{extract::DefaultBodyLimit, routing::get, Router};
 
 use crate::state::AppState;
 
+pub(crate) use handlers::{synthesize_record, CreateSpeechHistoryRecordRequest};
+
 pub fn router() -> Router<AppState> {
     const AUDIO_UPLOAD_LIMIT_BYTES: usize = 64 * 1024 * 1024;
     const CANONICAL_TTS_COLLECTION: &str = "/text-to-speech-generations";

@@ -29,6 +29,7 @@ import {
 } from "@/features/models/catalog/routeModelCatalog";
 import { VoicePicker, type VoicePickerItem } from "@/components/VoicePicker";
 import { GenerationStats } from "@/components/GenerationStats";
+import { TextToSpeechProjectsWorkspace } from "@/components/TextToSpeechProjectsWorkspace";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -61,6 +62,7 @@ interface TextToSpeechWorkspaceProps {
 }
 
 type VoiceMode = "saved" | "built_in";
+type WorkspaceMode = "quick" | "projects";
 
 const MAX_BUFFERED_PCM_BYTES = 256 * 1024 * 1024;
 const ABORT_ERROR_NAME = "AbortError";
@@ -208,6 +210,7 @@ export function TextToSpeechWorkspace({
   initialSavedVoiceId,
   initialSpeaker,
 }: TextToSpeechWorkspaceProps) {
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("quick");
   const [text, setText] = useState("");
   const [voiceMode, setVoiceMode] = useState<VoiceMode>(
     initialSavedVoiceId ? "saved" : "built_in",
@@ -890,8 +893,56 @@ export function TextToSpeechWorkspace({
     </div>
   );
 
+  const renderWorkspaceModeToggle = () => (
+    <Card>
+      <CardContent className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="space-y-1">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            Workflow
+          </div>
+          <h2 className="text-lg font-semibold text-foreground">
+            Quick render or project workflow
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Use quick mode for one-off generations, or switch to projects for reusable scripts and merged export.
+          </p>
+        </div>
+
+        <Tabs
+          value={workspaceMode}
+          onValueChange={(value) => setWorkspaceMode(value as WorkspaceMode)}
+          className="w-full max-w-sm"
+        >
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="quick">Quick</TabsTrigger>
+            <TabsTrigger value="projects">Projects</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </CardContent>
+    </Card>
+  );
+
+  if (workspaceMode === "projects") {
+    return (
+      <div className="space-y-4">
+        {renderWorkspaceModeToggle()}
+        <TextToSpeechProjectsWorkspace
+          selectedModel={selectedModel}
+          selectedModelInfo={selectedModelInfo}
+          availableModels={availableModels}
+          modelOptions={modelOptions}
+          onSelectModel={onSelectModel}
+          onOpenModelManager={onOpenModelManager}
+          onModelRequired={onModelRequired}
+          onError={onError}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
+      {renderWorkspaceModeToggle()}
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_420px]">
         <Card>
           <CardContent className="space-y-5 p-5">

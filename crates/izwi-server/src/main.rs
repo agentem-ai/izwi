@@ -16,6 +16,7 @@ mod speech_history_store;
 mod state;
 mod storage_layout;
 mod transcription_store;
+mod tts_project_store;
 
 use izwi_core::{RuntimeService, ServeRuntimeConfig, ServeRuntimeConfigOverrides};
 use state::AppState;
