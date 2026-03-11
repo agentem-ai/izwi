@@ -123,6 +123,99 @@ describe("TranscriptionPlayground history", () => {
     );
   });
 
+  it("renders the cleaned sidebar and the streamlined history modal", async () => {
+    apiMocks.listTranscriptionRecords.mockResolvedValue([
+      {
+        id: "transcription-1",
+        created_at: 1,
+        model_id: "Qwen3-ASR-0.6B",
+        language: "English",
+        duration_secs: 3.2,
+        processing_time_ms: 160,
+        rtf: 0.4,
+        audio_mime_type: "audio/wav",
+        audio_filename: "clip.wav",
+        transcription_preview: "Testing saved transcription history.",
+        transcription_chars: 34,
+      },
+    ]);
+    apiMocks.getTranscriptionRecord.mockResolvedValue({
+      id: "transcription-1",
+      created_at: 1,
+      model_id: "Qwen3-ASR-0.6B",
+      aligner_model_id: "Qwen3-ForcedAligner-0.6B",
+      language: "English",
+      duration_secs: 3.2,
+      processing_time_ms: 160,
+      rtf: 0.4,
+      audio_mime_type: "audio/wav",
+      audio_filename: "clip.wav",
+      transcription: "Testing saved transcription history.",
+      segments: [
+        {
+          start: 0,
+          end: 3.2,
+          text: "Testing saved transcription history.",
+          word_start: 0,
+          word_end: 3,
+        },
+      ],
+      words: [
+        { word: "Testing", start: 0, end: 0.8 },
+        { word: "saved", start: 0.85, end: 1.5 },
+        { word: "transcription", start: 1.55, end: 2.5 },
+        { word: "history.", start: 2.55, end: 3.2 },
+      ],
+    });
+
+    render(
+      <TranscriptionPlayground
+        selectedModel="Qwen3-ASR-0.6B"
+        selectedModelReady={true}
+        modelOptions={[
+          {
+            value: "Qwen3-ASR-0.6B",
+            label: "Qwen3 ASR 0.6B",
+            statusLabel: "Ready",
+            isReady: true,
+          },
+        ]}
+        onSelectModel={vi.fn()}
+        onOpenModelManager={vi.fn()}
+        onModelRequired={vi.fn()}
+        timestampAlignerModelId="Qwen3-ForcedAligner-0.6B"
+        timestampAlignerReady={true}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalled(),
+    );
+    await waitFor(() =>
+      expect(apiMocks.getTranscriptionRecord).toHaveBeenCalledWith(
+        "transcription-1",
+      ),
+    );
+
+    expect(screen.queryByText("Latest input")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Qwen3 ASR 0.6B/i }),
+    ).toHaveClass("bg-[var(--bg-surface-0)]");
+
+    fireEvent.click(screen.getByRole("button", { name: /History/i }));
+    fireEvent.click(await screen.findByText("Testing saved transcription history."));
+
+    expect(await screen.findByText("Timed transcript")).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: /Copy/i }).at(-1),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: /Download/i }).at(-1),
+    ).toBeInTheDocument();
+    expect(screen.getByTitle("Open older record")).toBeInTheDocument();
+    expect(screen.queryByText("Performance")).not.toBeInTheDocument();
+  });
+
   it("asks for the timestamp aligner before enabling timestamps", async () => {
     apiMocks.listTranscriptionRecords.mockResolvedValue([]);
     const onTimestampAlignerRequired = vi.fn();
