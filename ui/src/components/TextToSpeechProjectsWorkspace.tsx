@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -27,13 +34,13 @@ import {
   VOICE_CLONING_PREFERRED_MODELS,
   resolvePreferredRouteModel,
 } from "@/features/models/catalog/routeModelCatalog";
-import { VoicePicker, type VoicePickerItem } from "@/components/VoicePicker";
+import type { VoicePickerItem } from "@/components/VoicePicker";
+import { VoiceSelect } from "@/components/VoiceSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useDownloadIndicator } from "@/utils/useDownloadIndicator";
 import { getSpeakerProfilesForVariant } from "@/types";
 
@@ -165,24 +172,25 @@ export function TextToSpeechProjectsWorkspace({
     [availableModels],
   );
 
-  const compatibleModelOptions = useMemo(() => {
-    return modelOptions.filter((option) => {
-      const model = availableModels.find((candidate) => candidate.variant === option.value);
-      const capabilities = model?.speech_capabilities;
-      if (!capabilities) {
-        return false;
-      }
-      return projectVoiceMode === "saved"
-        ? capabilities.supports_reference_voice
-        : capabilities.supports_builtin_voices;
-    });
-  }, [availableModels, modelOptions, projectVoiceMode]);
-
   const availableSpeakers = useMemo(
     () =>
       supportsBuiltInVoices ? getSpeakerProfilesForVariant(projectModelId) : [],
     [projectModelId, supportsBuiltInVoices],
   );
+  const selectedVoiceName = useMemo(() => {
+    if (projectVoiceMode === "saved") {
+      return (
+        savedVoices.find((voice) => voice.id === projectSavedVoiceId)?.name ?? null
+      );
+    }
+    return availableSpeakers.find((voice) => voice.id === projectSpeaker)?.name ?? null;
+  }, [
+    availableSpeakers,
+    projectSavedVoiceId,
+    projectSpeaker,
+    projectVoiceMode,
+    savedVoices,
+  ]);
 
   const selectedProjectSummary = useMemo(
     () =>
@@ -304,41 +312,18 @@ export function TextToSpeechProjectsWorkspace({
   }, [selectedModel, selectedProject]);
 
   useEffect(() => {
-    if (projectVoiceMode === "saved" && !supportsSavedVoices) {
-      const nextModel = resolvePreferredRouteModel({
-        models: savedVoiceCompatibleModels,
-        selectedModel: projectModelId || selectedModel,
-        preferredVariants: SAVED_VOICE_RENDERER_PREFERRED_MODELS,
-      });
-      if (nextModel && nextModel !== projectModelId) {
-        setProjectModelId(nextModel);
-      }
+    if (projectVoiceMode === "saved" && !supportsSavedVoices && supportsBuiltInVoices) {
+      setProjectVoiceMode("built_in");
+      return;
     }
-  }, [
-    projectModelId,
-    projectVoiceMode,
-    savedVoiceCompatibleModels,
-    selectedModel,
-    supportsSavedVoices,
-  ]);
 
-  useEffect(() => {
-    if (projectVoiceMode === "built_in" && !supportsBuiltInVoices) {
-      const nextModel = resolvePreferredRouteModel({
-        models: builtInCompatibleModels,
-        selectedModel: projectModelId || selectedModel,
-        preferredVariants: TEXT_TO_SPEECH_PREFERRED_MODELS,
-      });
-      if (nextModel && nextModel !== projectModelId) {
-        setProjectModelId(nextModel);
-      }
+    if (projectVoiceMode === "built_in" && !supportsBuiltInVoices && supportsSavedVoices) {
+      setProjectVoiceMode("saved");
     }
   }, [
-    builtInCompatibleModels,
-    projectModelId,
     projectVoiceMode,
-    selectedModel,
     supportsBuiltInVoices,
+    supportsSavedVoices,
   ]);
 
   useEffect(() => {
@@ -369,7 +354,6 @@ export function TextToSpeechProjectsWorkspace({
     categoryLabel: currentProjectModelInfo?.variant ?? "Built-in voice",
     description: voice.description,
     meta: [voice.language],
-    previewMessage: "Use project render to audition this voice across the full script.",
     selected: projectVoiceMode === "built_in" && projectSpeaker === voice.id,
     onSelect: () => {
       setProjectVoiceMode("built_in");
@@ -377,6 +361,71 @@ export function TextToSpeechProjectsWorkspace({
       setWorkspaceStatus(null);
     },
   }));
+
+  const projectVoiceAvailabilitySummary = useMemo(() => {
+    if (!projectModelId) {
+      return "Choose a model";
+    }
+
+    if (supportsBuiltInVoices && supportsSavedVoices) {
+      return `${availableSpeakers.length} built-in voices plus saved voices`;
+    }
+
+    if (supportsBuiltInVoices) {
+      return availableSpeakers.length > 0
+        ? `${availableSpeakers.length} built-in voices`
+        : "Built-in voices unavailable";
+    }
+
+    if (supportsSavedVoices) {
+      return "Saved voices only";
+    }
+
+    return "No voices on this model";
+  }, [
+    availableSpeakers.length,
+    projectModelId,
+    supportsBuiltInVoices,
+    supportsSavedVoices,
+  ]);
+
+  const projectVoiceNotice = useMemo(() => {
+    if (!projectModelId) {
+      return "Choose a render model before assigning a project voice.";
+    }
+
+    if (projectVoiceMode === "saved") {
+      if (!supportsSavedVoices) {
+        return `${projectModelId} does not support reusable saved voices.`;
+      }
+      if (savedVoicesLoading) {
+        return "Loading your saved voice library.";
+      }
+      return selectedVoiceName
+        ? `Project voice set to "${selectedVoiceName}".`
+        : "Choose a saved voice for this project.";
+    }
+
+    if (!supportsBuiltInVoices) {
+      return `${projectModelId} does not expose built-in speakers on this route.`;
+    }
+
+    if (availableSpeakers.length === 0) {
+      return `No built-in speakers are currently mapped for ${projectModelId}.`;
+    }
+
+    return selectedVoiceName
+      ? `Project voice set to "${selectedVoiceName}".`
+      : "Choose a built-in speaker for this project.";
+  }, [
+    availableSpeakers.length,
+    projectModelId,
+    projectVoiceMode,
+    savedVoicesLoading,
+    selectedVoiceName,
+    supportsBuiltInVoices,
+    supportsSavedVoices,
+  ]);
 
   const savedVoiceItems: VoicePickerItem[] = savedVoices.map((voice) => ({
     id: voice.id,
@@ -396,8 +445,23 @@ export function TextToSpeechProjectsWorkspace({
     },
   }));
 
+  const selectedVoiceItem = useMemo(() => {
+    if (projectVoiceMode === "saved") {
+      return (
+        savedVoiceItems.find((item) => item.id === projectSavedVoiceId) ?? null
+      );
+    }
+    return builtInVoiceItems.find((item) => item.id === projectSpeaker) ?? null;
+  }, [
+    builtInVoiceItems,
+    projectSavedVoiceId,
+    projectSpeaker,
+    projectVoiceMode,
+    savedVoiceItems,
+  ]);
+
   const handleImportFile = async (
-    event: React.ChangeEvent<HTMLInputElement>,
+    event: ChangeEvent<HTMLInputElement>,
   ) => {
     const file = event.target.files?.[0];
     if (!file) {
@@ -743,19 +807,20 @@ export function TextToSpeechProjectsWorkspace({
   };
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-      <div className="space-y-4">
+    <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
+      <div className="space-y-6">
         <Card>
-          <CardContent className="space-y-4 p-5">
-            <div className="space-y-1">
+          <CardContent className="space-y-5 p-6">
+            <div className="space-y-2">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                 New project
               </div>
               <h3 className="text-lg font-semibold text-foreground">
                 Import and split a script
               </h3>
-              <p className="text-sm text-muted-foreground">
-                Create a reusable narration project with editable segments and merged export.
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                Create a reusable narration project with editable segments and
+                merged export.
               </p>
             </div>
 
@@ -778,15 +843,20 @@ export function TextToSpeechProjectsWorkspace({
               className="hidden"
               onChange={handleImportFile}
             />
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
               <Button
                 variant="outline"
                 onClick={() => fileInputRef.current?.click()}
+                className="w-full justify-center"
               >
                 <Upload className="h-4 w-4" />
                 Import text file
               </Button>
-              <Button onClick={handleCreateProject} disabled={creatingProject}>
+              <Button
+                onClick={handleCreateProject}
+                disabled={creatingProject}
+                className="w-full justify-center"
+              >
                 {creatingProject ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -809,8 +879,8 @@ export function TextToSpeechProjectsWorkspace({
         </Card>
 
         <Card>
-          <CardContent className="space-y-4 p-5">
-            <div className="space-y-1">
+          <CardContent className="space-y-5 p-6">
+            <div className="space-y-2">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                 Projects
               </div>
@@ -819,7 +889,7 @@ export function TextToSpeechProjectsWorkspace({
               </h3>
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {projectsLoading ? (
                 <div className="rounded-xl border border-dashed border-border/70 bg-muted/25 px-3 py-6 text-center text-sm text-muted-foreground">
                   Loading projects...
@@ -913,7 +983,7 @@ export function TextToSpeechProjectsWorkspace({
 
         {!selectedProject ? (
           <Card>
-            <CardContent className="flex min-h-[420px] flex-col items-center justify-center gap-4 p-6 text-center">
+            <CardContent className="flex min-h-[460px] flex-col items-center justify-center gap-4 p-8 text-center">
               <div className="rounded-2xl border border-border/70 bg-muted/45 p-4">
                 <FileAudio className="h-6 w-6 text-muted-foreground" />
               </div>
@@ -930,17 +1000,18 @@ export function TextToSpeechProjectsWorkspace({
         ) : (
           <>
             <Card>
-              <CardContent className="space-y-5 p-5">
+              <CardContent className="space-y-6 p-6">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                  <div className="space-y-1">
+                  <div className="space-y-2">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                       Project settings
                     </div>
                     <h2 className="text-lg font-semibold text-foreground">
                       {selectedProject.name}
                     </h2>
-                    <p className="text-sm text-muted-foreground">
-                      Apply a global voice and model, then render segments individually or all at once.
+                    <p className="text-sm leading-relaxed text-muted-foreground">
+                      Apply a global model and voice once, then render segments
+                      individually or all at once.
                     </p>
                   </div>
 
@@ -996,119 +1067,128 @@ export function TextToSpeechProjectsWorkspace({
                   </div>
                 </div>
 
-                <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
+                <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_250px]">
+                  <div className="space-y-5">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                          Project name
+                        </label>
+                        <Input
+                          value={projectName}
+                          onChange={(event) => setProjectName(event.target.value)}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                          Render model
+                        </label>
+                        <select
+                          value={projectModelId}
+                          onChange={(event) => {
+                            setProjectModelId(event.target.value);
+                            setWorkspaceStatus(null);
+                          }}
+                          className="flex h-11 w-full rounded-xl border border-input/85 bg-background/70 px-3.5 text-sm shadow-sm transition-[border-color,box-shadow,background-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 focus-visible:border-ring/50"
+                        >
+                          {modelOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label} · {option.statusLabel}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                        Voice
+                      </label>
+                      <VoiceSelect
+                        voiceMode={projectVoiceMode}
+                        onVoiceModeChange={(value) => {
+                          setProjectVoiceMode(value);
+                          setWorkspaceStatus(null);
+                        }}
+                        savedVoiceItems={savedVoiceItems}
+                        builtInVoiceItems={builtInVoiceItems}
+                        selectedItem={selectedVoiceItem}
+                        savedVoicesLoading={savedVoicesLoading}
+                        savedVoicesError={savedVoicesError}
+                        savedEnabled={supportsSavedVoices}
+                        builtInEnabled={supportsBuiltInVoices}
+                        disabled={!projectModelId}
+                        modelLabel={currentProjectModelInfo?.variant ?? projectModelId}
+                      />
+                    </div>
+
+                    <div className="rounded-2xl border border-border/60 bg-muted/20 px-4 py-3 text-sm leading-relaxed text-muted-foreground">
+                      {projectVoiceNotice}
+                    </div>
+                  </div>
+
                   <div className="space-y-4">
-                    <div className="space-y-2">
-                      <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                        Project name
-                      </label>
-                      <Input
-                        value={projectName}
-                        onChange={(event) => setProjectName(event.target.value)}
+                    <div className="rounded-2xl border border-border/75 bg-muted/25 p-4">
+                      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                        Progress
+                      </div>
+                      <div className="mt-2 text-2xl font-semibold text-foreground">
+                        {selectedProjectSummary?.rendered_segment_count ?? 0}/
+                        {selectedProjectSummary?.segment_count ?? selectedProject.segments.length}
+                      </div>
+                      <div className="mt-1 text-sm text-muted-foreground">
+                        rendered segments
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-border/75 bg-muted/25 p-4">
+                      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                        Voice availability
+                      </div>
+                      <div className="mt-2 text-base font-semibold text-foreground">
+                        {projectVoiceAvailabilitySummary}
+                      </div>
+                      <div className="mt-1 text-sm text-muted-foreground">
+                        {selectedVoiceItem?.name
+                          ? `Selected voice: ${selectedVoiceItem.name}`
+                          : "Choose a project voice"}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-border/75 bg-muted/25 p-4">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-medium text-foreground">Speed</span>
+                        <span className="text-muted-foreground">
+                          {projectSpeed.toFixed(2)}x
+                        </span>
+                      </div>
+                      <Slider
+                        value={[projectSpeed]}
+                        min={0.5}
+                        max={1.5}
+                        step={0.05}
+                        onValueChange={([value]) => setProjectSpeed(value ?? 1)}
                       />
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                        Render model
-                      </label>
-                      <select
-                        value={projectModelId}
-                        onChange={(event) => setProjectModelId(event.target.value)}
-                        className="flex h-10 w-full rounded-lg border border-input/85 bg-background/70 px-3 text-sm shadow-sm transition-[border-color,box-shadow,background-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 focus-visible:border-ring/50"
-                      >
-                        {compatibleModelOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label} · {option.statusLabel}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-border/75 bg-muted/25 p-4">
-                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                      Progress
-                    </div>
-                    <div className="mt-2 text-2xl font-semibold text-foreground">
-                      {selectedProjectSummary?.rendered_segment_count ?? 0}/
-                      {selectedProjectSummary?.segment_count ?? selectedProject.segments.length}
-                    </div>
-                    <div className="mt-1 text-sm text-muted-foreground">
-                      rendered segments
-                    </div>
-                    {onOpenModelManager ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="mt-4"
-                        onClick={onOpenModelManager}
-                      >
-                        <Settings2 className="h-4 w-4" />
-                        Models
-                      </Button>
-                    ) : null}
-                  </div>
-                </div>
-
-                <div className="space-y-4 rounded-2xl border border-border/75 bg-muted/25 p-4">
-                  <Tabs
-                    value={projectVoiceMode}
-                    onValueChange={(value) =>
-                      setProjectVoiceMode(value as TtsProjectVoiceMode)
-                    }
-                    className="space-y-4"
-                  >
-                    <TabsList>
-                      <TabsTrigger value="built_in">Built-in</TabsTrigger>
-                      <TabsTrigger value="saved">My voices</TabsTrigger>
-                    </TabsList>
-                  </Tabs>
-
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="font-medium text-foreground">Speed</span>
-                      <span className="text-muted-foreground">{projectSpeed.toFixed(2)}x</span>
-                    </div>
-                    <Slider
-                      value={[projectSpeed]}
-                      min={0.5}
-                      max={1.5}
-                      step={0.05}
-                      onValueChange={([value]) => setProjectSpeed(value ?? 1)}
-                    />
-                  </div>
-
-                  {projectVoiceMode === "saved" ? (
-                    <>
-                      {savedVoicesError ? (
-                        <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                          {savedVoicesError}
-                        </div>
+                      {onOpenModelManager ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="mt-4"
+                          onClick={onOpenModelManager}
+                        >
+                          <Settings2 className="h-4 w-4" />
+                          Models
+                        </Button>
                       ) : null}
-                      <VoicePicker
-                        items={savedVoiceItems}
-                        emptyTitle={
-                          savedVoicesLoading
-                            ? "Loading saved voices"
-                            : "No saved voices yet"
-                        }
-                        emptyDescription="Save a voice from cloning or design before using it in a TTS project."
-                      />
-                    </>
-                  ) : (
-                    <VoicePicker
-                      items={builtInVoiceItems}
-                      emptyTitle="No built-in voices available"
-                      emptyDescription="Load a built-in voice model to assign a speaker for this project."
-                    />
-                  )}
+                    </div>
+                  </div>
                 </div>
               </CardContent>
             </Card>
 
             <Card>
-              <CardContent className="space-y-4 p-5">
+              <CardContent className="space-y-4 p-6">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
