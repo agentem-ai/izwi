@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   AlertCircle,
   CheckCircle2,
-  ChevronDown,
   Download,
   Loader2,
   Mic2,
@@ -12,7 +11,6 @@ import {
   Settings2,
   Sparkles,
   Square,
-  Waves,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -27,14 +25,15 @@ import {
   VOICE_CLONING_PREFERRED_MODELS,
   resolvePreferredRouteModel,
 } from "@/features/models/catalog/routeModelCatalog";
-import { VoicePicker, type VoicePickerItem } from "@/components/VoicePicker";
+import type { VoicePickerItem } from "@/components/VoicePicker";
+import { VoiceSelect } from "@/components/VoiceSelect";
 import { GenerationStats } from "@/components/GenerationStats";
 import { TextToSpeechProjectsWorkspace } from "@/components/TextToSpeechProjectsWorkspace";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SpeechHistoryPanel } from "@/components/SpeechHistoryPanel";
 import { useDownloadIndicator } from "@/utils/useDownloadIndicator";
 import { getSpeakerProfilesForVariant } from "@/types";
@@ -219,7 +218,6 @@ export function TextToSpeechWorkspace({
   const [selectedSavedVoiceId, setSelectedSavedVoiceId] = useState(
     initialSavedVoiceId || "",
   );
-  const [voiceSearch, setVoiceSearch] = useState("");
   const [instructions, setInstructions] = useState("");
   const [speed, setSpeed] = useState(1);
   const [streamingEnabled, setStreamingEnabled] = useState(true);
@@ -236,7 +234,6 @@ export function TextToSpeechWorkspace({
   const [savedVoices, setSavedVoices] = useState<SavedVoiceSummary[]>([]);
   const [savedVoicesLoading, setSavedVoicesLoading] = useState(false);
   const [savedVoicesError, setSavedVoicesError] = useState<string | null>(null);
-  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const {
     downloadState,
     downloadMessage,
@@ -258,9 +255,9 @@ export function TextToSpeechWorkspace({
   const bufferedPcmBytesRef = useRef(0);
   const mergeSuppressedRef = useRef(false);
   const generationSessionRef = useRef(0);
-  const modelMenuRef = useRef<HTMLDivElement>(null);
   const appliedInitialSavedVoiceRef = useRef(false);
   const appliedInitialSpeakerRef = useRef(false);
+  const alignedInitialModelIntentRef = useRef(false);
 
   const selectedOption = useMemo(() => {
     if (!selectedModel) {
@@ -278,21 +275,6 @@ export function TextToSpeechWorkspace({
   const supportsVoiceDescription =
     capabilities?.supports_voice_description ?? false;
   const supportsStreaming = capabilities?.supports_streaming ?? false;
-
-  const builtInCompatibleModels = useMemo(
-    () =>
-      availableModels.filter(
-        (model) => model.speech_capabilities?.supports_builtin_voices,
-      ),
-    [availableModels],
-  );
-  const savedVoiceCompatibleModels = useMemo(
-    () =>
-      availableModels.filter(
-        (model) => model.speech_capabilities?.supports_reference_voice,
-      ),
-    [availableModels],
-  );
 
   const availableSpeakers = useMemo(
     () =>
@@ -337,18 +319,79 @@ export function TextToSpeechWorkspace({
   }, [initialSpeaker]);
 
   useEffect(() => {
-    const onPointerDown = (event: MouseEvent) => {
-      if (
-        modelMenuRef.current &&
-        event.target instanceof Node &&
-        !modelMenuRef.current.contains(event.target)
-      ) {
-        setIsModelMenuOpen(false);
+    if (alignedInitialModelIntentRef.current) {
+      return;
+    }
+
+    if (initialSavedVoiceId && !supportsReferenceVoices) {
+      const nextModel = resolvePreferredRouteModel({
+        models: availableModels.filter(
+          (model) => model.speech_capabilities?.supports_reference_voice,
+        ),
+        selectedModel,
+        preferredVariants: SAVED_VOICE_RENDERER_PREFERRED_MODELS,
+      });
+      if (nextModel && nextModel !== selectedModel) {
+        onSelectModel?.(nextModel);
+        return;
       }
-    };
-    window.addEventListener("mousedown", onPointerDown);
-    return () => window.removeEventListener("mousedown", onPointerDown);
-  }, []);
+    }
+
+    if (initialSpeaker && !supportsBuiltInVoices) {
+      const nextModel = resolvePreferredRouteModel({
+        models: availableModels.filter(
+          (model) => model.speech_capabilities?.supports_builtin_voices,
+        ),
+        selectedModel,
+        preferredVariants: TEXT_TO_SPEECH_PREFERRED_MODELS,
+      });
+      if (nextModel && nextModel !== selectedModel) {
+        onSelectModel?.(nextModel);
+        return;
+      }
+    }
+
+    alignedInitialModelIntentRef.current = true;
+  }, [
+    availableModels,
+    initialSavedVoiceId,
+    initialSpeaker,
+    onSelectModel,
+    selectedModel,
+    supportsBuiltInVoices,
+    supportsReferenceVoices,
+  ]);
+
+  useEffect(() => {
+    if (voiceMode === "saved" && !supportsReferenceVoices && supportsBuiltInVoices) {
+      setVoiceMode("built_in");
+      return;
+    }
+
+    if (voiceMode === "built_in" && !supportsBuiltInVoices && supportsReferenceVoices) {
+      setVoiceMode("saved");
+    }
+  }, [
+    supportsBuiltInVoices,
+    supportsReferenceVoices,
+    voiceMode,
+  ]);
+
+  useEffect(() => {
+    if (
+      voiceMode === "saved" &&
+      supportsReferenceVoices &&
+      !selectedSavedVoiceId &&
+      savedVoices.length > 0
+    ) {
+      setSelectedSavedVoiceId(savedVoices[0]?.id ?? "");
+    }
+  }, [
+    savedVoices,
+    selectedSavedVoiceId,
+    supportsReferenceVoices,
+    voiceMode,
+  ]);
 
   const replaceAudioUrl = useCallback((nextUrl: string | null) => {
     revokeObjectUrlIfNeeded(audioUrlRef.current);
@@ -418,143 +461,126 @@ export function TextToSpeechWorkspace({
     void loadSavedVoices();
   }, [loadSavedVoices]);
 
-  useEffect(() => {
-    if (
-      voiceMode === "saved" &&
-      selectedSavedVoiceId &&
-      !supportsReferenceVoices
-    ) {
-      const nextModel = resolvePreferredRouteModel({
-        models: savedVoiceCompatibleModels,
-        selectedModel,
-        preferredVariants: SAVED_VOICE_RENDERER_PREFERRED_MODELS,
-      });
-      if (nextModel && nextModel !== selectedModel) {
-        onSelectModel?.(nextModel);
-      }
-    }
-  }, [
-    onSelectModel,
-    savedVoiceCompatibleModels,
-    selectedModel,
-    selectedSavedVoiceId,
-    supportsReferenceVoices,
-    voiceMode,
-  ]);
-
-  useEffect(() => {
-    if (voiceMode === "built_in" && !supportsBuiltInVoices) {
-      const nextModel = resolvePreferredRouteModel({
-        models: builtInCompatibleModels,
-        selectedModel,
-        preferredVariants: TEXT_TO_SPEECH_PREFERRED_MODELS,
-      });
-      if (nextModel && nextModel !== selectedModel) {
-        onSelectModel?.(nextModel);
-      }
-    }
-  }, [
-    builtInCompatibleModels,
-    onSelectModel,
-    selectedModel,
-    supportsBuiltInVoices,
-    voiceMode,
-  ]);
-
   const compatibilityNotice = useMemo(() => {
+    if (!selectedModelInfo?.variant) {
+      return "Choose a model to see the voice options it supports on this route.";
+    }
+
     if (voiceMode === "saved") {
-      if (selectedSavedVoiceId && !supportsReferenceVoices) {
-        if (savedVoiceCompatibleModels.length === 0) {
-          return "Load a Qwen Base or LFM2 Audio model to render saved voices.";
-        }
-        return "Switching to a saved-voice compatible model.";
+      if (!supportsReferenceVoices) {
+        return `${selectedModelInfo.variant} does not support reusable saved voices. Pick a renderer with saved-voice support.`;
       }
       if (selectedSavedVoice) {
         return `Rendering with reusable voice "${selectedSavedVoice.name}".`;
+      }
+      if (savedVoicesLoading) {
+        return "Loading your saved voices for this model.";
       }
       return "Choose a saved voice to reuse an existing cloned or designed profile.";
     }
 
     if (!supportsBuiltInVoices) {
-      if (builtInCompatibleModels.length === 0) {
-        return "Load a CustomVoice, Kokoro, or LFM2 Audio model to use built-in voices.";
-      }
-      return "Switching to a built-in voice model.";
+      return `${selectedModelInfo.variant} does not expose built-in speakers on this route.`;
     }
 
-    return `Using built-in voice "${speaker}".`;
+    if (availableSpeakers.length === 0) {
+      return `No built-in speakers are currently mapped for ${selectedModelInfo.variant}.`;
+    }
+
+    return `Using built-in voice "${speaker}" on ${selectedModelInfo.variant}.`;
   }, [
-    builtInCompatibleModels.length,
-    savedVoiceCompatibleModels.length,
+    availableSpeakers.length,
+    savedVoicesLoading,
+    selectedModelInfo?.variant,
     selectedSavedVoice,
-    selectedSavedVoiceId,
     speaker,
     supportsBuiltInVoices,
     supportsReferenceVoices,
     voiceMode,
   ]);
 
-  const filteredSavedVoices = useMemo(() => {
-    const normalizedQuery = voiceSearch.trim().toLowerCase();
-    return savedVoices.filter((voice) => {
-      if (!normalizedQuery) {
-        return true;
-      }
+  const voiceAvailabilitySummary = useMemo(() => {
+    if (!selectedModelInfo?.variant) {
+      return "Choose a model";
+    }
+
+    if (supportsBuiltInVoices && supportsReferenceVoices) {
+      return `${availableSpeakers.length} built-in voices plus saved voices`;
+    }
+
+    if (supportsBuiltInVoices) {
+      return availableSpeakers.length > 0
+        ? `${availableSpeakers.length} built-in voices`
+        : "Built-in voices unavailable";
+    }
+
+    if (supportsReferenceVoices) {
+      return "Saved voices only";
+    }
+
+    return "No voices on this route";
+  }, [
+    availableSpeakers.length,
+    selectedModelInfo?.variant,
+    supportsBuiltInVoices,
+    supportsReferenceVoices,
+  ]);
+
+  const savedVoiceItems: VoicePickerItem[] = savedVoices.map((voice) => ({
+    id: voice.id,
+    name: voice.name,
+    categoryLabel: savedVoiceSourceLabel(voice.source_route_kind),
+    description: voice.reference_text_preview,
+    meta: [
+      `${voice.reference_text_chars} chars`,
+      formatSavedVoiceDate(voice.updated_at || voice.created_at),
+    ],
+    previewUrl: api.savedVoiceAudioUrl(voice.id),
+    selected: voiceMode === "saved" && selectedSavedVoiceId === voice.id,
+    onSelect: () => {
+      setVoiceMode("saved");
+      setSelectedSavedVoiceId(voice.id);
+    },
+  }));
+
+  const builtInVoiceItems: VoicePickerItem[] = availableSpeakers.map((voice) => ({
+    id: voice.id,
+    name: voice.name,
+    categoryLabel: selectedModelInfo?.variant ?? "Built-in voice",
+    description: voice.description,
+    meta: [voice.language],
+    selected: voiceMode === "built_in" && speaker === voice.id,
+    onSelect: () => {
+      setVoiceMode("built_in");
+      setSpeaker(voice.id);
+    },
+  }));
+
+  const selectedVoiceItem = useMemo(() => {
+    if (voiceMode === "saved") {
       return (
-        voice.name.toLowerCase().includes(normalizedQuery) ||
-        voice.reference_text_preview.toLowerCase().includes(normalizedQuery)
+        savedVoiceItems.find((item) => item.id === selectedSavedVoiceId) ?? null
       );
-    });
-  }, [savedVoices, voiceSearch]);
+    }
+    return builtInVoiceItems.find((item) => item.id === speaker) ?? null;
+  }, [
+    builtInVoiceItems,
+    savedVoiceItems,
+    selectedSavedVoiceId,
+    speaker,
+    voiceMode,
+  ]);
 
-  const filteredBuiltInVoices = useMemo(() => {
-    const normalizedQuery = voiceSearch.trim().toLowerCase();
-    return availableSpeakers.filter((voice) => {
-      if (!normalizedQuery) {
-        return true;
-      }
-      return (
-        voice.name.toLowerCase().includes(normalizedQuery) ||
-        voice.language.toLowerCase().includes(normalizedQuery) ||
-        voice.description.toLowerCase().includes(normalizedQuery)
-      );
-    });
-  }, [availableSpeakers, voiceSearch]);
+  const voiceAvailabilityDetail = selectedVoiceItem?.name
+    ? `Selected voice: ${selectedVoiceItem.name}`
+    : voiceMode === "saved"
+      ? "Select a saved voice"
+      : "Select a built-in voice";
 
-  const savedVoiceItems: VoicePickerItem[] = filteredSavedVoices.map(
-    (voice) => ({
-      id: voice.id,
-      name: voice.name,
-      categoryLabel: savedVoiceSourceLabel(voice.source_route_kind),
-      description: voice.reference_text_preview,
-      meta: [
-        `${voice.reference_text_chars} chars`,
-        formatSavedVoiceDate(voice.updated_at || voice.created_at),
-      ],
-      previewUrl: api.savedVoiceAudioUrl(voice.id),
-      selected: voiceMode === "saved" && selectedSavedVoiceId === voice.id,
-      onSelect: () => {
-        setVoiceMode("saved");
-        setSelectedSavedVoiceId(voice.id);
-      },
-    }),
-  );
-
-  const builtInVoiceItems: VoicePickerItem[] = filteredBuiltInVoices.map(
-    (voice) => ({
-      id: voice.id,
-      name: voice.name,
-      categoryLabel: selectedModelInfo?.variant ?? "Built-in voice",
-      description: voice.description,
-      meta: [voice.language],
-      previewMessage: "Select this voice, then generate speech to audition it.",
-      selected: voiceMode === "built_in" && speaker === voice.id,
-      onSelect: () => {
-        setVoiceMode("built_in");
-        setSpeaker(voice.id);
-      },
-    }),
-  );
+  const canGenerate =
+    selectedModelReady &&
+    (voiceMode !== "saved" || Boolean(selectedSavedVoiceId)) &&
+    (voiceMode !== "built_in" || Boolean(speaker));
 
   const handleGenerate = async () => {
     if (!selectedModel || !selectedModelReady) {
@@ -847,64 +873,25 @@ export function TextToSpeechWorkspace({
   };
 
   const renderModelSelector = () => (
-    <div className="relative inline-block w-full" ref={modelMenuRef}>
-      <button
-        onClick={() => setIsModelMenuOpen((prev) => !prev)}
-        className={cn(
-          "flex h-10 w-full items-center justify-between gap-2 rounded-lg border px-3 text-sm transition-colors",
-          selectedOption?.isReady
-            ? "border-border bg-background/75 text-foreground"
-            : "border-border/80 bg-muted/35 text-muted-foreground hover:border-border",
-        )}
-      >
-        <span className="min-w-0 flex-1 truncate text-left">
-          {selectedOption?.label || "Select model"}
-        </span>
-        <ChevronDown
-          className={cn(
-            "h-4 w-4 transition-transform",
-            isModelMenuOpen && "rotate-180",
-          )}
-        />
-      </button>
-
-      <AnimatePresence>
-        {isModelMenuOpen ? (
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 8 }}
-            transition={{ duration: 0.15 }}
-            className="absolute left-0 right-0 top-full z-50 mt-2 rounded-xl border border-border bg-popover p-1.5 shadow-xl"
-          >
-            <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
-              {modelOptions.map((option) => (
-                <button
-                  key={option.value}
-                  onClick={() => {
-                    onSelectModel?.(option.value);
-                    setIsModelMenuOpen(false);
-                  }}
-                  className={cn(
-                    "w-full rounded-lg px-3 py-2 text-left transition-colors",
-                    selectedOption?.value === option.value
-                      ? "bg-accent text-accent-foreground"
-                      : "hover:bg-accent/70",
-                  )}
-                >
-                  <div className="truncate text-sm font-medium">
-                    {option.label}
-                  </div>
-                  <div className="mt-1 text-[11px] text-muted-foreground">
-                    {option.statusLabel}
-                  </div>
-                </button>
-              ))}
-            </div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
-    </div>
+    <select
+      value={selectedModel ?? ""}
+      onChange={(event) => onSelectModel?.(event.target.value)}
+      className={cn(
+        "flex h-11 w-full rounded-xl border border-input/85 bg-background/70 px-3.5 text-sm shadow-sm transition-[border-color,box-shadow,background-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 focus-visible:border-ring/50",
+        !selectedOption?.isReady && "text-muted-foreground",
+      )}
+    >
+      {!selectedModel ? (
+        <option value="" disabled>
+          Select model
+        </option>
+      ) : null}
+      {modelOptions.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label} · {option.statusLabel}
+        </option>
+      ))}
+    </select>
   );
 
   const renderWorkspaceModeToggle = () => (
@@ -939,7 +926,7 @@ export function TextToSpeechWorkspace({
 
   if (workspaceMode === "projects") {
     return (
-      <div className="space-y-4">
+      <div className="mx-auto max-w-[1240px] space-y-6">
         {renderWorkspaceModeToggle()}
         <TextToSpeechProjectsWorkspace
           selectedModel={selectedModel}
@@ -956,228 +943,279 @@ export function TextToSpeechWorkspace({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="mx-auto max-w-[1180px] space-y-6">
       {renderWorkspaceModeToggle()}
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_420px]">
-        <Card>
-          <CardContent className="space-y-6 p-6">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div className="space-y-1">
+      <Card>
+        <CardContent className="space-y-8 p-6 lg:p-7">
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="space-y-4">
+              <div className="space-y-2">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Voice-first TTS
+                  Render setup
                 </div>
-                <h2 className="text-lg font-semibold text-foreground">
-                  Render with reusable or built-in voices
+                <h2 className="text-xl font-semibold text-foreground">
+                  Choose a model, then a compatible voice
                 </h2>
                 <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
-                  Pick the voice first, then generate. The route will use a
-                  compatible renderer for reusable saved voices versus built-in
-                  speaker libraries.
+                  The selected model drives which built-in speakers or reusable
+                  saved voices are available, keeping the quick workflow compact
+                  and predictable.
                 </p>
               </div>
 
-              <div className="flex w-full max-w-md flex-col gap-3 lg:items-end">
-                {renderModelSelector()}
-                <div className="flex w-full items-center justify-between rounded-xl border border-border/60 bg-muted/20 px-3.5 py-2.5 text-xs">
-                  <span className="text-muted-foreground">Model status</span>
-                  <span
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-border/60 bg-muted/20 p-4">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Model status
+                  </div>
+                  <div
                     className={cn(
-                      "font-semibold",
+                      "mt-2 text-base font-semibold",
                       selectedModelReady ? "text-foreground" : "text-amber-500",
                     )}
                   >
                     {selectedOption?.statusLabel || "No model selected"}
-                  </span>
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {selectedOption?.label || "Choose a TTS model to continue."}
+                  </p>
                 </div>
-                {onOpenModelManager ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={onOpenModelManager}
-                  >
-                    <Settings2 className="h-4 w-4" />
-                    Models
-                  </Button>
-                ) : null}
-              </div>
-            </div>
 
-            <div className="rounded-2xl border border-border/60 bg-muted/20 p-4.5 px-5 py-4 text-sm text-muted-foreground">
-              {compatibilityNotice}
-            </div>
-
-            <div className="space-y-2.5">
-              <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                Script
-              </label>
-              <textarea
-                ref={textareaRef}
-                value={text}
-                onChange={(event) => setText(event.target.value)}
-                rows={7}
-                placeholder="Paste the text you want this voice to speak..."
-                className="min-h-[180px] w-full rounded-xl border border-input/85 bg-background/70 px-4 py-3 text-sm leading-relaxed shadow-sm transition-[border-color,box-shadow,background-color] placeholder:text-muted-foreground/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 focus-visible:border-ring/50"
-              />
-            </div>
-
-            <div className="rounded-2xl border border-border/60 bg-muted/20 p-5">
-              <div className="flex items-center justify-between gap-3">
-                <div>
+                <div className="rounded-2xl border border-border/60 bg-muted/20 p-4">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                    Delivery controls
+                    Available voices
                   </div>
-                  <div className="mt-1.5 text-sm text-muted-foreground">
-                    Speed is persisted with the generation history. Streaming is
-                    available only on compatible models.
+                  <div className="mt-2 text-base font-semibold text-foreground">
+                    {voiceAvailabilitySummary}
                   </div>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {voiceAvailabilityDetail}
+                  </p>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowAdvanced((current) => !current)}
-                >
-                  <Sparkles className="h-4 w-4" />
-                  {showAdvanced ? "Hide" : "Show"} advanced
-                </Button>
               </div>
+            </div>
 
-              <div className="mt-5 space-y-4">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="font-medium text-foreground">Speed</span>
-                    <span className="text-muted-foreground">
-                      {speed.toFixed(2)}x
-                    </span>
-                  </div>
-                  <Slider
-                    value={[speed]}
-                    min={0.5}
-                    max={1.5}
-                    step={0.05}
-                    onValueChange={([value]) => setSpeed(value ?? 1)}
-                  />
-                </div>
-
-                <label className="flex items-center gap-3 rounded-xl border border-border/60 bg-background/50 px-3.5 py-3 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={streamingEnabled && supportsStreaming}
-                    onChange={(event) =>
-                      setStreamingEnabled(event.target.checked)
-                    }
-                    disabled={!supportsStreaming}
-                    className="h-4 w-4 rounded border-border"
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="font-medium text-foreground">
-                      Stream audio
-                    </span>
-                    <span className="block text-xs text-muted-foreground">
-                      {supportsStreaming
-                        ? "Play chunks as they arrive."
-                        : "Current model does not expose streaming on this route."}
-                    </span>
-                  </span>
-                  <Radio className="h-4 w-4 text-muted-foreground" />
-                </label>
-
-                <AnimatePresence>
-                  {showAdvanced ? (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="overflow-hidden"
+            <div className="space-y-4">
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Render model
+                  </label>
+                  {onOpenModelManager ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={onOpenModelManager}
                     >
-                      <div className="space-y-2 pt-1">
-                        <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                          Style prompt
-                        </label>
-                        <Input
-                          value={instructions}
-                          onChange={(event) =>
-                            setInstructions(event.target.value)
-                          }
-                          disabled={!supportsVoiceDescription}
-                          placeholder={
-                            supportsVoiceDescription
-                              ? "Optional style guidance such as calm, energetic, or formal"
-                              : "This renderer does not support style prompts"
-                          }
-                        />
-                      </div>
-                    </motion.div>
+                      <Settings2 className="h-4 w-4" />
+                      Models
+                    </Button>
                   ) : null}
-                </AnimatePresence>
+                </div>
+                {renderModelSelector()}
               </div>
+
+              <div className="space-y-2.5">
+                <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Voice
+                </label>
+                <VoiceSelect
+                  voiceMode={voiceMode}
+                  onVoiceModeChange={setVoiceMode}
+                  savedVoiceItems={savedVoiceItems}
+                  builtInVoiceItems={builtInVoiceItems}
+                  selectedItem={selectedVoiceItem}
+                  savedVoicesLoading={savedVoicesLoading}
+                  savedVoicesError={savedVoicesError}
+                  savedEnabled={supportsReferenceVoices}
+                  builtInEnabled={supportsBuiltInVoices}
+                  disabled={!selectedModel}
+                  modelLabel={selectedModelInfo?.variant ?? selectedModel}
+                />
+              </div>
+
+              <div className="rounded-2xl border border-border/60 bg-muted/20 px-4 py-3 text-sm leading-relaxed text-muted-foreground">
+                {compatibilityNotice}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2.5">
+            <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              Script
+            </label>
+            <textarea
+              ref={textareaRef}
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              rows={8}
+              placeholder="Paste the text you want this voice to speak..."
+              className="min-h-[220px] w-full rounded-2xl border border-input/85 bg-background/70 px-4 py-3.5 text-sm leading-relaxed shadow-sm transition-[border-color,box-shadow,background-color] placeholder:text-muted-foreground/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 focus-visible:border-ring/50"
+            />
+          </div>
+
+          <div className="rounded-2xl border border-border/60 bg-muted/20 p-5">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Delivery controls
+                </div>
+                <div className="mt-1.5 text-sm text-muted-foreground">
+                  Speed is saved with the generation history. Streaming appears
+                  only when the selected model exposes it.
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowAdvanced((current) => !current)}
+              >
+                <Sparkles className="h-4 w-4" />
+                {showAdvanced ? "Hide" : "Show"} advanced
+              </Button>
+            </div>
+
+            <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(260px,320px)]">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium text-foreground">Speed</span>
+                  <span className="text-muted-foreground">
+                    {speed.toFixed(2)}x
+                  </span>
+                </div>
+                <Slider
+                  value={[speed]}
+                  min={0.5}
+                  max={1.5}
+                  step={0.05}
+                  onValueChange={([value]) => setSpeed(value ?? 1)}
+                />
+              </div>
+
+              <label className="flex items-center gap-3 rounded-xl border border-border/60 bg-background/50 px-3.5 py-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={streamingEnabled && supportsStreaming}
+                  onChange={(event) => setStreamingEnabled(event.target.checked)}
+                  disabled={!supportsStreaming}
+                  className="h-4 w-4 rounded border-border"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="font-medium text-foreground">
+                    Stream audio
+                  </span>
+                  <span className="block text-xs text-muted-foreground">
+                    {supportsStreaming
+                      ? "Play chunks as they arrive."
+                      : "Current model does not expose streaming on this route."}
+                  </span>
+                </span>
+                <Radio className="h-4 w-4 text-muted-foreground" />
+              </label>
             </div>
 
             <AnimatePresence>
-              {error ? (
+              {showAdvanced ? (
                 <motion.div
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
                   exit={{ opacity: 0, height: 0 }}
                   className="overflow-hidden"
                 >
-                  <div className="flex items-start gap-2 rounded-xl border border-destructive/45 bg-destructive/5 px-3 py-3 text-sm text-destructive">
-                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-                    <p>{error}</p>
+                  <div className="space-y-2 pt-4">
+                    <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                      Style prompt
+                    </label>
+                    <Input
+                      value={instructions}
+                      onChange={(event) => setInstructions(event.target.value)}
+                      disabled={!supportsVoiceDescription}
+                      placeholder={
+                        supportsVoiceDescription
+                          ? "Optional style guidance such as calm, energetic, or formal"
+                          : "This renderer does not support style prompts"
+                      }
+                    />
                   </div>
                 </motion.div>
               ) : null}
             </AnimatePresence>
+          </div>
 
-            <div className="flex flex-wrap items-center gap-3">
-              <Button
-                onClick={handleGenerate}
-                disabled={
-                  generating ||
-                  !selectedModelReady ||
-                  (voiceMode === "saved" && !selectedSavedVoiceId)
-                }
-                className="min-w-[180px]"
+          <AnimatePresence>
+            {error ? (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="overflow-hidden"
               >
-                {generating ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <Mic2 className="h-4 w-4" />
-                    Generate audio
-                  </>
-                )}
-              </Button>
+                <div className="flex items-start gap-2 rounded-xl border border-destructive/45 bg-destructive/5 px-3 py-3 text-sm text-destructive">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <p>{error}</p>
+                </div>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
 
-              {(audioUrl || isStreaming) && (
-                <Button variant="outline" onClick={handleStop}>
-                  <Square className="h-4 w-4" />
-                  Stop
-                </Button>
-              )}
+          <div className="space-y-4 rounded-2xl border border-border/60 bg-muted/15 p-4 sm:p-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Output
+                </div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  Generate audio once the model and voice are ready.
+                </div>
+              </div>
 
-              {audioUrl ? (
-                <>
-                  <Button
-                    variant="outline"
-                    onClick={handleDownload}
-                    disabled={isDownloading}
-                  >
-                    {isDownloading ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  onClick={handleGenerate}
+                  disabled={generating || !canGenerate}
+                  className="min-w-[180px]"
+                >
+                  {generating ? (
+                    <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Download className="h-4 w-4" />
-                    )}
-                    Download
+                      Generating...
+                    </>
+                  ) : (
+                    <>
+                      <Mic2 className="h-4 w-4" />
+                      Generate audio
+                    </>
+                  )}
+                </Button>
+
+                {(audioUrl || isStreaming) ? (
+                  <Button variant="outline" onClick={handleStop}>
+                    <Square className="h-4 w-4" />
+                    Stop
                   </Button>
-                  <Button variant="ghost" onClick={handleReset}>
-                    <RotateCcw className="h-4 w-4" />
-                    Reset
-                  </Button>
-                </>
-              ) : null}
+                ) : null}
+
+                {audioUrl ? (
+                  <>
+                    <Button
+                      variant="outline"
+                      onClick={handleDownload}
+                      disabled={isDownloading}
+                    >
+                      {isDownloading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Download className="h-4 w-4" />
+                      )}
+                      Download
+                    </Button>
+                    <Button variant="ghost" onClick={handleReset}>
+                      <RotateCcw className="h-4 w-4" />
+                      Reset
+                    </Button>
+                  </>
+                ) : null}
+              </div>
             </div>
 
             <AnimatePresence>
@@ -1213,7 +1251,7 @@ export function TextToSpeechWorkspace({
             </AnimatePresence>
 
             {audioUrl ? (
-              <div className="space-y-4 rounded-2xl border border-border/75 bg-muted/25 p-4">
+              <div className="space-y-4 rounded-2xl border border-border/75 bg-background/70 p-4">
                 <audio
                   ref={audioRef}
                   src={audioUrl}
@@ -1225,80 +1263,9 @@ export function TextToSpeechWorkspace({
                 ) : null}
               </div>
             ) : null}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="space-y-5 p-6">
-            <div className="space-y-1">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                Voice picker
-              </div>
-              <h3 className="text-lg font-semibold text-foreground">
-                Choose the voice before you type
-              </h3>
-            </div>
-
-            <Tabs
-              value={voiceMode}
-              onValueChange={(value) => setVoiceMode(value as VoiceMode)}
-              className="space-y-5"
-            >
-              <TabsList>
-                <TabsTrigger value="saved">
-                  <Waves className="h-4 w-4" />
-                  My voices
-                </TabsTrigger>
-                <TabsTrigger value="built_in">
-                  <Sparkles className="h-4 w-4" />
-                  Built-in
-                </TabsTrigger>
-              </TabsList>
-
-              <div className="space-y-2.5">
-                <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Search voices
-                </label>
-                <Input
-                  value={voiceSearch}
-                  onChange={(event) => setVoiceSearch(event.target.value)}
-                  placeholder="Search by name, transcript, or language"
-                  className="bg-muted/20"
-                />
-              </div>
-
-              <TabsContent value="saved" className="mt-0">
-                {savedVoicesError ? (
-                  <div className="mb-3 rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                    {savedVoicesError}
-                  </div>
-                ) : null}
-                <VoicePicker
-                  items={savedVoiceItems}
-                  emptyTitle={
-                    savedVoicesLoading
-                      ? "Loading saved voices"
-                      : "No saved voices yet"
-                  }
-                  emptyDescription={
-                    savedVoicesLoading
-                      ? "Fetching your cloned and designed voices."
-                      : "Save a voice from cloning or design to reuse it directly in text-to-speech."
-                  }
-                />
-              </TabsContent>
-
-              <TabsContent value="built_in" className="mt-0">
-                <VoicePicker
-                  items={builtInVoiceItems}
-                  emptyTitle="No built-in voices available"
-                  emptyDescription="Load a CustomVoice, Kokoro, or LFM2 Audio model to browse its speaker library."
-                />
-              </TabsContent>
-            </Tabs>
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <SpeechHistoryPanel
         route="text-to-speech"
