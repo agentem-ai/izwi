@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import type { ModelInfo } from "@/api";
-import { CustomVoicePlayground } from "@/components/CustomVoicePlayground";
+import { TextToSpeechWorkspace } from "@/components/TextToSpeechWorkspace";
 import { PageHeader, PageShell } from "@/components/PageShell";
-import { VIEW_CONFIGS } from "@/types";
 import {
   TEXT_TO_SPEECH_PREFERRED_MODELS,
   resolvePreferredRouteModel,
@@ -46,12 +46,14 @@ export function TextToSpeechPage({
   onSelect,
   onError,
 }: TextToSpeechPageProps) {
+  const [searchParams] = useSearchParams();
   const [historyActionContainer, setHistoryActionContainer] =
     useState<HTMLDivElement | null>(null);
-  const viewConfig = VIEW_CONFIGS["custom-voice"];
+  const appliedQueryModelRef = useRef(false);
   const {
     routeModels,
     resolvedSelectedModel,
+    selectedModelInfo,
     selectedModelReady,
     isModelModalOpen,
     intentVariant,
@@ -64,7 +66,16 @@ export function TextToSpeechPage({
     models,
     selectedModel,
     onSelect,
-    modelFilter: viewConfig.modelFilter,
+    modelFilter: (variant) => {
+      const match = models.find((model) => model.variant === variant);
+      const capabilities = match?.speech_capabilities;
+      return Boolean(
+        capabilities &&
+          !variant.includes("Tokenizer") &&
+          (capabilities.supports_builtin_voices ||
+            capabilities.supports_reference_voice),
+      );
+    },
     resolveSelectedModel: (routeModels, currentModel) =>
       resolvePreferredRouteModel({
         models: routeModels,
@@ -73,11 +84,24 @@ export function TextToSpeechPage({
       }),
   });
 
+  useEffect(() => {
+    if (appliedQueryModelRef.current || routeModels.length === 0) {
+      return;
+    }
+
+    const requestedModel = searchParams.get("model");
+    if (requestedModel && routeModels.some((model) => model.variant === requestedModel)) {
+      onSelect(requestedModel);
+    }
+
+    appliedQueryModelRef.current = true;
+  }, [onSelect, routeModels, searchParams]);
+
   return (
     <PageShell>
       <PageHeader
         title="Text to Speech"
-        description="Generate natural speech from text with local voice models and reusable presets."
+        description="Generate natural speech from text with built-in voice libraries or reusable saved voices."
         actions={
           <div
             ref={setHistoryActionContainer}
@@ -87,26 +111,31 @@ export function TextToSpeechPage({
         }
       />
 
-      <CustomVoicePlayground
+      <TextToSpeechWorkspace
         selectedModel={resolvedSelectedModel}
+        selectedModelInfo={selectedModelInfo}
         selectedModelReady={selectedModelReady}
+        availableModels={routeModels}
         modelOptions={modelOptions}
         onSelectModel={handleModelSelect}
         onOpenModelManager={openModelManager}
         onModelRequired={() => {
           requestModel();
           onError(
-            "Select and load a CustomVoice, Kokoro, or LFM2.5 model to generate speech.",
+            "Select and load a built-in voice model or saved-voice renderer to generate speech.",
           );
         }}
+        onError={onError}
         historyActionContainer={historyActionContainer}
+        initialSavedVoiceId={searchParams.get("voiceId")}
+        initialSpeaker={searchParams.get("speaker")}
       />
 
       <RouteModelModal
         isOpen={isModelModalOpen}
         onClose={closeModelModal}
         title="Text-to-Speech Models"
-        description="Manage CustomVoice, Kokoro, and LFM2.5 models for this route."
+        description="Manage built-in voice models and saved-voice renderers for this route."
         models={routeModels}
         loading={loading}
         selectedVariant={resolvedSelectedModel}
@@ -118,7 +147,7 @@ export function TextToSpeechPage({
         onUnload={onUnload}
         onDelete={onDelete}
         onUseModel={onSelect}
-        emptyMessage={viewConfig.emptyStateDescription}
+        emptyMessage="Load a built-in voice model or saved-voice renderer to generate speech."
       />
     </PageShell>
   );
