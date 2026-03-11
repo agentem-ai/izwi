@@ -37,7 +37,6 @@ import {
 import type { VoicePickerItem } from "@/components/VoicePicker";
 import { VoiceSelect } from "@/components/VoiceSelect";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
@@ -806,24 +805,42 @@ export function TextToSpeechProjectsWorkspace({
     }
   };
 
-  return (
-    <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
-      <div className="space-y-6">
-        <Card>
-          <CardContent className="space-y-5 p-6">
-            <div className="space-y-2">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                New project
-              </div>
-              <h3 className="text-lg font-semibold text-foreground">
-                Import and split a script
-              </h3>
-              <p className="text-sm leading-relaxed text-muted-foreground">
-                Create a reusable narration project with editable segments and
-                merged export.
-              </p>
-            </div>
+  const selectedProjectRenderedCount =
+    selectedProjectSummary?.rendered_segment_count ??
+    selectedProject?.segments.filter((segment) => Boolean(segment.speech_record_id))
+      .length ??
+    0;
+  const selectedProjectSegmentCount =
+    selectedProjectSummary?.segment_count ?? selectedProject?.segments.length ?? 0;
+  const selectedProjectTotalChars =
+    selectedProjectSummary?.total_chars ??
+    selectedProject?.segments.reduce((total, segment) => total + segment.input_chars, 0) ??
+    0;
+  const selectedProjectCompletionPercent =
+    selectedProjectSegmentCount > 0
+      ? Math.round(
+          (selectedProjectRenderedCount / selectedProjectSegmentCount) * 100,
+        )
+      : 0;
 
+  return (
+    <div className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
+      <div className="space-y-5">
+        <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 sm:p-6">
+          <div className="space-y-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+              Create Project
+            </div>
+            <h3 className="text-lg font-semibold text-[var(--text-primary)]">
+              Import and split a script
+            </h3>
+            <p className="text-sm leading-relaxed text-[var(--text-secondary)]">
+              Start with a script. Izwi splits it into editable narration
+              segments, then you assign a global voice and render the project.
+            </p>
+          </div>
+
+          <div className="mt-4 space-y-3">
             <Input
               value={newProjectName}
               onChange={(event) => setNewProjectName(event.target.value)}
@@ -832,109 +849,139 @@ export function TextToSpeechProjectsWorkspace({
             <Textarea
               value={newProjectText}
               onChange={(event) => setNewProjectText(event.target.value)}
-              rows={8}
+              rows={10}
               placeholder="Paste the script you want to split into renderable segments..."
+              className="bg-[var(--bg-surface-1)] border-[var(--border-muted)]"
             />
+          </div>
 
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".txt,.md,text/plain"
-              className="hidden"
-              onChange={handleImportFile}
-            />
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
-              <Button
-                variant="outline"
-                onClick={() => fileInputRef.current?.click()}
-                className="w-full justify-center"
-              >
-                <Upload className="h-4 w-4" />
-                Import text file
-              </Button>
-              <Button
-                onClick={handleCreateProject}
-                disabled={creatingProject}
-                className="w-full justify-center"
-              >
-                {creatingProject ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Creating...
-                  </>
-                ) : (
-                  <>
-                    <FilePlus2 className="h-4 w-4" />
-                    Create project
-                  </>
-                )}
-              </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".txt,.md,text/plain"
+            className="hidden"
+            onChange={handleImportFile}
+          />
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+            <Button
+              variant="outline"
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full justify-center bg-[var(--bg-surface-1)]"
+            >
+              <Upload className="h-4 w-4" />
+              Import text file
+            </Button>
+            <Button
+              onClick={handleCreateProject}
+              disabled={creatingProject}
+              className="w-full justify-center"
+            >
+              {creatingProject ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                <>
+                  <FilePlus2 className="h-4 w-4" />
+                  Create project
+                </>
+              )}
+            </Button>
+          </div>
+
+          {newProjectFilename ? (
+            <div className="mt-3 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2 text-xs text-[var(--text-muted)]">
+              Imported file: {newProjectFilename}
             </div>
-            {newProjectFilename ? (
-              <div className="rounded-xl border border-border/70 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
-                Imported file: {newProjectFilename}
-              </div>
-            ) : null}
-          </CardContent>
-        </Card>
+          ) : null}
 
-        <Card>
-          <CardContent className="space-y-5 p-6">
-            <div className="space-y-2">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                Projects
+          <div className="mt-5 grid gap-2 text-xs sm:grid-cols-3 xl:grid-cols-1">
+            <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-3 text-[var(--text-secondary)]">
+              1. Paste or import a script
+            </div>
+            <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-3 text-[var(--text-secondary)]">
+              2. Configure the project voice and model
+            </div>
+            <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-3 text-[var(--text-secondary)]">
+              3. Render segments, then export one merged WAV
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 sm:p-6">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                Project Library
               </div>
-              <h3 className="text-lg font-semibold text-foreground">
+              <h3 className="mt-1 text-base font-semibold text-[var(--text-primary)]">
                 Saved scripts
               </h3>
+              <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                Pick an active project to continue editing or rendering.
+              </p>
             </div>
+            <div className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+              {projects.length}
+            </div>
+          </div>
 
-            <div className="space-y-2.5">
-              {projectsLoading ? (
-                <div className="rounded-xl border border-dashed border-border/70 bg-muted/25 px-3 py-6 text-center text-sm text-muted-foreground">
-                  Loading projects...
-                </div>
-              ) : projects.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-border/70 bg-muted/25 px-3 py-6 text-center text-sm text-muted-foreground">
-                  No TTS projects yet.
-                </div>
-              ) : (
-                projects.map((project) => (
-                  <button
-                    key={project.id}
-                    type="button"
-                    onClick={() => setSelectedProjectId(project.id)}
-                    className={cn(
-                      "w-full rounded-2xl border px-3 py-3 text-left transition-colors",
-                      project.id === selectedProjectId
-                        ? "border-primary/50 bg-primary/5"
-                        : "border-border/75 bg-card/70 hover:border-primary/30",
-                    )}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-foreground">
-                          {project.name}
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {project.rendered_segment_count}/{project.segment_count} segments rendered
-                        </div>
+          <div className="mt-4 space-y-2.5">
+            {projectsLoading ? (
+              <div className="rounded-xl border border-dashed border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-6 text-center text-sm text-[var(--text-muted)]">
+                Loading projects...
+              </div>
+            ) : projects.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-6 text-center text-sm text-[var(--text-muted)]">
+                No TTS projects yet.
+              </div>
+            ) : (
+              projects.map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  onClick={() => setSelectedProjectId(project.id)}
+                  className={cn(
+                    "w-full rounded-xl border px-3 py-3 text-left transition-all",
+                    project.id === selectedProjectId
+                      ? "border-[var(--accent-solid)] bg-[var(--accent-soft)] shadow-sm"
+                      : "border-[var(--border-muted)] bg-[var(--bg-surface-1)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-1)]/80",
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-[var(--text-primary)]">
+                        {project.name}
                       </div>
-                      <div className="rounded-full border border-border/80 bg-muted/55 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                        {formatRelativeDate(project.updated_at)}
+                      <div className="mt-1 text-xs text-[var(--text-muted)]">
+                        {project.rendered_segment_count}/{project.segment_count} segments rendered
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <span className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
+                          {project.total_chars} chars
+                        </span>
+                        {project.model_id ? (
+                          <span className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
+                            {project.model_id}
+                          </span>
+                        ) : null}
                       </div>
                     </div>
-                  </button>
-                ))
-              )}
-            </div>
-          </CardContent>
-        </Card>
+                    <div className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                      {formatRelativeDate(project.updated_at)}
+                    </div>
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </section>
       </div>
 
-      <div className="space-y-4">
+      <div className="space-y-5">
         {workspaceError ? (
-          <div className="flex items-start gap-2 rounded-xl border border-destructive/45 bg-destructive/5 px-3 py-3 text-sm text-destructive">
+          <div className="flex items-start gap-2 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-3 text-sm text-[var(--danger-text)]">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <p>{workspaceError}</p>
           </div>
@@ -943,10 +990,10 @@ export function TextToSpeechProjectsWorkspace({
         {workspaceStatus ? (
           <div
             className={cn(
-              "flex items-center gap-2 rounded-xl border px-3 py-2 text-sm",
+              "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm",
               workspaceStatus.tone === "success"
-                ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700"
-                : "border-destructive/35 bg-destructive/5 text-destructive",
+                ? "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]"
+                : "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
             )}
           >
             {workspaceStatus.tone === "success" ? (
@@ -961,13 +1008,13 @@ export function TextToSpeechProjectsWorkspace({
         {downloadState !== "idle" && downloadMessage ? (
           <div
             className={cn(
-              "flex items-center gap-2 rounded-xl border px-3 py-2 text-sm",
+              "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm",
               downloadState === "downloading" &&
-                "border-amber-500/30 bg-amber-500/10 text-amber-700",
+                "bg-[var(--status-warning-bg)] border-[var(--status-warning-border)] text-[var(--status-warning-text)]",
               downloadState === "success" &&
-                "border-emerald-500/25 bg-emerald-500/10 text-emerald-700",
+                "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]",
               downloadState === "error" &&
-                "border-destructive/35 bg-destructive/5 text-destructive",
+                "bg-[var(--danger-bg)] border-[var(--danger-border)] text-[var(--danger-text)]",
             )}
           >
             {downloadState === "downloading" ? (
@@ -982,228 +1029,159 @@ export function TextToSpeechProjectsWorkspace({
         ) : null}
 
         {!selectedProject ? (
-          <Card>
-            <CardContent className="flex min-h-[460px] flex-col items-center justify-center gap-4 p-8 text-center">
-              <div className="rounded-2xl border border-border/70 bg-muted/45 p-4">
-                <FileAudio className="h-6 w-6 text-muted-foreground" />
+          <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-8 sm:p-10">
+            <div className="flex min-h-[620px] flex-col items-center justify-center gap-6 text-center">
+              <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
+                <FileAudio className="h-6 w-6 text-[var(--text-muted)]" />
               </div>
-              <div className="space-y-1">
-                <p className="text-base font-semibold text-foreground">
+              <div className="space-y-2">
+                <p className="text-xl font-semibold text-[var(--text-primary)]">
                   Select or create a TTS project
                 </p>
-                <p className="max-w-md text-sm text-muted-foreground">
-                  Projects keep script segments, rendering progress, and merged export in one place.
+                <p className="max-w-xl text-sm leading-relaxed text-[var(--text-secondary)]">
+                  Projects keep script segments, global render settings, per-segment
+                  progress, and merged export in one place.
                 </p>
               </div>
-            </CardContent>
-          </Card>
+              <div className="grid w-full max-w-3xl gap-3 sm:grid-cols-3">
+                <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-4 text-left">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    Create
+                  </div>
+                  <div className="mt-2 text-sm text-[var(--text-secondary)]">
+                    Import or paste a script and let Izwi split it into editable blocks.
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-4 text-left">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    Configure
+                  </div>
+                  <div className="mt-2 text-sm text-[var(--text-secondary)]">
+                    Assign a project model, voice, and speed before rendering.
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-4 text-left">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    Export
+                  </div>
+                  <div className="mt-2 text-sm text-[var(--text-secondary)]">
+                    Render individual segments or all at once, then export merged audio.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
         ) : (
-          <>
-            <Card>
-              <CardContent className="space-y-6 p-6">
-                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="space-y-5">
+              <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 sm:p-6">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                   <div className="space-y-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                      Project settings
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                      Project Setup
                     </div>
-                    <h2 className="text-lg font-semibold text-foreground">
-                      {selectedProject.name}
-                    </h2>
-                    <p className="text-sm leading-relaxed text-muted-foreground">
-                      Apply a global model and voice once, then render segments
-                      individually or all at once.
+                    <h3 className="text-xl font-semibold text-[var(--text-primary)]">
+                      Configure the render profile
+                    </h3>
+                    <p className="max-w-2xl text-sm leading-relaxed text-[var(--text-secondary)]">
+                      Each TTS project keeps one shared model, voice, and speed
+                      profile. Update those first, then render the split script
+                      blocks below.
                     </p>
                   </div>
+                  {projectDirty ? (
+                    <div className="rounded-full border border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--status-warning-text)]">
+                      Unsaved changes
+                    </div>
+                  ) : (
+                    <div className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                      Settings synced
+                    </div>
+                  )}
+                </div>
 
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      variant="outline"
-                      onClick={() => void persistProjectSettings()}
-                      disabled={!projectDirty || savingProject}
+                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+                      Project name
+                    </label>
+                    <Input
+                      value={projectName}
+                      onChange={(event) => setProjectName(event.target.value)}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+                      Render model
+                    </label>
+                    <select
+                      value={projectModelId}
+                      onChange={(event) => {
+                        setProjectModelId(event.target.value);
+                        setWorkspaceStatus(null);
+                      }}
+                      className="flex h-11 w-full rounded-xl border border-input/85 bg-background/70 px-3.5 text-sm shadow-sm transition-[border-color,box-shadow,background-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 focus-visible:border-ring/50"
                     >
-                      {savingProject ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Settings2 className="h-4 w-4" />
-                      )}
-                      Save settings
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={handleExport}
-                      disabled={isDownloading}
-                    >
-                      {isDownloading ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Download className="h-4 w-4" />
-                      )}
-                      Export WAV
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() => void handleRenderAll()}
-                      disabled={renderingAll}
-                    >
-                      {renderingAll ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Waves className="h-4 w-4" />
-                      )}
-                      Render all
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      onClick={() => void handleDeleteProject()}
-                      disabled={deletingProject}
-                    >
-                      {deletingProject ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-4 w-4" />
-                      )}
-                      Delete
-                    </Button>
+                      {modelOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label} · {option.statusLabel}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
 
-                <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_250px]">
-                  <div className="space-y-5">
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                          Project name
-                        </label>
-                        <Input
-                          value={projectName}
-                          onChange={(event) => setProjectName(event.target.value)}
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                          Render model
-                        </label>
-                        <select
-                          value={projectModelId}
-                          onChange={(event) => {
-                            setProjectModelId(event.target.value);
-                            setWorkspaceStatus(null);
-                          }}
-                          className="flex h-11 w-full rounded-xl border border-input/85 bg-background/70 px-3.5 text-sm shadow-sm transition-[border-color,box-shadow,background-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 focus-visible:border-ring/50"
-                        >
-                          {modelOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label} · {option.statusLabel}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                        Voice
-                      </label>
-                      <VoiceSelect
-                        voiceMode={projectVoiceMode}
-                        onVoiceModeChange={(value) => {
-                          setProjectVoiceMode(value);
-                          setWorkspaceStatus(null);
-                        }}
-                        savedVoiceItems={savedVoiceItems}
-                        builtInVoiceItems={builtInVoiceItems}
-                        selectedItem={selectedVoiceItem}
-                        savedVoicesLoading={savedVoicesLoading}
-                        savedVoicesError={savedVoicesError}
-                        savedEnabled={supportsSavedVoices}
-                        builtInEnabled={supportsBuiltInVoices}
-                        disabled={!projectModelId}
-                        modelLabel={currentProjectModelInfo?.variant ?? projectModelId}
-                      />
-                    </div>
-
-                    <div className="rounded-2xl border border-border/60 bg-muted/20 px-4 py-3 text-sm leading-relaxed text-muted-foreground">
-                      {projectVoiceNotice}
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="rounded-2xl border border-border/75 bg-muted/25 p-4">
-                      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                        Progress
-                      </div>
-                      <div className="mt-2 text-2xl font-semibold text-foreground">
-                        {selectedProjectSummary?.rendered_segment_count ?? 0}/
-                        {selectedProjectSummary?.segment_count ?? selectedProject.segments.length}
-                      </div>
-                      <div className="mt-1 text-sm text-muted-foreground">
-                        rendered segments
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border border-border/75 bg-muted/25 p-4">
-                      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                        Voice availability
-                      </div>
-                      <div className="mt-2 text-base font-semibold text-foreground">
-                        {projectVoiceAvailabilitySummary}
-                      </div>
-                      <div className="mt-1 text-sm text-muted-foreground">
-                        {selectedVoiceItem?.name
-                          ? `Selected voice: ${selectedVoiceItem.name}`
-                          : "Choose a project voice"}
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border border-border/75 bg-muted/25 p-4">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="font-medium text-foreground">Speed</span>
-                        <span className="text-muted-foreground">
-                          {projectSpeed.toFixed(2)}x
-                        </span>
-                      </div>
-                      <Slider
-                        value={[projectSpeed]}
-                        min={0.5}
-                        max={1.5}
-                        step={0.05}
-                        onValueChange={([value]) => setProjectSpeed(value ?? 1)}
-                      />
-                      {onOpenModelManager ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="mt-4"
-                          onClick={onOpenModelManager}
-                        >
-                          <Settings2 className="h-4 w-4" />
-                          Models
-                        </Button>
-                      ) : null}
-                    </div>
-                  </div>
+                <div className="mt-5 space-y-2">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+                    Project voice
+                  </label>
+                  <VoiceSelect
+                    voiceMode={projectVoiceMode}
+                    onVoiceModeChange={(value) => {
+                      setProjectVoiceMode(value);
+                      setWorkspaceStatus(null);
+                    }}
+                    savedVoiceItems={savedVoiceItems}
+                    builtInVoiceItems={builtInVoiceItems}
+                    selectedItem={selectedVoiceItem}
+                    savedVoicesLoading={savedVoicesLoading}
+                    savedVoicesError={savedVoicesError}
+                    savedEnabled={supportsSavedVoices}
+                    builtInEnabled={supportsBuiltInVoices}
+                    disabled={!projectModelId}
+                    modelLabel={currentProjectModelInfo?.variant ?? projectModelId}
+                  />
                 </div>
-              </CardContent>
-            </Card>
 
-            <Card>
-              <CardContent className="space-y-4 p-6">
-                <div className="flex items-center justify-between gap-3">
+                <div className="mt-5 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-4 text-sm leading-relaxed text-[var(--text-secondary)]">
+                  {projectVoiceNotice}
+                </div>
+              </section>
+
+              <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 sm:p-6">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                       Segments
                     </div>
-                    <h3 className="text-lg font-semibold text-foreground">
+                    <h3 className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
                       Review and render script blocks
                     </h3>
+                    <p className="mt-1 max-w-2xl text-sm text-[var(--text-secondary)]">
+                      Edit segment text, save any changes, and render each block
+                      with the project profile above.
+                    </p>
                   </div>
                   {projectLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-1 text-xs text-[var(--text-muted)]">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Refreshing
+                    </div>
                   ) : null}
                 </div>
 
-                <div className="space-y-4">
+                <div className="mt-5 space-y-4">
                   {selectedProject.segments.map((segment) => {
                     const draft = segmentDrafts[segment.id] ?? segment.text;
                     const segmentDirty = draft !== segment.text;
@@ -1213,14 +1191,26 @@ export function TextToSpeechProjectsWorkspace({
                     return (
                       <div
                         key={segment.id}
-                        className="rounded-2xl border border-border/75 bg-card/70 p-4"
+                        className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4 sm:p-5"
                       >
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                          <div className="space-y-1">
-                            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                              Segment {segment.position + 1}
+                          <div className="space-y-1.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                                Segment {segment.position + 1}
+                              </span>
+                              <span
+                                className={cn(
+                                  "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em]",
+                                  segment.speech_record_id
+                                    ? "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]"
+                                    : "bg-[var(--bg-surface-0)] border-[var(--border-muted)] text-[var(--text-muted)]",
+                                )}
+                              >
+                                {segment.speech_record_id ? "Rendered" : "Draft"}
+                              </span>
                             </div>
-                            <div className="text-sm text-muted-foreground">
+                            <div className="text-sm text-[var(--text-secondary)]">
                               {segment.input_chars} chars
                               {segment.audio_duration_secs
                                 ? ` · ${segment.audio_duration_secs.toFixed(1)}s audio`
@@ -1234,6 +1224,7 @@ export function TextToSpeechProjectsWorkspace({
                               size="sm"
                               onClick={() => void handleSaveSegment(segment.id)}
                               disabled={!segmentDirty || isSaving}
+                              className="bg-[var(--bg-surface-0)]"
                             >
                               {isSaving ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -1258,7 +1249,7 @@ export function TextToSpeechProjectsWorkspace({
                         </div>
 
                         <Textarea
-                          className="mt-4"
+                          className="mt-4 bg-[var(--bg-surface-0)] border-[var(--border-muted)]"
                           value={draft}
                           onChange={(event) =>
                             setSegmentDrafts((current) => ({
@@ -1269,19 +1260,19 @@ export function TextToSpeechProjectsWorkspace({
                         />
 
                         {segment.speech_record_id ? (
-                          <div className="mt-4 space-y-2">
+                          <div className="mt-4 space-y-2 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-3">
                             <audio
                               src={api.textToSpeechRecordAudioUrl(segment.speech_record_id)}
                               controls
                               preload="none"
                               className="h-10 w-full"
                             />
-                            <div className="text-xs text-muted-foreground">
+                            <div className="text-xs text-[var(--text-muted)]">
                               Linked generation: {segment.speech_record_id}
                             </div>
                           </div>
                         ) : (
-                          <div className="mt-4 rounded-xl border border-dashed border-border/75 bg-muted/25 px-3 py-2 text-xs text-muted-foreground">
+                          <div className="mt-4 rounded-xl border border-dashed border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-2 text-xs text-[var(--text-muted)]">
                             Render this segment to attach audio and include it in the merged export.
                           </div>
                         )}
@@ -1289,9 +1280,185 @@ export function TextToSpeechProjectsWorkspace({
                     );
                   })}
                 </div>
-              </CardContent>
-            </Card>
-          </>
+              </section>
+            </div>
+
+            <div className="space-y-5">
+              <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  Active Project
+                </div>
+                <h3 className="mt-2 text-xl font-semibold text-[var(--text-primary)]">
+                  {selectedProject.name}
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">
+                  Keep the project profile stable, render the remaining blocks,
+                  then export a merged narration file.
+                </p>
+
+                <div className="mt-4 flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-1 text-[var(--text-muted)]">
+                    Updated {formatRelativeDate(selectedProject.updated_at)}
+                  </span>
+                  <span className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-1 text-[var(--text-muted)]">
+                    {selectedProject.source_filename || "Manual paste"}
+                  </span>
+                </div>
+
+                <div className="mt-5 grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+                  <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-3">
+                    <div className="text-[11px] uppercase tracking-wider text-[var(--text-muted)]">
+                      Segments
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-[var(--text-primary)]">
+                      {selectedProjectSegmentCount}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-3">
+                    <div className="text-[11px] uppercase tracking-wider text-[var(--text-muted)]">
+                      Rendered
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-[var(--text-primary)]">
+                      {selectedProjectRenderedCount}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-3">
+                    <div className="text-[11px] uppercase tracking-wider text-[var(--text-muted)]">
+                      Script Size
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-[var(--text-primary)]">
+                      {selectedProjectTotalChars}
+                    </div>
+                    <div className="text-xs text-[var(--text-muted)]">chars</div>
+                  </div>
+                </div>
+
+                <div className="mt-5 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="font-medium text-[var(--text-primary)]">
+                      Render completion
+                    </span>
+                    <span className="text-[var(--text-muted)]">
+                      {selectedProjectCompletionPercent}%
+                    </span>
+                  </div>
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--bg-surface-2)]">
+                    <div
+                      className="h-full rounded-full bg-[var(--accent-solid)] transition-[width] duration-300"
+                      style={{ width: `${selectedProjectCompletionPercent}%` }}
+                    />
+                  </div>
+                  <div className="mt-2 text-xs text-[var(--text-muted)]">
+                    {selectedProjectRenderedCount}/{selectedProjectSegmentCount} segments are ready for the merged export.
+                  </div>
+                </div>
+
+                <div className="mt-5 grid gap-2">
+                  <Button
+                    onClick={() => void handleRenderAll()}
+                    disabled={renderingAll}
+                    className="w-full justify-center"
+                  >
+                    {renderingAll ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Waves className="h-4 w-4" />
+                    )}
+                    Render all segments
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => void persistProjectSettings()}
+                    disabled={!projectDirty || savingProject}
+                    className="w-full justify-center bg-[var(--bg-surface-1)]"
+                  >
+                    {savingProject ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Settings2 className="h-4 w-4" />
+                    )}
+                    Save project settings
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={handleExport}
+                    disabled={isDownloading}
+                    className="w-full justify-center bg-[var(--bg-surface-1)]"
+                  >
+                    {isDownloading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Download className="h-4 w-4" />
+                    )}
+                    Export merged WAV
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => void handleDeleteProject()}
+                    disabled={deletingProject}
+                    className="w-full justify-center"
+                  >
+                    {deletingProject ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                    Delete project
+                  </Button>
+                </div>
+              </section>
+
+              <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  Render Profile
+                </div>
+                <div className="mt-3 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
+                  <div className="text-sm font-semibold text-[var(--text-primary)]">
+                    {projectVoiceAvailabilitySummary}
+                  </div>
+                  <div className="mt-1 text-sm text-[var(--text-secondary)]">
+                    {selectedVoiceItem?.name
+                      ? `Selected voice: ${selectedVoiceItem.name}`
+                      : "Choose a project voice"}
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-medium text-[var(--text-primary)]">
+                      Speed
+                    </span>
+                    <span className="text-[var(--text-muted)]">
+                      {projectSpeed.toFixed(2)}x
+                    </span>
+                  </div>
+                  <Slider
+                    value={[projectSpeed]}
+                    min={0.5}
+                    max={1.5}
+                    step={0.05}
+                    onValueChange={([value]) => setProjectSpeed(value ?? 1)}
+                    className="mt-4"
+                  />
+                  <div className="mt-3 text-xs leading-relaxed text-[var(--text-muted)]">
+                    This speed applies to every rendered segment in the project.
+                  </div>
+                </div>
+
+                {onOpenModelManager ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-4 w-full justify-center bg-[var(--bg-surface-1)]"
+                    onClick={onOpenModelManager}
+                  >
+                    <Settings2 className="h-4 w-4" />
+                    Open model manager
+                  </Button>
+                ) : null}
+              </section>
+            </div>
+          </div>
         )}
       </div>
     </div>

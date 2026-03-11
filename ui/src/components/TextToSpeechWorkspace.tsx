@@ -11,6 +11,7 @@ import {
   Settings2,
   Sparkles,
   Square,
+  Waves,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -30,7 +31,6 @@ import { VoiceSelect } from "@/components/VoiceSelect";
 import { GenerationStats } from "@/components/GenerationStats";
 import { TextToSpeechProjectsWorkspace } from "@/components/TextToSpeechProjectsWorkspace";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -888,50 +888,64 @@ export function TextToSpeechWorkspace({
     </select>
   );
 
-  const renderWorkspaceModeToggle = () => (
-    <Card>
-      <CardContent className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">
-        <div className="space-y-1">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-            Workflow
-          </div>
-          <h2 className="text-lg font-semibold text-foreground">
-            Quick render or project workflow
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Use quick mode for one-off generations, or switch to projects for
-            reusable scripts and merged export.
-          </p>
-        </div>
-
-        <Tabs
-          value={workspaceMode}
-          onValueChange={(value) => setWorkspaceMode(value as WorkspaceMode)}
-          className="w-full max-w-sm"
+  const renderWorkflowTabs = () => (
+    <Tabs
+      value={workspaceMode}
+      onValueChange={(value) => setWorkspaceMode(value as WorkspaceMode)}
+      className="w-full max-w-sm"
+    >
+      <TabsList className="grid w-full grid-cols-2 border-[var(--border-strong)] bg-[var(--bg-surface-2)] p-1 shadow-sm">
+        <TabsTrigger
+          value="quick"
+          className="text-[var(--text-muted)] data-[state=active]:bg-[var(--accent-solid)] data-[state=active]:text-[var(--text-on-accent)] data-[state=active]:shadow-[0_8px_20px_-14px_rgba(17,17,17,0.55)]"
         >
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="quick">Quick</TabsTrigger>
-            <TabsTrigger value="projects">Projects</TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </CardContent>
-    </Card>
+          Quick
+        </TabsTrigger>
+        <TabsTrigger
+          value="projects"
+          className="text-[var(--text-muted)] data-[state=active]:bg-[var(--accent-solid)] data-[state=active]:text-[var(--text-on-accent)] data-[state=active]:shadow-[0_8px_20px_-14px_rgba(17,17,17,0.55)]"
+        >
+          Projects
+        </TabsTrigger>
+      </TabsList>
+    </Tabs>
   );
 
   if (workspaceMode === "projects") {
     return (
-      <div className="space-y-4">
-        {renderWorkspaceModeToggle()}
-        <TextToSpeechProjectsWorkspace
-          selectedModel={selectedModel}
-          selectedModelInfo={selectedModelInfo}
-          availableModels={availableModels}
-          modelOptions={modelOptions}
-          onSelectModel={onSelectModel}
-          onOpenModelManager={onOpenModelManager}
-          onModelRequired={onModelRequired}
-          onError={onError}
-        />
+      <div className="grid gap-4 items-stretch xl:h-[calc(100dvh-11.75rem)]">
+        <div className="card p-4 flex min-h-0 flex-col">
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded bg-[var(--bg-surface-2)] border border-[var(--border-muted)] p-2">
+                <Waves className="h-5 w-5 text-[var(--text-muted)]" />
+              </div>
+              <div>
+                <h2 className="text-sm font-medium text-[var(--text-primary)]">
+                  TTS Projects
+                </h2>
+                <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+                  Import scripts, render segments, and export merged narration.
+                </p>
+              </div>
+            </div>
+
+            {renderWorkflowTabs()}
+          </div>
+
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-thin">
+            <TextToSpeechProjectsWorkspace
+              selectedModel={selectedModel}
+              selectedModelInfo={selectedModelInfo}
+              availableModels={availableModels}
+              modelOptions={modelOptions}
+              onSelectModel={onSelectModel}
+              onOpenModelManager={onOpenModelManager}
+              onModelRequired={onModelRequired}
+              onError={onError}
+            />
+          </div>
+        </div>
       </div>
     );
   }
@@ -955,16 +969,7 @@ export function TextToSpeechWorkspace({
               </div>
             </div>
 
-            <Tabs
-              value={workspaceMode}
-              onValueChange={(value) => setWorkspaceMode(value as WorkspaceMode)}
-              className="w-full max-w-sm"
-            >
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="quick">Quick</TabsTrigger>
-                <TabsTrigger value="projects">Projects</TabsTrigger>
-              </TabsList>
-            </Tabs>
+            {renderWorkflowTabs()}
           </div>
 
           <div className="mb-4 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
