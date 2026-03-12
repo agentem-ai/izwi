@@ -13,6 +13,10 @@ import { api } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { VoicePicker, type VoicePickerItem } from "@/components/VoicePicker";
 import {
+  VOICE_ROUTE_BODY_COPY_CLASS,
+  VOICE_ROUTE_META_COPY_CLASS,
+  VOICE_ROUTE_PANEL_TITLE_CLASS,
+  VOICE_ROUTE_SECTION_LABEL_CLASS,
   VOICE_ROUTE_WORKSPACE_DESCRIPTION_CLASS,
   VOICE_ROUTE_WORKSPACE_TITLE_CLASS,
 } from "@/components/voiceRouteTypography";
@@ -476,16 +480,19 @@ export function VoicesPage({
         <div className="grid min-h-0 flex-1 gap-5 xl:grid-cols-[290px_minmax(0,1fr)]">
           <aside className="space-y-4">
             <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                Search
-              </div>
+              <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>Search</div>
               <Input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder={activeSearchPlaceholder}
                 className="mt-3 bg-[var(--bg-surface-1)]"
               />
-              <div className="mt-3 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2 text-xs text-[var(--text-muted)]">
+              <div
+                className={cn(
+                  VOICE_ROUTE_META_COPY_CLASS,
+                  "mt-3 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2",
+                )}
+              >
                 {activeResultsLabel} matching the current tab.
               </div>
             </section>
@@ -494,10 +501,10 @@ export function VoicesPage({
               <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                    <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
                       Saved Library
                     </div>
-                    <h3 className="mt-1 text-base font-semibold text-[var(--text-primary)]">
+                    <h3 className={cn(VOICE_ROUTE_PANEL_TITLE_CLASS, "mt-1")}>
                       Reusable saved voices
                     </h3>
                   </div>
@@ -519,25 +526,19 @@ export function VoicesPage({
 
                 <div className="mt-4 grid gap-2 sm:grid-cols-3 xl:grid-cols-1">
                   <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-3">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                      Total
-                    </div>
+                    <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>Total</div>
                     <div className="mt-1 text-xl font-semibold text-[var(--text-primary)]">
                       {totalSavedVoices}
                     </div>
                   </div>
                   <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-3">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                      Cloned
-                    </div>
+                    <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>Cloned</div>
                     <div className="mt-1 text-xl font-semibold text-[var(--text-primary)]">
                       {clonedVoiceCount}
                     </div>
                   </div>
                   <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-3">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                      Designed
-                    </div>
+                    <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>Designed</div>
                     <div className="mt-1 text-xl font-semibold text-[var(--text-primary)]">
                       {designedVoiceCount}
                     </div>
@@ -545,9 +546,7 @@ export function VoicesPage({
                 </div>
 
                 <div className="mt-4 space-y-3">
-                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                    Filters
-                  </div>
+                  <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>Filters</div>
                   <div className="flex flex-wrap gap-2">
                     {(
                       [
@@ -573,10 +572,10 @@ export function VoicesPage({
               <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                    <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
                       Built-in Model
                     </div>
-                    <h3 className="mt-1 text-base font-semibold text-[var(--text-primary)]">
+                    <h3 className={cn(VOICE_ROUTE_PANEL_TITLE_CLASS, "mt-1")}>
                       {resolvedSelectedModel ?? "No model selected"}
                     </h3>
                     <div
@@ -602,7 +601,12 @@ export function VoicesPage({
                   </Button>
                 </div>
 
-                <div className="mt-4 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3.5 py-3 text-xs leading-relaxed text-[var(--text-muted)]">
+                <div
+                  className={cn(
+                    VOICE_ROUTE_BODY_COPY_CLASS,
+                    "mt-4 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3.5 py-3",
+                  )}
+                >
                   {selectedModelInfo?.speech_capabilities?.built_in_voice_count
                     ? `${selectedModelInfo.speech_capabilities.built_in_voice_count} built-in speakers are available on the active model.`
                     : "Built-in voices appear when a CustomVoice, Kokoro, or LFM2 Audio model is selected."}
@@ -610,7 +614,7 @@ export function VoicesPage({
 
                 <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
                   <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-3">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                    <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
                       Visible voices
                     </div>
                     <div className="mt-1 text-xl font-semibold text-[var(--text-primary)]">
@@ -618,7 +622,7 @@ export function VoicesPage({
                     </div>
                   </div>
                   <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-3">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                    <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
                       Route models
                     </div>
                     <div className="mt-1 text-xl font-semibold text-[var(--text-primary)]">
@@ -633,13 +637,13 @@ export function VoicesPage({
           <section className="flex min-h-0 flex-col rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 sm:p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
                   {activeTab === "saved" ? "Saved voices" : "Built-in voices"}
                 </div>
-                <h3 className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
+                <h3 className={cn(VOICE_ROUTE_PANEL_TITLE_CLASS, "mt-1")}>
                   {activePanelTitle}
                 </h3>
-                <p className="mt-1 max-w-3xl text-sm leading-relaxed text-[var(--text-secondary)]">
+                <p className={cn(VOICE_ROUTE_BODY_COPY_CLASS, "mt-1 max-w-3xl")}>
                   {activePanelDescription}
                 </p>
               </div>

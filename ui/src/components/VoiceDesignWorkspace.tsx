@@ -16,7 +16,10 @@ import {
 import clsx from "clsx";
 import { api, type SpeechHistoryRecord, type TTSGenerationStats } from "../api";
 import {
+  VOICE_ROUTE_META_COPY_CLASS,
+  VOICE_ROUTE_PANEL_TITLE_CLASS,
   VOICE_ROUTE_SECTION_LABEL_CLASS,
+  VOICE_ROUTE_TITLE_ACCENT_CLASS,
   VOICE_ROUTE_WORKSPACE_DESCRIPTION_CLASS,
   VOICE_ROUTE_WORKSPACE_TITLE_CLASS,
 } from "@/components/voiceRouteTypography";
@@ -524,7 +527,7 @@ export function VoiceDesignWorkspace({
             <div className="space-y-6">
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wide">
+                  <label className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
                     Voice Direction
                     <span className="text-red-500 ml-1">*</span>
                   </label>
@@ -551,10 +554,15 @@ export function VoiceDesignWorkspace({
                             onClick={() => handlePresetSelect(preset.description)}
                             className="p-3 rounded-lg bg-[var(--bg-surface-0)] hover:bg-[var(--bg-surface-2)] border border-[var(--border-muted)] hover:border-[var(--border-strong)] text-left transition-colors group"
                           >
-                            <div className="text-sm font-semibold text-[var(--text-primary)] mb-1">
+                            <div className={clsx(VOICE_ROUTE_TITLE_ACCENT_CLASS, "mb-1 text-sm")}>
                               {preset.name}
                             </div>
-                            <div className="text-[11px] text-[var(--text-secondary)] line-clamp-2 leading-relaxed group-hover:text-[var(--text-primary)] transition-colors">
+                            <div
+                              className={clsx(
+                                VOICE_ROUTE_META_COPY_CLASS,
+                                "line-clamp-2 leading-relaxed group-hover:text-[var(--text-primary)] transition-colors",
+                              )}
+                            >
                               {preset.description}
                             </div>
                           </button>
@@ -571,13 +579,13 @@ export function VoiceDesignWorkspace({
                   rows={4}
                   className="textarea text-base py-4 leading-relaxed bg-[var(--bg-surface-0)] border-[var(--border-muted)] w-full"
                 />
-                <p className="text-[11px] font-medium text-[var(--text-muted)] mt-2">
+                <p className={clsx(VOICE_ROUTE_META_COPY_CLASS, "mt-2")}>
                   We will generate three nearby directions so you can compare before saving a reusable voice.
                 </p>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wide mb-2">
+                <label className={clsx(VOICE_ROUTE_SECTION_LABEL_CLASS, "mb-2 block")}>
                   Preview Script
                   <span className="text-red-500 ml-1">*</span>
                 </label>
@@ -600,7 +608,7 @@ export function VoiceDesignWorkspace({
               </div>
 
               <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-2">
+                <div className={clsx(VOICE_ROUTE_SECTION_LABEL_CLASS, "mb-2")}>
                   Candidate Workflow
                 </div>
                 <div className="grid gap-2 sm:grid-cols-3 text-xs">
@@ -691,7 +699,7 @@ export function VoiceDesignWorkspace({
 
             <div className="space-y-4">
               <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-3">
+                <div className={clsx(VOICE_ROUTE_SECTION_LABEL_CLASS, "mb-3")}>
                   Candidate Compare
                 </div>
 
@@ -715,10 +723,10 @@ export function VoiceDesignWorkspace({
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div>
-                              <div className="text-sm font-semibold text-[var(--text-primary)]">
+                              <div className={clsx(VOICE_ROUTE_TITLE_ACCENT_CLASS, "text-sm")}>
                                 {candidate.label}
                               </div>
-                              <div className="mt-1 text-xs text-[var(--text-secondary)]">
+                              <div className={clsx(VOICE_ROUTE_META_COPY_CLASS, "mt-1")}>
                                 {candidate.nuance}
                               </div>
                             </div>
@@ -762,10 +770,10 @@ export function VoiceDesignWorkspace({
                 <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4 space-y-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <div className="text-sm font-semibold text-[var(--text-primary)]">
+                      <div className={VOICE_ROUTE_PANEL_TITLE_CLASS}>
                         Save Selected Voice
                       </div>
-                      <div className="text-xs text-[var(--text-secondary)] mt-1">
+                      <div className={clsx(VOICE_ROUTE_META_COPY_CLASS, "mt-1")}>
                         Turn the selected design into a reusable voice for TTS.
                       </div>
                     </div>
@@ -777,7 +785,7 @@ export function VoiceDesignWorkspace({
                   <GenerationStats stats={selectedCandidate.stats} type="tts" />
 
                   <div>
-                    <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1.5">
+                    <label className="mb-1.5 block text-[11px] font-medium text-[var(--text-secondary)]">
                       Voice Name
                     </label>
                     <input

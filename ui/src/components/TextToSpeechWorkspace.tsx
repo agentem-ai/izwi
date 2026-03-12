@@ -32,6 +32,9 @@ import { RouteModelSelect } from "@/components/RouteModelSelect";
 import { GenerationStats } from "@/components/GenerationStats";
 import { TextToSpeechProjectsWorkspace } from "@/components/TextToSpeechProjectsWorkspace";
 import {
+  VOICE_ROUTE_BODY_COPY_CLASS,
+  VOICE_ROUTE_META_COPY_CLASS,
+  VOICE_ROUTE_PANEL_TITLE_CLASS,
   VOICE_ROUTE_SECTION_LABEL_CLASS,
   VOICE_ROUTE_WORKSPACE_DESCRIPTION_CLASS,
   VOICE_ROUTE_WORKSPACE_TITLE_CLASS,
@@ -1029,7 +1032,7 @@ export function TextToSpeechWorkspace({
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
             <div className="space-y-6">
               <div>
-                <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-[var(--text-primary)]">
+                <label className={cn(VOICE_ROUTE_SECTION_LABEL_CLASS, "mb-2 block")}>
                   Script
                 </label>
                 <textarea
@@ -1045,10 +1048,10 @@ export function TextToSpeechWorkspace({
               <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div>
-                    <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    <div className={cn(VOICE_ROUTE_SECTION_LABEL_CLASS, "mb-2")}>
                       Delivery Controls
                     </div>
-                    <div className="text-sm text-[var(--text-secondary)]">
+                    <div className={VOICE_ROUTE_BODY_COPY_CLASS}>
                       Speed is saved with the generation history. Streaming
                       appears only when the selected model exposes it.
                     </div>
@@ -1115,7 +1118,7 @@ export function TextToSpeechWorkspace({
                       className="overflow-hidden"
                     >
                       <div className="space-y-2 pt-4">
-                        <label className="text-xs font-semibold uppercase tracking-wide text-[var(--text-primary)]">
+                        <label className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
                           Style prompt
                         </label>
                         <Input
@@ -1224,17 +1227,17 @@ export function TextToSpeechWorkspace({
 
             <div className="space-y-4">
               <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
-                <div className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                <div className={cn(VOICE_ROUTE_SECTION_LABEL_CLASS, "mb-3")}>
                   Voice Summary
                 </div>
                 <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-4">
-                  <div className="text-sm font-semibold text-[var(--text-primary)]">
+                  <div className={VOICE_ROUTE_PANEL_TITLE_CLASS}>
                     {selectedVoiceItem?.name || "Select a voice"}
                   </div>
-                  <div className="mt-1 text-xs text-[var(--text-secondary)]">
+                  <div className={cn(VOICE_ROUTE_META_COPY_CLASS, "mt-1")}>
                     {voiceMode === "saved" ? "Saved voice" : "Built-in voice"}
                   </div>
-                  <p className="mt-3 text-sm leading-relaxed text-[var(--text-muted)]">
+                  <p className={cn(VOICE_ROUTE_BODY_COPY_CLASS, "mt-3")}>
                     {compatibilityNotice}
                   </p>
                   <div className="mt-3 grid gap-2 sm:grid-cols-2 text-xs">
@@ -1249,7 +1252,7 @@ export function TextToSpeechWorkspace({
               </div>
 
               <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
-                <div className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                <div className={cn(VOICE_ROUTE_SECTION_LABEL_CLASS, "mb-3")}>
                   Output
                 </div>
 
@@ -1280,7 +1283,7 @@ export function TextToSpeechWorkspace({
               </div>
 
               <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
-                <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                <div className={cn(VOICE_ROUTE_SECTION_LABEL_CLASS, "mb-2")}>
                   Quick Workflow
                 </div>
                 <div className="grid gap-2 text-xs">
