@@ -2,6 +2,11 @@ import type { ReactNode } from "react";
 import { Music4 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  VOICE_ROUTE_BODY_COPY_CLASS,
+  VOICE_ROUTE_PANEL_TITLE_CLASS,
+  VOICE_ROUTE_SECTION_LABEL_CLASS,
+} from "@/components/voiceRouteTypography";
 
 export interface VoicePickerItem {
   id: string;
@@ -37,10 +42,8 @@ export function VoicePicker({
             <Music4 className="h-6 w-6 text-muted-foreground" />
           </div>
           <div className="space-y-1">
-            <p className="text-sm font-semibold text-foreground">
-              {emptyTitle}
-            </p>
-            <p className="max-w-md text-sm text-muted-foreground">
+            <p className={VOICE_ROUTE_PANEL_TITLE_CLASS}>{emptyTitle}</p>
+            <p className={cn(VOICE_ROUTE_BODY_COPY_CLASS, "max-w-md")}>
               {emptyDescription}
             </p>
           </div>
@@ -83,10 +86,10 @@ export function VoicePicker({
               <div className="space-y-1.5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
                       {item.categoryLabel}
                     </div>
-                    <div className="mt-1 text-[1rem] font-semibold leading-tight text-foreground">
+                    <div className={cn(VOICE_ROUTE_PANEL_TITLE_CLASS, "mt-1")}>
                       {item.name}
                     </div>
                   </div>
@@ -97,7 +100,7 @@ export function VoicePicker({
                   ) : null}
                 </div>
                 {item.description ? (
-                  <p className="line-clamp-4 text-sm leading-6 text-muted-foreground">
+                  <p className={cn(VOICE_ROUTE_BODY_COPY_CLASS, "line-clamp-4")}>
                     {item.description}
                   </p>
                 ) : null}

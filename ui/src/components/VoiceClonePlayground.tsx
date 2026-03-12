@@ -16,6 +16,9 @@ import {
 } from "lucide-react";
 import { api, type SpeechHistoryRecord, type TTSGenerationStats } from "../api";
 import {
+  VOICE_ROUTE_BODY_COPY_CLASS,
+  VOICE_ROUTE_META_COPY_CLASS,
+  VOICE_ROUTE_PANEL_TITLE_CLASS,
   VOICE_ROUTE_SECTION_LABEL_CLASS,
   VOICE_ROUTE_WORKSPACE_DESCRIPTION_CLASS,
   VOICE_ROUTE_WORKSPACE_TITLE_CLASS,
@@ -462,7 +465,7 @@ export function VoiceClonePlayground({
             <div className="p-6 rounded-2xl bg-[var(--bg-surface-0)] border border-[var(--border-muted)]">
               <div className="flex items-center gap-2 mb-5">
                 <Users className="w-5 h-5 text-[var(--text-muted)]" />
-                <span className="text-sm font-semibold text-[var(--text-primary)]">
+                <span className={VOICE_ROUTE_PANEL_TITLE_CLASS}>
                   Voice Reference
                 </span>
                 {isVoiceReady && (
@@ -480,7 +483,7 @@ export function VoiceClonePlayground({
 
               <div className="mt-5 grid gap-4 xl:grid-cols-2">
                 <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-5">
-                  <div className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3">
+                  <div className={clsx(VOICE_ROUTE_SECTION_LABEL_CLASS, "mb-3")}>
                     Quality Checks
                   </div>
                   <div className="space-y-2.5 text-sm">
@@ -520,7 +523,7 @@ export function VoiceClonePlayground({
                 </div>
 
                 <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
-                  <div className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-2">
+                  <div className={clsx(VOICE_ROUTE_SECTION_LABEL_CLASS, "mb-2")}>
                     Rights and Reuse
                   </div>
                   <label className="flex items-start gap-3 rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-3 text-sm">
@@ -548,7 +551,7 @@ export function VoiceClonePlayground({
                         Use in TTS
                       </button>
                     ) : (
-                      <div className="text-xs text-[var(--text-muted)]">
+                      <div className={VOICE_ROUTE_META_COPY_CLASS}>
                         Save the reference as a voice profile to reuse it
                         directly in text-to-speech.
                       </div>
@@ -560,7 +563,7 @@ export function VoiceClonePlayground({
 
             {/* Text to speak */}
             <div className="p-6 rounded-2xl bg-[var(--bg-surface-0)] border border-[var(--border-muted)]">
-              <label className="block text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-4">
+              <label className={clsx(VOICE_ROUTE_SECTION_LABEL_CLASS, "mb-4 block")}>
                 Audition Text
               </label>
               <div className="relative">
@@ -579,7 +582,7 @@ export function VoiceClonePlayground({
                   </span>
                 </div>
               </div>
-              <p className="mt-4 text-xs leading-relaxed text-[var(--text-muted)]">
+              <p className={clsx(VOICE_ROUTE_BODY_COPY_CLASS, "mt-4")}>
                 Start with a short proof clip before moving the saved voice into
                 the TTS route for longer scripts.
               </p>

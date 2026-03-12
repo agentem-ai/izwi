@@ -18,6 +18,12 @@ import {
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import type { VoicePickerItem } from "@/components/VoicePicker";
+import {
+  VOICE_ROUTE_BODY_COPY_CLASS,
+  VOICE_ROUTE_META_COPY_CLASS,
+  VOICE_ROUTE_SECTION_LABEL_CLASS,
+  VOICE_ROUTE_TITLE_ACCENT_CLASS,
+} from "@/components/voiceRouteTypography";
 
 type VoiceMode = "saved" | "built_in";
 
@@ -249,14 +255,14 @@ export function VoiceSelect({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium text-[var(--text-primary)]">
+            <span className={cn(VOICE_ROUTE_TITLE_ACCENT_CLASS, "truncate text-sm")}>
               {selectedItem?.name ?? (canOpen ? "Select a voice" : "No voices available")}
             </span>
             <span className="rounded-md bg-[var(--bg-surface-2)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
               {MODE_COPY[activeMode].triggerLabel}
             </span>
           </div>
-          <div className="mt-0.5 truncate text-[11px] text-[var(--text-muted)]">
+          <div className={cn(VOICE_ROUTE_META_COPY_CLASS, "mt-0.5 truncate")}>
             {triggerSubtitle}
           </div>
         </div>
@@ -304,10 +310,10 @@ export function VoiceSelect({
 
               <div className="flex items-center justify-between gap-3 px-1">
                 <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                  <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
                     Available for
                   </div>
-                  <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+                  <div className={cn(VOICE_ROUTE_TITLE_ACCENT_CLASS, "mt-1 text-sm")}>
                     {modelLabel ?? "No model selected"}
                   </div>
                 </div>
@@ -361,23 +367,23 @@ export function VoiceSelect({
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
-                              <span className="truncate text-sm font-medium text-[var(--text-primary)]">
+                              <span className={cn(VOICE_ROUTE_TITLE_ACCENT_CLASS, "truncate text-sm")}>
                                 {item.name}
                               </span>
                               {item.selected ? (
                                 <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
                               ) : null}
                             </div>
-                            <div className="mt-0.5 truncate text-[11px] text-[var(--text-muted)]">
+                            <div className={cn(VOICE_ROUTE_META_COPY_CLASS, "mt-0.5 truncate")}>
                               {item.categoryLabel}
                             </div>
 
                             {item.description ? (
-                              <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[var(--text-secondary)]">
+                              <p className={cn(VOICE_ROUTE_BODY_COPY_CLASS, "mt-1 line-clamp-2 text-xs")}>
                                 {item.description}
                               </p>
                             ) : item.previewMessage ? (
-                              <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[var(--text-muted)]">
+                              <p className={cn(VOICE_ROUTE_META_COPY_CLASS, "mt-1 line-clamp-2 leading-relaxed")}>
                                 {item.previewMessage}
                               </p>
                             ) : null}
