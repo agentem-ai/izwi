@@ -6,7 +6,7 @@ use candle_transformers::models::with_tracing::QMatMul;
 use candle_transformers::quantized_nn::RmsNorm;
 
 use crate::error::{Error, Result};
-use crate::models::architectures::qwen3::core::{build_rope_cache, repeat_kv};
+use crate::models::architectures::qwen3::core::repeat_kv;
 use crate::models::shared::weights::gguf::GgufLoader;
 
 use super::chat::Qwen35TextConfig;
@@ -20,7 +20,6 @@ pub struct Qwen35TextModel {
 }
 
 pub struct Qwen35TextRuntimeState {
-    position: usize,
     layers: Vec<Qwen35LayerRuntimeState>,
 }
 
@@ -65,6 +64,7 @@ struct Qwen35FullAttention {
     head_dim: usize,
     rope_dim: usize,
     rope_theta: f64,
+    mrope_sections: Vec<usize>,
 }
 
 struct Qwen35LinearAttention {
@@ -163,26 +163,38 @@ impl Qwen35TextModel {
 
     pub fn new_state(&self) -> Qwen35TextRuntimeState {
         Qwen35TextRuntimeState {
-            position: 0,
             layers: self.layers.iter().map(Qwen35Layer::new_state).collect(),
         }
     }
 
-    pub fn forward_token_id(
+    pub fn hidden_size(&self) -> usize {
+        self.token_embeddings.hidden_size()
+    }
+
+    pub fn forward_token_id_at(
         &self,
         token_id: u32,
+        position_ids: [usize; 3],
         state: &mut Qwen35TextRuntimeState,
     ) -> Result<Tensor> {
         let input = Tensor::from_vec(vec![token_id], (1, 1), &self.device)?;
-        let mut hidden = self.token_embeddings.forward(&input)?;
+        let hidden = self.token_embeddings.forward(&input)?;
+        self.forward_input_embedding_at(&hidden, position_ids, state)
+    }
 
+    pub fn forward_input_embedding_at(
+        &self,
+        input_embedding: &Tensor,
+        position_ids: [usize; 3],
+        state: &mut Qwen35TextRuntimeState,
+    ) -> Result<Tensor> {
+        let mut hidden = input_embedding.clone();
         for (layer, layer_state) in self.layers.iter().zip(state.layers.iter_mut()) {
-            hidden = layer.forward(&hidden, layer_state, state.position)?;
+            hidden = layer.forward(&hidden, layer_state, position_ids)?;
         }
 
         let hidden = self.output_norm.forward(&hidden)?;
         let logits = self.output.forward(&hidden)?;
-        state.position = state.position.saturating_add(1);
         logits.i((0, 0)).map_err(Error::from)
     }
 }
@@ -205,13 +217,13 @@ impl Qwen35Layer {
         &self,
         hidden_states: &Tensor,
         state: &mut Qwen35LayerRuntimeState,
-        position: usize,
+        position_ids: [usize; 3],
     ) -> Result<Tensor> {
         let residual = hidden_states.clone();
         let hidden_states = self.attn_norm.forward(hidden_states)?;
         let hidden_states = match &self.mixer {
             Qwen35Mixer::Linear(mixer) => mixer.forward(&hidden_states, state)?,
-            Qwen35Mixer::Full(mixer) => mixer.forward(&hidden_states, state, position)?,
+            Qwen35Mixer::Full(mixer) => mixer.forward(&hidden_states, state, position_ids)?,
         };
         let hidden_states = (&residual + &hidden_states)?;
 
@@ -257,6 +269,13 @@ impl Qwen35FullAttention {
             head_dim: cfg.attention_key_length,
             rope_dim: cfg.rope_dimension_count.min(cfg.attention_key_length),
             rope_theta: cfg.rope_freq_base,
+            mrope_sections: cfg
+                .rope_dimension_sections
+                .iter()
+                .copied()
+                .filter(|section| *section > 0)
+                .take(3)
+                .collect(),
         })
     }
 
@@ -264,7 +283,7 @@ impl Qwen35FullAttention {
         &self,
         hidden_states: &Tensor,
         state: &mut Qwen35LayerRuntimeState,
-        position: usize,
+        position_ids: [usize; 3],
     ) -> Result<Tensor> {
         let (keys, values) = match state {
             Qwen35LayerRuntimeState::Full { keys, values } => (keys, values),
@@ -302,7 +321,8 @@ impl Qwen35FullAttention {
 
         let query_states = self.q_norm.forward(&query_states.contiguous()?)?;
         let key_states = self.k_norm.forward(&key_states.contiguous()?)?;
-        let (query_states, key_states) = self.apply_rope(&query_states, &key_states, position)?;
+        let (query_states, key_states) =
+            self.apply_rope(&query_states, &key_states, position_ids)?;
 
         let all_keys = append_sequence_cache(keys, &key_states)?;
         let all_values = append_sequence_cache(values, &value_states)?;
@@ -330,26 +350,20 @@ impl Qwen35FullAttention {
         &self,
         query_states: &Tensor,
         key_states: &Tensor,
-        position: usize,
+        position_ids: [usize; 3],
     ) -> Result<(Tensor, Tensor)> {
         if self.rope_dim == 0 {
             return Ok((query_states.clone(), key_states.clone()));
         }
 
-        let (cos, sin) = build_rope_cache(
-            1,
+        let (cos, sin) = build_mrope(
             self.rope_dim,
-            position,
+            position_ids,
+            &self.mrope_sections,
             self.rope_theta,
             query_states.device(),
             query_states.dtype(),
         )?;
-        let cos = Tensor::cat(&[cos.clone(), cos], 1)?
-            .unsqueeze(0)?
-            .unsqueeze(2)?;
-        let sin = Tensor::cat(&[sin.clone(), sin], 1)?
-            .unsqueeze(0)?
-            .unsqueeze(2)?;
 
         let query_rot = query_states.narrow(3, 0, self.rope_dim)?;
         let key_rot = key_states.narrow(3, 0, self.rope_dim)?;
@@ -665,6 +679,61 @@ fn append_sequence_cache(cache: &mut Option<Tensor>, current: &Tensor) -> Result
     };
     *cache = Some(updated.clone());
     Ok(updated)
+}
+
+fn build_mrope(
+    rope_dim: usize,
+    position_ids: [usize; 3],
+    mrope_sections: &[usize],
+    rope_theta: f64,
+    device: &Device,
+    dtype: DType,
+) -> Result<(Tensor, Tensor)> {
+    let half_dim = rope_dim / 2;
+    let inv_freqs: Vec<f32> = (0..rope_dim)
+        .step_by(2)
+        .map(|idx| (1.0f64 / rope_theta.powf(idx as f64 / rope_dim as f64)) as f32)
+        .collect();
+    if inv_freqs.len() != half_dim {
+        return Err(Error::InferenceError(format!(
+            "Invalid Qwen3.5 rotary dimension {rope_dim}"
+        )));
+    }
+
+    let mut temporal = vec![0f32; half_dim];
+    let mut height = vec![0f32; half_dim];
+    let mut width = vec![0f32; half_dim];
+    for (idx, inv_freq) in inv_freqs.iter().enumerate() {
+        temporal[idx] = position_ids[0] as f32 * inv_freq;
+        height[idx] = position_ids[1] as f32 * inv_freq;
+        width[idx] = position_ids[2] as f32 * inv_freq;
+    }
+
+    let mut interleaved = temporal.clone();
+    if position_ids[0] != position_ids[1] || position_ids[0] != position_ids[2] {
+        if mrope_sections.iter().sum::<usize>() != half_dim || mrope_sections.len() < 3 {
+            return Err(Error::InferenceError(format!(
+                "Invalid Qwen3.5 multimodal RoPE sections {:?} for rotary dim {}",
+                mrope_sections, rope_dim
+            )));
+        }
+
+        for (offset, source, section_len) in [
+            (1usize, &height, mrope_sections[1]),
+            (2usize, &width, mrope_sections[2]),
+        ] {
+            let stop = section_len * 3;
+            for idx in (offset..stop.min(half_dim)).step_by(3) {
+                interleaved[idx] = source[idx];
+            }
+        }
+    }
+
+    let mut emb = Vec::with_capacity(rope_dim);
+    emb.extend_from_slice(&interleaved);
+    emb.extend_from_slice(&interleaved);
+    let emb = Tensor::from_vec(emb, (1, 1, 1, rope_dim), device)?.to_dtype(dtype)?;
+    Ok((emb.cos()?, emb.sin()?))
 }
 
 fn apply_rotary_emb(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
