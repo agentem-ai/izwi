@@ -13,10 +13,13 @@ use crate::api::request_context::RequestContext;
 use crate::app::chat::{
     generate_chat, parse_chat_model, spawn_chat_stream, ChatExecutionRequest, ChatStreamEvent,
 };
+use crate::app::chat_content::{
+    flatten_thread_content, validate_media_inputs_for_variant, FlattenedMultimodalContent,
+};
 use crate::chat_store::{ChatThreadMessage, ChatThreadSummary};
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::{ChatMessage, ChatRequestConfig, ChatRole};
+use izwi_core::{ChatMediaInput, ChatMessage, ChatRequestConfig, ChatRole};
 
 #[derive(Debug, Serialize)]
 pub struct ChatThreadListResponse {
@@ -215,18 +218,12 @@ pub async fn create_thread_message(
 ) -> Result<Response, ApiError> {
     let model_variant = parse_chat_model(&req.model)?;
     let model_id = model_variant.dir_name().to_string();
-    if content_parts_contain_media(req.content_parts.as_deref()) {
-        return Err(ApiError::bad_request(
-            "Image/video inputs in threaded chat are not currently supported",
-        ));
-    }
-
     let prepared_content_parts = req.content_parts.clone();
     let flattened_content = flatten_thread_content(&req.content, prepared_content_parts.as_deref())
         .map_err(|err| {
             ApiError::bad_request(format!("Invalid chat message content payload: {err}"))
         })?;
-    if flattened_content.runtime.trim().is_empty() {
+    if flattened_content.runtime_text.trim().is_empty() && !flattened_content.has_media() {
         return Err(ApiError::bad_request("Message content cannot be empty"));
     }
 
@@ -237,12 +234,20 @@ pub async fn create_thread_message(
         .await
         .map_err(map_store_error)?;
 
+    let (runtime_messages, media_inputs) = build_runtime_messages(
+        &existing_messages,
+        &flattened_content,
+        req.system_prompt.as_deref(),
+    )?;
+    validate_media_inputs_for_variant(model_variant, &media_inputs)
+        .map_err(ApiError::bad_request)?;
+
     let user_message = state
         .chat_store
         .append_message(
             thread_id.clone(),
             "user".to_string(),
-            flattened_content.display.clone(),
+            flattened_content.display_text.clone(),
             prepared_content_parts.clone(),
             Some(model_id.clone()),
             None,
@@ -251,11 +256,6 @@ pub async fn create_thread_message(
         .await
         .map_err(map_store_or_not_found)?;
 
-    let runtime_messages = build_runtime_messages(
-        &existing_messages,
-        &flattened_content.runtime,
-        req.system_prompt.as_deref(),
-    )?;
     let execution_request = ChatExecutionRequest {
         variant: model_variant,
         messages: runtime_messages,
@@ -267,7 +267,7 @@ pub async fn create_thread_message(
         chat_config: ChatRequestConfig {
             enable_thinking: req.enable_thinking,
             tools: Vec::new(),
-            media_inputs: Vec::new(),
+            media_inputs,
         },
         correlation_id: Some(ctx.correlation_id),
     };
@@ -422,10 +422,11 @@ async fn create_streaming_thread_message(
 
 fn build_runtime_messages(
     existing: &[ChatThreadMessage],
-    new_user_content: &str,
+    new_user_content: &FlattenedMultimodalContent,
     system_prompt: Option<&str>,
-) -> Result<Vec<ChatMessage>, ApiError> {
+) -> Result<(Vec<ChatMessage>, Vec<ChatMediaInput>), ApiError> {
     let mut messages = Vec::new();
+    let mut media_inputs = Vec::new();
 
     if let Some(prompt) = system_prompt
         .map(str::trim)
@@ -439,127 +440,24 @@ fn build_runtime_messages(
 
     for message in existing {
         let role = parse_stored_role(&message.role)?;
+        let flattened = flatten_thread_content(&message.content, message.content_parts.as_deref())
+            .map_err(|err| {
+                ApiError::internal(format!("Invalid stored chat message payload: {err}"))
+            })?;
+        media_inputs.extend(flattened.media_inputs);
         messages.push(ChatMessage {
             role,
-            content: message.content.clone(),
+            content: flattened.runtime_text,
         });
     }
 
+    media_inputs.extend(new_user_content.media_inputs.clone());
     messages.push(ChatMessage {
         role: ChatRole::User,
-        content: new_user_content.to_string(),
+        content: new_user_content.runtime_text.clone(),
     });
 
-    Ok(messages)
-}
-
-#[derive(Debug, Default)]
-struct FlattenedThreadContent {
-    display: String,
-    runtime: String,
-}
-
-fn flatten_thread_content(
-    raw_content: &str,
-    content_parts: Option<&[serde_json::Value]>,
-) -> Result<FlattenedThreadContent, String> {
-    let raw_trimmed = raw_content.trim().to_string();
-    let Some(parts) = content_parts else {
-        return Ok(FlattenedThreadContent {
-            display: raw_trimmed.clone(),
-            runtime: raw_trimmed,
-        });
-    };
-
-    if parts.is_empty() {
-        return Ok(FlattenedThreadContent {
-            display: raw_trimmed.clone(),
-            runtime: raw_trimmed,
-        });
-    }
-
-    let mut out = FlattenedThreadContent::default();
-    for part in parts {
-        if content_part_is_image(part) {
-            return Err(
-                "Image/video inputs are not currently supported for chat messages".to_string(),
-            );
-        }
-        if content_part_is_video(part) {
-            return Err(
-                "Image/video inputs are not currently supported for chat messages".to_string(),
-            );
-        }
-        if let Some(text) = resolve_text_part(part) {
-            out.runtime.push_str(&text);
-            out.display.push_str(&text);
-        }
-    }
-
-    if out.runtime.trim().is_empty() && !raw_trimmed.is_empty() {
-        out.runtime = raw_trimmed.clone();
-        out.display = raw_trimmed;
-    }
-
-    Ok(out)
-}
-
-fn resolve_text_part(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::String(raw) => {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }
-        serde_json::Value::Object(map) => map
-            .get("text")
-            .or_else(|| map.get("input_text"))
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        _ => None,
-    }
-}
-
-fn content_part_is_image(part: &serde_json::Value) -> bool {
-    let Some(map) = part.as_object() else {
-        return false;
-    };
-    if matches!(
-        map.get("type")
-            .or_else(|| map.get("kind"))
-            .and_then(|v| v.as_str()),
-        Some("image") | Some("image_url") | Some("input_image")
-    ) {
-        return true;
-    }
-    map.contains_key("image") || map.contains_key("image_url") || map.contains_key("input_image")
-}
-
-fn content_part_is_video(part: &serde_json::Value) -> bool {
-    let Some(map) = part.as_object() else {
-        return false;
-    };
-    if matches!(
-        map.get("type")
-            .or_else(|| map.get("kind"))
-            .and_then(|v| v.as_str()),
-        Some("video") | Some("video_url") | Some("input_video")
-    ) {
-        return true;
-    }
-    map.contains_key("video") || map.contains_key("video_url") || map.contains_key("input_video")
-}
-
-fn content_parts_contain_media(content_parts: Option<&[serde_json::Value]>) -> bool {
-    let Some(parts) = content_parts else {
-        return false;
-    };
-    parts
-        .iter()
-        .any(|part| content_part_is_image(part) || content_part_is_video(part))
+    Ok((messages, media_inputs))
 }
 
 fn parse_stored_role(role: &str) -> Result<ChatRole, ApiError> {
@@ -615,34 +513,26 @@ mod tests {
         )
         .expect("flatten thread content");
 
-        assert_eq!(flattened.runtime, "Look  now");
-        assert_eq!(flattened.display, "Look  now");
+        assert_eq!(flattened.runtime_text, "Look  now");
+        assert_eq!(flattened.display_text, "Look  now");
     }
 
     #[test]
-    fn flatten_thread_content_rejects_media_parts() {
-        let err = flatten_thread_content("", Some(&[json!({"type":"image_url","image_url":{}})]))
-            .expect_err("media parts should fail");
-        assert!(err.contains("not currently supported"));
-    }
+    fn flatten_thread_content_collects_media_parts() {
+        let flattened = flatten_thread_content(
+            "",
+            Some(&[json!({"type":"image_url","image_url":{"url":"https://example.com/cat.png"}})]),
+        )
+        .expect("media parts should flatten");
 
-    #[test]
-    fn content_parts_contain_media_detects_multimodal_parts() {
-        assert!(!content_parts_contain_media(None));
-        assert!(!content_parts_contain_media(Some(&[
-            json!({"type":"text","text":"hello"})
-        ])));
-        assert!(content_parts_contain_media(Some(&[
-            json!({"type":"image_url","image_url":{"url":"https://example.com/cat.png"}})
-        ])));
-        assert!(content_parts_contain_media(Some(&[
-            json!({"type":"input_video","input_video":{"url":"https://example.com/clip.mp4"}})
-        ])));
+        assert!(flattened.display_text.is_empty());
+        assert!(flattened.runtime_text.contains("<|image_pad|>"));
+        assert_eq!(flattened.media_inputs.len(), 1);
     }
 
     #[test]
     fn build_runtime_messages_appends_existing_messages_and_prompt() {
-        let messages = build_runtime_messages(
+        let (messages, media_inputs) = build_runtime_messages(
             &[ChatThreadMessage {
                 id: "message-1".to_string(),
                 thread_id: "thread-1".to_string(),
@@ -653,7 +543,11 @@ mod tests {
                 tokens_generated: None,
                 generation_time_ms: None,
             }],
-            "How are you?",
+            &FlattenedMultimodalContent {
+                display_text: "How are you?".to_string(),
+                runtime_text: "How are you?".to_string(),
+                media_inputs: Vec::new(),
+            },
             Some("Be concise."),
         )
         .expect("runtime messages");
@@ -662,5 +556,39 @@ mod tests {
         assert_eq!(messages[0].role, ChatRole::System);
         assert_eq!(messages[1].role, ChatRole::Assistant);
         assert_eq!(messages[2].role, ChatRole::User);
+        assert!(media_inputs.is_empty());
+    }
+
+    #[test]
+    fn build_runtime_messages_collects_media_from_history_and_new_message() {
+        let (messages, media_inputs) = build_runtime_messages(
+            &[ChatThreadMessage {
+                id: "message-1".to_string(),
+                thread_id: "thread-1".to_string(),
+                role: "user".to_string(),
+                content: "".to_string(),
+                content_parts: Some(vec![json!({
+                    "type":"image_url",
+                    "image_url":{"url":"https://example.com/history.png"}
+                })]),
+                created_at: 1,
+                tokens_generated: None,
+                generation_time_ms: None,
+            }],
+            &FlattenedMultimodalContent {
+                display_text: "Describe this".to_string(),
+                runtime_text: "<|vision_start|><|image_pad|><|vision_end|>Describe this"
+                    .to_string(),
+                media_inputs: vec![ChatMediaInput {
+                    kind: izwi_core::ChatMediaKind::Image,
+                    source: "https://example.com/new.png".to_string(),
+                }],
+            },
+            None,
+        )
+        .expect("runtime messages");
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(media_inputs.len(), 2);
     }
 }

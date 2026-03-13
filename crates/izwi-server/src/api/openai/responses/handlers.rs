@@ -11,9 +11,15 @@ use axum::{
 
 use crate::api::request_context::RequestContext;
 use crate::app::chat::{generate_chat, spawn_chat_stream, ChatExecutionRequest, ChatStreamEvent};
+use crate::app::chat_content::{
+    flatten_content_parts, validate_media_inputs_for_variant, FlattenedMultimodalContent,
+};
 use crate::error::ApiError;
 use crate::state::{AppState, StoredResponseInputItem, StoredResponseRecord};
-use izwi_core::{parse_chat_model_variant, ChatMessage, ChatRequestConfig, ChatRole, ModelVariant};
+use izwi_core::{
+    parse_chat_model_variant, ChatMediaInput, ChatMessage, ChatRequestConfig, ChatRole,
+    ModelVariant,
+};
 
 use super::dto::{
     ResponseDeletedObject, ResponseError, ResponseInput, ResponseInputContent,
@@ -30,13 +36,8 @@ pub async fn create_response(
 ) -> Result<Response<Body>, ApiError> {
     let model_variant = parse_chat_model_variant(Some(&req.model))
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
-    if response_input_contains_multimodal_content(req.input.as_ref()) {
-        return Err(ApiError::bad_request(
-            "Multimodal responses input is not currently supported",
-        ));
-    }
 
-    let (messages, input_items) = build_input_messages(
+    let (messages, input_items, media_inputs) = build_input_messages(
         model_variant,
         req.instructions.as_deref(),
         req.input.clone(),
@@ -44,6 +45,8 @@ pub async fn create_response(
         req.tools.clone(),
         req.tool_choice.clone(),
     )?;
+    validate_media_inputs_for_variant(model_variant, &media_inputs)
+        .map_err(ApiError::bad_request)?;
     if messages.is_empty() {
         return Err(ApiError::bad_request(
             "Responses request requires non-empty `input` or `instructions`",
@@ -61,7 +64,7 @@ pub async fn create_response(
         chat_config: ChatRequestConfig {
             enable_thinking: req.enable_thinking,
             tools: req.tools.clone().unwrap_or_default(),
-            media_inputs: Vec::new(),
+            media_inputs,
         },
         correlation_id: Some(ctx.correlation_id.clone()),
     };
@@ -352,31 +355,13 @@ enum ResponseInboundRole {
     Tool,
 }
 
-#[derive(Debug, Default)]
-struct FlattenedContent {
-    text: String,
-    contains_media: bool,
-}
-
-fn response_input_contains_multimodal_content(input: Option<&ResponseInput>) -> bool {
-    let Some(input) = input else {
-        return false;
-    };
-
-    let check_content = |content: &Option<ResponseInputContent>| -> bool {
-        match content {
-            Some(ResponseInputContent::Parts(parts)) => parts
-                .iter()
-                .any(|part| content_part_is_image(part) || content_part_is_video(part)),
-            _ => false,
-        }
-    };
-
-    match input {
-        ResponseInput::Text(_) => false,
-        ResponseInput::One(item) => check_content(&item.content),
-        ResponseInput::Many(items) => items.iter().any(|item| check_content(&item.content)),
-    }
+#[derive(Debug, Clone)]
+struct NormalizedInputItem {
+    role: String,
+    display_content: String,
+    runtime_content: String,
+    is_tool: bool,
+    media_inputs: Vec<ChatMediaInput>,
 }
 
 fn build_input_messages(
@@ -386,9 +371,17 @@ fn build_input_messages(
     _enable_thinking: Option<bool>,
     _tools: Option<Vec<serde_json::Value>>,
     _tool_choice: Option<serde_json::Value>,
-) -> Result<(Vec<ChatMessage>, Vec<StoredResponseInputItem>), ApiError> {
+) -> Result<
+    (
+        Vec<ChatMessage>,
+        Vec<StoredResponseInputItem>,
+        Vec<ChatMediaInput>,
+    ),
+    ApiError,
+> {
     let mut messages = Vec::new();
     let mut stored = Vec::new();
+    let mut media_inputs = Vec::new();
 
     if let Some(instructions) = instructions {
         if !instructions.trim().is_empty() {
@@ -405,7 +398,13 @@ fn build_input_messages(
 
     let input_items = match input {
         None => Vec::new(),
-        Some(ResponseInput::Text(text)) => vec![("user".to_string(), text, false, false)],
+        Some(ResponseInput::Text(text)) => vec![NormalizedInputItem {
+            role: "user".to_string(),
+            display_content: text.clone(),
+            runtime_content: text,
+            is_tool: false,
+            media_inputs: Vec::new(),
+        }],
         Some(ResponseInput::One(item)) => vec![normalize_input_item(item)?],
         Some(ResponseInput::Many(items)) => items
             .into_iter()
@@ -413,62 +412,79 @@ fn build_input_messages(
             .collect::<Result<Vec<_>, _>>()?,
     };
 
-    for (role, content, is_tool, contains_media) in input_items {
+    for item in input_items {
+        let role = item.role.clone();
         let parsed_role = parse_input_role(&role)?;
-        if contains_media {
-            return Err(ApiError::bad_request(
-                "Multimodal responses input is not currently supported",
-            ));
-        }
-        if content.trim().is_empty() {
+        if item.runtime_content.trim().is_empty() && item.media_inputs.is_empty() {
             return Err(ApiError::bad_request(
                 "Response input item content cannot be empty",
             ));
         }
+        media_inputs.extend(item.media_inputs.clone());
 
         match parsed_role {
             ResponseInboundRole::System => {
+                if !item.media_inputs.is_empty() {
+                    return Err(ApiError::bad_request(
+                        "System response input items cannot contain images or videos",
+                    ));
+                }
                 messages.push(ChatMessage {
                     role: ChatRole::System,
-                    content: content.clone(),
+                    content: item.runtime_content.clone(),
                 });
-                stored.push(StoredResponseInputItem { role, content });
+                stored.push(StoredResponseInputItem {
+                    role,
+                    content: item.display_content,
+                });
             }
             ResponseInboundRole::User => {
                 messages.push(ChatMessage {
                     role: ChatRole::User,
-                    content: content.clone(),
+                    content: item.runtime_content.clone(),
                 });
-                stored.push(StoredResponseInputItem { role, content });
+                stored.push(StoredResponseInputItem {
+                    role,
+                    content: item.display_content,
+                });
             }
             ResponseInboundRole::Assistant => {
                 messages.push(ChatMessage {
                     role: ChatRole::Assistant,
-                    content: content.clone(),
+                    content: item.runtime_content.clone(),
                 });
-                stored.push(StoredResponseInputItem { role, content });
+                stored.push(StoredResponseInputItem {
+                    role,
+                    content: item.display_content,
+                });
             }
             ResponseInboundRole::Tool => {
-                let wrapped = if is_tool {
-                    format!("<tool_response>\n{}\n</tool_response>", content.trim())
+                let wrapped = if item.is_tool {
+                    format!(
+                        "<tool_response>\n{}\n</tool_response>",
+                        item.runtime_content.trim()
+                    )
                 } else {
-                    content.clone()
+                    item.runtime_content.clone()
                 };
                 messages.push(ChatMessage {
                     role: ChatRole::User,
                     content: wrapped,
                 });
-                stored.push(StoredResponseInputItem { role, content });
+                stored.push(StoredResponseInputItem {
+                    role,
+                    content: item.display_content,
+                });
             }
         }
     }
 
-    Ok((messages, stored))
+    Ok((messages, stored, media_inputs))
 }
 
 fn normalize_input_item(
     item: super::dto::ResponseInputItem,
-) -> Result<(String, String, bool, bool), ApiError> {
+) -> Result<NormalizedInputItem, ApiError> {
     let role = item
         .role
         .unwrap_or_else(|| "user".to_string())
@@ -476,7 +492,7 @@ fn normalize_input_item(
         .to_ascii_lowercase();
 
     let flattened = flatten_content(item.content)?;
-    let mut content = flattened.text;
+    let mut runtime_content = flattened.runtime_text.clone();
     if role == "assistant"
         && item
             .tool_calls
@@ -485,60 +501,42 @@ fn normalize_input_item(
     {
         let tool_xml = render_tool_calls_xml(item.tool_calls.as_deref().unwrap_or(&[]))?;
         if !tool_xml.is_empty() {
-            if !content.trim().is_empty() {
-                content.push_str("\n\n");
+            if !runtime_content.trim().is_empty() {
+                runtime_content.push_str("\n\n");
             }
-            content.push_str(&tool_xml);
+            runtime_content.push_str(&tool_xml);
         }
     }
 
-    if content.trim().is_empty() && !flattened.contains_media {
+    if runtime_content.trim().is_empty() && !flattened.has_media() {
         return Err(ApiError::bad_request(
             "Response input item content cannot be empty",
         ));
     }
 
-    Ok((
-        role.clone(),
-        content,
-        role == "tool",
-        flattened.contains_media,
-    ))
+    Ok(NormalizedInputItem {
+        role: role.clone(),
+        display_content: flattened.display_text,
+        runtime_content,
+        is_tool: role == "tool",
+        media_inputs: flattened.media_inputs,
+    })
 }
 
-fn flatten_content(content: Option<ResponseInputContent>) -> Result<FlattenedContent, ApiError> {
+fn flatten_content(
+    content: Option<ResponseInputContent>,
+) -> Result<FlattenedMultimodalContent, ApiError> {
     match content {
-        None => Ok(FlattenedContent::default()),
-        Some(ResponseInputContent::Text(text)) => Ok(FlattenedContent {
-            text,
-            contains_media: false,
+        None => Ok(FlattenedMultimodalContent::default()),
+        Some(ResponseInputContent::Text(text)) => Ok(FlattenedMultimodalContent {
+            display_text: text.clone(),
+            runtime_text: text,
+            media_inputs: Vec::new(),
         }),
         Some(ResponseInputContent::Parts(parts)) => {
-            let mut out = FlattenedContent::default();
-            for part in parts {
-                if content_part_is_image(&part) {
-                    ensure_media_part_has_source(&part, InboundMediaKind::Image)?;
-                    out.contains_media = true;
-                    continue;
-                }
-                if content_part_is_video(&part) {
-                    ensure_media_part_has_source(&part, InboundMediaKind::Video)?;
-                    out.contains_media = true;
-                    continue;
-                }
-                if let Some(text) = part.input_text.or(part.text) {
-                    out.text.push_str(&text);
-                }
-            }
-            Ok(out)
+            flatten_content_parts(&content_parts_to_values(&parts)?).map_err(ApiError::bad_request)
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InboundMediaKind {
-    Image,
-    Video,
 }
 
 fn parse_input_role(raw: &str) -> Result<ResponseInboundRole, ApiError> {
@@ -554,147 +552,13 @@ fn parse_input_role(raw: &str) -> Result<ResponseInboundRole, ApiError> {
     }
 }
 
-fn content_part_is_image(part: &super::dto::ResponseInputContentPart) -> bool {
-    if matches!(
-        part.kind.as_deref(),
-        Some("image") | Some("image_url") | Some("input_image")
-    ) {
-        return true;
-    }
-    part.image.is_some() || part.image_url.is_some() || part.input_image.is_some()
-}
-
-fn content_part_is_video(part: &super::dto::ResponseInputContentPart) -> bool {
-    if matches!(
-        part.kind.as_deref(),
-        Some("video") | Some("video_url") | Some("input_video")
-    ) {
-        return true;
-    }
-    part.video.is_some() || part.video_url.is_some() || part.input_video.is_some()
-}
-
-fn ensure_media_part_has_source(
-    part: &super::dto::ResponseInputContentPart,
-    kind: InboundMediaKind,
-) -> Result<(), ApiError> {
-    let source = match kind {
-        InboundMediaKind::Image => [
-            part.image_url.as_ref(),
-            part.input_image.as_ref(),
-            part.image.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(|value| resolve_media_source(value, 3)),
-        InboundMediaKind::Video => [
-            part.video.as_ref(),
-            part.video_url.as_ref(),
-            part.input_video.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(|value| resolve_media_source(value, 3)),
-    };
-
-    if source.is_some() {
-        Ok(())
-    } else {
-        Err(ApiError::bad_request(
-            "Multimodal content part is missing a usable source URL/data",
-        ))
-    }
-}
-
-fn resolve_media_source(value: &serde_json::Value, max_depth: usize) -> Option<String> {
-    if max_depth == 0 {
-        return None;
-    }
-
-    match value {
-        serde_json::Value::String(raw) => {
-            let source = raw.trim();
-            if source.is_empty() {
-                None
-            } else {
-                Some(source.to_string())
-            }
-        }
-        serde_json::Value::Object(map) => {
-            if let Some(source) = map
-                .get("url")
-                .and_then(|v| resolve_media_source(v, max_depth - 1))
-            {
-                return Some(source);
-            }
-            for key in [
-                "src",
-                "uri",
-                "path",
-                "file",
-                "image_url",
-                "video_url",
-                "input_image",
-                "input_video",
-            ] {
-                if let Some(source) = map
-                    .get(key)
-                    .and_then(|v| resolve_media_source(v, max_depth - 1))
-                {
-                    return Some(source);
-                }
-            }
-
-            if let Some(data_url) = map
-                .get("b64_json")
-                .and_then(|v| v.as_str())
-                .and_then(|b64| data_url_from_base64_field(b64, map))
-            {
-                return Some(data_url);
-            }
-
-            if let Some(data) = map.get("data").and_then(|v| v.as_str()) {
-                let data = data.trim();
-                if data.starts_with("data:")
-                    || data.starts_with("http://")
-                    || data.starts_with("https://")
-                    || data.starts_with("file://")
-                {
-                    return Some(data.to_string());
-                }
-
-                let is_base64 = map
-                    .get("encoding")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|encoding| encoding.eq_ignore_ascii_case("base64"));
-                if is_base64 {
-                    return data_url_from_base64_field(data, map);
-                }
-            }
-
-            None
-        }
-        _ => None,
-    }
-}
-
-fn data_url_from_base64_field(
-    b64: &str,
-    map: &serde_json::Map<String, serde_json::Value>,
-) -> Option<String> {
-    let payload = b64.trim();
-    if payload.is_empty() {
-        return None;
-    }
-    let mime = map
-        .get("mime_type")
-        .or_else(|| map.get("media_type"))
-        .or_else(|| map.get("content_type"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("application/octet-stream");
-    Some(format!("data:{mime};base64,{payload}"))
+fn content_parts_to_values(
+    parts: &[super::dto::ResponseInputContentPart],
+) -> Result<Vec<serde_json::Value>, ApiError> {
+    parts
+        .iter()
+        .map(|part| serde_json::to_value(part).map_err(|err| ApiError::internal(err.to_string())))
+        .collect()
 }
 
 fn render_tool_calls_xml(tool_calls: &[serde_json::Value]) -> Result<String, ApiError> {
@@ -832,7 +696,7 @@ mod tests {
 
     #[test]
     fn builds_messages_from_text_and_instructions() {
-        let (messages, stored) = build_input_messages(
+        let (messages, stored, media_inputs) = build_input_messages(
             ModelVariant::Qwen38BGguf,
             Some("Be concise."),
             Some(ResponseInput::Text("Hello".to_string())),
@@ -846,6 +710,7 @@ mod tests {
         assert_eq!(stored.len(), 2);
         assert_eq!(stored[0].role, "system");
         assert_eq!(stored[1].role, "user");
+        assert!(media_inputs.is_empty());
     }
 
     #[test]
@@ -875,8 +740,8 @@ mod tests {
             },
         ])))
         .expect("flatten");
-        assert_eq!(flattened.text, "part1part2");
-        assert!(!flattened.contains_media);
+        assert_eq!(flattened.runtime_text, "part1part2");
+        assert!(!flattened.has_media());
     }
 
     #[test]
@@ -917,8 +782,10 @@ mod tests {
             },
         ])))
         .expect("flatten");
-        assert_eq!(flattened.text, "Look ");
-        assert!(flattened.contains_media);
+        assert_eq!(flattened.display_text, "Look ");
+        assert!(flattened.runtime_text.contains("<|image_pad|>"));
+        assert!(flattened.runtime_text.contains("<|video_pad|>"));
+        assert_eq!(flattened.media_inputs.len(), 2);
     }
 
     #[test]
@@ -938,7 +805,7 @@ mod tests {
         ])))
         .expect_err("missing source should fail");
 
-        assert!(err.message.contains("missing a usable source"));
+        assert!(err.message.contains("missing a usable"));
     }
 
     #[test]
@@ -948,11 +815,11 @@ mod tests {
             content: Some(ResponseInputContent::Text("hello".to_string())),
             tool_calls: None,
         };
-        let (role, text, is_tool, contains_media) = normalize_input_item(item).expect("normalize");
-        assert_eq!(role, "user");
-        assert_eq!(text, "hello");
-        assert!(!is_tool);
-        assert!(!contains_media);
+        let normalized = normalize_input_item(item).expect("normalize");
+        assert_eq!(normalized.role, "user");
+        assert_eq!(normalized.runtime_content, "hello");
+        assert!(!normalized.is_tool);
+        assert!(normalized.media_inputs.is_empty());
     }
 
     #[test]
@@ -969,42 +836,20 @@ mod tests {
             })]),
         };
 
-        let (role, content, is_tool, contains_media) =
-            normalize_input_item(item).expect("normalize tool call");
-        assert_eq!(role, "assistant");
-        assert!(!is_tool);
-        assert!(!contains_media);
-        assert!(content.contains("<tool_call>"));
-        assert!(content.contains("<function=get_weather>"));
-        assert!(content.contains("<parameter=city>"));
+        let normalized = normalize_input_item(item).expect("normalize tool call");
+        assert_eq!(normalized.role, "assistant");
+        assert!(!normalized.is_tool);
+        assert!(normalized.media_inputs.is_empty());
+        assert!(normalized.runtime_content.contains("<tool_call>"));
+        assert!(normalized
+            .runtime_content
+            .contains("<function=get_weather>"));
+        assert!(normalized.runtime_content.contains("<parameter=city>"));
     }
 
     #[test]
-    fn detects_multimodal_content_in_responses_input() {
-        let input = ResponseInput::Many(vec![ResponseInputItem {
-            role: Some("user".to_string()),
-            content: Some(ResponseInputContent::Parts(vec![
-                ResponseInputContentPart {
-                    kind: Some("input_image".to_string()),
-                    text: None,
-                    input_text: None,
-                    image_url: Some(json!({"url":"https://example.com/img.png"})),
-                    input_image: None,
-                    image: None,
-                    video: None,
-                    video_url: None,
-                    input_video: None,
-                },
-            ])),
-            tool_calls: None,
-        }]);
-
-        assert!(response_input_contains_multimodal_content(Some(&input)));
-    }
-
-    #[test]
-    fn build_input_messages_rejects_multimodal_input() {
-        let err = build_input_messages(
+    fn build_input_messages_collects_multimodal_input() {
+        let (messages, _stored, media_inputs) = build_input_messages(
             ModelVariant::Qwen38BGguf,
             None,
             Some(ResponseInput::Many(vec![ResponseInputItem {
@@ -1028,8 +873,15 @@ mod tests {
             None,
             None,
         )
-        .expect_err("multimodal input should fail");
+        .expect("multimodal input should normalize");
 
-        assert!(err.message.contains("not currently supported"));
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].content.contains("<|image_pad|>"));
+        assert_eq!(media_inputs.len(), 1);
+        assert!(
+            validate_media_inputs_for_variant(ModelVariant::Qwen38BGguf, &media_inputs)
+                .expect_err("non-qwen35 multimodal should fail")
+                .contains("currently supported only for Qwen3.5")
+        );
     }
 }

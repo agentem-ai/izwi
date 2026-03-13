@@ -15,9 +15,12 @@ use crate::api::request_context::RequestContext;
 use crate::app::chat::{
     generate_chat, parse_chat_model, spawn_chat_stream, ChatExecutionRequest, ChatStreamEvent,
 };
+use crate::app::chat_content::{
+    flatten_content_parts, validate_media_inputs_for_variant, FlattenedMultimodalContent,
+};
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::{ChatMessage, ChatRequestConfig, ChatRole, ModelVariant};
+use izwi_core::{ChatMediaInput, ChatMessage, ChatRequestConfig, ChatRole, ModelVariant};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
@@ -76,7 +79,7 @@ pub enum OpenAiInboundContent {
     Parts(Vec<OpenAiInboundContentPart>),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OpenAiInboundContentPart {
     #[serde(rename = "type")]
     pub kind: Option<String>,
@@ -188,18 +191,6 @@ enum InboundMessageRole {
     Tool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InboundMediaKind {
-    Image,
-    Video,
-}
-
-#[derive(Debug, Default)]
-struct FlattenedContent {
-    text: String,
-    contains_media: bool,
-}
-
 fn now_unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -207,24 +198,20 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn to_core_messages(
+fn to_core_messages_with_media(
     _variant: ModelVariant,
     messages: Vec<OpenAiInboundMessage>,
     _enable_thinking: Option<bool>,
     _tools: Option<Vec<serde_json::Value>>,
     _tool_choice: Option<serde_json::Value>,
-) -> Result<Vec<ChatMessage>, ApiError> {
+) -> Result<(Vec<ChatMessage>, Vec<ChatMediaInput>), ApiError> {
     let mut core = Vec::with_capacity(messages.len());
+    let mut media_inputs = Vec::new();
 
     for message in messages {
         let role = parse_role(&message.role)?;
         let flattened = flatten_content(message.content)?;
-        let mut content = flattened.text;
-        if flattened.contains_media {
-            return Err(ApiError::bad_request(
-                "Multimodal chat input is not currently supported",
-            ));
-        }
+        let mut content = flattened.runtime_text.clone();
 
         if role == InboundMessageRole::Assistant
             && message
@@ -244,6 +231,11 @@ fn to_core_messages(
 
         match role {
             InboundMessageRole::System => {
+                if flattened.has_media() {
+                    return Err(ApiError::bad_request(
+                        "System messages cannot contain images or videos",
+                    ));
+                }
                 if content.trim().is_empty() {
                     return Err(ApiError::bad_request(
                         "System message content cannot be empty",
@@ -255,33 +247,42 @@ fn to_core_messages(
                 });
             }
             InboundMessageRole::User => {
-                if content.trim().is_empty() {
+                if content.trim().is_empty() && !flattened.has_media() {
                     return Err(ApiError::bad_request(
                         "User message content cannot be empty",
                     ));
                 }
+                media_inputs.extend(flattened.media_inputs);
                 core.push(ChatMessage {
                     role: ChatRole::User,
                     content,
                 });
             }
             InboundMessageRole::Assistant => {
-                if content.trim().is_empty() {
+                if content.trim().is_empty()
+                    && !flattened.has_media()
+                    && message
+                        .tool_calls
+                        .as_ref()
+                        .is_none_or(|tool_calls| tool_calls.is_empty())
+                {
                     return Err(ApiError::bad_request(
                         "Assistant message must include content or tool calls",
                     ));
                 }
+                media_inputs.extend(flattened.media_inputs);
                 core.push(ChatMessage {
                     role: ChatRole::Assistant,
                     content,
                 });
             }
             InboundMessageRole::Tool => {
-                if content.trim().is_empty() {
+                if content.trim().is_empty() && !flattened.has_media() {
                     return Err(ApiError::bad_request(
                         "Tool message content cannot be empty",
                     ));
                 }
+                media_inputs.extend(flattened.media_inputs);
 
                 let wrapped = format!("<tool_response>\n{}\n</tool_response>", content.trim());
                 core.push(ChatMessage {
@@ -292,7 +293,7 @@ fn to_core_messages(
         }
     }
 
-    Ok(core)
+    Ok((core, media_inputs))
 }
 
 fn parse_role(raw: &str) -> Result<InboundMessageRole, ApiError> {
@@ -308,176 +309,29 @@ fn parse_role(raw: &str) -> Result<InboundMessageRole, ApiError> {
     }
 }
 
-fn flatten_content(content: Option<OpenAiInboundContent>) -> Result<FlattenedContent, ApiError> {
+fn flatten_content(
+    content: Option<OpenAiInboundContent>,
+) -> Result<FlattenedMultimodalContent, ApiError> {
     match content {
-        None => Ok(FlattenedContent::default()),
-        Some(OpenAiInboundContent::Text(text)) => Ok(FlattenedContent {
-            text,
-            contains_media: false,
+        None => Ok(FlattenedMultimodalContent::default()),
+        Some(OpenAiInboundContent::Text(text)) => Ok(FlattenedMultimodalContent {
+            display_text: text.clone(),
+            runtime_text: text,
+            media_inputs: Vec::new(),
         }),
         Some(OpenAiInboundContent::Parts(parts)) => {
-            let mut out = FlattenedContent::default();
-            for part in parts {
-                if content_part_is_image(&part) {
-                    ensure_media_part_has_source(&part, InboundMediaKind::Image)?;
-                    out.contains_media = true;
-                    continue;
-                }
-                if content_part_is_video(&part) {
-                    ensure_media_part_has_source(&part, InboundMediaKind::Video)?;
-                    out.contains_media = true;
-                    continue;
-                }
-                if let Some(text) = part.text.or(part.input_text) {
-                    out.text.push_str(&text);
-                }
-            }
-            Ok(out)
+            flatten_content_parts(&content_parts_to_values(&parts)?).map_err(ApiError::bad_request)
         }
     }
 }
 
-fn content_part_is_image(part: &OpenAiInboundContentPart) -> bool {
-    if matches!(
-        part.kind.as_deref(),
-        Some("image") | Some("image_url") | Some("input_image")
-    ) {
-        return true;
-    }
-    part.image.is_some() || part.image_url.is_some() || part.input_image.is_some()
-}
-
-fn content_part_is_video(part: &OpenAiInboundContentPart) -> bool {
-    if matches!(
-        part.kind.as_deref(),
-        Some("video") | Some("input_video") | Some("video_url")
-    ) {
-        return true;
-    }
-    part.video.is_some() || part.video_url.is_some() || part.input_video.is_some()
-}
-
-fn ensure_media_part_has_source(
-    part: &OpenAiInboundContentPart,
-    kind: InboundMediaKind,
-) -> Result<(), ApiError> {
-    let source = match kind {
-        InboundMediaKind::Image => [
-            part.image_url.as_ref(),
-            part.input_image.as_ref(),
-            part.image.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(|value| resolve_media_source(value, 3)),
-        InboundMediaKind::Video => [
-            part.video.as_ref(),
-            part.video_url.as_ref(),
-            part.input_video.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(|value| resolve_media_source(value, 3)),
-    };
-
-    if source.is_some() {
-        Ok(())
-    } else {
-        Err(ApiError::bad_request(
-            "Multimodal content part is missing a usable source URL/data",
-        ))
-    }
-}
-
-fn resolve_media_source(value: &serde_json::Value, max_depth: usize) -> Option<String> {
-    if max_depth == 0 {
-        return None;
-    }
-
-    match value {
-        serde_json::Value::String(raw) => {
-            let source = raw.trim();
-            if source.is_empty() {
-                None
-            } else {
-                Some(source.to_string())
-            }
-        }
-        serde_json::Value::Object(map) => {
-            if let Some(source) = map
-                .get("url")
-                .and_then(|v| resolve_media_source(v, max_depth - 1))
-            {
-                return Some(source);
-            }
-            for key in [
-                "src",
-                "uri",
-                "path",
-                "file",
-                "image_url",
-                "video_url",
-                "input_image",
-                "input_video",
-            ] {
-                if let Some(source) = map
-                    .get(key)
-                    .and_then(|v| resolve_media_source(v, max_depth - 1))
-                {
-                    return Some(source);
-                }
-            }
-
-            if let Some(data_url) = map
-                .get("b64_json")
-                .and_then(|v| v.as_str())
-                .and_then(|b64| data_url_from_base64_field(b64, map))
-            {
-                return Some(data_url);
-            }
-
-            if let Some(data) = map.get("data").and_then(|v| v.as_str()) {
-                let data = data.trim();
-                if data.starts_with("data:")
-                    || data.starts_with("http://")
-                    || data.starts_with("https://")
-                    || data.starts_with("file://")
-                {
-                    return Some(data.to_string());
-                }
-
-                let is_base64 = map
-                    .get("encoding")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|encoding| encoding.eq_ignore_ascii_case("base64"));
-                if is_base64 {
-                    return data_url_from_base64_field(data, map);
-                }
-            }
-
-            None
-        }
-        _ => None,
-    }
-}
-
-fn data_url_from_base64_field(
-    b64: &str,
-    map: &serde_json::Map<String, serde_json::Value>,
-) -> Option<String> {
-    let payload = b64.trim();
-    if payload.is_empty() {
-        return None;
-    }
-    let mime = map
-        .get("mime_type")
-        .or_else(|| map.get("media_type"))
-        .or_else(|| map.get("content_type"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("application/octet-stream");
-    Some(format!("data:{mime};base64,{payload}"))
+fn content_parts_to_values(
+    parts: &[OpenAiInboundContentPart],
+) -> Result<Vec<serde_json::Value>, ApiError> {
+    parts
+        .iter()
+        .map(|part| serde_json::to_value(part).map_err(|err| ApiError::internal(err.to_string())))
+        .collect()
 }
 
 fn render_tool_calls_xml(tool_calls: &[serde_json::Value]) -> Result<String, ApiError> {
@@ -639,15 +493,6 @@ fn parse_tool_call_block(block: &str) -> Option<OpenAiOutputToolCall> {
     })
 }
 
-fn request_contains_multimodal_content(messages: &[OpenAiInboundMessage]) -> bool {
-    messages.iter().any(|message| match &message.content {
-        Some(OpenAiInboundContent::Parts(parts)) => parts
-            .iter()
-            .any(|part| content_part_is_image(part) || content_part_is_video(part)),
-        _ => false,
-    })
-}
-
 fn build_assistant_response_parts(
     text: String,
 ) -> (
@@ -680,18 +525,14 @@ pub async fn completions(
     }
 
     let variant = parse_chat_model(&req.model)?;
-    if request_contains_multimodal_content(&req.messages) {
-        return Err(ApiError::bad_request(
-            "Multimodal chat input is not currently supported",
-        ));
-    }
-    let messages = to_core_messages(
+    let (messages, media_inputs) = to_core_messages_with_media(
         variant,
         req.messages.clone(),
         req.enable_thinking,
         req.tools.clone(),
         req.tool_choice.clone(),
     )?;
+    validate_media_inputs_for_variant(variant, &media_inputs).map_err(ApiError::bad_request)?;
     if messages.is_empty() {
         return Err(ApiError::bad_request(
             "Chat request must include at least one message",
@@ -708,7 +549,7 @@ pub async fn completions(
         chat_config: ChatRequestConfig {
             enable_thinking: req.enable_thinking,
             tools: req.tools.clone().unwrap_or_default(),
-            media_inputs: Vec::new(),
+            media_inputs,
         },
         correlation_id: Some(ctx.correlation_id),
     };
@@ -919,8 +760,8 @@ mod tests {
         ])))
         .expect("flatten content");
 
-        assert_eq!(flattened.text, "helloworld");
-        assert!(!flattened.contains_media);
+        assert_eq!(flattened.runtime_text, "helloworld");
+        assert!(!flattened.has_media());
     }
 
     #[test]
@@ -973,8 +814,10 @@ mod tests {
         ])))
         .expect("flatten content");
 
-        assert_eq!(flattened.text, "Before  after");
-        assert!(flattened.contains_media);
+        assert_eq!(flattened.display_text, "Before  after");
+        assert!(flattened.runtime_text.contains("<|image_pad|>"));
+        assert!(flattened.runtime_text.contains("<|video_pad|>"));
+        assert_eq!(flattened.media_inputs.len(), 2);
     }
 
     #[test]
@@ -994,7 +837,7 @@ mod tests {
         ])))
         .expect_err("missing source should fail");
 
-        assert!(err.message.contains("missing a usable source"));
+        assert!(err.message.contains("missing a usable"));
     }
 
     #[test]
@@ -1041,38 +884,8 @@ mod tests {
     }
 
     #[test]
-    fn detects_multimodal_parts_in_request_messages() {
-        let messages = vec![
-            OpenAiInboundMessage {
-                role: "user".to_string(),
-                content: Some(OpenAiInboundContent::Parts(vec![
-                    OpenAiInboundContentPart {
-                        kind: Some("image_url".to_string()),
-                        text: None,
-                        input_text: None,
-                        image_url: Some(json!({"url":"https://example.com/cat.png"})),
-                        input_image: None,
-                        image: None,
-                        video: None,
-                        video_url: None,
-                        input_video: None,
-                    },
-                ])),
-                tool_calls: None,
-            },
-            OpenAiInboundMessage {
-                role: "assistant".to_string(),
-                content: Some(OpenAiInboundContent::Text("ok".to_string())),
-                tool_calls: None,
-            },
-        ];
-
-        assert!(request_contains_multimodal_content(&messages));
-    }
-
-    #[test]
-    fn to_core_messages_rejects_multimodal_parts() {
-        let err = to_core_messages(
+    fn to_core_messages_collects_multimodal_parts() {
+        let (messages, media_inputs) = to_core_messages_with_media(
             ModelVariant::Qwen38BGguf,
             vec![OpenAiInboundMessage {
                 role: "user".to_string(),
@@ -1095,8 +908,15 @@ mod tests {
             None,
             None,
         )
-        .expect_err("multimodal parts should fail");
+        .expect("multimodal parts should normalize");
 
-        assert!(err.message.contains("not currently supported"));
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].content.contains("<|image_pad|>"));
+        assert_eq!(media_inputs.len(), 1);
+        assert!(
+            validate_media_inputs_for_variant(ModelVariant::Qwen38BGguf, &media_inputs)
+                .expect_err("non-qwen35 multimodal should fail")
+                .contains("currently supported only for Qwen3.5")
+        );
     }
 }

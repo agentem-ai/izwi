@@ -55,7 +55,7 @@ pub enum ResponseInputContent {
     Parts(Vec<ResponseInputContentPart>),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResponseInputContentPart {
     #[serde(rename = "type")]
     pub kind: Option<String>,
