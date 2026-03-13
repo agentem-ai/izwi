@@ -10,7 +10,7 @@ use super::output::StreamingOutput;
 use super::types::{GenerationParams, Priority, RequestId, TaskType, TokenId};
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
-use crate::models::shared::chat::ChatMessage;
+use crate::models::shared::chat::{ChatMessage, ChatRequestConfig};
 
 /// Status of a request in the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +40,8 @@ pub struct EngineCoreRequest {
     pub text: Option<String>,
     /// Chat input messages.
     pub chat_messages: Option<Vec<ChatMessage>>,
+    /// Chat-specific prompt/runtime controls.
+    pub chat_config: ChatRequestConfig,
     /// Optional language hint for multilingual generation.
     pub language: Option<String>,
     /// Request correlation ID propagated from API/runtime boundaries.
@@ -80,6 +82,7 @@ impl EngineCoreRequest {
             model_variant: None,
             text: Some(text.into()),
             chat_messages: None,
+            chat_config: ChatRequestConfig::default(),
             language: None,
             correlation_id: None,
             audio_input: None,
@@ -105,6 +108,7 @@ impl EngineCoreRequest {
             model_variant: None,
             text: None,
             chat_messages: None,
+            chat_config: ChatRequestConfig::default(),
             language: None,
             correlation_id: None,
             audio_input: Some(audio_base64.into()),
@@ -130,6 +134,7 @@ impl EngineCoreRequest {
             model_variant: None,
             text: None,
             chat_messages: None,
+            chat_config: ChatRequestConfig::default(),
             language: None,
             correlation_id: None,
             audio_input: None,
@@ -155,6 +160,7 @@ impl EngineCoreRequest {
             model_variant: None,
             text: None,
             chat_messages: Some(messages),
+            chat_config: ChatRequestConfig::default(),
             language: None,
             correlation_id: None,
             audio_input: None,
@@ -180,6 +186,7 @@ impl EngineCoreRequest {
             model_variant: None,
             text: None,
             chat_messages: None,
+            chat_config: ChatRequestConfig::default(),
             language: None,
             correlation_id: None,
             audio_input: Some(audio_base64.into()),
@@ -205,6 +212,7 @@ impl EngineCoreRequest {
             model_variant: None,
             text: None,
             chat_messages: None,
+            chat_config: ChatRequestConfig::default(),
             language: None,
             correlation_id: None,
             audio_input: None,
@@ -280,6 +288,12 @@ impl EngineCoreRequest {
     /// Set speech-to-speech system prompt.
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
+        self
+    }
+
+    /// Set chat-specific prompt/runtime configuration.
+    pub fn with_chat_config(mut self, chat_config: ChatRequestConfig) -> Self {
+        self.chat_config = chat_config;
         self
     }
 

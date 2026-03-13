@@ -16,7 +16,7 @@ use crate::app::chat::{
 use crate::chat_store::{ChatThreadMessage, ChatThreadSummary};
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::{ChatMessage, ChatRole};
+use izwi_core::{ChatMessage, ChatRequestConfig, ChatRole};
 
 #[derive(Debug, Serialize)]
 pub struct ChatThreadListResponse {
@@ -264,6 +264,10 @@ pub async fn create_thread_message(
         temperature: req.temperature,
         top_p: req.top_p,
         presence_penalty: None,
+        chat_config: ChatRequestConfig {
+            enable_thinking: req.enable_thinking,
+            tools: Vec::new(),
+        },
         correlation_id: Some(ctx.correlation_id),
     };
 
@@ -647,7 +651,6 @@ mod tests {
                 created_at: 1,
                 tokens_generated: None,
                 generation_time_ms: None,
-                model_id: None,
             }],
             "How are you?",
             Some("Be concise."),

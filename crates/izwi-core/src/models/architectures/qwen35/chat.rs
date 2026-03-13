@@ -237,7 +237,15 @@ impl Qwen35ChatModel {
     }
 
     pub fn prompt_token_ids(&self, messages: &[ChatMessage]) -> Result<Vec<u32>> {
-        let prompt = render_fallback_prompt(messages);
+        self.prompt_token_ids_with_config(messages, &ChatGenerationConfig::default())
+    }
+
+    pub fn prompt_token_ids_with_config(
+        &self,
+        messages: &[ChatMessage],
+        config: &ChatGenerationConfig,
+    ) -> Result<Vec<u32>> {
+        let prompt = render_prompt(messages, config, self.default_enable_thinking())?;
         self.tokenizer.encode_text(&prompt)
     }
 
@@ -277,7 +285,7 @@ impl Qwen35ChatModel {
         config: &ChatGenerationConfig,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ChatGenerationOutput> {
-        let prompt_ids = self.prompt_token_ids(messages)?;
+        let prompt_ids = self.prompt_token_ids_with_config(messages, config)?;
         if prompt_ids.is_empty() {
             return Err(Error::InvalidInput(
                 "Chat request must include at least one tokenizable message".to_string(),
@@ -352,6 +360,125 @@ fn render_fallback_prompt(messages: &[ChatMessage]) -> String {
     prompt.push_str("<|im_start|>assistant\n");
     prompt
 }
+
+fn render_prompt(
+    messages: &[ChatMessage],
+    config: &ChatGenerationConfig,
+    default_enable_thinking: bool,
+) -> Result<String> {
+    if messages.is_empty() {
+        return Err(Error::InvalidInput(
+            "Qwen3.5 chat prompt requires at least one message".to_string(),
+        ));
+    }
+
+    let mut prompt = String::new();
+    let leading_system =
+        matches!(messages.first(), Some(message) if message.role == ChatRole::System);
+    let system_content = if leading_system {
+        messages[0].content.trim()
+    } else {
+        ""
+    };
+
+    if !config.request.tools.is_empty() {
+        prompt.push_str("<|im_start|>system\n");
+        prompt.push_str("# Tools\n\nYou have access to the following functions:\n\n<tools>");
+        for tool in &config.request.tools {
+            prompt.push('\n');
+            prompt.push_str(&serde_json::to_string(tool)?);
+        }
+        prompt.push_str("\n</tools>");
+        prompt.push_str(TOOL_PROMPT_SUFFIX);
+        if !system_content.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(system_content);
+        }
+        prompt.push_str("<|im_end|>\n");
+    } else if leading_system {
+        prompt.push_str("<|im_start|>system\n");
+        prompt.push_str(system_content);
+        prompt.push_str("<|im_end|>\n");
+    }
+
+    let last_query_index = last_query_index(messages)?;
+    for (index, message) in messages.iter().enumerate() {
+        if message.role == ChatRole::System {
+            if index != 0 {
+                return Err(Error::InvalidInput(
+                    "Qwen3.5 system message must be the first message".to_string(),
+                ));
+            }
+            continue;
+        }
+
+        match message.role {
+            ChatRole::User => {
+                prompt.push_str("<|im_start|>user\n");
+                prompt.push_str(message.content.trim());
+                prompt.push_str("<|im_end|>\n");
+            }
+            ChatRole::Assistant => {
+                let (reasoning_content, content) = split_assistant_reasoning(&message.content);
+                prompt.push_str("<|im_start|>assistant\n");
+                if index > last_query_index {
+                    prompt.push_str("<think>\n");
+                    prompt.push_str(reasoning_content.trim());
+                    prompt.push_str("\n</think>\n\n");
+                    prompt.push_str(content.trim_start());
+                } else {
+                    prompt.push_str(message.content.trim());
+                }
+                prompt.push_str("<|im_end|>\n");
+            }
+            ChatRole::System => {}
+        }
+    }
+
+    prompt.push_str("<|im_start|>assistant\n");
+    if config
+        .request
+        .enable_thinking
+        .unwrap_or(default_enable_thinking)
+    {
+        prompt.push_str("<think>\n");
+    } else {
+        prompt.push_str("<think>\n\n</think>\n\n");
+    }
+    Ok(prompt)
+}
+
+fn last_query_index(messages: &[ChatMessage]) -> Result<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, message)| {
+            (message.role == ChatRole::User && !is_tool_response(&message.content)).then_some(index)
+        })
+        .ok_or_else(|| {
+            Error::InvalidInput("Qwen3.5 prompt requires at least one user query".to_string())
+        })
+}
+
+fn is_tool_response(content: &str) -> bool {
+    let content = content.trim();
+    content.starts_with("<tool_response>") && content.ends_with("</tool_response>")
+}
+
+fn split_assistant_reasoning(content: &str) -> (&str, &str) {
+    let Some(end_idx) = content.find("</think>") else {
+        return ("", content);
+    };
+    let reasoning = content[..end_idx]
+        .rsplit_once("<think>")
+        .map(|(_, reasoning)| reasoning)
+        .unwrap_or("");
+    let answer = content[(end_idx + "</think>".len())..].trim_start_matches('\n');
+    (reasoning.trim_matches('\n'), answer)
+}
+
+const TOOL_PROMPT_SUFFIX: &str = "\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>";
 
 fn qwen35_gguf_filename(variant: ModelVariant) -> Result<&'static str> {
     match variant {
@@ -728,6 +855,7 @@ impl SimpleRng {
 mod tests {
     use super::*;
     use crate::backends::DeviceProfile;
+    use crate::models::shared::chat::ChatRequestConfig;
     use std::path::PathBuf;
 
     fn local_model_dir(name: &str) -> PathBuf {
@@ -750,6 +878,59 @@ mod tests {
             large,
             ModelVariant::Qwen354BGguf
         ));
+    }
+
+    #[test]
+    fn render_prompt_injects_tool_system_preamble() {
+        let config = ChatGenerationConfig {
+            request: ChatRequestConfig {
+                enable_thinking: Some(true),
+                tools: vec![serde_json::json!({"type":"function","function":{"name":"lookup"}})],
+            },
+            ..ChatGenerationConfig::default()
+        };
+        let prompt = render_prompt(
+            &[
+                ChatMessage {
+                    role: ChatRole::System,
+                    content: "Be precise.".to_string(),
+                },
+                ChatMessage {
+                    role: ChatRole::User,
+                    content: "Hi".to_string(),
+                },
+            ],
+            &config,
+            false,
+        )
+        .expect("prompt should render");
+
+        assert!(prompt.contains("# Tools"));
+        assert!(prompt.contains("\"name\":\"lookup\""));
+        assert!(prompt.contains("Be precise."));
+        assert!(prompt.ends_with("<|im_start|>assistant\n<think>\n"));
+    }
+
+    #[test]
+    fn render_prompt_can_force_closed_think_block() {
+        let config = ChatGenerationConfig {
+            request: ChatRequestConfig {
+                enable_thinking: Some(false),
+                tools: Vec::new(),
+            },
+            ..ChatGenerationConfig::default()
+        };
+        let prompt = render_prompt(
+            &[ChatMessage {
+                role: ChatRole::User,
+                content: "Answer briefly.".to_string(),
+            }],
+            &config,
+            true,
+        )
+        .expect("prompt should render");
+
+        assert!(prompt.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"));
     }
 
     #[test]
@@ -802,6 +983,7 @@ mod tests {
             presence_penalty: 0.0,
             stop_token_ids: Vec::new(),
             seed: 7,
+            request: ChatRequestConfig::default(),
         };
 
         let output = model

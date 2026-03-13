@@ -17,7 +17,7 @@ use crate::app::chat::{
 };
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::{ChatMessage, ChatRole, ModelVariant};
+use izwi_core::{ChatMessage, ChatRequestConfig, ChatRole, ModelVariant};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
@@ -705,6 +705,10 @@ pub async fn completions(
         temperature: req.temperature,
         top_p: req.top_p,
         presence_penalty: req.presence_penalty,
+        chat_config: ChatRequestConfig {
+            enable_thinking: req.enable_thinking,
+            tools: req.tools.clone().unwrap_or_default(),
+        },
         correlation_id: Some(ctx.correlation_id),
     };
 

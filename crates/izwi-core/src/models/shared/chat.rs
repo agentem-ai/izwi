@@ -1,8 +1,9 @@
 //! Shared chat message types across text-chat model families.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChatRole {
     System,
@@ -26,6 +27,15 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+/// Chat-specific request metadata consumed by native backends.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChatRequestConfig {
+    #[serde(default)]
+    pub enable_thinking: Option<bool>,
+    #[serde(default)]
+    pub tools: Vec<Value>,
+}
+
 /// Model-agnostic chat generation controls used by native chat backends.
 ///
 /// The default preserves legacy deterministic greedy decoding for direct callers.
@@ -38,6 +48,7 @@ pub struct ChatGenerationConfig {
     pub presence_penalty: f32,
     pub stop_token_ids: Vec<u32>,
     pub seed: u64,
+    pub request: ChatRequestConfig,
 }
 
 impl Default for ChatGenerationConfig {
@@ -50,13 +61,14 @@ impl Default for ChatGenerationConfig {
             presence_penalty: 0.0,
             stop_token_ids: Vec::new(),
             seed: 0,
+            request: ChatRequestConfig::default(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ChatGenerationConfig;
+    use super::{ChatGenerationConfig, ChatRequestConfig};
 
     #[test]
     fn chat_generation_config_default_is_greedy() {
@@ -68,5 +80,6 @@ mod tests {
         assert_eq!(config.presence_penalty, 0.0);
         assert!(config.stop_token_ids.is_empty());
         assert_eq!(config.seed, 0);
+        assert_eq!(config.request, ChatRequestConfig::default());
     }
 }
