@@ -1134,7 +1134,7 @@ impl SimpleRng {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backends::DeviceProfile;
+    use crate::backends::{DeviceKind, DeviceProfile, DeviceSelector};
     use crate::models::shared::chat::{ChatMediaInput, ChatMediaKind, ChatRequestConfig};
     use std::path::PathBuf;
 
@@ -1143,6 +1143,16 @@ mod tests {
         PathBuf::from(home)
             .join("Library/Application Support/izwi/models")
             .join(name)
+    }
+
+    fn local_metal_device() -> Option<DeviceProfile> {
+        let Ok(device) = DeviceSelector::detect_with_preference(Some("metal")) else {
+            return None;
+        };
+        if device.kind != DeviceKind::Metal {
+            return None;
+        }
+        Some(device)
     }
 
     #[test]
@@ -1276,6 +1286,40 @@ mod tests {
     }
 
     #[test]
+    fn generate_local_qwen35_text_metal_smoke_if_available() {
+        let model_dir = local_model_dir("Qwen3.5-0.8B");
+        if !model_dir.exists() {
+            return;
+        }
+
+        let Some(device) = local_metal_device() else {
+            return;
+        };
+        let model = Qwen35ChatModel::load(&model_dir, ModelVariant::Qwen3508BGguf, device)
+            .expect("qwen3.5 assets should load on Metal");
+        let messages = vec![ChatMessage {
+            role: ChatRole::User,
+            content: "Reply with one short word.".to_string(),
+        }];
+        let config = ChatGenerationConfig {
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: 0,
+            repetition_penalty: 1.0,
+            presence_penalty: 0.0,
+            stop_token_ids: Vec::new(),
+            seed: 7,
+            request: ChatRequestConfig::default(),
+        };
+
+        let output = model
+            .generate_with_config(&messages, 4, &config)
+            .expect("qwen3.5 text generation should run on Metal");
+
+        assert!(output.tokens_generated <= 4);
+    }
+
+    #[test]
     fn expand_image_placeholders_repeats_each_media_slot() {
         let prompt = concat!(
             "<|vision_start|><|image_pad|><|vision_end|>",
@@ -1372,6 +1416,55 @@ mod tests {
         let output = model
             .generate_with_config(&messages, 2, &config)
             .expect("qwen3.5 image generation should run");
+
+        assert!(output.tokens_generated <= 2);
+    }
+
+    #[test]
+    fn generate_local_qwen35_image_metal_smoke_if_available() {
+        let model_dir = local_model_dir("Qwen3.5-0.8B");
+        if !model_dir.exists() {
+            return;
+        }
+        let image_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../izwi-desktop/icons/32x32.png");
+        if !image_path.exists() {
+            return;
+        }
+
+        let Some(device) = local_metal_device() else {
+            return;
+        };
+        let model = Qwen35ChatModel::load(&model_dir, ModelVariant::Qwen3508BGguf, device)
+            .expect("qwen3.5 assets should load on Metal");
+        let messages = vec![ChatMessage {
+            role: ChatRole::User,
+            content: format!(
+                "{}{}{} Reply with one short word.",
+                "<|vision_start|>", IMAGE_PAD_PLACEHOLDER, "<|vision_end|>"
+            ),
+        }];
+        let config = ChatGenerationConfig {
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: 0,
+            repetition_penalty: 1.0,
+            presence_penalty: 0.0,
+            stop_token_ids: Vec::new(),
+            seed: 7,
+            request: ChatRequestConfig {
+                enable_thinking: Some(false),
+                tools: Vec::new(),
+                media_inputs: vec![ChatMediaInput {
+                    kind: ChatMediaKind::Image,
+                    source: image_path.display().to_string(),
+                }],
+            },
+        };
+
+        let output = model
+            .generate_with_config(&messages, 2, &config)
+            .expect("qwen3.5 image generation should run on Metal");
 
         assert!(output.tokens_generated <= 2);
     }
