@@ -164,12 +164,14 @@ impl VisionAttention {
             let k_chunk = k.narrow(0, start, len)?.transpose(0, 1)?.contiguous()?;
             let v_chunk = v.narrow(0, start, len)?.transpose(0, 1)?.contiguous()?;
 
-            let q = q_chunk.unsqueeze(0)?;
-            let k = k_chunk.unsqueeze(0)?;
-            let v = v_chunk.unsqueeze(0)?;
-            let attn_weights = (q.matmul(&k.transpose(2, 3)?)? / (self.head_dim as f64).sqrt())?;
+            let q = q_chunk.unsqueeze(0)?.contiguous()?;
+            let k = k_chunk.unsqueeze(0)?.contiguous()?;
+            let v = v_chunk.unsqueeze(0)?.contiguous()?;
+            let k_t = k.transpose(2, 3)?.contiguous()?;
+            let attn_weights = (q.matmul(&k_t)? / (self.head_dim as f64).sqrt())?;
             let attn_weights = candle_nn::ops::softmax_last_dim(&attn_weights)?;
             let chunk_out = attn_weights
+                .contiguous()?
                 .matmul(&v)?
                 .squeeze(0)?
                 .transpose(0, 1)?

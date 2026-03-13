@@ -330,14 +330,15 @@ impl Qwen35FullAttention {
         let key_states = repeat_kv(&all_keys, self.num_heads, self.num_kv_heads)?;
         let value_states = repeat_kv(&all_values, self.num_heads, self.num_kv_heads)?;
 
-        let query_states = query_states.transpose(1, 2)?;
-        let key_states = key_states.transpose(1, 2)?;
-        let value_states = value_states.transpose(1, 2)?;
+        let query_states = query_states.transpose(1, 2)?.contiguous()?;
+        let key_states = key_states.transpose(1, 2)?.contiguous()?;
+        let value_states = value_states.transpose(1, 2)?.contiguous()?;
 
-        let attn = query_states.matmul(&key_states.transpose(2, 3)?)?;
+        let key_states_t = key_states.transpose(2, 3)?.contiguous()?;
+        let attn = query_states.matmul(&key_states_t)?;
         let attn = (attn / (self.head_dim as f64).sqrt())?;
         let attn = ops::softmax_last_dim(&attn)?;
-        let attn_output = attn.matmul(&value_states)?;
+        let attn_output = attn.contiguous()?.matmul(&value_states)?;
         let attn_output =
             attn_output
                 .transpose(1, 2)?
