@@ -1,0 +1,19 @@
+import { describe, expect, it } from "vitest";
+
+import { VIEW_CONFIGS } from "@/types";
+
+describe("VIEW_CONFIGS.chat.modelFilter", () => {
+  it("includes the shipped Qwen3.5 chat variants", () => {
+    expect(VIEW_CONFIGS.chat.modelFilter("Qwen3.5-0.8B")).toBe(true);
+    expect(VIEW_CONFIGS.chat.modelFilter("Qwen3.5-2B")).toBe(true);
+    expect(VIEW_CONFIGS.chat.modelFilter("Qwen3.5-4B")).toBe(true);
+    expect(VIEW_CONFIGS.chat.modelFilter("Qwen3.5-9B")).toBe(true);
+  });
+
+  it("continues to reject non-chat variants", () => {
+    expect(VIEW_CONFIGS.chat.modelFilter("Qwen3-ASR-0.6B")).toBe(false);
+    expect(VIEW_CONFIGS.chat.modelFilter("Qwen3-TTS-12Hz-0.6B-Base")).toBe(
+      false,
+    );
+  });
+});
