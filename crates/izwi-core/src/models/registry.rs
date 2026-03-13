@@ -524,9 +524,17 @@ pub struct NativeChatDecodeStep {
 
 impl NativeChatModel {
     pub fn prompt_token_ids(&self, messages: &[ChatMessage]) -> Result<Vec<u32>> {
+        self.prompt_token_ids_with_config(messages, &ChatGenerationConfig::default())
+    }
+
+    pub fn prompt_token_ids_with_config(
+        &self,
+        messages: &[ChatMessage],
+        config: &ChatGenerationConfig,
+    ) -> Result<Vec<u32>> {
         match self {
             Self::Qwen3(model) => model.prompt_token_ids(messages),
-            Self::Qwen35(model) => model.prompt_token_ids(messages),
+            Self::Qwen35(model) => model.prompt_token_ids_with_config(messages, config),
             Self::Gemma3(model) => model.prompt_token_ids(messages),
             Self::Lfm2(model) => model.prompt_token_ids(messages),
         }

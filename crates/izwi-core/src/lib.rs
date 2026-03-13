@@ -68,7 +68,7 @@ pub use catalog::{
     resolve_asr_model_variant, resolve_diarization_model_variant, ModelInfo, ModelStatus,
     ModelVariant, SpeechModelCapabilities,
 };
-pub use runtime_models::shared::chat::{ChatMessage, ChatRole};
+pub use runtime_models::shared::chat::{ChatMessage, ChatRequestConfig, ChatRole};
 
 // Canonical native registry/device exports.
 pub use backends::{DeviceProfile, DeviceSelector};

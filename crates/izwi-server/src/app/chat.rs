@@ -5,7 +5,8 @@ use tokio::sync::mpsc;
 use crate::error::ApiError;
 use crate::state::AppState;
 use izwi_core::{
-    parse_chat_model_variant, ChatGeneration, ChatMessage, GenerationParams, ModelVariant,
+    parse_chat_model_variant, ChatGeneration, ChatMessage, ChatRequestConfig, GenerationParams,
+    ModelVariant,
 };
 
 #[derive(Debug, Clone)]
@@ -17,6 +18,7 @@ pub struct ChatExecutionRequest {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub presence_penalty: Option<f32>,
+    pub chat_config: ChatRequestConfig,
     pub correlation_id: Option<String>,
 }
 
@@ -40,6 +42,10 @@ impl ChatExecutionRequest {
             params.presence_penalty = presence_penalty;
         }
         params
+    }
+
+    fn resolved_chat_config(&self) -> ChatRequestConfig {
+        self.chat_config.clone()
     }
 }
 
@@ -85,15 +91,20 @@ pub async fn generate_chat(
     request: ChatExecutionRequest,
 ) -> Result<ChatGeneration, ApiError> {
     let params = request.resolved_generation_params();
+    let chat_config = request.resolved_chat_config();
+    let variant = request.variant;
+    let messages = request.messages;
+    let correlation_id = request.correlation_id;
     let _permit = state.acquire_permit().await;
 
     state
         .runtime
-        .chat_generate_with_generation_params_and_correlation(
-            request.variant,
-            request.messages,
+        .chat_generate_with_generation_params_and_chat_config_and_correlation(
+            variant,
+            messages,
             params,
-            request.correlation_id.as_deref(),
+            chat_config,
+            correlation_id.as_deref(),
         )
         .await
         .map_err(ApiError::from)
@@ -107,6 +118,7 @@ pub fn spawn_chat_stream(
     let semaphore = state.request_semaphore.clone();
     let runtime = state.runtime.clone();
     let params = request.resolved_generation_params();
+    let chat_config = request.resolved_chat_config();
     let variant = request.variant;
     let messages = request.messages;
     let correlation_id = request.correlation_id;
@@ -127,10 +139,11 @@ pub fn spawn_chat_stream(
         let delta_tx = event_tx.clone();
         let generation = tokio::time::timeout(timeout, async {
             runtime
-                .chat_generate_streaming_with_generation_params_and_correlation(
+                .chat_generate_streaming_with_generation_params_and_chat_config_and_correlation(
                     variant,
                     messages,
                     params,
+                    chat_config,
                     correlation_id.as_deref(),
                     move |delta| {
                         let _ = delta_tx.send(ChatStreamEvent::Delta(delta));
@@ -174,6 +187,7 @@ mod tests {
             temperature: Some(0.42),
             top_p: Some(0.73),
             presence_penalty: Some(0.25),
+            chat_config: ChatRequestConfig::default(),
             correlation_id: None,
         };
 

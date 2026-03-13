@@ -4,34 +4,71 @@ use crate::engine::EngineCoreRequest;
 use crate::engine::GenerationParams;
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
-use crate::models::shared::chat::ChatMessage;
+use crate::models::shared::chat::{ChatGenerationConfig, ChatMessage, ChatRequestConfig};
 use crate::runtime::service::RuntimeService;
 use crate::runtime::types::ChatGeneration;
 
 impl RuntimeService {
-    async fn build_chat_request_with_params(
+    fn prompt_token_config(
+        params: &GenerationParams,
+        chat_config: &ChatRequestConfig,
+    ) -> ChatGenerationConfig {
+        ChatGenerationConfig {
+            temperature: params.temperature.max(0.0),
+            top_p: params.top_p.clamp(0.0, 1.0),
+            top_k: params.top_k,
+            repetition_penalty: params.repetition_penalty.max(1.0),
+            presence_penalty: params.presence_penalty.clamp(-2.0, 2.0),
+            stop_token_ids: params.stop_token_ids.clone(),
+            seed: 0,
+            request: chat_config.clone(),
+        }
+    }
+
+    async fn build_chat_request_with_params_and_config(
         &self,
         variant: ModelVariant,
         messages: Vec<ChatMessage>,
         mut params: GenerationParams,
+        chat_config: ChatRequestConfig,
         correlation_id: Option<&str>,
     ) -> Result<EngineCoreRequest> {
         self.load_model(variant).await?;
+
+        let prompt_config = Self::prompt_token_config(&params, &chat_config);
 
         let prompt_tokens = self
             .model_registry
             .get_chat(variant)
             .await
             .ok_or_else(|| Error::ModelNotFound(variant.to_string()))?
-            .prompt_token_ids(&messages)?;
+            .prompt_token_ids_with_config(&messages, &prompt_config)?;
 
         let mut request = EngineCoreRequest::chat(messages);
         request.model_variant = Some(variant);
         params.max_tokens = params.max_tokens.max(1);
         request.params = params;
+        request.chat_config = chat_config;
         request.correlation_id = correlation_id.map(|s| s.to_string());
         request.prompt_tokens = prompt_tokens;
         Ok(request)
+    }
+
+    async fn build_chat_request_with_params(
+        &self,
+        variant: ModelVariant,
+        messages: Vec<ChatMessage>,
+        params: GenerationParams,
+        correlation_id: Option<&str>,
+    ) -> Result<EngineCoreRequest> {
+        self.build_chat_request_with_params_and_config(
+            variant,
+            messages,
+            params,
+            ChatRequestConfig::default(),
+            correlation_id,
+        )
+        .await
     }
 
     async fn build_chat_request(
@@ -93,8 +130,32 @@ impl RuntimeService {
         params: GenerationParams,
         correlation_id: Option<&str>,
     ) -> Result<ChatGeneration> {
+        self.chat_generate_with_generation_params_and_chat_config_and_correlation(
+            variant,
+            messages,
+            params,
+            ChatRequestConfig::default(),
+            correlation_id,
+        )
+        .await
+    }
+
+    pub async fn chat_generate_with_generation_params_and_chat_config_and_correlation(
+        &self,
+        variant: ModelVariant,
+        messages: Vec<ChatMessage>,
+        params: GenerationParams,
+        chat_config: ChatRequestConfig,
+        correlation_id: Option<&str>,
+    ) -> Result<ChatGeneration> {
         let request = self
-            .build_chat_request_with_params(variant, messages, params, correlation_id)
+            .build_chat_request_with_params_and_config(
+                variant,
+                messages,
+                params,
+                chat_config,
+                correlation_id,
+            )
             .await?;
         let output = self.run_request(request).await?;
         Ok(ChatGeneration {
@@ -182,13 +243,42 @@ impl RuntimeService {
         messages: Vec<ChatMessage>,
         params: GenerationParams,
         correlation_id: Option<&str>,
+        on_delta: F,
+    ) -> Result<ChatGeneration>
+    where
+        F: FnMut(String) + Send + 'static,
+    {
+        self.chat_generate_streaming_with_generation_params_and_chat_config_and_correlation(
+            variant,
+            messages,
+            params,
+            ChatRequestConfig::default(),
+            correlation_id,
+            on_delta,
+        )
+        .await
+    }
+
+    pub async fn chat_generate_streaming_with_generation_params_and_chat_config_and_correlation<F>(
+        &self,
+        variant: ModelVariant,
+        messages: Vec<ChatMessage>,
+        params: GenerationParams,
+        chat_config: ChatRequestConfig,
+        correlation_id: Option<&str>,
         mut on_delta: F,
     ) -> Result<ChatGeneration>
     where
         F: FnMut(String) + Send + 'static,
     {
         let request = self
-            .build_chat_request_with_params(variant, messages, params, correlation_id)
+            .build_chat_request_with_params_and_config(
+                variant,
+                messages,
+                params,
+                chat_config,
+                correlation_id,
+            )
             .await?;
         let mut streamed_text = String::new();
         let output = self

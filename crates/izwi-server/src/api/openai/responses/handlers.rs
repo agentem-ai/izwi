@@ -1,5 +1,5 @@
 use std::convert::Infallible;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     body::Body,
@@ -8,12 +8,12 @@ use axum::{
     response::Response,
     Json,
 };
-use tokio::sync::mpsc;
 
 use crate::api::request_context::RequestContext;
+use crate::app::chat::{generate_chat, spawn_chat_stream, ChatExecutionRequest, ChatStreamEvent};
 use crate::error::ApiError;
 use crate::state::{AppState, StoredResponseInputItem, StoredResponseRecord};
-use izwi_core::{parse_chat_model_variant, ChatMessage, ChatRole, ModelVariant};
+use izwi_core::{parse_chat_model_variant, ChatMessage, ChatRequestConfig, ChatRole, ModelVariant};
 
 use super::dto::{
     ResponseDeletedObject, ResponseError, ResponseInput, ResponseInputContent,
@@ -50,29 +50,26 @@ pub async fn create_response(
         ));
     }
 
+    let execution_request = ChatExecutionRequest {
+        variant: model_variant,
+        messages,
+        max_completion_tokens: req.max_output_tokens,
+        max_tokens: None,
+        temperature: req.temperature,
+        top_p: req.top_p,
+        presence_penalty: None,
+        chat_config: ChatRequestConfig {
+            enable_thinking: req.enable_thinking,
+            tools: req.tools.clone().unwrap_or_default(),
+        },
+        correlation_id: Some(ctx.correlation_id.clone()),
+    };
+
     if req.stream.unwrap_or(false) {
-        return create_streaming_response(
-            state,
-            req,
-            model_variant,
-            messages,
-            input_items,
-            ctx.correlation_id,
-        )
-        .await;
+        return create_streaming_response(state, req, execution_request, input_items).await;
     }
 
-    let _permit = state.acquire_permit().await;
-
-    let output = state
-        .runtime
-        .chat_generate_with_correlation(
-            model_variant,
-            messages,
-            max_output_tokens(model_variant, req.max_output_tokens),
-            Some(&ctx.correlation_id),
-        )
-        .await?;
+    let output = generate_chat(&state, execution_request).await?;
 
     let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
     let created_at = now_unix_secs();
@@ -202,40 +199,18 @@ pub async fn list_response_input_items(
 async fn create_streaming_response(
     state: AppState,
     req: ResponsesCreateRequest,
-    model_variant: izwi_core::ModelVariant,
-    messages: Vec<ChatMessage>,
+    execution_request: ChatExecutionRequest,
     input_items: Vec<StoredResponseInputItem>,
-    correlation_id: String,
 ) -> Result<Response<Body>, ApiError> {
     let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
     let created_at = now_unix_secs();
     let metadata = req.metadata.clone();
     let response_id_for_task = response_id.clone();
-    let model_name = model_variant.dir_name().to_string();
-
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<String>();
-    let semaphore = state.request_semaphore.clone();
-    let engine = state.runtime.clone();
-    let timeout = Duration::from_secs(state.request_timeout_secs);
+    let model_name = execution_request.variant.dir_name().to_string();
     let store_state = state.clone();
+    let mut event_rx = spawn_chat_stream(state.clone(), execution_request);
 
-    tokio::spawn(async move {
-        let _permit = match semaphore.acquire_owned().await {
-            Ok(permit) => permit,
-            Err(_) => {
-                let _ = event_tx.send(
-                    serde_json::json!({
-                        "type": "response.failed",
-                        "response_id": response_id_for_task,
-                        "error": {"message": "Server is shutting down"}
-                    })
-                    .to_string(),
-                );
-                let _ = event_tx.send("[DONE]".to_string());
-                return;
-            }
-        };
-
+    let stream = async_stream::stream! {
         let created_response = ResponseObject {
             id: response_id_for_task.clone(),
             object: "response",
@@ -251,125 +226,113 @@ async fn create_streaming_response(
             error: None,
             metadata: metadata.clone(),
         };
-
         let created_event = ResponseStreamEnvelope {
             event_type: "response.created",
             payload: ResponseStreamCreatedPayload {
                 response: created_response,
             },
         };
-        let _ = event_tx.send(serde_json::to_string(&created_event).unwrap_or_default());
+        yield Ok::<_, Infallible>(format!(
+            "data: {}\n\n",
+            serde_json::to_string(&created_event).unwrap_or_default()
+        ));
 
-        let delta_tx = event_tx.clone();
-        let full_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let full_text_for_cb = full_text.clone();
-        let response_id_for_delta = response_id_for_task.clone();
-
-        let result = tokio::time::timeout(timeout, async {
-            engine
-                .chat_generate_streaming_with_correlation(
-                    model_variant,
-                    messages,
-                    max_output_tokens(model_variant, req.max_output_tokens),
-                    Some(correlation_id.as_str()),
-                    move |delta| {
-                        if let Ok(mut text) = full_text_for_cb.lock() {
-                            text.push_str(&delta);
-                        }
-
-                        let delta_event = ResponseStreamEnvelope {
-                            event_type: "response.output_text.delta",
-                            payload: ResponseStreamDeltaPayload {
-                                response_id: response_id_for_delta.clone(),
-                                delta,
-                            },
-                        };
-
-                        let _ =
-                            delta_tx.send(serde_json::to_string(&delta_event).unwrap_or_default());
-                    },
-                )
-                .await
-        })
-        .await;
-
-        match result {
-            Ok(Ok(generation)) => {
-                let output_text = full_text.lock().map(|s| s.clone()).unwrap_or_default();
-                let completed = ResponseObject {
-                    id: response_id_for_task.clone(),
-                    object: "response",
-                    created_at,
-                    status: "completed".to_string(),
-                    model: model_name.clone(),
-                    output: vec![assistant_output_item(output_text.clone())],
-                    usage: ResponseUsage {
-                        input_tokens: generation.prompt_tokens,
-                        output_tokens: generation.tokens_generated,
-                        total_tokens: generation.prompt_tokens + generation.tokens_generated,
-                    },
-                    error: None,
-                    metadata: metadata.clone(),
-                };
-
-                persist_response(
-                    &store_state,
-                    StoredResponseRecord {
+        let mut full_text = String::new();
+        while let Some(event) = event_rx.recv().await {
+            let payload = match event {
+                ChatStreamEvent::Started => continue,
+                ChatStreamEvent::Delta(delta) => {
+                    full_text.push_str(&delta);
+                    serde_json::to_string(&ResponseStreamEnvelope {
+                        event_type: "response.output_text.delta",
+                        payload: ResponseStreamDeltaPayload {
+                            response_id: response_id_for_task.clone(),
+                            delta,
+                        },
+                    })
+                    .unwrap_or_default()
+                }
+                ChatStreamEvent::Completed(generation) => {
+                    let output_text = if generation.text.is_empty() {
+                        full_text.clone()
+                    } else {
+                        generation.text.clone()
+                    };
+                    let completed = ResponseObject {
                         id: response_id_for_task.clone(),
+                        object: "response",
                         created_at,
                         status: "completed".to_string(),
-                        model: model_name,
-                        input_items,
-                        output_text: Some(output_text),
-                        input_tokens: generation.prompt_tokens,
-                        output_tokens: generation.tokens_generated,
+                        model: model_name.clone(),
+                        output: vec![assistant_output_item(output_text.clone())],
+                        usage: ResponseUsage {
+                            input_tokens: generation.prompt_tokens,
+                            output_tokens: generation.tokens_generated,
+                            total_tokens: generation.prompt_tokens + generation.tokens_generated,
+                        },
                         error: None,
-                        metadata,
-                    },
-                    req.store,
-                )
-                .await;
+                        metadata: metadata.clone(),
+                    };
 
-                let completed_event = ResponseStreamEnvelope {
-                    event_type: "response.completed",
-                    payload: ResponseStreamCompletedPayload {
-                        response: completed,
-                    },
-                };
-                let _ = event_tx.send(serde_json::to_string(&completed_event).unwrap_or_default());
-            }
-            Ok(Err(err)) => {
-                let _ = event_tx.send(
+                    persist_response(
+                        &store_state,
+                        StoredResponseRecord {
+                            id: response_id_for_task.clone(),
+                            created_at,
+                            status: "completed".to_string(),
+                            model: model_name.clone(),
+                            input_items: input_items.clone(),
+                            output_text: Some(output_text),
+                            input_tokens: generation.prompt_tokens,
+                            output_tokens: generation.tokens_generated,
+                            error: None,
+                            metadata: metadata.clone(),
+                        },
+                        req.store,
+                    )
+                    .await;
+
+                    let payload = serde_json::to_string(&ResponseStreamEnvelope {
+                        event_type: "response.completed",
+                        payload: ResponseStreamCompletedPayload {
+                            response: completed,
+                        },
+                    })
+                    .unwrap_or_default();
+                    yield Ok::<_, Infallible>(format!("data: {payload}\n\n"));
+                    break;
+                }
+                ChatStreamEvent::Failed(error) => {
                     serde_json::json!({
                         "type": "response.failed",
                         "response_id": response_id_for_task,
-                        "error": {"message": err.to_string()}
+                        "error": {"message": error}
                     })
-                    .to_string(),
-                );
-            }
-            Err(_) => {
-                let _ = event_tx.send(
+                    .to_string()
+                }
+                ChatStreamEvent::TimedOut => {
                     serde_json::json!({
                         "type": "response.failed",
                         "response_id": response_id_for_task,
                         "error": {"message": "Response request timed out"}
                     })
-                    .to_string(),
-                );
-            }
-        }
-
-        let _ = event_tx.send("[DONE]".to_string());
-    });
-
-    let stream = async_stream::stream! {
-        while let Some(payload) = event_rx.recv().await {
+                    .to_string()
+                }
+                ChatStreamEvent::ShuttingDown => {
+                    serde_json::json!({
+                        "type": "response.failed",
+                        "response_id": response_id_for_task,
+                        "error": {"message": "Server is shutting down"}
+                    })
+                    .to_string()
+                }
+            };
             yield Ok::<_, Infallible>(format!("data: {payload}\n\n"));
-            if payload == "[DONE]" {
+            if payload.contains("\"type\":\"response.failed\"") {
                 break;
             }
         }
+        yield Ok::<_, Infallible>("data: [DONE]\n\n".to_string());
     };
 
     Ok(Response::builder()
@@ -378,18 +341,6 @@ async fn create_streaming_response(
         .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from_stream(stream))
         .unwrap())
-}
-
-fn max_output_tokens(variant: ModelVariant, requested: Option<usize>) -> usize {
-    let default = match variant {
-        ModelVariant::Gemma34BIt => 4096,
-        ModelVariant::Gemma31BIt => 4096,
-        ModelVariant::Lfm2512BInstructGguf => 4096,
-        ModelVariant::Lfm2512BThinkingGguf => 4096,
-        _ => 1536,
-    };
-
-    requested.unwrap_or(default).clamp(1, 4096)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -463,14 +414,14 @@ fn build_input_messages(
 
     for (role, content, is_tool, contains_media) in input_items {
         let parsed_role = parse_input_role(&role)?;
-        if content.trim().is_empty() {
-            return Err(ApiError::bad_request(
-                "Response input item content cannot be empty",
-            ));
-        }
         if contains_media {
             return Err(ApiError::bad_request(
                 "Multimodal responses input is not currently supported",
+            ));
+        }
+        if content.trim().is_empty() {
+            return Err(ApiError::bad_request(
+                "Response input item content cannot be empty",
             ));
         }
 
@@ -540,7 +491,7 @@ fn normalize_input_item(
         }
     }
 
-    if content.trim().is_empty() {
+    if content.trim().is_empty() && !flattened.contains_media {
         return Err(ApiError::bad_request(
             "Response input item content cannot be empty",
         ));

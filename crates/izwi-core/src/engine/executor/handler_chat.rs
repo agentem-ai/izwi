@@ -18,6 +18,7 @@ impl NativeExecutor {
             presence_penalty: request.params.presence_penalty.clamp(-2.0, 2.0),
             stop_token_ids: request.params.stop_token_ids.clone(),
             seed: Self::chat_request_seed(&request.id),
+            request: request.chat_config.clone(),
         }
     }
 
@@ -238,6 +239,7 @@ mod tests {
             config.seed,
             NativeExecutor::chat_request_seed("req-sampling")
         );
+        assert_eq!(config.request, request.chat_config);
     }
 
     #[test]
