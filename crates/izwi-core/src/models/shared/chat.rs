@@ -27,6 +27,19 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatMediaKind {
+    Image,
+    Video,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatMediaInput {
+    pub kind: ChatMediaKind,
+    pub source: String,
+}
+
 /// Chat-specific request metadata consumed by native backends.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChatRequestConfig {
@@ -34,6 +47,8 @@ pub struct ChatRequestConfig {
     pub enable_thinking: Option<bool>,
     #[serde(default)]
     pub tools: Vec<Value>,
+    #[serde(default)]
+    pub media_inputs: Vec<ChatMediaInput>,
 }
 
 /// Model-agnostic chat generation controls used by native chat backends.

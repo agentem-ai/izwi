@@ -267,6 +267,7 @@ pub async fn create_thread_message(
         chat_config: ChatRequestConfig {
             enable_thinking: req.enable_thinking,
             tools: Vec::new(),
+            media_inputs: Vec::new(),
         },
         correlation_id: Some(ctx.correlation_id),
     };

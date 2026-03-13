@@ -2,3 +2,4 @@
 
 pub mod chat;
 mod text;
+mod vision;

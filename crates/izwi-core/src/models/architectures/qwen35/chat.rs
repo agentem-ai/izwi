@@ -19,6 +19,18 @@ use crate::models::shared::weights::gguf::{GgufLoader, GgufModelInfo};
 use crate::tokenizer::Tokenizer;
 
 use super::text::Qwen35TextModel;
+use super::vision::{PreparedVisionInputs, Qwen35VisionModel};
+
+const IMAGE_PAD_PLACEHOLDER: &str = "<|image_pad|>";
+const VIDEO_PAD_PLACEHOLDER: &str = "<|video_pad|>";
+
+#[derive(Debug)]
+struct PreparedPrompt {
+    prompt_ids: Vec<u32>,
+    prompt_positions: Vec<[usize; 3]>,
+    next_text_position: usize,
+    vision_inputs: Option<PreparedVisionInputs>,
+}
 
 #[derive(Debug, Clone)]
 pub struct ChatGenerationOutput {
@@ -53,6 +65,8 @@ pub struct Qwen35TextConfig {
 struct SpecialTokenIds {
     im_start: u32,
     im_end: u32,
+    image_pad: u32,
+    video_pad: u32,
     eos: u32,
     eos_alt: Option<u32>,
 }
@@ -105,6 +119,12 @@ impl Qwen35Tokenizer {
             .ok_or_else(|| Error::TokenizationError("Missing <|im_start|> token id".to_string()))?;
         let im_end = id_for("<|im_end|>")
             .ok_or_else(|| Error::TokenizationError("Missing <|im_end|> token id".to_string()))?;
+        let image_pad = id_for("<|image_pad|>").ok_or_else(|| {
+            Error::TokenizationError("Missing <|image_pad|> token id".to_string())
+        })?;
+        let video_pad = id_for("<|video_pad|>").ok_or_else(|| {
+            Error::TokenizationError("Missing <|video_pad|> token id".to_string())
+        })?;
         let eos = config
             .eos_token
             .as_deref()
@@ -120,6 +140,8 @@ impl Qwen35Tokenizer {
             specials: SpecialTokenIds {
                 im_start,
                 im_end,
+                image_pad,
+                video_pad,
                 eos,
                 eos_alt,
             },
@@ -151,6 +173,7 @@ pub struct Qwen35ChatModel {
     text_checkpoint: GgufModelInfo,
     projector_checkpoint: GgufModelInfo,
     text_model: Qwen35TextModel,
+    vision_model: Qwen35VisionModel,
 }
 
 impl Qwen35ChatModel {
@@ -192,6 +215,8 @@ impl Qwen35ChatModel {
 
         let projector_loader = GgufLoader::from_path_with_backend(&mmproj_path, backend)?;
         let projector_checkpoint = projector_loader.get_model_info();
+        let vision_model =
+            Qwen35VisionModel::load(&projector_loader, &device.device, text_model.hidden_size())?;
 
         info!(
             "Loaded Qwen3.5 chat assets for {} on {:?} ({} text tensors, {} projector tensors)",
@@ -209,6 +234,7 @@ impl Qwen35ChatModel {
             text_checkpoint,
             projector_checkpoint,
             text_model,
+            vision_model,
         })
     }
 
@@ -245,8 +271,7 @@ impl Qwen35ChatModel {
         messages: &[ChatMessage],
         config: &ChatGenerationConfig,
     ) -> Result<Vec<u32>> {
-        let prompt = render_prompt(messages, config, self.default_enable_thinking())?;
-        self.tokenizer.encode_text(&prompt)
+        Ok(self.prepare_prompt(messages, config)?.prompt_ids)
     }
 
     pub fn generate(
@@ -285,8 +310,8 @@ impl Qwen35ChatModel {
         config: &ChatGenerationConfig,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ChatGenerationOutput> {
-        let prompt_ids = self.prompt_token_ids_with_config(messages, config)?;
-        if prompt_ids.is_empty() {
+        let prepared_prompt = self.prepare_prompt(messages, config)?;
+        if prepared_prompt.prompt_ids.is_empty() {
             return Err(Error::InvalidInput(
                 "Chat request must include at least one tokenizable message".to_string(),
             ));
@@ -294,8 +319,48 @@ impl Qwen35ChatModel {
 
         let mut state = self.text_model.new_state();
         let mut logits: Option<Tensor> = None;
-        for token_id in prompt_ids {
-            logits = Some(self.text_model.forward_token_id(token_id, &mut state)?);
+        let mut vision_embedding_index = 0usize;
+        for (token_id, position_ids) in prepared_prompt
+            .prompt_ids
+            .iter()
+            .copied()
+            .zip(prepared_prompt.prompt_positions.iter().copied())
+        {
+            logits = Some(if token_id == self.tokenizer.specials.image_pad {
+                let vision_inputs = prepared_prompt.vision_inputs.as_ref().ok_or_else(|| {
+                    Error::InvalidInput(
+                        "Qwen3.5 image placeholders require paired media inputs".to_string(),
+                    )
+                })?;
+                if vision_embedding_index >= vision_inputs.embeddings.dim(0)? {
+                    return Err(Error::InferenceError(
+                        "Qwen3.5 prompt consumed more image placeholders than vision embeddings"
+                            .to_string(),
+                    ));
+                }
+                let embedding = vision_inputs
+                    .embeddings
+                    .narrow(0, vision_embedding_index, 1)?
+                    .reshape((1, 1, self.text_model.hidden_size()))?;
+                vision_embedding_index += 1;
+                self.text_model
+                    .forward_input_embedding_at(&embedding, position_ids, &mut state)?
+            } else if token_id == self.tokenizer.specials.video_pad {
+                return Err(Error::InvalidInput(
+                    "Qwen3.5 video inputs are not implemented yet".to_string(),
+                ));
+            } else {
+                self.text_model
+                    .forward_token_id_at(token_id, position_ids, &mut state)?
+            });
+        }
+        if let Some(vision_inputs) = prepared_prompt.vision_inputs.as_ref() {
+            if vision_embedding_index != vision_inputs.embeddings.dim(0)? {
+                return Err(Error::InferenceError(format!(
+                    "Qwen3.5 prompt consumed {vision_embedding_index} image embeddings, expected {}",
+                    vision_inputs.embeddings.dim(0)?
+                )));
+            }
         }
         let mut logits = logits.ok_or_else(|| {
             Error::InferenceError("Qwen3.5 prompt prefill did not produce logits".to_string())
@@ -305,6 +370,7 @@ impl Qwen35ChatModel {
         let mut generated_ids = Vec::new();
         let mut assembled = String::new();
         let mut rng = SimpleRng::new(config.seed);
+        let mut next_text_position = prepared_prompt.next_text_position;
 
         while generated_ids.len() < max_new_tokens {
             let next = sample_next_token(&logits, config, &generated_ids, &mut rng)?;
@@ -319,7 +385,10 @@ impl Qwen35ChatModel {
                 on_delta(&delta);
             }
             assembled = decoded;
-            logits = self.text_model.forward_token_id(next, &mut state)?;
+            logits =
+                self.text_model
+                    .forward_token_id_at(next, [next_text_position; 3], &mut state)?;
+            next_text_position += 1;
         }
 
         Ok(ChatGenerationOutput {
@@ -342,6 +411,217 @@ impl Qwen35ChatModel {
             || self.tokenizer.specials.eos_alt == Some(token_id)
             || config.stop_token_ids.contains(&token_id)
     }
+
+    fn prepare_prompt(
+        &self,
+        messages: &[ChatMessage],
+        config: &ChatGenerationConfig,
+    ) -> Result<PreparedPrompt> {
+        let prompt = render_prompt(messages, config, self.default_enable_thinking())?;
+        let image_placeholders = prompt.matches(IMAGE_PAD_PLACEHOLDER).count();
+        let video_placeholders = prompt.matches(VIDEO_PAD_PLACEHOLDER).count();
+        if video_placeholders > 0 {
+            return Err(Error::InvalidInput(
+                "Qwen3.5 video inputs are not implemented yet".to_string(),
+            ));
+        }
+
+        let Some(vision_inputs) = self
+            .vision_model
+            .encode_media(&config.request.media_inputs)?
+        else {
+            if image_placeholders > 0 {
+                return Err(Error::InvalidInput(
+                    "Qwen3.5 image placeholders require paired media inputs".to_string(),
+                ));
+            }
+            let prompt_ids = self.tokenizer.encode_text(&prompt)?;
+            let prompt_positions = build_text_positions(prompt_ids.len());
+            return Ok(PreparedPrompt {
+                next_text_position: prompt_positions.len(),
+                prompt_ids,
+                prompt_positions,
+                vision_inputs: None,
+            });
+        };
+
+        if image_placeholders == 0 {
+            return Err(Error::InvalidInput(
+                "Qwen3.5 media inputs require <|image_pad|> placeholders in the rendered prompt"
+                    .to_string(),
+            ));
+        }
+        if image_placeholders != vision_inputs.token_counts.len() {
+            return Err(Error::InvalidInput(format!(
+                "Qwen3.5 prompt/media mismatch: rendered {image_placeholders} image placeholders for {} media inputs",
+                vision_inputs.token_counts.len()
+            )));
+        }
+
+        let expanded_prompt = expand_image_placeholders(&prompt, &vision_inputs.token_counts)?;
+        let prompt_ids = self.tokenizer.encode_text(&expanded_prompt)?;
+        let (prompt_positions, next_text_position) = build_prompt_positions(
+            &prompt_ids,
+            &vision_inputs,
+            self.tokenizer.specials.image_pad,
+            self.tokenizer.specials.video_pad,
+            self.vision_model.spatial_merge_size(),
+        )?;
+        Ok(PreparedPrompt {
+            prompt_ids,
+            prompt_positions,
+            next_text_position,
+            vision_inputs: Some(vision_inputs),
+        })
+    }
+}
+
+fn build_text_positions(token_count: usize) -> Vec<[usize; 3]> {
+    (0..token_count).map(|idx| [idx; 3]).collect()
+}
+
+fn expand_image_placeholders(prompt: &str, token_counts: &[usize]) -> Result<String> {
+    let segments: Vec<&str> = prompt.split(IMAGE_PAD_PLACEHOLDER).collect();
+    if segments.len() != token_counts.len() + 1 {
+        return Err(Error::InvalidInput(format!(
+            "Qwen3.5 prompt/media mismatch while expanding image placeholders: found {} placeholders for {} media inputs",
+            segments.len().saturating_sub(1),
+            token_counts.len()
+        )));
+    }
+
+    let mut expanded = String::with_capacity(
+        prompt.len()
+            + token_counts
+                .iter()
+                .map(|count| IMAGE_PAD_PLACEHOLDER.len() * count.saturating_sub(1))
+                .sum::<usize>(),
+    );
+    for (idx, segment) in segments.iter().enumerate() {
+        expanded.push_str(segment);
+        if let Some(&token_count) = token_counts.get(idx) {
+            if token_count == 0 {
+                return Err(Error::InvalidInput(
+                    "Qwen3.5 image inputs must contribute at least one LLM token".to_string(),
+                ));
+            }
+            expanded.push_str(&IMAGE_PAD_PLACEHOLDER.repeat(token_count));
+        }
+    }
+    Ok(expanded)
+}
+
+fn build_prompt_positions(
+    prompt_ids: &[u32],
+    vision_inputs: &PreparedVisionInputs,
+    image_pad_id: u32,
+    video_pad_id: u32,
+    spatial_merge_size: usize,
+) -> Result<(Vec<[usize; 3]>, usize)> {
+    let mut prompt_positions = Vec::with_capacity(prompt_ids.len());
+    let mut current_pos = 0usize;
+    let mut idx = 0usize;
+    let mut image_idx = 0usize;
+
+    while idx < prompt_ids.len() {
+        let token_id = prompt_ids[idx];
+        if token_id == image_pad_id {
+            let Some(grid) = vision_inputs.grids.get(image_idx).copied() else {
+                return Err(Error::InvalidInput(
+                    "Qwen3.5 prompt consumed more image placeholder runs than media inputs"
+                        .to_string(),
+                ));
+            };
+            let expected_tokens = *vision_inputs.token_counts.get(image_idx).ok_or_else(|| {
+                Error::InvalidInput(
+                    "Qwen3.5 image token counts are missing for a prepared media input".to_string(),
+                )
+            })?;
+            let run_start = idx;
+            while idx < prompt_ids.len() && prompt_ids[idx] == image_pad_id {
+                idx += 1;
+            }
+            let actual_tokens = idx - run_start;
+            if actual_tokens != expected_tokens {
+                return Err(Error::InvalidInput(format!(
+                    "Qwen3.5 image placeholder count mismatch for media input {}: prompt has {}, encoder expects {}",
+                    image_idx + 1,
+                    actual_tokens,
+                    expected_tokens
+                )));
+            }
+            prompt_positions.extend(vision_position_ids(current_pos, grid, spatial_merge_size)?);
+            current_pos += grid[1].max(grid[2]) / spatial_merge_size;
+            image_idx += 1;
+            continue;
+        }
+        if token_id == video_pad_id {
+            return Err(Error::InvalidInput(
+                "Qwen3.5 video inputs are not implemented yet".to_string(),
+            ));
+        }
+
+        let run_start = idx;
+        while idx < prompt_ids.len()
+            && prompt_ids[idx] != image_pad_id
+            && prompt_ids[idx] != video_pad_id
+        {
+            idx += 1;
+        }
+        let text_len = idx - run_start;
+        prompt_positions.extend((0..text_len).map(|offset| {
+            let position = current_pos + offset;
+            [position; 3]
+        }));
+        current_pos += text_len;
+    }
+
+    if image_idx != vision_inputs.grids.len() {
+        return Err(Error::InvalidInput(format!(
+            "Qwen3.5 prompt consumed {} image placeholder runs for {} media inputs",
+            image_idx,
+            vision_inputs.grids.len()
+        )));
+    }
+    if prompt_positions.len() != prompt_ids.len() {
+        return Err(Error::InferenceError(format!(
+            "Qwen3.5 prompt position count mismatch: {} positions for {} tokens",
+            prompt_positions.len(),
+            prompt_ids.len()
+        )));
+    }
+
+    Ok((prompt_positions, current_pos))
+}
+
+fn vision_position_ids(
+    start_position: usize,
+    grid_thw: [usize; 3],
+    spatial_merge_size: usize,
+) -> Result<Vec<[usize; 3]>> {
+    if spatial_merge_size == 0 {
+        return Err(Error::InvalidInput(
+            "Qwen3.5 spatial merge size must be non-zero".to_string(),
+        ));
+    }
+
+    let llm_grid_t = grid_thw[0];
+    let llm_grid_h = grid_thw[1] / spatial_merge_size;
+    let llm_grid_w = grid_thw[2] / spatial_merge_size;
+    let image_seq_length = llm_grid_t * llm_grid_h * llm_grid_w;
+    let mut positions = Vec::with_capacity(image_seq_length);
+    for _temporal_idx in 0..llm_grid_t {
+        for height_idx in 0..llm_grid_h {
+            for width_idx in 0..llm_grid_w {
+                positions.push([
+                    start_position,
+                    start_position + height_idx,
+                    start_position + width_idx,
+                ]);
+            }
+        }
+    }
+    Ok(positions)
 }
 
 fn render_fallback_prompt(messages: &[ChatMessage]) -> String {
@@ -855,7 +1135,7 @@ impl SimpleRng {
 mod tests {
     use super::*;
     use crate::backends::DeviceProfile;
-    use crate::models::shared::chat::ChatRequestConfig;
+    use crate::models::shared::chat::{ChatMediaInput, ChatMediaKind, ChatRequestConfig};
     use std::path::PathBuf;
 
     fn local_model_dir(name: &str) -> PathBuf {
@@ -886,6 +1166,7 @@ mod tests {
             request: ChatRequestConfig {
                 enable_thinking: Some(true),
                 tools: vec![serde_json::json!({"type":"function","function":{"name":"lookup"}})],
+                media_inputs: Vec::new(),
             },
             ..ChatGenerationConfig::default()
         };
@@ -917,6 +1198,7 @@ mod tests {
             request: ChatRequestConfig {
                 enable_thinking: Some(false),
                 tools: Vec::new(),
+                media_inputs: Vec::new(),
             },
             ..ChatGenerationConfig::default()
         };
@@ -991,5 +1273,106 @@ mod tests {
             .expect("qwen3.5 text generation should run");
 
         assert!(output.tokens_generated <= 4);
+    }
+
+    #[test]
+    fn expand_image_placeholders_repeats_each_media_slot() {
+        let prompt = concat!(
+            "<|vision_start|><|image_pad|><|vision_end|>",
+            " then ",
+            "<|vision_start|><|image_pad|><|vision_end|>"
+        );
+        let expanded = expand_image_placeholders(prompt, &[4, 2]).expect("expand");
+        assert_eq!(expanded.matches(IMAGE_PAD_PLACEHOLDER).count(), 6);
+        assert!(expanded.contains(
+            "<|vision_start|><|image_pad|><|image_pad|><|image_pad|><|image_pad|><|vision_end|>"
+        ));
+        assert!(expanded.contains("then <|vision_start|><|image_pad|><|image_pad|><|vision_end|>"));
+    }
+
+    #[test]
+    fn build_prompt_positions_matches_qwen_multimodal_rope_layout() {
+        let image_pad_id = 248056;
+        let prompt_ids = vec![
+            11,
+            image_pad_id,
+            image_pad_id,
+            image_pad_id,
+            image_pad_id,
+            12,
+        ];
+        let vision_inputs = PreparedVisionInputs {
+            embeddings: Tensor::zeros((4, 8), DType::F32, &candle_core::Device::Cpu)
+                .expect("embeddings"),
+            grids: vec![[1, 4, 4]],
+            token_counts: vec![4],
+        };
+
+        let (positions, next_text_position) =
+            build_prompt_positions(&prompt_ids, &vision_inputs, image_pad_id, 248057, 2)
+                .expect("positions");
+
+        assert_eq!(
+            positions,
+            vec![
+                [0, 0, 0],
+                [1, 1, 1],
+                [1, 1, 2],
+                [1, 2, 1],
+                [1, 2, 2],
+                [3, 3, 3],
+            ]
+        );
+        assert_eq!(next_text_position, 4);
+    }
+
+    #[test]
+    fn generate_local_qwen35_image_smoke_if_available() {
+        let model_dir = local_model_dir("Qwen3.5-0.8B");
+        if !model_dir.exists() {
+            return;
+        }
+        let image_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../izwi-desktop/icons/32x32.png");
+        if !image_path.exists() {
+            return;
+        }
+
+        let model = Qwen35ChatModel::load(
+            &model_dir,
+            ModelVariant::Qwen3508BGguf,
+            DeviceProfile::cpu(),
+        )
+        .expect("qwen3.5 assets should load");
+        let messages = vec![ChatMessage {
+            role: ChatRole::User,
+            content: format!(
+                "{}{}{} Reply with one short word.",
+                "<|vision_start|>", IMAGE_PAD_PLACEHOLDER, "<|vision_end|>"
+            ),
+        }];
+        let config = ChatGenerationConfig {
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: 0,
+            repetition_penalty: 1.0,
+            presence_penalty: 0.0,
+            stop_token_ids: Vec::new(),
+            seed: 7,
+            request: ChatRequestConfig {
+                enable_thinking: Some(false),
+                tools: Vec::new(),
+                media_inputs: vec![ChatMediaInput {
+                    kind: ChatMediaKind::Image,
+                    source: image_path.display().to_string(),
+                }],
+            },
+        };
+
+        let output = model
+            .generate_with_config(&messages, 2, &config)
+            .expect("qwen3.5 image generation should run");
+
+        assert!(output.tokens_generated <= 2);
     }
 }

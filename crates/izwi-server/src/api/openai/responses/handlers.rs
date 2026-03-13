@@ -61,6 +61,7 @@ pub async fn create_response(
         chat_config: ChatRequestConfig {
             enable_thinking: req.enable_thinking,
             tools: req.tools.clone().unwrap_or_default(),
+            media_inputs: Vec::new(),
         },
         correlation_id: Some(ctx.correlation_id.clone()),
     };
