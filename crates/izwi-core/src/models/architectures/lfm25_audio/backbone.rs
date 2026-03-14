@@ -77,34 +77,35 @@ pub struct QuantizedLfm2Backbone {
 
 impl Mlp {
     fn load(loader: &GgufLoader, device: &Device, prefix: &str) -> Result<Self> {
+        Self::load_with_prefixes(loader, device, &[prefix.to_string()])
+    }
+
+    fn load_with_prefixes(loader: &GgufLoader, device: &Device, prefixes: &[String]) -> Result<Self> {
+        let mut gate_names = Vec::new();
+        let mut down_names = Vec::new();
+        let mut up_names = Vec::new();
+        for prefix in prefixes {
+            gate_names.extend([
+                format!("{prefix}.ffn_gate.weight"),
+                format!("{prefix}.feed_forward.w1.weight"),
+                format!("{prefix}.mlp.gate_proj.weight"),
+            ]);
+            down_names.extend([
+                format!("{prefix}.ffn_down.weight"),
+                format!("{prefix}.feed_forward.w2.weight"),
+                format!("{prefix}.mlp.down_proj.weight"),
+            ]);
+            up_names.extend([
+                format!("{prefix}.ffn_up.weight"),
+                format!("{prefix}.feed_forward.w3.weight"),
+                format!("{prefix}.mlp.up_proj.weight"),
+            ]);
+        }
+
         Ok(Self {
-            gate: load_qmatmul_any(
-                loader,
-                device,
-                &[
-                    format!("{prefix}.ffn_gate.weight"),
-                    format!("{prefix}.feed_forward.w1.weight"),
-                    format!("{prefix}.mlp.gate_proj.weight"),
-                ],
-            )?,
-            down: load_qmatmul_any(
-                loader,
-                device,
-                &[
-                    format!("{prefix}.ffn_down.weight"),
-                    format!("{prefix}.feed_forward.w2.weight"),
-                    format!("{prefix}.mlp.down_proj.weight"),
-                ],
-            )?,
-            up: load_qmatmul_any(
-                loader,
-                device,
-                &[
-                    format!("{prefix}.ffn_up.weight"),
-                    format!("{prefix}.feed_forward.w3.weight"),
-                    format!("{prefix}.mlp.up_proj.weight"),
-                ],
-            )?,
+            gate: load_qmatmul_any(loader, device, &gate_names)?,
+            down: load_qmatmul_any(loader, device, &down_names)?,
+            up: load_qmatmul_any(loader, device, &up_names)?,
         })
     }
 
@@ -287,6 +288,8 @@ impl ProjectionHead {
                 "lm_head.weight".to_string(),
                 "model.output.weight".to_string(),
                 "model.lm_head.weight".to_string(),
+                "lfm.output.weight".to_string(),
+                "lfm.lm_head.weight".to_string(),
                 "dense_2_out.weight".to_string(),
                 "lin.weight".to_string(),
                 "token_embd.weight".to_string(),
@@ -299,6 +302,8 @@ impl ProjectionHead {
             &[
                 "output.bias".to_string(),
                 "lm_head.bias".to_string(),
+                "lfm.output.bias".to_string(),
+                "lfm.lm_head.bias".to_string(),
                 "dense_2_out.bias".to_string(),
                 "lin.bias".to_string(),
             ],
@@ -329,6 +334,7 @@ impl QuantizedLfm2Backbone {
                 "token_embd.weight".to_string(),
                 "tok_embeddings.weight".to_string(),
                 "model.embed_tokens.weight".to_string(),
+                "lfm.embed_tokens.weight".to_string(),
             ],
         )?;
         let token_embeddings_weight = token_embedding_q.dequantize(device).map_err(Error::from)?;
@@ -351,6 +357,7 @@ impl QuantizedLfm2Backbone {
                     "model.embedding_norm.weight".to_string(),
                     "model.embedding_norm".to_string(),
                     "token_embd_norm.weight".to_string(),
+                    "lfm.embedding_norm.weight".to_string(),
                 ],
             )?,
             cfg.attention_layer_norm_rms_epsilon,
@@ -361,6 +368,7 @@ impl QuantizedLfm2Backbone {
         let mut layers = Vec::with_capacity(cfg.block_count);
         for layer_idx in 0..cfg.block_count {
             let prefix = format!("blk.{layer_idx}");
+            let legacy_prefix = format!("lfm.layers.{layer_idx}");
             let operator_norm = RmsNorm::from_qtensor(
                 load_qtensor_any(
                     loader,
@@ -369,6 +377,7 @@ impl QuantizedLfm2Backbone {
                         format!("{prefix}.attn_norm.weight"),
                         format!("{prefix}.operator_norm.weight"),
                         format!("{prefix}.attention_norm.weight"),
+                        format!("{legacy_prefix}.operator_norm.weight"),
                     ],
                 )?,
                 cfg.attention_layer_norm_rms_epsilon,
@@ -381,12 +390,17 @@ impl QuantizedLfm2Backbone {
                     &[
                         format!("{prefix}.ffn_norm.weight"),
                         format!("{prefix}.ffn_norm"),
+                        format!("{legacy_prefix}.ffn_norm.weight"),
                     ],
                 )?,
                 cfg.attention_layer_norm_rms_epsilon,
             )
             .map_err(Error::from)?;
-            let mlp = Mlp::load(loader, device, &prefix)?;
+            let mlp = Mlp::load_with_prefixes(
+                loader,
+                device,
+                &[prefix.clone(), legacy_prefix.clone()],
+            )?;
 
             let is_attention = cfg
                 .attention_head_count_kv
@@ -403,6 +417,7 @@ impl QuantizedLfm2Backbone {
                         &[
                             format!("{prefix}.attn_q.weight"),
                             format!("{prefix}.self_attn.q_proj.weight"),
+                            format!("{legacy_prefix}.self_attn.q_proj.weight"),
                         ],
                     )?,
                     wk: load_qmatmul_any(
@@ -411,6 +426,7 @@ impl QuantizedLfm2Backbone {
                         &[
                             format!("{prefix}.attn_k.weight"),
                             format!("{prefix}.self_attn.k_proj.weight"),
+                            format!("{legacy_prefix}.self_attn.k_proj.weight"),
                         ],
                     )?,
                     wv: load_qmatmul_any(
@@ -419,6 +435,7 @@ impl QuantizedLfm2Backbone {
                         &[
                             format!("{prefix}.attn_v.weight"),
                             format!("{prefix}.self_attn.v_proj.weight"),
+                            format!("{legacy_prefix}.self_attn.v_proj.weight"),
                         ],
                     )?,
                     wo: load_qmatmul_any(
@@ -427,6 +444,7 @@ impl QuantizedLfm2Backbone {
                         &[
                             format!("{prefix}.attn_output.weight"),
                             format!("{prefix}.self_attn.out_proj.weight"),
+                            format!("{legacy_prefix}.self_attn.out_proj.weight"),
                         ],
                     )?,
                     q_norm: RmsNorm::from_qtensor(
@@ -437,6 +455,7 @@ impl QuantizedLfm2Backbone {
                                 format!("{prefix}.attn_q_norm.weight"),
                                 format!("{prefix}.self_attn.q_layernorm.weight"),
                                 format!("{prefix}.attention.q_norm.weight"),
+                                format!("{legacy_prefix}.self_attn.q_layernorm.weight"),
                             ],
                         )?,
                         cfg.attention_layer_norm_rms_epsilon,
@@ -450,6 +469,7 @@ impl QuantizedLfm2Backbone {
                                 format!("{prefix}.attn_k_norm.weight"),
                                 format!("{prefix}.self_attn.k_layernorm.weight"),
                                 format!("{prefix}.attention.k_norm.weight"),
+                                format!("{legacy_prefix}.self_attn.k_layernorm.weight"),
                             ],
                         )?,
                         cfg.attention_layer_norm_rms_epsilon,
@@ -471,6 +491,7 @@ impl QuantizedLfm2Backbone {
                         &[
                             format!("{prefix}.shortconv.in_proj.weight"),
                             format!("{prefix}.conv.in_proj.weight"),
+                            format!("{legacy_prefix}.conv.in_proj.weight"),
                         ],
                     )?,
                     out_proj: load_qmatmul_any(
@@ -479,6 +500,7 @@ impl QuantizedLfm2Backbone {
                         &[
                             format!("{prefix}.shortconv.out_proj.weight"),
                             format!("{prefix}.conv.out_proj.weight"),
+                            format!("{legacy_prefix}.conv.out_proj.weight"),
                         ],
                     )?,
                     conv: load_dense_any(
@@ -488,6 +510,7 @@ impl QuantizedLfm2Backbone {
                             format!("{prefix}.shortconv.conv.weight"),
                             format!("{prefix}.conv.conv.weight"),
                             format!("{prefix}.shortconv.conv"),
+                            format!("{legacy_prefix}.conv.conv.weight"),
                         ],
                         Some(DType::F32),
                     )?,
