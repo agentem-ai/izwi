@@ -345,7 +345,6 @@ impl DepthAttention {
                 DEPTHFORMER_HEADS,
                 head_dim,
             ))?
-            .transpose(1, 2)?
             .contiguous()?;
         let k = self
             .k_norm
@@ -356,7 +355,6 @@ impl DepthAttention {
                 DEPTHFORMER_KV_HEADS,
                 head_dim,
             ))?
-            .transpose(1, 2)?
             .contiguous()?;
         let v = v_hidden
             .reshape((
@@ -365,18 +363,17 @@ impl DepthAttention {
                 DEPTHFORMER_KV_HEADS,
                 head_dim,
             ))?
-            .transpose(1, 2)?
             .contiguous()?;
 
         let index_pos = cache
             .as_ref()
-            .map(|(keys, _values)| keys.dim(2).unwrap_or(0))
+            .map(|(keys, _values)| keys.dim(1).unwrap_or(0))
             .unwrap_or(0);
         let q = apply_rotary_emb(&q, &self.cos, &self.sin, index_pos)?;
         let k = apply_rotary_emb(&k, &self.cos, &self.sin, index_pos)?;
 
         let (all_k, all_v): (Tensor, Tensor) = if let Some((old_k, old_v)) = cache.as_ref() {
-            (Tensor::cat(&[old_k, &k], 2)?, Tensor::cat(&[old_v, &v], 2)?)
+            (Tensor::cat(&[old_k, &k], 1)?, Tensor::cat(&[old_v, &v], 1)?)
         } else {
             (k, v)
         };
@@ -384,6 +381,9 @@ impl DepthAttention {
 
         let key = repeat_kv(&all_k, DEPTHFORMER_HEADS, DEPTHFORMER_KV_HEADS)?;
         let value = repeat_kv(&all_v, DEPTHFORMER_HEADS, DEPTHFORMER_KV_HEADS)?;
+        let q = q.transpose(1, 2)?.contiguous()?;
+        let key = key.transpose(1, 2)?.contiguous()?;
+        let value = value.transpose(1, 2)?.contiguous()?;
         let scores = (q.matmul(&key.transpose(2, 3)?.contiguous()?)?
             / ((hidden_size / DEPTHFORMER_HEADS) as f64).sqrt())?;
         let scores = causal_mask(scores, index_pos)?;
