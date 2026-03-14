@@ -24,6 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
   MODULAR_STACK_VARIANTS,
+  UNIFIED_VOICE_PIPELINE_LABEL,
   VOICE_PIPELINE_LABEL,
   VOICE_AGENT_SYSTEM_PROMPT,
   buildVoiceRealtimeWebSocketUrl,
@@ -34,10 +35,12 @@ import {
   formatBytes,
   formatModelVariantLabel,
   isRunnableModelStatus,
+  isUnifiedAudioChatVariant,
   isVoiceRealtimeServerEvent,
   makeTranscriptEntryId,
   mergeSampleChunks,
   parseFinalAnswer,
+  type VoiceRealtimeMode,
   parseVoiceRealtimeAssistantAudioBinaryChunk,
   type RuntimeStatus,
   type TranscriptEntry,
@@ -87,6 +90,7 @@ export function VoicePage({
   const [audioLevel, setAudioLevel] = useState(0);
 
   const [selectedSpeaker, setSelectedSpeaker] = useState("Serena");
+  const [voiceMode, setVoiceMode] = useState<VoiceRealtimeMode>("modular");
 
   const [vadThreshold, setVadThreshold] = useState(0.02);
   const [silenceDurationMs, setSilenceDurationMs] = useState(900);
@@ -199,6 +203,15 @@ export function VoicePage({
   const selectedAsrModel = selectedAsrInfo?.variant ?? null;
   const selectedTextModel = selectedTextInfo?.variant ?? null;
   const selectedTtsModel = selectedTtsInfo?.variant ?? null;
+  const unifiedAudioModels = useMemo(
+    () => sortedModels.filter((model) => isUnifiedAudioChatVariant(model.variant)),
+    [sortedModels],
+  );
+  const selectedUnifiedInfo = useMemo(
+    () => unifiedAudioModels[0] ?? null,
+    [unifiedAudioModels],
+  );
+  const selectedUnifiedModel = selectedUnifiedInfo?.variant ?? null;
   const modularStackModels = useMemo(
     () => [
       {
@@ -226,6 +239,10 @@ export function VoicePage({
     () => getSpeakerProfilesForVariant(selectedTtsModel),
     [selectedTtsModel],
   );
+  const currentPipelineLabel =
+    voiceMode === "unified"
+      ? UNIFIED_VOICE_PIPELINE_LABEL
+      : VOICE_PIPELINE_LABEL;
   const activeVoiceSystemPrompt =
     savedSystemPrompt.trim() ||
     defaultSystemPrompt.trim() ||
@@ -345,6 +362,13 @@ export function VoicePage({
   }, [transcript, runtimeStatus]);
 
   const hasRunnableConfig = useMemo(() => {
+    if (voiceMode === "unified") {
+      return (
+        !!selectedUnifiedInfo &&
+        isRunnableModelStatus(selectedUnifiedInfo.status)
+      );
+    }
+
     if (!selectedAsrInfo || !isRunnableModelStatus(selectedAsrInfo.status)) {
       return false;
     }
@@ -355,7 +379,13 @@ export function VoicePage({
       isRunnableModelStatus(selectedTextInfo.status) &&
       isRunnableModelStatus(selectedTtsInfo.status)
     );
-  }, [selectedAsrInfo, selectedTextInfo, selectedTtsInfo]);
+  }, [
+    selectedAsrInfo,
+    selectedTextInfo,
+    selectedTtsInfo,
+    selectedUnifiedInfo,
+    voiceMode,
+  ]);
 
   const hasRequiredModularModels = useMemo(
     () => modularStackModels.every((item) => item.model !== null),
@@ -947,6 +977,23 @@ export function VoicePage({
           }
           return;
         }
+        case "assistant_text_delta": {
+          const entryId = voiceAssistantEntryIdsRef.current.get(
+            event.utterance_id,
+          );
+          if (!entryId) return;
+          setTranscript((prev) => {
+            const index = prev.findIndex((entry) => entry.id === entryId);
+            if (index === -1) return prev;
+            const next = [...prev];
+            next[index] = {
+              ...next[index],
+              text: `${next[index].text}${event.delta}`,
+            };
+            return next;
+          });
+          return;
+        }
         case "assistant_text_final": {
           const entryId = voiceAssistantEntryIdsRef.current.get(
             event.utterance_id,
@@ -1225,27 +1272,47 @@ export function VoicePage({
           throw new Error("Voice realtime websocket is not connected");
         }
         const readyPromise = waitForVoiceRealtimeInputStreamReady();
-        if (!selectedAsrModel || !selectedTextModel || !selectedTtsModel) {
-          throw new Error(
-            "Required modular stack models are unavailable. Open Config.",
-          );
+        if (voiceMode === "unified") {
+          if (!selectedUnifiedModel) {
+            throw new Error(
+              "A unified LFM2.5 Audio model is unavailable. Open Config.",
+            );
+          }
+          sendVoiceRealtimeJson({
+            type: "input_stream_start",
+            mode: "unified",
+            s2s_model_id: selectedUnifiedModel,
+            max_output_tokens: 1536,
+            vad_threshold: vadThreshold,
+            min_speech_ms: minSpeechMs,
+            silence_duration_ms: silenceDurationMs,
+            max_utterance_ms: 20_000,
+            pre_roll_ms: 160,
+            input_sample_rate: Math.round(inputSampleRate),
+          });
+        } else {
+          if (!selectedAsrModel || !selectedTextModel || !selectedTtsModel) {
+            throw new Error(
+              "Required modular stack models are unavailable. Open Config.",
+            );
+          }
+          sendVoiceRealtimeJson({
+            type: "input_stream_start",
+            mode: "modular",
+            asr_model_id: selectedAsrModel,
+            text_model_id: selectedTextModel,
+            tts_model_id: selectedTtsModel,
+            speaker: selectedSpeaker,
+            asr_language: "Auto",
+            max_output_tokens: 1536,
+            vad_threshold: vadThreshold,
+            min_speech_ms: minSpeechMs,
+            silence_duration_ms: silenceDurationMs,
+            max_utterance_ms: 20_000,
+            pre_roll_ms: 160,
+            input_sample_rate: Math.round(inputSampleRate),
+          });
         }
-        sendVoiceRealtimeJson({
-          type: "input_stream_start",
-          mode: "modular",
-          asr_model_id: selectedAsrModel,
-          text_model_id: selectedTextModel,
-          tts_model_id: selectedTtsModel,
-          speaker: selectedSpeaker,
-          asr_language: "Auto",
-          max_output_tokens: 1536,
-          vad_threshold: vadThreshold,
-          min_speech_ms: minSpeechMs,
-          silence_duration_ms: silenceDurationMs,
-          max_utterance_ms: 20_000,
-          pre_roll_ms: 160,
-          input_sample_rate: Math.round(inputSampleRate),
-        });
         await readyPromise;
       })();
 
@@ -1264,9 +1331,11 @@ export function VoicePage({
       selectedSpeaker,
       selectedTextModel,
       selectedTtsModel,
+      selectedUnifiedModel,
       sendVoiceRealtimeJson,
       silenceDurationMs,
       vadThreshold,
+      voiceMode,
       waitForVoiceRealtimeInputStreamReady,
     ],
   );
@@ -1646,12 +1715,12 @@ export function VoicePage({
       : "Review or remove stored voice memories without leaving this modal."
     : "Memory capture is currently turned off for voice mode.";
 
-  const modelStatusLabel = hasRunnableConfig
-    ? "Ready to start"
-    : "Needs model action";
+  const modelStatusLabel = hasRunnableConfig ? "Ready to start" : "Needs model action";
 
   const modelSummaryText =
-    "Parakeet, Qwen, and Kokoro stay separate so each stage is inspectable.";
+    voiceMode === "unified"
+      ? "LFM2.5 Audio handles transcription, reasoning, and response speech in one native GGUF stack."
+      : "Parakeet, Qwen, and Kokoro stay separate so each stage is inspectable.";
 
   const renderSetupTab = () => (
     <div className="space-y-4">
@@ -1674,7 +1743,7 @@ export function VoicePage({
               </p>
             </div>
             <span className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-2 py-1 text-[10px] text-[var(--text-muted)]">
-              {VOICE_PIPELINE_LABEL}
+              {currentPipelineLabel}
             </span>
           </div>
         </button>
@@ -1723,15 +1792,42 @@ export function VoicePage({
             Choose how inference is orchestrated.
           </span>
         </div>
-        <div className="rounded-lg border border-primary bg-primary/5 p-3 text-left ring-1 ring-primary/20">
-          <div className="text-sm font-medium">Modular Voice Stack</div>
-          <p className="text-xs text-muted-foreground mt-1">
-            Uses a fixed local stack: Parakeet ASR, Qwen3-1.7B-GGUF, and
-            Kokoro-82M.
-          </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => setVoiceMode("modular")}
+            className={cn(
+              "rounded-lg border p-3 text-left transition-colors",
+              voiceMode === "modular"
+                ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                : "border-[var(--border-muted)] bg-[var(--bg-surface-1)] hover:border-[var(--border-strong)]",
+            )}
+          >
+            <div className="text-sm font-medium">Modular Voice Stack</div>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Uses a fixed local stack: Parakeet ASR, Qwen3-1.7B-GGUF, and
+              Kokoro-82M.
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => setVoiceMode("unified")}
+            className={cn(
+              "rounded-lg border p-3 text-left transition-colors",
+              voiceMode === "unified"
+                ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                : "border-[var(--border-muted)] bg-[var(--bg-surface-1)] hover:border-[var(--border-strong)]",
+            )}
+          >
+            <div className="text-sm font-medium">Unified LFM2.5 Audio</div>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Runs transcription, response planning, and synthesized speech in a
+              single native GGUF model.
+            </p>
+          </button>
         </div>
         <div className="text-[11px] text-[var(--text-muted)]">
-          Current mode: {VOICE_PIPELINE_LABEL}
+          Current mode: {currentPipelineLabel}
         </div>
       </section>
 
@@ -1905,6 +2001,91 @@ export function VoicePage({
 
   const renderModelSettings = () => (
     <section className="space-y-3">
+      <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-medium text-white">Unified Model</h3>
+            <p className="text-[11px] text-[var(--text-muted)] mt-1">
+              Single-stack speech model for end-to-end voice replies.
+            </p>
+          </div>
+          <span className="text-[11px] text-[var(--text-muted)]">
+            {voiceMode === "unified" ? "Selected mode" : "Available mode"}
+          </span>
+        </div>
+        {selectedUnifiedInfo ? (
+          <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] p-3 space-y-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-white">
+                  {formatModelVariantLabel(selectedUnifiedInfo.variant)}
+                </div>
+                <div className="mt-0.5 text-xs text-[var(--text-muted)] truncate">
+                  {selectedUnifiedInfo.variant}
+                </div>
+              </div>
+              <span
+                className={clsx(
+                  "text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap",
+                  getStatusClass(selectedUnifiedInfo.status),
+                )}
+              >
+                {getStatusLabel(selectedUnifiedInfo.status)}
+              </span>
+            </div>
+            <p className="text-xs text-[var(--text-muted)]">
+              Native LFM2.5 Audio GGUF bundle with speech-to-speech generation.
+            </p>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {selectedUnifiedInfo.status === "downloading" && onCancelDownload && (
+                <Button
+                  onClick={() => onCancelDownload(selectedUnifiedInfo.variant)}
+                  variant="destructive"
+                  size="sm"
+                  className="text-xs h-7 gap-2"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  Cancel
+                </Button>
+              )}
+              {selectedUnifiedInfo.status === "loading" && (
+                <Button disabled variant="outline" size="sm" className="text-xs h-7 gap-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Loading
+                </Button>
+              )}
+              {selectedUnifiedInfo.status !== "loading" &&
+                selectedUnifiedInfo.status !== "downloading" && (
+                  <Button
+                    onClick={() => onModelAction(selectedUnifiedInfo)}
+                    variant={selectedUnifiedInfo.status === "ready" ? "outline" : "default"}
+                    size="sm"
+                    className="text-xs h-7 gap-2"
+                  >
+                    {selectedUnifiedInfo.status === "not_downloaded" ||
+                    selectedUnifiedInfo.status === "error" ? (
+                      <Download className="w-3.5 h-3.5" />
+                    ) : selectedUnifiedInfo.status === "downloaded" ? (
+                      <Play className="w-3.5 h-3.5" />
+                    ) : (
+                      <Square className="w-3.5 h-3.5" />
+                    )}
+                    {selectedUnifiedInfo.status === "not_downloaded" ||
+                    selectedUnifiedInfo.status === "error"
+                      ? "Download"
+                      : selectedUnifiedInfo.status === "downloaded"
+                        ? "Load"
+                        : "Unload"}
+                  </Button>
+                )}
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-[var(--text-muted)]">
+            No unified LFM2.5 Audio model is available in the current catalog.
+          </p>
+        )}
+      </div>
       <div className="flex items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-white">Modular Stack Models</h3>
@@ -2157,7 +2338,9 @@ export function VoicePage({
   );
 
   const startDisabled =
-    (!selectedAsrModel || !selectedTextModel || !selectedTtsModel) ||
+    (voiceMode === "unified"
+      ? !selectedUnifiedModel
+      : !selectedAsrModel || !selectedTextModel || !selectedTtsModel) ||
     !hasRunnableConfig;
   const showTranscriptPanel = runtimeStatus !== "idle" || transcript.length > 0;
 
@@ -2191,7 +2374,7 @@ export function VoicePage({
             {hasRunnableConfig ? "Ready" : "Models Required"}
           </span>
           <span className="text-[11px] font-medium text-[var(--text-muted)] bg-[var(--bg-surface-2)] border border-[var(--border-muted)] px-2.5 py-1 rounded-full">
-            {VOICE_PIPELINE_LABEL}
+            {currentPipelineLabel}
           </span>
         </div>
         <Button

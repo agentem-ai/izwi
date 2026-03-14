@@ -245,6 +245,15 @@ export const MODEL_DETAILS: Record<string, ModelDetail> = {
     capabilities: ["Text Chat", "GGUF", "Q4_K_M", "Thinking"],
     size: "0.68 GB",
   },
+  "LFM2.5-Audio-1.5B-GGUF": {
+    shortName: "LFM2.5 Audio 1.5B",
+    fullName: "LFM2.5 Audio 1.5B (GGUF Q4_0 bundle)",
+    description:
+      "Native end-to-end speech model from Liquid AI with unified audio-chat generation",
+    category: "asr",
+    capabilities: ["Speech-to-speech", "GGUF", "Q4_0", "Unified Voice"],
+    size: "1.14 GB",
+  },
   "Gemma-3-1b-it": {
     shortName: "Gemma 3 1B",
     fullName: "Gemma 3 1B Instruct",

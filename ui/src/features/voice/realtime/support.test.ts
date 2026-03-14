@@ -3,6 +3,7 @@ import {
   buildVoiceRealtimeWebSocketUrl,
   encodeVoiceRealtimeClientPcm16Frame,
   formatModelVariantLabel,
+  isUnifiedAudioChatVariant,
   mergeSampleChunks,
   parseFinalAnswer,
   parseVoiceRealtimeAssistantAudioBinaryChunk,
@@ -23,6 +24,14 @@ describe("voice realtime support", () => {
     expect(formatModelVariantLabel("Whisper-Large-v3-Turbo")).toBe(
       "Whisper Large v3 Turbo",
     );
+    expect(formatModelVariantLabel("LFM2.5-Audio-1.5B-GGUF")).toBe(
+      "LFM2.5 Audio 1.5B GGUF",
+    );
+  });
+
+  it("detects the unified lfm25 audio variant", () => {
+    expect(isUnifiedAudioChatVariant("LFM2.5-Audio-1.5B-GGUF")).toBe(true);
+    expect(isUnifiedAudioChatVariant("Qwen3-1.7B-GGUF")).toBe(false);
   });
 
   it("builds the voice realtime websocket endpoint from an api base url", () => {

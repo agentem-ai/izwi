@@ -8,6 +8,8 @@ export type RuntimeStatus =
   | "processing"
   | "assistant_speaking";
 
+export type VoiceRealtimeMode = "modular" | "unified";
+
 export type VoiceRealtimeServerEvent =
   | { type: "connected"; protocol: string; server_time_ms?: number }
   | { type: "session_ready"; protocol: string }
@@ -61,6 +63,12 @@ export type VoiceRealtimeServerEvent =
       raw_text?: string;
     }
   | {
+      type: "assistant_text_delta";
+      utterance_id: string;
+      utterance_seq: number;
+      delta: string;
+    }
+  | {
       type: "assistant_audio_start";
       utterance_id: string;
       utterance_seq: number;
@@ -91,10 +99,11 @@ export type VoiceRealtimeClientMessage =
   | { type: "session_start"; system_prompt?: string }
   | {
       type: "input_stream_start";
-      mode?: "modular";
+      mode?: VoiceRealtimeMode;
       asr_model_id?: string;
       text_model_id?: string;
       tts_model_id?: string;
+      s2s_model_id?: string;
       speaker?: string;
       asr_language?: string;
       max_output_tokens?: number;
@@ -155,6 +164,7 @@ export interface VoicePageProps {
 export const VOICE_AGENT_SYSTEM_PROMPT =
   "You are a helpful voice assistant. Reply with concise spoken-friendly language. Avoid markdown. Do not output <think> tags or internal reasoning. Return only the final spoken answer. Keep responses brief unless asked for details.";
 export const VOICE_PIPELINE_LABEL = "Modular Voice Stack";
+export const UNIFIED_VOICE_PIPELINE_LABEL = "Unified LFM2.5 Audio";
 
 export const MODULAR_STACK_VARIANTS = {
   asr: "Parakeet-TDT-0.6B-v3",
@@ -199,6 +209,10 @@ export function isAsrVariant(variant: string): boolean {
   );
 }
 
+export function isUnifiedAudioChatVariant(variant: string): boolean {
+  return variant.trim() === "LFM2.5-Audio-1.5B-GGUF";
+}
+
 export function formatModelVariantLabel(variant: string): string {
   const normalized = variant
     .replace(/-4bit\b/g, "-4-bit")
@@ -232,6 +246,10 @@ export function formatModelVariantLabel(variant: string): string {
     return normalized
       .replace("Gemma-3-1b-it", "Gemma 3 1B Instruct")
       .replace("Gemma-3-4b-it", "Gemma 3 4B Instruct");
+  }
+
+  if (normalized === "LFM2.5-Audio-1.5B-GGUF") {
+    return "LFM2.5 Audio 1.5B GGUF";
   }
 
   if (isKokoroVariant(normalized)) {

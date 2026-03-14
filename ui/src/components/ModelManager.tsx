@@ -414,6 +414,19 @@ const MODEL_DETAILS: Record<
     ],
     size: "~8 GB",
   },
+  "LFM2.5-Audio-1.5B-GGUF": {
+    shortName: "LFM2.5 Audio 1.5B",
+    fullName: "LFM2.5 Audio 1.5B (GGUF Q4_0 bundle)",
+    description:
+      "Unified native speech-to-speech model from Liquid AI for voice conversations",
+    features: [
+      "Speech-to-speech",
+      "Native GGUF",
+      "Interleaved text + audio",
+      "Q4_0 bundle",
+    ],
+    size: "~1.14 GB",
+  },
 };
 
 export function ModelManager({
