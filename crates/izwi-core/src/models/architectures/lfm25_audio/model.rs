@@ -7,7 +7,9 @@ use tracing::info;
 use crate::backends::{BackendKind, DeviceProfile};
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
+use crate::models::shared::chat::{ChatMessage, ChatRole};
 
+use super::audio_output::Lfm25AudioHead;
 use super::backbone::QuantizedLfm2Backbone;
 use super::bundle::{Lfm25AudioBundle, Lfm25AudioBundleInfo};
 use super::conformer::Lfm25AudioEncoder;
@@ -16,6 +18,7 @@ use super::config::{
     parse_main_backbone_config, Lfm25AudioDecoderConfig, Lfm25AudioEncoderConfig,
     Lfm2BackboneConfig,
 };
+use super::detokenizer::Lfm25AudioDetokenizer;
 use super::preprocessor::Lfm25AudioPreprocessor;
 use super::tokenizer::Lfm25TextTokenizer;
 
@@ -28,6 +31,16 @@ pub struct Lfm25AudioTextOutput {
     pub tokens_generated: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct Lfm25AudioGenerationOutput {
+    pub text: String,
+    pub prompt_tokens: usize,
+    pub tokens_generated: usize,
+    pub audio_frames_generated: usize,
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+}
+
 pub struct Lfm25AudioModel {
     device: DeviceProfile,
     bundle_info: Lfm25AudioBundleInfo,
@@ -38,8 +51,9 @@ pub struct Lfm25AudioModel {
     decoder_config: Lfm25AudioDecoderConfig,
     preprocessor: Lfm25AudioPreprocessor,
     encoder: Lfm25AudioEncoder,
+    audio_head: Lfm25AudioHead,
+    detokenizer: Lfm25AudioDetokenizer,
     main_backbone: Mutex<QuantizedLfm2Backbone>,
-    detokenizer_backbone: Mutex<QuantizedLfm2Backbone>,
 }
 
 impl Lfm25AudioModel {
@@ -63,12 +77,20 @@ impl Lfm25AudioModel {
 
         let main_backbone =
             QuantizedLfm2Backbone::load(&bundle.main, main_config.clone(), &device.device)?;
-        let detokenizer_backbone = QuantizedLfm2Backbone::load(
-            &bundle.tokenizer,
-            detokenizer_config.clone(),
+        let encoder =
+            Lfm25AudioEncoder::load(&bundle.mmproj, encoder_config.clone(), &device.device)?;
+        let audio_head = Lfm25AudioHead::load(
+            &bundle.vocoder,
+            &decoder_config,
+            main_config.embedding_length,
             &device.device,
         )?;
-        let encoder = Lfm25AudioEncoder::load(&bundle.mmproj, encoder_config.clone(), &device.device)?;
+        let detokenizer = Lfm25AudioDetokenizer::load(
+            &bundle.tokenizer,
+            detokenizer_config.clone(),
+            &decoder_config,
+            &device.device,
+        )?;
 
         info!(
             "Loaded LFM2.5 Audio GGUF bundle on {:?} from {}",
@@ -86,8 +108,9 @@ impl Lfm25AudioModel {
             decoder_config,
             preprocessor,
             encoder,
+            audio_head,
+            detokenizer,
             main_backbone: Mutex::new(main_backbone),
-            detokenizer_backbone: Mutex::new(detokenizer_backbone),
         })
     }
 
@@ -238,22 +261,132 @@ impl Lfm25AudioModel {
         })
     }
 
+    pub fn generate_sequential(
+        &self,
+        messages: &[ChatMessage],
+        max_new_tokens: usize,
+    ) -> Result<Lfm25AudioGenerationOutput> {
+        let mut no_op = |_delta: &str| {};
+        self.generate_sequential_with_callback(messages, max_new_tokens, &mut no_op)
+    }
+
+    pub fn generate_sequential_with_callback(
+        &self,
+        messages: &[ChatMessage],
+        max_new_tokens: usize,
+        on_text_delta: &mut dyn FnMut(&str),
+    ) -> Result<Lfm25AudioGenerationOutput> {
+        let prompt_ids = self.build_chat_prompt(messages)?;
+        let vocab_limit = self.tokenizer.vocab_size();
+        let specials = self.tokenizer.specials().clone();
+        let codebooks = self.decoder_config.codebooks;
+
+        let (text, prompt_tokens, tokens_generated, audio_codes) =
+            self.with_main_backbone(|main_backbone| {
+                main_backbone.reset_state();
+
+                let prompt_embeds =
+                    embed_token_ids(main_backbone, &self.device.device, &prompt_ids)?;
+                let prompt_tokens = prompt_embeds.dim(1)?;
+                let prompt_hidden = main_backbone.forward_embeds(&prompt_embeds, 0)?;
+                let mut last_hidden = last_hidden_state(&prompt_hidden)?;
+                let mut logits = main_backbone.project_last_hidden(&prompt_hidden)?;
+                let mut position = prompt_tokens;
+                let mut visible_text_ids = Vec::new();
+                let mut visible_text = String::new();
+                let mut audio_codes = vec![Vec::new(); codebooks];
+                let mut tokens_generated = 0usize;
+                let mut in_audio = false;
+                let max_new_tokens = max_new_tokens.max(1);
+
+                while tokens_generated < max_new_tokens {
+                    if !in_audio {
+                        let next = argmax(&logits, vocab_limit)?;
+                        tokens_generated += 1;
+
+                        if next == specials.im_end
+                            || next == specials.eos
+                            || specials.eos_alt == Some(next)
+                        {
+                            break;
+                        }
+
+                        if next == specials.audio_start {
+                            in_audio = true;
+                        } else if next != specials.text_end {
+                            visible_text_ids.push(next);
+                            let decoded = self.tokenizer.decode_text(&visible_text_ids)?;
+                            let delta = text_delta(&visible_text, &decoded);
+                            if !delta.is_empty() {
+                                for ch in delta.chars() {
+                                    let mut buf = [0u8; 4];
+                                    on_text_delta(ch.encode_utf8(&mut buf));
+                                }
+                            }
+                            visible_text = decoded;
+                        }
+
+                        let next_embed =
+                            embed_token_ids(main_backbone, &self.device.device, &[next])?;
+                        let step_hidden = main_backbone.forward_embeds(&next_embed, position)?;
+                        position += 1;
+                        last_hidden = last_hidden_state(&step_hidden)?;
+                        logits = main_backbone.project_last_hidden(&step_hidden)?;
+
+                        if has_token_repetition_loop(&visible_text_ids) {
+                            break;
+                        }
+                    } else {
+                        let frame = self.audio_head.sample_audio_frame(&last_hidden)?;
+                        tokens_generated += 1;
+                        let is_end = frame
+                            .first()
+                            .copied()
+                            == Some(self.audio_head.audio_end_token_id());
+                        if !is_end {
+                            for (codebook_idx, token) in frame.iter().copied().enumerate() {
+                                audio_codes[codebook_idx].push(token);
+                            }
+                        }
+
+                        let audio_embed =
+                            self.audio_head.embed_audio_frame(&frame, &self.device.device)?;
+                        let step_hidden = main_backbone.forward_embeds(&audio_embed, position)?;
+                        position += 1;
+                        last_hidden = last_hidden_state(&step_hidden)?;
+
+                        if is_end {
+                            in_audio = false;
+                            logits = main_backbone.project_last_hidden(&step_hidden)?;
+                        }
+                    }
+                }
+
+                Ok((
+                    visible_text.trim().to_string(),
+                    prompt_tokens,
+                    tokens_generated,
+                    audio_codes,
+                ))
+            })?;
+
+        let samples = self.detokenizer.decode(&audio_codes, &self.device.device)?;
+        Ok(Lfm25AudioGenerationOutput {
+            text,
+            prompt_tokens,
+            tokens_generated,
+            audio_frames_generated: audio_codes.first().map(Vec::len).unwrap_or(0),
+            samples,
+            sample_rate: self.decoder_config.output_sample_rate,
+        })
+    }
+
     pub fn with_main_backbone<T>(
         &self,
         f: impl FnOnce(&mut QuantizedLfm2Backbone) -> Result<T>,
     ) -> Result<T> {
         let mut guard = self.main_backbone.lock().map_err(|_| {
             Error::InferenceError("LFM2.5 Audio backbone mutex poisoned".to_string())
-        })?;
-        f(&mut guard)
-    }
-
-    pub fn with_detokenizer_backbone<T>(
-        &self,
-        f: impl FnOnce(&mut QuantizedLfm2Backbone) -> Result<T>,
-    ) -> Result<T> {
-        let mut guard = self.detokenizer_backbone.lock().map_err(|_| {
-            Error::InferenceError("LFM2.5 Audio detokenizer mutex poisoned".to_string())
         })?;
         f(&mut guard)
     }
@@ -280,6 +413,67 @@ impl Lfm25AudioModel {
 
         Ok((prefix, suffix))
     }
+
+    fn build_chat_prompt(&self, messages: &[ChatMessage]) -> Result<Vec<u32>> {
+        if messages.is_empty() {
+            return Err(Error::InvalidInput(
+                "Chat request must include at least one message".to_string(),
+            ));
+        }
+
+        let mut prompt_messages = messages.to_vec();
+        if !matches!(
+            prompt_messages.first().map(|message| &message.role),
+            Some(ChatRole::System)
+        ) {
+            prompt_messages.insert(
+                0,
+                ChatMessage {
+                    role: ChatRole::System,
+                    content: "You are a helpful assistant.".to_string(),
+                },
+            );
+        }
+
+        let specials = self.tokenizer.specials();
+        let last_assistant_index = prompt_messages
+            .iter()
+            .rposition(|message| matches!(message.role, ChatRole::Assistant));
+
+        let mut ids = Vec::new();
+        if let Some(bos) = specials.bos {
+            ids.push(bos);
+        }
+
+        for (idx, message) in prompt_messages.iter().enumerate() {
+            let content = if matches!(message.role, ChatRole::Assistant) {
+                if Some(idx) == last_assistant_index {
+                    message.content.trim().to_string()
+                } else {
+                    strip_past_assistant_thinking(message.content.trim())
+                }
+            } else {
+                message.content.trim().to_string()
+            };
+            if content.is_empty() {
+                continue;
+            }
+
+            ids.push(specials.im_start);
+            ids.extend(
+                self.tokenizer
+                    .encode_text(&format!("{}\n", message.role.as_prompt_role()))?,
+            );
+            ids.extend(self.tokenizer.encode_text(&content)?);
+            ids.push(specials.im_end);
+            ids.extend(self.tokenizer.encode_text("\n")?);
+        }
+
+        ids.push(specials.im_start);
+        ids.extend(self.tokenizer.encode_text("assistant\n")?);
+
+        Ok(ids)
+    }
 }
 
 fn embed_token_ids(
@@ -289,6 +483,13 @@ fn embed_token_ids(
 ) -> Result<Tensor> {
     let ids = Tensor::from_vec(token_ids.to_vec(), (1, token_ids.len()), device)?;
     backbone.embed_tokens(&ids)
+}
+
+fn last_hidden_state(hidden_states: &Tensor) -> Result<Tensor> {
+    let seq_len = hidden_states.dim(1)?;
+    hidden_states
+        .i((0, seq_len.saturating_sub(1)))
+        .map_err(Error::from)
 }
 
 fn argmax(logits: &Tensor, vocab_limit: usize) -> Result<u32> {
@@ -336,6 +537,14 @@ fn text_delta(previous: &str, current: &str) -> String {
         .take_while(|(left, right)| left == right)
         .count();
     current.chars().skip(common).collect()
+}
+
+fn strip_past_assistant_thinking(input: &str) -> String {
+    if let Some((_reasoning, tail)) = input.rsplit_once("</think>") {
+        tail.trim().to_string()
+    } else {
+        input.trim().to_string()
+    }
 }
 
 fn has_suffix_repeat(ids: &[u32], span: usize, repeats: usize) -> bool {

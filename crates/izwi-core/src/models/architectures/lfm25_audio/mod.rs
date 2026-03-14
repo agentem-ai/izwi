@@ -2,8 +2,10 @@
 
 mod backbone;
 mod bundle;
+mod audio_output;
 mod conformer;
 mod config;
+mod detokenizer;
 mod model;
 mod preprocessor;
 mod tokenizer;
