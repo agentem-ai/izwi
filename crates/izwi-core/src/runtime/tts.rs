@@ -14,10 +14,16 @@ use crate::runtime::types::{AudioChunk, GenerationConfig, GenerationRequest, Gen
 const LFM25_AUDIO_DEFAULT_MAX_NEW_TOKENS: usize = 1024;
 
 fn lfm25_audio_prompt_messages(text: &str) -> Vec<ChatMessage> {
-    vec![ChatMessage {
-        role: ChatRole::User,
-        content: text.trim().to_string(),
-    }]
+    vec![
+        ChatMessage {
+            role: ChatRole::System,
+            content: "Perform TTS.".to_string(),
+        },
+        ChatMessage {
+            role: ChatRole::User,
+            content: text.trim().to_string(),
+        },
+    ]
 }
 
 impl RuntimeService {

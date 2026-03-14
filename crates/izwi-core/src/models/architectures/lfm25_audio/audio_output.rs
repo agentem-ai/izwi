@@ -5,8 +5,9 @@ use candle_nn::{Embedding, Module};
 use candle_transformers::models::with_tracing::QMatMul;
 use candle_transformers::quantized_nn::RmsNorm;
 
+use candle_transformers::utils::repeat_kv as candle_repeat_kv;
+
 use crate::error::{Error, Result};
-use crate::models::architectures::qwen3::core::repeat_kv;
 use crate::models::shared::weights::gguf::GgufLoader;
 
 use super::config::Lfm25AudioDecoderConfig;
@@ -249,19 +250,25 @@ impl DepthAttention {
                 q_proj: QLinear::load(
                     loader,
                     device,
-                    &[format!("audio_head.depthformer.blocks.{idx}.attn.q_proj.weight")],
+                    &[format!(
+                        "audio_head.depthformer.blocks.{idx}.attn.q_proj.weight"
+                    )],
                     &[],
                 )?,
                 k_proj: QLinear::load(
                     loader,
                     device,
-                    &[format!("audio_head.depthformer.blocks.{idx}.attn.k_proj.weight")],
+                    &[format!(
+                        "audio_head.depthformer.blocks.{idx}.attn.k_proj.weight"
+                    )],
                     &[],
                 )?,
                 v_proj: QLinear::load(
                     loader,
                     device,
-                    &[format!("audio_head.depthformer.blocks.{idx}.attn.v_proj.weight")],
+                    &[format!(
+                        "audio_head.depthformer.blocks.{idx}.attn.v_proj.weight"
+                    )],
                     &[],
                 )?,
             }
@@ -336,54 +343,49 @@ impl DepthAttention {
             ),
         };
 
-        let q = self
-            .q_norm
-            .forward(&q_hidden)?
-            .reshape((
-                batch,
-                seq_len,
-                DEPTHFORMER_HEADS,
-                head_dim,
-            ))?
+        // reshape [b, s, hidden] -> [b, s, heads, head_dim] then transpose to [b, heads, s, head_dim]
+        let q = q_hidden
+            .reshape((batch, seq_len, DEPTHFORMER_HEADS, head_dim))?
+            .transpose(1, 2)?
             .contiguous()?;
-        let k = self
-            .k_norm
-            .forward(&k_hidden)?
-            .reshape((
-                batch,
-                seq_len,
-                DEPTHFORMER_KV_HEADS,
-                head_dim,
-            ))?
+        let k = k_hidden
+            .reshape((batch, seq_len, DEPTHFORMER_KV_HEADS, head_dim))?
+            .transpose(1, 2)?
             .contiguous()?;
         let v = v_hidden
-            .reshape((
-                batch,
-                seq_len,
-                DEPTHFORMER_KV_HEADS,
-                head_dim,
-            ))?
+            .reshape((batch, seq_len, DEPTHFORMER_KV_HEADS, head_dim))?
+            .transpose(1, 2)?
             .contiguous()?;
+
+        // norm on last dim (head_dim), then RoPE — all in [b, h, s, d] layout
+        let q = self.q_norm.forward(&q)?;
+        let k = self.k_norm.forward(&k)?;
 
         let index_pos = cache
             .as_ref()
-            .map(|(keys, _values)| keys.dim(1).unwrap_or(0))
+            .map(|(keys, _values)| keys.dim(2).unwrap_or(0))
             .unwrap_or(0);
         let q = apply_rotary_emb(&q, &self.cos, &self.sin, index_pos)?;
         let k = apply_rotary_emb(&k, &self.cos, &self.sin, index_pos)?;
 
+        // KV cache in [b, h, s, d] layout — cat on dim 2 (seq)
         let (all_k, all_v): (Tensor, Tensor) = if let Some((old_k, old_v)) = cache.as_ref() {
-            (Tensor::cat(&[old_k, &k], 1)?, Tensor::cat(&[old_v, &v], 1)?)
+            (Tensor::cat(&[old_k, &k], 2)?, Tensor::cat(&[old_v, &v], 2)?)
         } else {
             (k, v)
         };
         *cache = Some((all_k.clone(), all_v.clone()));
 
-        let key = repeat_kv(&all_k, DEPTHFORMER_HEADS, DEPTHFORMER_KV_HEADS)?;
-        let value = repeat_kv(&all_v, DEPTHFORMER_HEADS, DEPTHFORMER_KV_HEADS)?;
-        let q = q.transpose(1, 2)?.contiguous()?;
-        let key = key.transpose(1, 2)?.contiguous()?;
-        let value = value.transpose(1, 2)?.contiguous()?;
+        // GQA repeat_kv directly on [b, h, s, d] layout
+        let (key, value) = if DEPTHFORMER_HEADS != DEPTHFORMER_KV_HEADS {
+            let repeats = DEPTHFORMER_HEADS / DEPTHFORMER_KV_HEADS;
+            (
+                candle_repeat_kv(all_k, repeats)?,
+                candle_repeat_kv(all_v, repeats)?,
+            )
+        } else {
+            (all_k, all_v)
+        };
         let scores = (q.matmul(&key.transpose(2, 3)?.contiguous()?)?
             / ((hidden_size / DEPTHFORMER_HEADS) as f64).sqrt())?;
         let scores = causal_mask(scores, index_pos)?;
