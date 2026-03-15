@@ -349,7 +349,7 @@ export function DiarizationSpeakerManager({
                 Merge into
               </Label>
               <Select value={mergeTargetSpeaker} onValueChange={setMergeTargetSpeaker}>
-                <SelectTrigger className="h-9 border-[var(--border-muted)] bg-[var(--bg-surface-1)] text-sm">
+                <SelectTrigger className="h-9 text-sm">
                   <SelectValue placeholder="Select a target speaker" />
                 </SelectTrigger>
                 <SelectContent>

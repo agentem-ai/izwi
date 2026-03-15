@@ -19,7 +19,6 @@ import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import type { VoicePickerItem } from "@/components/VoicePicker";
 import {
-  VOICE_ROUTE_BODY_COPY_CLASS,
   VOICE_ROUTE_META_COPY_CLASS,
   VOICE_ROUTE_SECTION_LABEL_CLASS,
   VOICE_ROUTE_TITLE_ACCENT_CLASS,
@@ -80,6 +79,16 @@ function itemMatchesSearch(item: VoicePickerItem, query: string): boolean {
   return [item.name, item.categoryLabel, item.description, ...(item.meta ?? [])]
     .filter((value): value is string => Boolean(value))
     .some((value) => value.toLowerCase().includes(normalizedQuery));
+}
+
+function itemSummary(item: VoicePickerItem): string | null {
+  return (
+    item.meta?.[0] ??
+    item.description ??
+    item.previewMessage ??
+    item.categoryLabel ??
+    null
+  );
 }
 
 export function VoiceSelect({
@@ -245,8 +254,8 @@ export function VoiceSelect({
         }}
         disabled={!canOpen}
         className={cn(
-          "flex w-full items-center justify-between gap-3 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3.5 text-left shadow-none transition-[border-color,box-shadow,background-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 focus-visible:border-ring/50",
-          compact ? "h-11 py-0" : "py-2.5",
+          "flex w-full items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3.5 text-left shadow-[var(--shadow-soft)] transition-[border-color,box-shadow,background-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 focus-visible:border-ring/50",
+          compact ? "h-10 py-0" : "py-2.5",
           canOpen
             ? "hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-1)]"
             : "cursor-not-allowed bg-[var(--bg-surface-1)]/60 text-[var(--text-muted)]",
@@ -266,7 +275,7 @@ export function VoiceSelect({
             <span className={cn(VOICE_ROUTE_TITLE_ACCENT_CLASS, "truncate text-sm")}>
               {selectedItem?.name ?? (canOpen ? "Select a voice" : "No voices available")}
             </span>
-            <span className="rounded-md bg-[var(--bg-surface-2)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+            <span className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">
               {MODE_COPY[activeMode].triggerLabel}
             </span>
           </div>
@@ -291,11 +300,11 @@ export function VoiceSelect({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 8, scale: 0.98 }}
             transition={{ duration: 0.15, ease: "easeOut" }}
-            className="absolute inset-x-0 top-[calc(100%+8px)] z-50 overflow-hidden rounded-2xl border border-[var(--border-strong)] bg-[var(--bg-surface-0)] shadow-[0_16px_48px_-18px_rgba(0,0,0,0.35)]"
+            className="absolute inset-x-0 top-[calc(100%+8px)] z-50 overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border-muted)] bg-[var(--bg-surface-0)] shadow-[var(--shadow-overlay)]"
           >
             <div className="space-y-3 p-2.5">
               {availableModes.length > 1 ? (
-                <div className="grid grid-cols-2 gap-1 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-1">
+                <div className="grid grid-cols-2 gap-1 rounded-[var(--radius-md)] border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-1">
                   {availableModes.map((mode) => {
                     const Icon = mode === "saved" ? Waves : Sparkles;
                     return (
@@ -304,7 +313,7 @@ export function VoiceSelect({
                         type="button"
                         onClick={() => onVoiceModeChange(mode)}
                         className={cn(
-                          "inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition-colors",
+                          "inline-flex items-center justify-center gap-2 rounded-[var(--radius-sm)] px-3 py-1.5 text-sm font-semibold transition-colors",
                           activeMode === mode
                             ? "bg-[var(--bg-surface-0)] text-[var(--text-primary)] shadow-sm"
                             : "text-[var(--text-muted)] hover:bg-[var(--bg-surface-0)] hover:text-[var(--text-primary)]",
@@ -328,7 +337,7 @@ export function VoiceSelect({
                   </div>
                 </div>
                 {canOpen ? (
-                  <span className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-1 text-[10px] font-medium text-[var(--text-muted)]">
+                  <span className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
                     {activeItems.length} voices
                   </span>
                 ) : null}
@@ -351,16 +360,16 @@ export function VoiceSelect({
             </div>
 
             <div className="max-h-[340px] overflow-y-auto px-2.5 pb-2.5">
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 {filteredItems.length === 0
                   ? renderEmptyState()
                   : filteredItems.map((item) => (
                       <div
                         key={item.id}
                         className={cn(
-                          "flex items-start gap-3 rounded-xl border px-3 py-2.5 transition-colors",
+                          "flex items-center gap-3 rounded-[var(--radius-md)] border px-3 py-2 transition-colors",
                           item.selected
-                            ? "border-primary/30 bg-primary/5"
+                            ? "border-[var(--border-muted)] bg-[var(--bg-surface-1)]"
                             : "border-transparent bg-[var(--bg-surface-0)] hover:border-[var(--border-muted)] hover:bg-[var(--bg-surface-1)]",
                         )}
                       >
@@ -370,9 +379,9 @@ export function VoiceSelect({
                             item.onSelect?.();
                             setIsOpen(false);
                           }}
-                          className="flex min-w-0 flex-1 items-start gap-3 rounded-lg text-left"
+                          className="flex min-w-0 flex-1 items-center gap-3 rounded-[var(--radius-sm)] text-left"
                         >
-                          <div className="speaker-avatar mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-medium">
+                          <div className="speaker-avatar flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-medium">
                             {itemInitial(item, activeMode === "saved" ? "S" : "B")}
                           </div>
                           <div className="min-w-0 flex-1">
@@ -381,29 +390,28 @@ export function VoiceSelect({
                                 {item.name}
                               </span>
                               {item.selected ? (
-                                <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
+                                <Check className="h-3.5 w-3.5 shrink-0 text-[var(--text-primary)]" />
                               ) : null}
                             </div>
-                            <div className={cn(VOICE_ROUTE_META_COPY_CLASS, "mt-0.5 truncate")}>
-                              {item.categoryLabel}
+                            <div className="mt-0.5 flex items-center gap-2 text-xs text-[var(--text-muted)]">
+                              <span className="truncate">{item.categoryLabel}</span>
+                              {itemSummary(item) &&
+                              itemSummary(item) !== item.categoryLabel ? (
+                                <>
+                                  <span className="text-[var(--text-subtle)]">•</span>
+                                  <span className="truncate">
+                                    {itemSummary(item)}
+                                  </span>
+                                </>
+                              ) : null}
                             </div>
 
-                            {item.description ? (
-                              <p className={cn(VOICE_ROUTE_BODY_COPY_CLASS, "mt-1 line-clamp-2 text-xs")}>
-                                {item.description}
-                              </p>
-                            ) : item.previewMessage ? (
-                              <p className={cn(VOICE_ROUTE_META_COPY_CLASS, "mt-1 line-clamp-2 leading-relaxed")}>
-                                {item.previewMessage}
-                              </p>
-                            ) : null}
-
-                            {item.meta && item.meta.length > 0 ? (
-                              <div className="mt-2 flex flex-wrap gap-1.5">
-                                {item.meta.map((meta) => (
+                            {item.meta && item.meta.length > 1 ? (
+                              <div className="mt-1.5 flex flex-wrap gap-1">
+                                {item.meta.slice(1, 3).map((meta) => (
                                   <span
                                     key={`${item.id}-${meta}`}
-                                    className="rounded-md bg-[var(--bg-surface-2)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)]"
+                                    className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)]"
                                   >
                                     {meta}
                                   </span>
@@ -420,9 +428,9 @@ export function VoiceSelect({
                               togglePreview(event, item.previewUrl, item.id)
                             }
                             className={cn(
-                              "mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border bg-[var(--bg-surface-0)] transition-colors",
+                              "flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-[var(--bg-surface-0)] transition-colors",
                               playingId === item.id
-                                ? "border-primary text-primary shadow-sm"
+                                ? "border-[var(--border-strong)] text-[var(--text-primary)] shadow-sm"
                                 : "border-[var(--border-muted)] text-[var(--text-muted)] hover:bg-[var(--bg-surface-1)]",
                             )}
                             aria-label={

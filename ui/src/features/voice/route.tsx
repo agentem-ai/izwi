@@ -1866,7 +1866,7 @@ export function VoicePage({
           onValueChange={setSelectedSpeaker}
           disabled={assistantSpeakers.length === 0}
         >
-          <SelectTrigger className="border-[var(--border-muted)] bg-[var(--bg-surface-2)]">
+          <SelectTrigger>
             <SelectValue placeholder="Select assistant voice" />
           </SelectTrigger>
           <SelectContent>
