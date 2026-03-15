@@ -122,9 +122,6 @@ export function AppRoutes() {
     onDelete: deleteModel,
     onRefresh: refreshModels,
   };
-  const activeModelOperationsCount = models.filter(
-    (model) => model.status === "downloading" || model.status === "loading",
-  ).length;
   const selectedModelLabel =
     models.find((model) => model.variant === selectedModel)?.variant ??
     selectedModel;
@@ -135,7 +132,6 @@ export function AppRoutes() {
         element={
           <AppLayout
             readyModelsCount={readyModelsCount}
-            activeModelOperationsCount={activeModelOperationsCount}
             selectedModelLabel={selectedModelLabel}
             resolvedTheme={resolvedTheme}
             themePreference={themePreference}
