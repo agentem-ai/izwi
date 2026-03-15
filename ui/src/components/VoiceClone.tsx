@@ -939,7 +939,7 @@ export function VoiceClone({
                     onValueChange={setSelectedSavedVoiceId}
                     disabled={savedVoicesLoading || !savedVoices.length}
                   >
-                    <SelectTrigger className="w-full bg-[var(--bg-surface-1)] border-[var(--border-muted)]">
+                    <SelectTrigger className="w-full">
                       <SelectValue
                         placeholder={
                           savedVoicesLoading

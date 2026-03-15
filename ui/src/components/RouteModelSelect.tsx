@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -20,6 +20,7 @@ interface RouteModelSelectProps {
   placeholder?: string;
   className?: string;
   disabled?: boolean;
+  menuPlacement?: "top" | "bottom";
 }
 
 function getStatusTone(
@@ -49,6 +50,7 @@ export function RouteModelSelect({
   placeholder = "Select model",
   className,
   disabled = false,
+  menuPlacement = "bottom",
 }: RouteModelSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -85,9 +87,8 @@ export function RouteModelSelect({
         }}
         disabled={disabled || options.length === 0}
         className={cn(
-          "h-11 w-full justify-between rounded-xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3.5 font-normal shadow-none transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-1)]",
-          selectedOption?.isReady &&
-            "border-primary/20 bg-primary/5 hover:border-primary/30 hover:bg-primary/10",
+          "h-10 w-full justify-between rounded-[var(--radius-md)] border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3.5 font-normal text-[var(--text-primary)] shadow-[var(--shadow-soft)] transition-[border-color,background-color,box-shadow] hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-1)]",
+          isOpen && "border-ring/50 ring-2 ring-ring/35",
         )}
       >
         <span className="min-w-0 flex-1 truncate text-left text-sm font-medium text-[var(--text-primary)]">
@@ -108,7 +109,10 @@ export function RouteModelSelect({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 6, scale: 0.98 }}
             transition={{ duration: 0.16 }}
-            className="absolute inset-x-0 top-full z-[90] mt-2 rounded-xl border border-[var(--border-strong)] bg-[var(--bg-surface-0)] p-1.5 shadow-xl"
+            className={cn(
+              "absolute inset-x-0 z-[90] rounded-[var(--radius-lg)] border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-1.5 shadow-[var(--shadow-overlay)]",
+              menuPlacement === "top" ? "bottom-[calc(100%+8px)]" : "top-[calc(100%+8px)]",
+            )}
           >
             <div className="max-h-72 overflow-y-auto">
               {options.map((option) => (
@@ -120,7 +124,7 @@ export function RouteModelSelect({
                     setIsOpen(false);
                   }}
                   className={cn(
-                    "relative flex w-full items-center rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--bg-surface-1)]",
+                    "relative flex w-full items-center gap-3 rounded-[var(--radius-sm)] px-2.5 py-2 text-left transition-colors hover:bg-[var(--bg-surface-1)]",
                     selectedOption?.value === option.value &&
                       "bg-[var(--bg-surface-1)]",
                   )}
@@ -129,13 +133,16 @@ export function RouteModelSelect({
                     <div className="truncate text-sm font-medium text-[var(--text-primary)]">
                       {option.label}
                     </div>
-                    <StatusBadge
-                      tone={getStatusTone(option)}
-                      className="mt-1"
-                    >
-                      {option.statusLabel}
-                    </StatusBadge>
                   </div>
+                  <StatusBadge
+                    tone={getStatusTone(option)}
+                    className="shrink-0 px-2 py-0.5 text-[9px] tracking-[0.14em]"
+                  >
+                    {option.statusLabel}
+                  </StatusBadge>
+                  {selectedOption?.value === option.value ? (
+                    <Check className="h-3.5 w-3.5 shrink-0 text-[var(--text-primary)]" />
+                  ) : null}
                 </button>
               ))}
             </div>
