@@ -405,7 +405,7 @@ export function FirstRunOnboarding() {
       >
         <div className="flex flex-col">
           <div className="relative overflow-hidden border-b border-border/70 bg-[var(--bg-surface-1)] px-6 py-4 sm:px-8 sm:py-5">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.12),_transparent_55%)]" />
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.06),_transparent_60%)]" />
             <div className="relative z-10 flex flex-col gap-3">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="flex flex-wrap items-center gap-3">
