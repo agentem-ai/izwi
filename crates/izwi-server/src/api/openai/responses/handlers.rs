@@ -314,14 +314,6 @@ async fn create_streaming_response(
                     })
                     .to_string()
                 }
-                ChatStreamEvent::TimedOut => {
-                    serde_json::json!({
-                        "type": "response.failed",
-                        "response_id": response_id_for_task,
-                        "error": {"message": "Response request timed out"}
-                    })
-                    .to_string()
-                }
                 ChatStreamEvent::ShuttingDown => {
                     serde_json::json!({
                         "type": "response.failed",
