@@ -353,9 +353,8 @@ export function VoiceDesignWorkspace({
   };
 
   return (
-    <div className="grid gap-4 items-stretch xl:h-[calc(100dvh-11.75rem)]">
-      <WorkspaceFrame className="flex min-h-0 flex-col">
-        <div className="flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-thin">
+    <div className="grid gap-4 items-start">
+      <WorkspaceFrame className="flex flex-col">
           <WorkspaceHeader
             icon={Wand2}
             title="Voice Design"
@@ -753,7 +752,6 @@ export function VoiceDesignWorkspace({
               ) : null}
             </div>
           </div>
-        </div>
       </WorkspaceFrame>
 
       <SpeechHistoryPanel

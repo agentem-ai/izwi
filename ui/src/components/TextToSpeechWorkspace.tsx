@@ -952,8 +952,8 @@ export function TextToSpeechWorkspace({
 
   if (workspaceMode === "projects") {
     return (
-      <div className="grid gap-5 items-stretch xl:h-[calc(100dvh-11.75rem)]">
-        <WorkspaceFrame className="flex min-h-0 flex-col">
+      <div className="grid gap-5 items-start">
+        <WorkspaceFrame className="flex flex-col">
           <WorkspaceHeader
             icon={Waves}
             title="TTS Projects"
@@ -961,7 +961,7 @@ export function TextToSpeechWorkspace({
             actions={renderWorkflowTabs()}
           />
 
-          <div className="mt-5 flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-thin">
+          <div className="mt-5">
             <TextToSpeechProjectsWorkspace
               selectedModel={selectedModel}
               selectedModelInfo={selectedModelInfo}
@@ -980,8 +980,8 @@ export function TextToSpeechWorkspace({
   }
 
   return (
-    <div className="grid gap-5 items-stretch xl:h-[calc(100dvh-11.75rem)]">
-      <WorkspaceFrame className="flex min-h-0 flex-col">
+    <div className="grid gap-5 items-start">
+      <WorkspaceFrame className="flex flex-col">
         <WorkspaceHeader
           icon={Mic2}
           title="Text to Speech"
@@ -989,7 +989,7 @@ export function TextToSpeechWorkspace({
           actions={renderWorkflowTabs()}
         />
 
-        <div className="mt-5 flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-thin">
+        <div className="mt-5">
           <WorkspacePanel className="mb-5 p-4">
             <div className="grid gap-x-5 gap-y-4 xl:grid-cols-[minmax(0,360px)_minmax(0,360px)_minmax(0,1fr)_auto]">
               <div className="min-w-0">
