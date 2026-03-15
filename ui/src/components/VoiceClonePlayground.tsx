@@ -298,9 +298,8 @@ export function VoiceClonePlayground({
   );
 
   return (
-    <div className="grid gap-6 items-stretch xl:h-[calc(100dvh-11.75rem)]">
-      <WorkspaceFrame className="flex min-h-0 flex-col p-6">
-        <div className="flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-thin">
+    <div className="grid gap-6 items-start">
+      <WorkspaceFrame className="p-6">
           <WorkspaceHeader
             icon={Users}
             title="Voice Cloning"
@@ -640,7 +639,6 @@ export function VoiceClonePlayground({
               </motion.div>
             )}
           </AnimatePresence>
-        </div>
       </WorkspaceFrame>
 
       <SpeechHistoryPanel

@@ -432,7 +432,7 @@ export function VoicesPage({
         description="Manage saved cloned and designed voices, browse built-in voice libraries, and hand them off into text-to-speech."
       />
 
-      <WorkspaceFrame className="flex min-h-0 flex-col xl:h-[calc(100dvh-11.75rem)]">
+      <WorkspaceFrame className="flex flex-col">
         <WorkspaceHeader
           icon={Library}
           title="Voice browser"
@@ -473,7 +473,7 @@ export function VoicesPage({
           }
         />
 
-        <div className="mt-5 grid min-h-0 flex-1 gap-5 xl:grid-cols-[290px_minmax(0,1fr)]">
+        <div className="mt-5 grid gap-5 xl:grid-cols-[290px_minmax(0,1fr)]">
           <aside className="space-y-4">
             <WorkspacePanel className="p-5">
               <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>Search</div>
@@ -630,7 +630,7 @@ export function VoicesPage({
             )}
           </aside>
 
-          <WorkspacePanel className="flex min-h-0 flex-col p-5 sm:p-6">
+          <WorkspacePanel className="p-5 sm:p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
@@ -667,28 +667,26 @@ export function VoicesPage({
               </div>
             ) : null}
 
-            <div className="mt-5 min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-thin">
-              <VoicePicker
-                items={activeItems}
-                emptyTitle={
-                  activeTab === "saved"
-                    ? savedVoicesLoading
-                      ? "Loading saved voices"
-                      : "No saved voices yet"
-                    : "No built-in voices available"
-                }
-                emptyDescription={
-                  activeTab === "saved"
-                    ? savedVoicesLoading
-                      ? "Fetching your reusable cloned and designed voices."
-                      : "Save a result from voice cloning or voice design to build a reusable voice library."
-                    : routeModels.length === 0
-                      ? "Load a CustomVoice or Kokoro model to browse built-in voices."
-                      : "Try a different built-in voice model or search term."
-                }
-                className="grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"
-              />
-            </div>
+            <VoicePicker
+              items={activeItems}
+              emptyTitle={
+                activeTab === "saved"
+                  ? savedVoicesLoading
+                    ? "Loading saved voices"
+                    : "No saved voices yet"
+                  : "No built-in voices available"
+              }
+              emptyDescription={
+                activeTab === "saved"
+                  ? savedVoicesLoading
+                    ? "Fetching your reusable cloned and designed voices."
+                    : "Save a result from voice cloning or voice design to build a reusable voice library."
+                  : routeModels.length === 0
+                    ? "Load a CustomVoice or Kokoro model to browse built-in voices."
+                    : "Try a different built-in voice model or search term."
+              }
+              className="mt-5 grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"
+            />
           </WorkspacePanel>
         </div>
       </WorkspaceFrame>
