@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronDown } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDownToLine,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  CircleDashed,
+  Loader2,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -43,6 +51,46 @@ function getStatusTone(
   return "neutral";
 }
 
+function getStatusPresentation(option: RouteModelSelectOption): {
+  icon: typeof CheckCircle2;
+  className: string;
+} {
+  const normalizedStatus = option.statusLabel.toLowerCase();
+
+  if (option.isReady) {
+    return {
+      icon: CheckCircle2,
+      className: "text-[var(--status-positive-text)]",
+    };
+  }
+  if (normalizedStatus.includes("downloaded")) {
+    return {
+      icon: ArrowDownToLine,
+      className: "text-[var(--status-info-text)]",
+    };
+  }
+  if (
+    normalizedStatus.includes("downloading") ||
+    normalizedStatus.includes("loading")
+  ) {
+    return {
+      icon: Loader2,
+      className: "text-[var(--status-warning-text)]",
+    };
+  }
+  if (normalizedStatus.includes("error")) {
+    return {
+      icon: AlertTriangle,
+      className: "text-[var(--danger-text)]",
+    };
+  }
+
+  return {
+    icon: CircleDashed,
+    className: "text-[var(--text-muted)]",
+  };
+}
+
 export function RouteModelSelect({
   value,
   options,
@@ -59,6 +107,9 @@ export function RouteModelSelect({
     () => options.find((option) => option.value === value) ?? null,
     [options, value],
   );
+  const selectedStatus = selectedOption
+    ? getStatusPresentation(selectedOption)
+    : null;
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -91,9 +142,24 @@ export function RouteModelSelect({
           isOpen && "border-ring/50 ring-2 ring-ring/35",
         )}
       >
-        <span className="min-w-0 flex-1 truncate text-left text-sm font-medium text-[var(--text-primary)]">
-          {selectedOption?.label || placeholder}
-        </span>
+        <div className="min-w-0 flex flex-1 items-center gap-2">
+          {selectedStatus ? (
+            <selectedStatus.icon
+              className={cn(
+                "h-3.5 w-3.5 shrink-0",
+                selectedStatus.className,
+                selectedOption?.statusLabel.toLowerCase().includes("loading") &&
+                  "animate-spin",
+              )}
+            />
+          ) : null}
+          <span
+            className="min-w-0 flex-1 truncate text-left text-sm font-medium text-[var(--text-primary)]"
+            title={selectedOption?.label || placeholder}
+          >
+            {selectedOption?.label || placeholder}
+          </span>
+        </div>
         <ChevronDown
           className={cn(
             "h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] transition-transform",
@@ -110,7 +176,7 @@ export function RouteModelSelect({
             exit={{ opacity: 0, y: 6, scale: 0.98 }}
             transition={{ duration: 0.16 }}
             className={cn(
-              "absolute inset-x-0 z-[90] rounded-[var(--radius-lg)] border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-1.5 shadow-[var(--shadow-overlay)]",
+              "absolute left-0 z-[90] min-w-full max-w-[min(36rem,calc(100vw-2rem))] rounded-[var(--radius-lg)] border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-1.5 shadow-[var(--shadow-overlay)]",
               menuPlacement === "top" ? "bottom-[calc(100%+8px)]" : "top-[calc(100%+8px)]",
             )}
           >
@@ -124,24 +190,48 @@ export function RouteModelSelect({
                     setIsOpen(false);
                   }}
                   className={cn(
-                    "relative flex w-full items-center gap-3 rounded-[var(--radius-sm)] px-2.5 py-2 text-left transition-colors hover:bg-[var(--bg-surface-1)]",
+                    "relative flex min-w-[18rem] items-start gap-3 rounded-[var(--radius-sm)] px-3 py-2.5 text-left transition-colors hover:bg-[var(--bg-surface-1)]",
                     selectedOption?.value === option.value &&
                       "bg-[var(--bg-surface-1)]",
                   )}
+                  title={option.label}
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-[var(--text-primary)]">
-                      {option.label}
+                  <div className="flex min-w-0 flex-1 items-start gap-2.5">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)]">
+                      {(() => {
+                        const status = getStatusPresentation(option);
+                        const StatusIcon = status.icon;
+                        return (
+                          <StatusIcon
+                            className={cn(
+                              "h-4 w-4",
+                              status.className,
+                              option.statusLabel.toLowerCase().includes("loading") &&
+                                "animate-spin",
+                            )}
+                          />
+                        );
+                      })()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium leading-5 text-[var(--text-primary)] break-words">
+                        {option.label}
+                      </div>
+                      <div className="mt-1 text-xs text-[var(--text-muted)]">
+                        {option.statusLabel}
+                      </div>
                     </div>
                   </div>
-                  <StatusBadge
-                    tone={getStatusTone(option)}
-                    className="shrink-0 px-2 py-0.5 text-[9px] tracking-[0.14em]"
-                  >
-                    {option.statusLabel}
-                  </StatusBadge>
                   {selectedOption?.value === option.value ? (
-                    <Check className="h-3.5 w-3.5 shrink-0 text-[var(--text-primary)]" />
+                    <div className="flex shrink-0 items-center gap-2 pl-2">
+                      <StatusBadge
+                        tone={getStatusTone(option)}
+                        className="px-2 py-0.5 text-[9px] tracking-[0.14em]"
+                      >
+                        Current
+                      </StatusBadge>
+                      <Check className="h-3.5 w-3.5 shrink-0 text-[var(--text-primary)]" />
+                    </div>
                   ) : null}
                 </button>
               ))}
