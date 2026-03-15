@@ -387,14 +387,6 @@ async fn create_streaming_thread_message(
                     .unwrap_or_default(),
                     true,
                 ),
-                ChatStreamEvent::TimedOut => (
-                    serde_json::to_string(&ThreadStreamErrorEvent {
-                        event: "error",
-                        error: "Chat request timed out".to_string(),
-                    })
-                    .unwrap_or_default(),
-                    true,
-                ),
                 ChatStreamEvent::ShuttingDown => (
                     serde_json::to_string(&ThreadStreamErrorEvent {
                         event: "error",

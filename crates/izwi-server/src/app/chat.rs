@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{future::Future, sync::Arc};
 
 use tokio::sync::mpsc;
 
@@ -55,7 +55,6 @@ pub enum ChatStreamEvent {
     Delta(String),
     Completed(ChatGeneration),
     Failed(String),
-    TimedOut,
     ShuttingDown,
 }
 
@@ -114,7 +113,6 @@ pub fn spawn_chat_stream(
     state: AppState,
     request: ChatExecutionRequest,
 ) -> mpsc::UnboundedReceiver<ChatStreamEvent> {
-    let timeout = Duration::from_secs(state.request_timeout_secs);
     let semaphore = state.request_semaphore.clone();
     let runtime = state.runtime.clone();
     let params = request.resolved_generation_params();
@@ -123,6 +121,33 @@ pub fn spawn_chat_stream(
     let messages = request.messages;
     let correlation_id = request.correlation_id;
 
+    // Streamed chat should be allowed to finish once generation starts; a hard
+    // wall-clock timeout cuts off active responses mid-stream.
+    spawn_chat_stream_with_task(semaphore, move |event_tx| async move {
+        runtime
+            .chat_generate_streaming_with_generation_params_and_chat_config_and_correlation(
+                variant,
+                messages,
+                params,
+                chat_config,
+                correlation_id.as_deref(),
+                move |delta| {
+                    let _ = event_tx.send(ChatStreamEvent::Delta(delta));
+                },
+            )
+            .await
+            .map_err(|err| err.to_string())
+    })
+}
+
+fn spawn_chat_stream_with_task<G, Fut>(
+    semaphore: Arc<tokio::sync::Semaphore>,
+    generation_task: G,
+) -> mpsc::UnboundedReceiver<ChatStreamEvent>
+where
+    G: FnOnce(mpsc::UnboundedSender<ChatStreamEvent>) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<ChatGeneration, String>> + Send + 'static,
+{
     let (event_tx, event_rx) = mpsc::unbounded_channel();
 
     tokio::spawn(async move {
@@ -136,32 +161,12 @@ pub fn spawn_chat_stream(
 
         let _ = event_tx.send(ChatStreamEvent::Started);
 
-        let delta_tx = event_tx.clone();
-        let generation = tokio::time::timeout(timeout, async {
-            runtime
-                .chat_generate_streaming_with_generation_params_and_chat_config_and_correlation(
-                    variant,
-                    messages,
-                    params,
-                    chat_config,
-                    correlation_id.as_deref(),
-                    move |delta| {
-                        let _ = delta_tx.send(ChatStreamEvent::Delta(delta));
-                    },
-                )
-                .await
-        })
-        .await;
-
-        match generation {
-            Ok(Ok(generation)) => {
+        match generation_task(event_tx.clone()).await {
+            Ok(generation) => {
                 let _ = event_tx.send(ChatStreamEvent::Completed(generation));
             }
-            Ok(Err(err)) => {
-                let _ = event_tx.send(ChatStreamEvent::Failed(err.to_string()));
-            }
-            Err(_) => {
-                let _ = event_tx.send(ChatStreamEvent::TimedOut);
+            Err(err) => {
+                let _ = event_tx.send(ChatStreamEvent::Failed(err));
             }
         }
     });
@@ -173,6 +178,8 @@ pub fn spawn_chat_stream(
 mod tests {
     use super::*;
     use izwi_core::ChatRole;
+    use std::time::Duration;
+    use tokio::sync::Semaphore;
 
     #[test]
     fn explicit_overrides_win_over_default_generation_params() {
@@ -209,6 +216,45 @@ mod tests {
             ModelVariant::Qwen314BGguf,
         ] {
             assert_eq!(max_new_tokens(variant, None, None), 4096);
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_chat_allows_long_running_generations_to_complete() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let mut event_rx = spawn_chat_stream_with_task(semaphore, |event_tx| async move {
+            let _ = event_tx.send(ChatStreamEvent::Delta("Hello".to_string()));
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            let _ = event_tx.send(ChatStreamEvent::Delta(" world".to_string()));
+            Ok(ChatGeneration {
+                text: "Hello world".to_string(),
+                prompt_tokens: 12,
+                tokens_generated: 2,
+                generation_time_ms: 25.0,
+            })
+        });
+
+        match event_rx.recv().await {
+            Some(ChatStreamEvent::Started) => {}
+            other => panic!("expected stream start event, got {other:?}"),
+        }
+
+        match event_rx.recv().await {
+            Some(ChatStreamEvent::Delta(delta)) => assert_eq!(delta, "Hello"),
+            other => panic!("expected first delta event, got {other:?}"),
+        }
+
+        match event_rx.recv().await {
+            Some(ChatStreamEvent::Delta(delta)) => assert_eq!(delta, " world"),
+            other => panic!("expected second delta event, got {other:?}"),
+        }
+
+        match event_rx.recv().await {
+            Some(ChatStreamEvent::Completed(generation)) => {
+                assert_eq!(generation.text, "Hello world");
+                assert_eq!(generation.tokens_generated, 2);
+            }
+            other => panic!("expected completed event, got {other:?}"),
         }
     }
 }

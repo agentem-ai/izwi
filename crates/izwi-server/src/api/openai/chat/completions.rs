@@ -695,16 +695,6 @@ async fn complete_stream(
                     .to_string(),
                     true,
                 ),
-                ChatStreamEvent::TimedOut => (
-                    serde_json::json!({
-                        "error": {
-                            "message": "Chat request timed out",
-                            "type": "timeout_error"
-                        }
-                    })
-                    .to_string(),
-                    true,
-                ),
                 ChatStreamEvent::ShuttingDown => (
                     serde_json::json!({
                         "error": {
