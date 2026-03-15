@@ -4,8 +4,11 @@ use crate::style::Theme;
 use crate::BenchCommands;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use futures::{stream, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
+use std::sync::Arc;
+use std::time::Instant;
 
 #[derive(Debug, Clone, Deserialize)]
 struct RuntimeTelemetrySnapshot {
@@ -24,13 +27,70 @@ struct RuntimeTelemetrySnapshot {
     decode_ms_avg: f64,
     decode_ms_p50: f64,
     decode_ms_p95: f64,
+    ttft_ms_avg: f64,
+    ttft_ms_p50: f64,
+    ttft_ms_p95: f64,
     end_to_end_ms_avg: f64,
     end_to_end_ms_p50: f64,
     end_to_end_ms_p95: f64,
 }
 
+#[derive(Debug, Clone)]
+struct ChatBenchSample {
+    ttft_ms: f64,
+    total_ms: f64,
+    prompt_tokens: usize,
+    completion_tokens: usize,
+    generation_time_ms: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatStreamChunk {
+    choices: Vec<ChatStreamChoice>,
+    usage: Option<ChatStreamUsage>,
+    izwi_generation_time_ms: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatStreamChoice {
+    delta: ChatStreamDelta,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ChatStreamDelta {
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatStreamUsage {
+    prompt_tokens: usize,
+    completion_tokens: usize,
+}
+
 pub async fn execute(command: BenchCommands, server: &str, theme: &Theme) -> Result<()> {
     match command {
+        BenchCommands::Chat {
+            model,
+            iterations,
+            prompt,
+            system,
+            max_tokens,
+            concurrent,
+            warmup,
+        } => {
+            bench_chat(
+                server,
+                &model,
+                iterations,
+                &prompt,
+                system.as_deref(),
+                max_tokens,
+                concurrent,
+                warmup,
+                theme,
+            )
+            .await
+        }
         BenchCommands::Tts {
             model,
             iterations,
@@ -48,6 +108,145 @@ pub async fn execute(command: BenchCommands, server: &str, theme: &Theme) -> Res
             concurrent,
         } => bench_throughput(server, duration, concurrent, theme).await,
     }
+}
+
+async fn bench_chat(
+    server: &str,
+    model: &str,
+    iterations: u32,
+    prompt: &str,
+    system: Option<&str>,
+    max_tokens: usize,
+    concurrent: u32,
+    warmup: bool,
+    theme: &Theme,
+) -> Result<()> {
+    if iterations == 0 {
+        return Err(CliError::InvalidInput(
+            "Iterations must be greater than 0".to_string(),
+        ));
+    }
+    if concurrent == 0 {
+        return Err(CliError::InvalidInput(
+            "Concurrent requests must be greater than 0".to_string(),
+        ));
+    }
+    if max_tokens == 0 {
+        return Err(CliError::InvalidInput(
+            "Max tokens must be greater than 0".to_string(),
+        ));
+    }
+
+    theme.step(1, 3, &format!("Benchmarking chat with '{}'", model));
+    let metrics_before = fetch_runtime_metrics(server).await;
+
+    if warmup {
+        theme.info("Running warmup iteration...");
+        let _ = run_chat_request(server, model, prompt, system, max_tokens).await?;
+    }
+
+    let pb = ProgressBar::new(iterations as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} chat requests",
+            )
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let progress = Arc::new(pb);
+    let prompt = Arc::new(prompt.to_string());
+    let system = system.map(|value| Arc::new(value.to_string()));
+    let samples: Vec<ChatBenchSample> = stream::iter(0..iterations)
+        .map(|_| {
+            let progress = Arc::clone(&progress);
+            let prompt = Arc::clone(&prompt);
+            let system = system.clone();
+            let model = model.to_string();
+            let server = server.to_string();
+            async move {
+                let result = run_chat_request(
+                    &server,
+                    &model,
+                    prompt.as_str(),
+                    system.as_deref().map(|s| s.as_str()),
+                    max_tokens,
+                )
+                .await;
+                progress.inc(1);
+                result
+            }
+        })
+        .buffer_unordered(concurrent as usize)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+
+    progress.finish_with_message("Benchmark complete");
+
+    let ttft_ms: Vec<f64> = samples.iter().map(|sample| sample.ttft_ms).collect();
+    let total_ms: Vec<f64> = samples.iter().map(|sample| sample.total_ms).collect();
+    let server_generation_ms: Vec<f64> = samples
+        .iter()
+        .filter_map(|sample| sample.generation_time_ms)
+        .collect();
+    let completion_tps: Vec<f64> = samples
+        .iter()
+        .map(|sample| {
+            if sample.total_ms > 0.0 {
+                sample.completion_tokens as f64 * 1000.0 / sample.total_ms
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let prompt_tokens_avg = samples
+        .iter()
+        .map(|sample| sample.prompt_tokens as f64)
+        .sum::<f64>()
+        / samples.len() as f64;
+    let completion_tokens_avg = samples
+        .iter()
+        .map(|sample| sample.completion_tokens as f64)
+        .sum::<f64>()
+        / samples.len() as f64;
+
+    println!("\n{}", console::style("Results:").bold().underlined());
+    println!("  Iterations: {}", iterations);
+    println!("  Concurrent: {}", concurrent);
+    println!("  Prompt tokens (avg):      {:.2}", prompt_tokens_avg);
+    println!("  Completion tokens (avg):  {:.2}", completion_tokens_avg);
+    println!(
+        "  TTFT (avg/p50/p95):       {:.2} / {:.2} / {:.2} ms",
+        ttft_ms.iter().sum::<f64>() / ttft_ms.len() as f64,
+        percentile(&ttft_ms, 0.5),
+        percentile(&ttft_ms, 0.95)
+    );
+    println!(
+        "  End-to-end (avg/p50/p95): {:.2} / {:.2} / {:.2} ms",
+        total_ms.iter().sum::<f64>() / total_ms.len() as f64,
+        percentile(&total_ms, 0.5),
+        percentile(&total_ms, 0.95)
+    );
+    println!(
+        "  Completion TPS (avg/p50/p95): {:.2} / {:.2} / {:.2} tok/s",
+        completion_tps.iter().sum::<f64>() / completion_tps.len() as f64,
+        percentile(&completion_tps, 0.5),
+        percentile(&completion_tps, 0.95)
+    );
+    if !server_generation_ms.is_empty() {
+        println!(
+            "  Server generation (avg/p50/p95): {:.2} / {:.2} / {:.2} ms",
+            server_generation_ms.iter().sum::<f64>() / server_generation_ms.len() as f64,
+            percentile(&server_generation_ms, 0.5),
+            percentile(&server_generation_ms, 0.95)
+        );
+    }
+    print_runtime_delta(metrics_before, fetch_runtime_metrics(server).await);
+
+    Ok(())
 }
 
 async fn bench_tts(
@@ -301,6 +500,151 @@ async fn run_asr_request(server: &str, model: &str, file: &std::path::PathBuf) -
     Ok(())
 }
 
+async fn run_chat_request(
+    server: &str,
+    model: &str,
+    prompt: &str,
+    system: Option<&str>,
+    max_tokens: usize,
+) -> Result<ChatBenchSample> {
+    let client = http::client(Some(std::time::Duration::from_secs(300)))?;
+    let mut messages = Vec::new();
+    if let Some(system) = system {
+        messages.push(serde_json::json!({
+            "role": "system",
+            "content": system,
+        }));
+    }
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": prompt,
+    }));
+
+    let request_body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "stream": true,
+        "stream_options": {
+            "include_usage": true,
+        },
+        "max_completion_tokens": max_tokens,
+    });
+
+    let response = client
+        .post(format!("{}/v1/chat/completions", server))
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| CliError::ConnectionError(e.to_string()))?;
+
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        return Err(CliError::ApiError {
+            status,
+            message: text,
+        });
+    }
+
+    let started = Instant::now();
+    let mut first_delta_at: Option<f64> = None;
+    let mut prompt_tokens = 0usize;
+    let mut completion_tokens = 0usize;
+    let mut generation_time_ms = None;
+    let mut buffer = String::new();
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| CliError::ConnectionError(e.to_string()))?;
+        let chunk_text = std::str::from_utf8(&chunk)
+            .map_err(|e| CliError::Other(format!("Invalid UTF-8 in chat stream: {e}")))?;
+        buffer.push_str(chunk_text);
+
+        while let Some(boundary) = buffer.find("\n\n") {
+            let event = buffer[..boundary].to_string();
+            buffer.drain(..boundary + 2);
+            if let Some(sample) = handle_chat_stream_event(
+                &event,
+                started,
+                &mut first_delta_at,
+                &mut prompt_tokens,
+                &mut completion_tokens,
+                &mut generation_time_ms,
+            )? {
+                return Ok(sample);
+            }
+        }
+    }
+
+    Err(CliError::Other(
+        "Chat benchmark stream ended before a terminal event".to_string(),
+    ))
+}
+
+fn handle_chat_stream_event(
+    event: &str,
+    started: Instant,
+    first_delta_at: &mut Option<f64>,
+    prompt_tokens: &mut usize,
+    completion_tokens: &mut usize,
+    generation_time_ms: &mut Option<f64>,
+) -> Result<Option<ChatBenchSample>> {
+    for line in event.lines() {
+        let Some(payload) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let payload = payload.trim();
+        if payload.is_empty() {
+            continue;
+        }
+        if payload == "[DONE]" {
+            continue;
+        }
+
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) {
+            if let Some(message) = value
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(|message| message.as_str())
+            {
+                return Err(CliError::Other(format!(
+                    "Chat benchmark request failed: {message}"
+                )));
+            }
+        }
+
+        let chunk: ChatStreamChunk = serde_json::from_str(payload)
+            .map_err(|e| CliError::Other(format!("Invalid chat stream payload: {e}")))?;
+
+        let has_delta = chunk.choices.iter().any(|choice| {
+            choice
+                .delta
+                .content
+                .as_ref()
+                .is_some_and(|content| !content.is_empty())
+        });
+        if has_delta && first_delta_at.is_none() {
+            *first_delta_at = Some(started.elapsed().as_secs_f64() * 1000.0);
+        }
+
+        if let Some(usage) = chunk.usage {
+            *prompt_tokens = usage.prompt_tokens;
+            *completion_tokens = usage.completion_tokens;
+            *generation_time_ms = chunk.izwi_generation_time_ms;
+            let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+            return Ok(Some(ChatBenchSample {
+                ttft_ms: first_delta_at.unwrap_or(total_ms),
+                total_ms,
+                prompt_tokens: *prompt_tokens,
+                completion_tokens: *completion_tokens,
+                generation_time_ms: *generation_time_ms,
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
 fn percentile(data: &[f64], p: f64) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -367,7 +711,55 @@ fn print_runtime_delta(
         after.decode_ms_avg, after.decode_ms_p50, after.decode_ms_p95
     );
     println!(
+        "  TTFT (avg/p50/p95):       {:.2} / {:.2} / {:.2} ms",
+        after.ttft_ms_avg, after.ttft_ms_p50, after.ttft_ms_p95
+    );
+    println!(
         "  End-to-end (avg/p50/p95): {:.2} / {:.2} / {:.2} ms",
         after.end_to_end_ms_avg, after.end_to_end_ms_p50, after.end_to_end_ms_p95
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_stream_event_records_first_delta_and_terminal_usage() {
+        let started = Instant::now();
+        let mut first_delta_at = None;
+        let mut prompt_tokens = 0usize;
+        let mut completion_tokens = 0usize;
+        let mut generation_time_ms = None;
+
+        let delta = r#"data: {"choices":[{"delta":{"content":"hello"}}],"usage":null,"izwi_generation_time_ms":null}"#;
+        let terminal = r#"data: {"choices":[{"delta":{"content":null}}],"usage":{"prompt_tokens":42,"completion_tokens":7},"izwi_generation_time_ms":123.0}"#;
+
+        let sample = handle_chat_stream_event(
+            delta,
+            started,
+            &mut first_delta_at,
+            &mut prompt_tokens,
+            &mut completion_tokens,
+            &mut generation_time_ms,
+        )
+        .expect("delta should parse");
+        assert!(sample.is_none());
+        assert!(first_delta_at.is_some());
+
+        let sample = handle_chat_stream_event(
+            terminal,
+            started,
+            &mut first_delta_at,
+            &mut prompt_tokens,
+            &mut completion_tokens,
+            &mut generation_time_ms,
+        )
+        .expect("terminal should parse")
+        .expect("terminal event should finish sample");
+        assert_eq!(sample.prompt_tokens, 42);
+        assert_eq!(sample.completion_tokens, 7);
+        assert_eq!(sample.generation_time_ms, Some(123.0));
+        assert!(sample.ttft_ms >= 0.0);
+    }
 }

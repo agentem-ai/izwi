@@ -16,9 +16,38 @@ izwi bench <COMMAND>
 
 | Command | Description |
 |---------|-------------|
+| `chat` | Benchmark chat inference |
 | `tts` | Benchmark TTS inference |
 | `asr` | Benchmark ASR inference |
 | `throughput` | Benchmark system throughput |
+
+---
+
+## izwi bench chat
+
+Benchmark chat performance, including time-to-first-token.
+
+```bash
+izwi bench chat [OPTIONS]
+```
+
+### Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-m, --model <MODEL>` | Model to benchmark | `Qwen3.5-4B` |
+| `-i, --iterations <N>` | Number of requests | `10` |
+| `-p, --prompt <TEXT>` | User prompt to send | Default benchmark prompt |
+| `--system <TEXT>` | Optional system prompt | — |
+| `--max-tokens <N>` | Maximum completion tokens | `128` |
+| `-c, --concurrent <N>` | Concurrent requests | `1` |
+| `--warmup` | Enable warmup iteration | — |
+
+### Example
+
+```bash
+izwi bench chat --model Qwen3.5-4B --iterations 8 --max-tokens 160 --warmup
+```
 
 ---
 
@@ -99,6 +128,7 @@ izwi bench throughput --duration 60 --concurrent 4
 
 Benchmarks report:
 
+- **TTFT** — Time to first streamed token for chat benchmarks
 - **Latency** — Average, min, max, p50, p95, p99
 - **Throughput** — Requests per second
 - **Tokens/second** — For TTS benchmarks

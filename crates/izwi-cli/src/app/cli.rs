@@ -434,6 +434,41 @@ pub enum ModelCommands {
 
 #[derive(Subcommand)]
 pub enum BenchCommands {
+    /// Benchmark chat inference
+    Chat {
+        /// Model to benchmark
+        #[arg(short, long, default_value = "Qwen3.5-4B")]
+        model: String,
+
+        /// Number of iterations
+        #[arg(short, long, default_value = "10")]
+        iterations: u32,
+
+        /// User prompt to send
+        #[arg(
+            short,
+            long,
+            default_value = "Summarize the main trade-offs between chunked prefill and continuous batching in two concise paragraphs."
+        )]
+        prompt: String,
+
+        /// Optional system prompt
+        #[arg(long)]
+        system: Option<String>,
+
+        /// Maximum completion tokens
+        #[arg(long, default_value = "128")]
+        max_tokens: usize,
+
+        /// Maximum concurrent requests
+        #[arg(short, long, default_value = "1")]
+        concurrent: u32,
+
+        /// Enable warmup iteration
+        #[arg(long)]
+        warmup: bool,
+    },
+
     /// Benchmark TTS inference
     Tts {
         /// Model to benchmark
