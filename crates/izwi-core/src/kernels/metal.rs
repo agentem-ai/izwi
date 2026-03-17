@@ -26,6 +26,10 @@ pub fn try_fused_gated_delta_recurrent(
     beta: &Tensor,
     state: &Tensor,
 ) -> Option<(Tensor, Tensor)> {
+    if !use_fused_kernels() {
+        return None;
+    }
+
     // Only supported for F32 on Metal devices currently
     if query.dtype() != DType::F32 {
         return None;
@@ -127,6 +131,10 @@ fn fused_gated_delta_sequential(
 ///
 /// Computes: x / sqrt(sum(x^2) + eps)
 pub fn try_fused_l2_norm(input: &Tensor, eps: f64) -> Option<Tensor> {
+    if !use_fused_kernels() {
+        return None;
+    }
+
     // Only supported for F32 on Metal devices
     if input.dtype() != DType::F32 {
         return None;
@@ -149,6 +157,10 @@ pub fn try_fused_l2_norm(input: &Tensor, eps: f64) -> Option<Tensor> {
 /// This fuses the SiLU activation with the elementwise multiplication,
 /// reducing memory bandwidth by 50% for this operation.
 pub fn try_fused_silu_mul(gate: &Tensor, up: &Tensor) -> Option<Tensor> {
+    if !use_fused_kernels() {
+        return None;
+    }
+
     // For now, use standard operations
     // A truly fused version would require custom kernels
     let silu_gate = candle_nn::ops::silu(gate).ok()?;
@@ -159,6 +171,10 @@ pub fn try_fused_silu_mul(gate: &Tensor, up: &Tensor) -> Option<Tensor> {
 ///
 /// Computes: x / sqrt(mean(x^2) + eps) * weight
 pub fn try_fused_rms_norm(input: &Tensor, weight: &Tensor, eps: f64) -> Option<Tensor> {
+    if !use_fused_kernels() {
+        return None;
+    }
+
     let sq_mean = input
         .sqr()
         .ok()?
@@ -180,6 +196,10 @@ pub fn try_fused_gated_rms_norm(
     weight: &Tensor,
     eps: f64,
 ) -> Option<Tensor> {
+    if !use_fused_kernels() {
+        return None;
+    }
+
     let rms_out = try_fused_rms_norm(hidden, weight, eps)?;
     let silu_gate = candle_nn::ops::silu(gate).ok()?;
     rms_out.broadcast_mul(&silu_gate).ok()
@@ -218,6 +238,10 @@ pub fn try_tiled_deltanet_recurrence(
     _initial_state: &Tensor,
     _tile_size: usize,
 ) -> Option<(Tensor, Tensor)> {
+    if !use_fused_kernels() {
+        return None;
+    }
+
     // Only supported for F32 on Metal devices
     if queries.dtype() != DType::F32 {
         return None;
@@ -273,6 +297,10 @@ pub fn try_tiled_deltanet_recurrence(
 /// # Returns
 /// Softmax-normalized attention weights
 pub fn try_simd_softmax(scores: &Tensor, scale: f32) -> Option<Tensor> {
+    if !use_fused_kernels() {
+        return None;
+    }
+
     // Only supported for F32 on Metal devices
     if scores.dtype() != DType::F32 {
         return None;
@@ -302,6 +330,10 @@ pub fn try_simd_softmax(scores: &Tensor, scale: f32) -> Option<Tensor> {
 /// Uses Metal's simd_sum for parallel reduction across head dimensions.
 /// More efficient for small head dimensions common in 4B/9B models.
 pub fn try_simd_rms_norm(input: &Tensor, weight: &Tensor, eps: f64) -> Option<Tensor> {
+    if !use_fused_kernels() {
+        return None;
+    }
+
     // Only supported for F32 on Metal devices
     if input.dtype() != DType::F32 {
         return None;
@@ -343,6 +375,10 @@ pub fn try_fused_deltanet_blocks_3x1(
     block_configs: &[DeltaNetBlockConfig],
     _states: &mut [&mut dyn std::any::Any],
 ) -> Option<Tensor> {
+    if !use_fused_kernels() {
+        return None;
+    }
+
     // Only supported for F32 on Metal devices
     if input.dtype() != DType::F32 {
         return None;
@@ -397,6 +433,10 @@ pub struct DeltaNetBlockConfig {
 
 /// Check if 3:1 block fusion is enabled.
 pub fn use_block_fusion() -> bool {
+    if !use_fused_kernels() {
+        return false;
+    }
+
     std::env::var("IZWI_BLOCK_FUSION")
         .ok()
         .map(|v| {
@@ -410,6 +450,10 @@ pub fn use_block_fusion() -> bool {
 
 /// Check if SIMD-group optimizations should be used.
 pub fn use_simd_optimizations() -> bool {
+    if !use_fused_kernels() {
+        return false;
+    }
+
     std::env::var("IZWI_SIMD_OPTIMIZATIONS")
         .ok()
         .map(|v| {
@@ -423,15 +467,7 @@ pub fn use_simd_optimizations() -> bool {
 
 /// Check if fused kernels should be used.
 pub fn use_fused_kernels() -> bool {
-    std::env::var("IZWI_FUSED_KERNELS")
-        .ok()
-        .map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(true)
+    crate::kernels::use_fused_kernels()
 }
 
 #[cfg(test)]
