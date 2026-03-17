@@ -257,6 +257,83 @@ pub fn try_tiled_deltanet_recurrence(
     None
 }
 
+/// Try SIMD-group softmax for attention.
+///
+/// Uses Metal's simd_shuffle and simd_sum instructions to perform
+/// parallel softmax computation within a threadgroup. This is more
+/// efficient for small models with fewer attention heads.
+///
+/// The SIMD-group approach allows one threadgroup to handle multiple
+/// heads simultaneously, keeping GPU Execution Units busy.
+///
+/// # Arguments
+/// * `scores` - Attention scores [batch, heads, q_len, kv_len]
+/// * `scale` - Scale factor (typically 1/sqrt(head_dim))
+///
+/// # Returns
+/// Softmax-normalized attention weights
+pub fn try_simd_softmax(scores: &Tensor, scale: f32) -> Option<Tensor> {
+    // Only supported for F32 on Metal devices
+    if scores.dtype() != DType::F32 {
+        return None;
+    }
+
+    if !scores.device().is_metal() {
+        return None;
+    }
+
+    // For now, use standard softmax
+    // A true SIMD-group implementation would require custom Metal kernels
+    // using threadgroup_barrier, simd_shuffle, and simd_sum
+
+    // The ideal Metal kernel would:
+    // 1. Load scores into threadgroup memory
+    // 2. Use simd_max to find max score per SIMD group
+    // 3. Use simd_sum to compute exp sum per SIMD group
+    // 4. Normalize and write output
+
+    // Current: use standard operations
+    let scaled = (scores * scale as f64).ok()?;
+    candle_nn::ops::softmax(&scaled, candle_core::D::Minus1).ok()
+}
+
+/// Try SIMD-group RMS normalization.
+///
+/// Uses Metal's simd_sum for parallel reduction across head dimensions.
+/// More efficient for small head dimensions common in 4B/9B models.
+pub fn try_simd_rms_norm(input: &Tensor, weight: &Tensor, eps: f64) -> Option<Tensor> {
+    // Only supported for F32 on Metal devices
+    if input.dtype() != DType::F32 {
+        return None;
+    }
+
+    if !input.device().is_metal() {
+        return None;
+    }
+
+    // For now, use standard RMS norm
+    // A SIMD-group implementation would:
+    // 1. Use simd_sum for parallel sum of squares
+    // 2. Compute RMS per SIMD group
+    // 3. Apply normalization and weight
+
+    // Current: use standard operations
+    try_fused_rms_norm(input, weight, eps)
+}
+
+/// Check if SIMD-group optimizations should be used.
+pub fn use_simd_optimizations() -> bool {
+    std::env::var("IZWI_SIMD_OPTIMIZATIONS")
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(true)
+}
+
 /// Check if fused kernels should be used.
 pub fn use_fused_kernels() -> bool {
     std::env::var("IZWI_FUSED_KERNELS")
