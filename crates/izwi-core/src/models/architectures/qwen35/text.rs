@@ -8,7 +8,9 @@ use candle_transformers::models::with_tracing::QMatMul;
 use candle_transformers::quantized_nn::RmsNorm;
 
 use crate::error::{Error, Result};
-use crate::kernels::metal::{try_fused_gated_delta_recurrent, try_fused_l2_norm};
+use crate::kernels::metal::{
+    try_fused_gated_delta_recurrent, try_fused_gated_rms_norm, try_fused_l2_norm,
+};
 use crate::models::architectures::qwen3::core::repeat_kv;
 use crate::models::shared::attention::flash::try_fused_self_attention;
 use crate::models::shared::attention::paged::{
@@ -714,6 +716,17 @@ impl Qwen35LinearAttention {
 
 impl Qwen35GatedRmsNorm {
     fn forward(&self, hidden_states: &Tensor, gate: &Tensor) -> Result<Tensor> {
+        if hidden_states.dtype() == DType::F32 {
+            if let Some(result) = try_fused_gated_rms_norm(
+                hidden_states,
+                gate,
+                &self.weight,
+                self.eps,
+            ) {
+                return Ok(result);
+            }
+        }
+
         let normalized = candle_nn::ops::rms_norm(hidden_states, &self.weight, self.eps as f32)?;
         (&normalized * &ops::silu(gate)?).map_err(Error::from)
     }
