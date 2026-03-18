@@ -13,7 +13,7 @@ use crate::kernels::buffer_pool::{
 };
 use crate::kernels::metal::{
     try_fused_gated_delta_recurrent, try_fused_gated_rms_norm, try_fused_l2_norm,
-    try_tiled_deltanet_recurrence,
+    try_tiled_deltanet_recurrence, use_block_fusion,
 };
 use crate::models::architectures::qwen3::core::repeat_kv;
 use crate::models::shared::attention::flash::try_fused_self_attention;
@@ -232,8 +232,31 @@ impl Qwen35TextModel {
         state: &mut Qwen35TextRuntimeState,
     ) -> Result<Tensor> {
         let mut hidden = input_embedding.clone();
-        for (layer, layer_state) in self.layers.iter().zip(state.layers.iter_mut()) {
-            hidden = layer.forward(&hidden, layer_state, position_ids)?;
+        let mut layer_idx = 0usize;
+        while layer_idx < self.layers.len() {
+            if qwen35_use_block_fusion_decode(&self.device) && self.has_linear_triplet_at(layer_idx)
+            {
+                for offset in 0..3 {
+                    let idx = layer_idx + offset;
+                    let layer_state = state.layers.get_mut(idx).ok_or_else(|| {
+                        Error::InferenceError(format!(
+                            "Qwen3.5 missing runtime state for layer index {}",
+                            idx
+                        ))
+                    })?;
+                    hidden = self.layers[idx].forward(&hidden, layer_state, position_ids)?;
+                }
+                layer_idx += 3;
+            } else {
+                let layer_state = state.layers.get_mut(layer_idx).ok_or_else(|| {
+                    Error::InferenceError(format!(
+                        "Qwen3.5 missing runtime state for layer index {}",
+                        layer_idx
+                    ))
+                })?;
+                hidden = self.layers[layer_idx].forward(&hidden, layer_state, position_ids)?;
+                layer_idx += 1;
+            }
         }
         Ok(hidden)
     }
@@ -266,8 +289,33 @@ impl Qwen35TextModel {
         // Batch embedding lookup: single forward pass for all tokens.
         let input = Tensor::from_vec(token_ids.to_vec(), (1, token_ids.len()), &self.device)?;
         let mut hidden = self.token_embeddings.forward(&input)?;
-        for (layer, layer_state) in self.layers.iter().zip(state.layers.iter_mut()) {
-            hidden = layer.forward_sequence(&hidden, layer_state, position_ids)?;
+        let mut layer_idx = 0usize;
+        let can_fuse_prefill = qwen35_use_block_fusion_prefill(&self.device, token_ids.len());
+        while layer_idx < self.layers.len() {
+            if can_fuse_prefill && self.has_linear_triplet_at(layer_idx) {
+                for offset in 0..3 {
+                    let idx = layer_idx + offset;
+                    let layer_state = state.layers.get_mut(idx).ok_or_else(|| {
+                        Error::InferenceError(format!(
+                            "Qwen3.5 missing runtime state for layer index {}",
+                            idx
+                        ))
+                    })?;
+                    hidden =
+                        self.layers[idx].forward_sequence(&hidden, layer_state, position_ids)?;
+                }
+                layer_idx += 3;
+            } else {
+                let layer_state = state.layers.get_mut(layer_idx).ok_or_else(|| {
+                    Error::InferenceError(format!(
+                        "Qwen3.5 missing runtime state for layer index {}",
+                        layer_idx
+                    ))
+                })?;
+                hidden =
+                    self.layers[layer_idx].forward_sequence(&hidden, layer_state, position_ids)?;
+                layer_idx += 1;
+            }
         }
 
         if !compute_logits {
@@ -284,9 +332,22 @@ impl Qwen35TextModel {
         let logits = self.output.forward(&hidden)?;
         logits.i((0, 0)).map_err(Error::from)
     }
+
+    fn has_linear_triplet_at(&self, layer_idx: usize) -> bool {
+        if layer_idx + 2 >= self.layers.len() {
+            return false;
+        }
+        self.layers[layer_idx].is_linear()
+            && self.layers[layer_idx + 1].is_linear()
+            && self.layers[layer_idx + 2].is_linear()
+    }
 }
 
 impl Qwen35Layer {
+    fn is_linear(&self) -> bool {
+        matches!(self.mixer, Qwen35Mixer::Linear(_))
+    }
+
     fn new_state(&self) -> Qwen35LayerRuntimeState {
         match self.mixer {
             Qwen35Mixer::Linear(_) => Qwen35LayerRuntimeState::Linear {
@@ -1219,8 +1280,8 @@ fn repeat_head_states_seq(x: &Tensor, repeats: usize) -> Result<Tensor> {
         .map_err(Error::from)
 }
 
-fn qwen35_use_tiled_recurrence() -> bool {
-    std::env::var("IZWI_QWEN35_TILED_RECURRENCE")
+fn qwen35_env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
         .ok()
         .map(|value| {
             matches!(
@@ -1228,7 +1289,11 @@ fn qwen35_use_tiled_recurrence() -> bool {
                 "1" | "true" | "yes" | "on"
             )
         })
-        .unwrap_or(true)
+        .unwrap_or(default)
+}
+
+fn qwen35_use_tiled_recurrence() -> bool {
+    qwen35_env_bool("IZWI_QWEN35_TILED_RECURRENCE", true)
 }
 
 fn qwen35_tiled_recurrence_tile_size(seq_len: usize) -> usize {
@@ -1247,6 +1312,26 @@ fn qwen35_tiled_recurrence_tile_size(seq_len: usize) -> usize {
     } else {
         seq_len.max(1)
     }
+}
+
+fn qwen35_use_block_fusion_decode(device: &Device) -> bool {
+    device.is_metal()
+        && use_block_fusion()
+        && qwen35_env_bool("IZWI_QWEN35_BLOCK_FUSION_DECODE", true)
+}
+
+fn qwen35_use_block_fusion_prefill(device: &Device, seq_len: usize) -> bool {
+    if !device.is_metal() || !use_block_fusion() {
+        return false;
+    }
+    if !qwen35_env_bool("IZWI_QWEN35_BLOCK_FUSION_PREFILL", true) {
+        return false;
+    }
+    let min_tokens = std::env::var("IZWI_QWEN35_BLOCK_FUSION_PREFILL_MIN_TOKENS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(8);
+    seq_len >= min_tokens
 }
 
 fn recurrent_gated_delta_sequence(
