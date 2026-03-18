@@ -37,9 +37,14 @@ pub struct Qwen35TextRuntimeState {
     layers: Vec<Qwen35LayerRuntimeState>,
 }
 
+struct ConvRingState {
+    slots: Vec<Tensor>,
+    next_idx: usize,
+}
+
 enum Qwen35LayerRuntimeState {
     Linear {
-        conv_state: Option<Vec<Tensor>>,
+        conv_state: Option<ConvRingState>,
         recurrent_state: Option<Tensor>,
     },
     Full {
@@ -93,6 +98,7 @@ struct Qwen35LinearAttention {
     dt_bias: Tensor,
     a: Tensor,
     conv_kernel: Tensor,
+    conv_kernel_slices: Vec<Tensor>,
     norm: Qwen35GatedRmsNorm,
     out_proj: QMatMul,
     num_k_heads: usize,
@@ -380,7 +386,7 @@ impl Qwen35Layer {
             ) => {
                 if conv_state.is_none() && mixer.kernel_size > 1 {
                     // Initialize the ring buffer with zeros
-                    let mut buffer = Vec::with_capacity(mixer.kernel_size - 1);
+                    let mut slots = Vec::with_capacity(mixer.kernel_size - 1);
                     let zero = pooled_zero_tensor(
                         pool.as_ref(),
                         &[mixer.conv_dim, 1],
@@ -388,9 +394,9 @@ impl Qwen35Layer {
                         device,
                     )?;
                     for _ in 0..(mixer.kernel_size - 1) {
-                        buffer.push(zero.clone());
+                        slots.push(zero.clone());
                     }
-                    *conv_state = Some(buffer);
+                    *conv_state = Some(ConvRingState { slots, next_idx: 0 });
                 }
                 if recurrent_state.is_none() {
                     *recurrent_state = Some(pooled_zero_tensor(
@@ -737,6 +743,7 @@ impl Qwen35LinearAttention {
             conv_dim,
             cfg.ssm_conv_kernel,
         )?;
+        let conv_kernel_slices = pre_slice_conv_kernel(&conv_kernel, cfg.ssm_conv_kernel)?;
         let norm = Qwen35GatedRmsNorm {
             weight: load_vector(
                 loader,
@@ -755,6 +762,7 @@ impl Qwen35LinearAttention {
             dt_bias,
             a,
             conv_kernel,
+            conv_kernel_slices,
             norm,
             out_proj: load_qmatmul(loader, device, &format!("{prefix}.ssm_out.weight"))?,
             num_k_heads,
@@ -952,7 +960,7 @@ impl Qwen35LinearAttention {
     fn depthwise_conv_sequence(
         &self,
         mixed_qkv: &Tensor,
-        conv_state: &mut Option<Vec<Tensor>>,
+        conv_state: &mut Option<ConvRingState>,
     ) -> Result<Tensor> {
         let seq_len = mixed_qkv.dim(1)?;
         if seq_len == 1 {
@@ -971,7 +979,7 @@ impl Qwen35LinearAttention {
     fn depthwise_conv_step(
         &self,
         mixed_qkv: &Tensor,
-        conv_state: &mut Option<Vec<Tensor>>,
+        conv_state: &mut Option<ConvRingState>,
     ) -> Result<Tensor> {
         let current = mixed_qkv.i((0, 0))?;
         let current = if current.dtype() != self.conv_kernel.dtype() {
@@ -994,22 +1002,25 @@ impl Qwen35LinearAttention {
 
             // Compute convolution as sum of elementwise products
             // self.conv_kernel shape: (conv_dim, kernel_size)
-            // buffer contains kernel_size - 1 past states of shape (conv_dim, 1)
+            // ring buffer contains kernel_size - 1 past states of shape (conv_dim, 1)
 
             // Start with current * conv_kernel[:, kernel_size - 1]
-            let k_slice = self.conv_kernel.narrow(1, self.kernel_size - 1, 1)?;
-            let mut convolved = (&current * &k_slice)?;
+            let k_slice = &self.conv_kernel_slices[self.kernel_size - 1];
+            let mut convolved = (&current * k_slice)?;
 
-            // Add previous tokens * their respective kernel weights
+            // Add previous tokens * their respective kernel weights.
+            // Read history in oldest -> newest order from the circular ring.
+            let history_len = self.kernel_size - 1;
             for i in 0..(self.kernel_size - 1) {
-                let prev_token = &buffer[i];
-                let k_slice = self.conv_kernel.narrow(1, i, 1)?;
-                convolved = (&convolved + &(prev_token * &k_slice)?)?;
+                let ring_idx = (buffer.next_idx + i) % history_len;
+                let prev_token = &buffer.slots[ring_idx];
+                let k_slice = &self.conv_kernel_slices[i];
+                convolved = (&convolved + &(prev_token * k_slice)?)?;
             }
 
-            // Update the ring buffer: drop oldest, push current
-            buffer.remove(0);
-            buffer.push(current);
+            // Update the ring buffer in O(1): overwrite oldest and advance cursor.
+            buffer.slots[buffer.next_idx] = current;
+            buffer.next_idx = (buffer.next_idx + 1) % history_len;
 
             convolved.squeeze(1)?
         };
@@ -1131,6 +1142,14 @@ fn normalize_conv_kernel(
             "Unexpected Qwen3.5 conv kernel rank {rank}"
         ))),
     }
+}
+
+fn pre_slice_conv_kernel(conv_kernel: &Tensor, kernel_size: usize) -> Result<Vec<Tensor>> {
+    let mut slices = Vec::with_capacity(kernel_size);
+    for idx in 0..kernel_size {
+        slices.push(conv_kernel.narrow(1, idx, 1)?);
+    }
+    Ok(slices)
 }
 
 fn build_mrope(
