@@ -76,6 +76,18 @@ impl PooledBuffer {
     }
 }
 
+fn bool_from_env(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default)
+}
+
 /// Configuration for buffer pool sizing.
 #[derive(Debug, Clone)]
 pub struct BufferPoolConfig {
@@ -401,9 +413,57 @@ pub fn global_buffer_pool() -> Option<SharedBufferPool> {
     GLOBAL_BUFFER_POOL.get().cloned()
 }
 
+/// Get the global buffer pool if initialized for the same device.
+pub fn global_buffer_pool_for_device(device: &Device) -> Option<SharedBufferPool> {
+    let requested = format!("{device:?}");
+    let shared = global_buffer_pool()?;
+    let pool_device = {
+        let guard = shared.inner.lock().ok()?;
+        guard
+            .small
+            .first()
+            .or_else(|| guard.medium.first())
+            .or_else(|| guard.large.first())
+            .map(|buf| format!("{:?}", buf.as_tensor().device()))?
+    };
+
+    if pool_device == requested {
+        Some(shared)
+    } else {
+        None
+    }
+}
+
 /// Check if buffer pooling is enabled.
 pub fn buffer_pooling_enabled() -> bool {
     GLOBAL_BUFFER_POOL.get().is_some()
+}
+
+/// Initialize a global pool lazily when enabled via env and not already present.
+///
+/// Enabled by default and can be disabled with `IZWI_BUFFER_POOL=0`.
+/// Returns a device-compatible shared pool when available.
+pub fn maybe_init_global_buffer_pool(device: &Device) -> Option<SharedBufferPool> {
+    if let Some(pool) = global_buffer_pool_for_device(device) {
+        return Some(pool);
+    }
+
+    if !bool_from_env("IZWI_BUFFER_POOL", true) {
+        return None;
+    }
+
+    // If another device already owns the global pool, do not reuse it unsafely.
+    if buffer_pooling_enabled() {
+        return None;
+    }
+
+    let config = BufferPoolConfig::from_env();
+    if let Err(err) = init_global_buffer_pool(&config, device) {
+        // A concurrent initializer may have won the race; ignore and re-read.
+        tracing::debug!("Skipping explicit buffer-pool init: {}", err);
+    }
+
+    global_buffer_pool_for_device(device)
 }
 
 #[cfg(test)]
@@ -428,7 +488,7 @@ mod tests {
 
         // Acquire all small buffers
         let (idx1, _) = pool.acquire_small().unwrap();
-        let (idx2, _) = pool.acquire_small().unwrap();
+        let (_idx2, _) = pool.acquire_small().unwrap();
 
         // Third acquisition should fail
         assert!(pool.acquire_small().is_none());
