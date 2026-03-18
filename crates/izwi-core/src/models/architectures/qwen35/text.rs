@@ -8,6 +8,9 @@ use candle_transformers::models::with_tracing::QMatMul;
 use candle_transformers::quantized_nn::RmsNorm;
 
 use crate::error::{Error, Result};
+use crate::kernels::buffer_pool::{
+    global_buffer_pool_for_device, maybe_init_global_buffer_pool, SharedBufferPool,
+};
 use crate::kernels::metal::{
     try_fused_gated_delta_recurrent, try_fused_gated_rms_norm, try_fused_l2_norm,
 };
@@ -118,6 +121,9 @@ impl Qwen35TextModel {
                 cfg.ssm_inner_size, cfg.ssm_time_step_rank
             )));
         }
+
+        // Phase 5: initialize the shared scratch buffer pool once per process.
+        let _ = maybe_init_global_buffer_pool(device);
 
         let embedding_weights = loader
             .load_qtensor("token_embd.weight", device)?
@@ -318,6 +324,8 @@ impl Qwen35Layer {
         state: &mut Qwen35LayerRuntimeState,
         device: &Device,
     ) -> Result<()> {
+        let pool = global_buffer_pool_for_device(device);
+
         match (&self.mixer, state) {
             (
                 Qwen35Mixer::Linear(mixer),
@@ -329,15 +337,21 @@ impl Qwen35Layer {
                 if conv_state.is_none() && mixer.kernel_size > 1 {
                     // Initialize the ring buffer with zeros
                     let mut buffer = Vec::with_capacity(mixer.kernel_size - 1);
-                    let zero = Tensor::zeros((mixer.conv_dim, 1), DType::F32, device)?;
+                    let zero = pooled_zero_tensor(
+                        pool.as_ref(),
+                        &[mixer.conv_dim, 1],
+                        DType::F32,
+                        device,
+                    )?;
                     for _ in 0..(mixer.kernel_size - 1) {
                         buffer.push(zero.clone());
                     }
                     *conv_state = Some(buffer);
                 }
                 if recurrent_state.is_none() {
-                    *recurrent_state = Some(Tensor::zeros(
-                        (1, mixer.num_v_heads, mixer.head_k_dim, mixer.head_v_dim),
+                    *recurrent_state = Some(pooled_zero_tensor(
+                        pool.as_ref(),
+                        &[1, mixer.num_v_heads, mixer.head_k_dim, mixer.head_v_dim],
                         DType::F32,
                         device,
                     )?);
@@ -507,7 +521,7 @@ impl Qwen35FullAttention {
         } else {
             let key_states = materialize_pages(k_pages)?;
             let value_states = materialize_pages(v_pages)?;
-            
+
             // Expand materialized GQA states to full attention heads for math
             let key_states = repeat_kv(&key_states, self.num_heads, self.num_kv_heads)?;
             let value_states = repeat_kv(&value_states, self.num_heads, self.num_kv_heads)?;
@@ -798,12 +812,9 @@ impl Qwen35LinearAttention {
 impl Qwen35GatedRmsNorm {
     fn forward(&self, hidden_states: &Tensor, gate: &Tensor) -> Result<Tensor> {
         if hidden_states.dtype() == DType::F32 {
-            if let Some(result) = try_fused_gated_rms_norm(
-                hidden_states,
-                gate,
-                &self.weight,
-                self.eps,
-            ) {
+            if let Some(result) =
+                try_fused_gated_rms_norm(hidden_states, gate, &self.weight, self.eps)
+            {
                 return Ok(result);
             }
         }
@@ -983,6 +994,35 @@ fn build_rope_inv_freqs(rope_dim: usize, rope_theta: f64) -> Result<Vec<f32>> {
         )));
     }
     Ok(inv_freqs)
+}
+
+fn pooled_zero_tensor(
+    pool: Option<&SharedBufferPool>,
+    shape: &[usize],
+    dtype: DType,
+    device: &Device,
+) -> Result<Tensor> {
+    if let Some(pool) = pool {
+        let num_elements = shape.iter().product::<usize>();
+        if let Some((size, idx, buf)) = pool.acquire(num_elements) {
+            let maybe_tensor = buf.view(shape).ok();
+            pool.release(size, idx);
+
+            if let Some(tensor) = maybe_tensor {
+                // Guard against accidental cross-device reuse from a mismatched global pool.
+                if format!("{:?}", tensor.device()) == format!("{device:?}") {
+                    if tensor.dtype() == dtype {
+                        return Ok(tensor);
+                    }
+                    if let Ok(casted) = tensor.to_dtype(dtype) {
+                        return Ok(casted);
+                    }
+                }
+            }
+        }
+    }
+
+    Tensor::zeros(shape.to_vec(), dtype, device).map_err(Error::from)
 }
 
 fn softplus(x: &Tensor) -> Result<Tensor> {
