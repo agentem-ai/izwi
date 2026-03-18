@@ -52,8 +52,8 @@ pub fn try_fused_gated_delta_recurrent(
     fused_gated_delta_sequential(query, key, value, g, beta, state).ok()
 }
 
-/// Sequential implementation of gated delta with optimized operation ordering.
-/// This reduces intermediate allocations compared to the naive implementation.
+/// Optimized sequential implementation of gated delta using matmul for
+/// batched reductions, halving intermediate tensor allocations.
 fn fused_gated_delta_sequential(
     query: &Tensor,
     key: &Tensor,
@@ -67,18 +67,15 @@ fn fused_gated_delta_sequential(
         .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
     let scale = 1.0f64 / (dim as f64).sqrt();
 
-    // Scale query
     let scaled_query =
         (query * scale).map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
 
-    // Compute gate decay: exp(g) where g is already softplus(alpha) * a
     let g_val = g
         .exp()
         .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?
         .reshape((1, g.dim(1).unwrap_or(1), 1, 1))
         .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
 
-    // Reshape beta
     let beta = beta
         .reshape((1, beta.dim(1).unwrap_or(1), 1))
         .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
@@ -88,40 +85,41 @@ fn fused_gated_delta_sequential(
         .broadcast_mul(&g_val)
         .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
 
-    // Compute kv_mem: sum(gated_state * key.unsqueeze(3), dim=2)
-    let key_expanded = key
-        .unsqueeze(3)
-        .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
-    let kv_mem = gated_state
-        .broadcast_mul(&key_expanded)
+    // kv_mem via matmul: key (1,H,1,Dk) × state (1,H,Dk,Dv) → (1,H,1,Dv) → squeeze → (1,H,Dv)
+    let kv_mem = key
+        .unsqueeze(2)
         .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?
-        .sum(2)
+        .matmul(&gated_state)
+        .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?
+        .squeeze(2)
         .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
 
-    // Compute delta: (value - kv_mem) * beta
+    // delta = (value - kv_mem) * beta
     let delta = (value - kv_mem)
         .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?
         .broadcast_mul(&beta)
         .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
 
-    // Update state: gated_state + key.unsqueeze(3) * delta.unsqueeze(2)
-    let delta_expanded = delta
-        .unsqueeze(2)
-        .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
+    // State update via matmul outer product: key (1,H,Dk,1) × delta (1,H,1,Dv) → (1,H,Dk,Dv)
     let new_state = (&gated_state
-        + &key_expanded
-            .broadcast_mul(&delta_expanded)
+        + &key
+            .unsqueeze(3)
+            .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?
+            .matmul(
+                &delta
+                    .unsqueeze(2)
+                    .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?,
+            )
             .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?)
-        .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
+    .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
 
-    // Compute output: sum(new_state * query.unsqueeze(3), dim=2)
-    let query_expanded = scaled_query
-        .unsqueeze(3)
-        .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
-    let output = new_state
-        .broadcast_mul(&query_expanded)
+    // Output via matmul: query (1,H,1,Dk) × state (1,H,Dk,Dv) → (1,H,1,Dv) → squeeze → (1,H,Dv)
+    let output = scaled_query
+        .unsqueeze(2)
         .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?
-        .sum(2)
+        .matmul(&new_state)
+        .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?
+        .squeeze(2)
         .map_err(|e| FusedKernelError::ExecutionError(e.to_string()))?;
 
     Ok((output, new_state))

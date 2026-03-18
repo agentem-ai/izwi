@@ -1006,18 +1006,31 @@ fn recurrent_gated_delta(
         }
     }
 
-    // Fallback to original implementation
+    // Optimized implementation using matmul for batched reductions.
+    // Shapes: query/key (1, H, Dk), value (1, H, Dv), state (1, H, Dk, Dv)
+    // g (1, H), beta (1, H)
     let dim = query.dim(D::Minus1)?;
     let scale = 1.0 / (dim as f64).sqrt();
     let query = (query * scale)?;
     let g = g.exp()?.reshape((1, g.dim(1)?, 1, 1))?;
     let beta = beta.reshape((1, beta.dim(1)?, 1))?;
 
+    // Gate the state: state = state * exp(g)
     let state = state.broadcast_mul(&g)?;
-    let kv_mem = state.broadcast_mul(&key.unsqueeze(3)?)?.sum(2)?;
+
+    // kv_mem = sum(state * key[..., None], dim=2) = matmul(key[:, :, None, :], state).squeeze(2)
+    // key: (1, H, Dk) -> (1, H, 1, Dk)  matmul  state: (1, H, Dk, Dv) -> (1, H, 1, Dv) -> squeeze -> (1, H, Dv)
+    let kv_mem = key.unsqueeze(2)?.matmul(&state)?.squeeze(2)?;
+
+    // delta = (value - kv_mem) * beta
     let delta = (value - &kv_mem)?.broadcast_mul(&beta)?;
-    let state = (&state + &key.unsqueeze(3)?.broadcast_mul(&delta.unsqueeze(2)?)?)?;
-    let output = state.broadcast_mul(&query.unsqueeze(3)?)?.sum(2)?;
+
+    // state += key[:, :, :, None] * delta[:, :, None, :]  (outer product)
+    // = matmul(key.unsqueeze(3), delta.unsqueeze(2)) + state
+    let state = (&state + &key.unsqueeze(3)?.matmul(&delta.unsqueeze(2)?)?)?;
+
+    // output = sum(state * query[..., None], dim=2) = matmul(query[:, :, None, :], state).squeeze(2)
+    let output = query.unsqueeze(2)?.matmul(&state)?.squeeze(2)?;
     Ok((output, state))
 }
 
