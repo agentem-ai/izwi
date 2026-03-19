@@ -83,8 +83,10 @@ describe("TranscriptionPlayground history", () => {
       screen.getByRole("heading", { name: "Transcription Settings" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/record or upload audio to open the transcript workspace/i),
-    ).toBeInTheDocument();
+      screen.queryByRole("heading", { name: "Audio Input" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Record audio")).toBeInTheDocument();
+    expect(screen.getByText("Upload audio")).toBeInTheDocument();
   });
 
   it("shows the transcript workspace after an upload starts a session", async () => {

@@ -1251,224 +1251,205 @@ export function TranscriptionPlayground({
     >
       <div className="space-y-4">
         <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-4 sm:p-5 space-y-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">
-                <FileAudio className="w-3.5 h-3.5" />
-                Capture
-              </div>
-              <h2 className="mt-1.5 text-base font-semibold text-[var(--text-primary)]">
-                Audio Input
-              </h2>
-            </div>
-            {onOpenModelManager ? (
-              <Button
-                onClick={handleOpenModels}
-                variant="outline"
-                size="sm"
-                className="h-8 gap-1.5 text-xs bg-[var(--bg-surface-1)] border-[var(--border-muted)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface-2)] shadow-sm"
-              >
-                <Settings2 className="w-4 h-4" />
-                Models
-              </Button>
-            ) : null}
-          </div>
-
-          <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4 space-y-3">
-            <div>
-              <div className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">
-                Active Model
-              </div>
-              {modelOptions.length > 0 ? (
-                <div className="mt-3">{renderModelSelector()}</div>
-              ) : null}
-            </div>
-
-            <div className="pt-2 border-t border-[var(--border-muted)]">
-              <StatusBadge tone={selectedModelReady ? "success" : "warning"}>
-                {selectedModelReady
-                  ? "Loaded and ready"
-                  : "Select and load a transcription model"}
-              </StatusBadge>
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5">
-            <div className="flex flex-col items-center">
-              <button
-                onClick={() => {
-                  if (isRecording) {
-                    stopRecording();
-                  } else {
-                    void startRecording();
-                  }
-                }}
-                className={cn(
-                  "w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300 shadow-md",
-                  isRecording
-                    ? "bg-red-500 hover:bg-red-600 scale-110 shadow-red-500/20 shadow-xl"
-                    : "bg-[var(--bg-surface-3)] hover:bg-[var(--border-muted)] border-2 border-[var(--border-strong)] hover:border-[var(--text-muted)]",
-                  (!selectedModelReady || isProcessing) &&
-                    "opacity-50 cursor-not-allowed",
-                )}
-                disabled={!selectedModelReady || isProcessing}
-              >
-                {isRecording ? (
-                  <div className="relative flex items-center justify-center">
-                    <div
-                      className="absolute inset-0 rounded-full bg-red-500/20 animate-ping"
-                      style={{ animationDuration: "1.5s" }}
-                    />
-                    <div
-                      className="absolute inset-[-10px] rounded-full bg-red-500/10 animate-ping"
-                      style={{ animationDuration: "2s" }}
-                    />
-                    <Square className="w-10 h-10 text-white fill-current relative z-10" />
-                  </div>
-                ) : (
-                  <Mic className="w-10 h-10 text-[var(--text-primary)]" />
-                )}
-              </button>
-              <p className="mt-4 text-sm font-medium text-[var(--text-secondary)]">
-                {isRecording
-                  ? "Recording... click to stop"
-                  : "Tap to record audio"}
-              </p>
-
-              <div className="w-full mt-6">
-                <div className="relative">
-                  <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-[var(--border-muted)]" />
-                  </div>
-                  <div className="relative flex justify-center text-xs uppercase">
-                    <span className="bg-[var(--bg-surface-0)] px-2 text-[var(--text-muted)]">
-                      Or
-                    </span>
-                  </div>
-                </div>
-
-                <div
-                  onClick={() => {
-                    if (!requireReadyModel()) return;
-                    fileInputRef.current?.click();
-                  }}
-                  className={cn(
-                    "mt-4 flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-6 transition-all duration-200 cursor-pointer group",
-                    selectedModelReady && !isProcessing
-                      ? "border-[var(--border-strong)] hover:border-primary hover:bg-[var(--bg-surface-2)] bg-[var(--bg-surface-1)] hover:shadow-sm"
-                      : "border-[var(--border-muted)] bg-[var(--bg-surface-1)] opacity-50 cursor-not-allowed",
-                  )}
-                >
-                  <div className="p-3 bg-background rounded-full mb-3 shadow-sm group-hover:scale-105 transition-transform duration-200 border border-[var(--border-muted)]">
-                    <Upload className="w-5 h-5 text-muted-foreground group-hover:text-primary transition-colors" />
-                  </div>
-                  <p className="text-sm font-medium text-[var(--text-primary)] group-hover:text-primary transition-colors">
-                    Upload audio file
-                  </p>
-                  <p className="text-xs text-[var(--text-muted)] mt-1.5">
-                    WAV, MP3, M4A, AAC
-                  </p>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="audio/*"
-                    onChange={handleFileUpload}
-                    className="hidden"
-                    disabled={!selectedModelReady || isProcessing}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {canResetSession ? (
-            <Button
-              onClick={handleReset}
-              variant="ghost"
-              size="sm"
-              className="w-full h-9 gap-2 text-xs border border-transparent hover:border-[var(--border-muted)] bg-transparent hover:bg-[var(--bg-surface-1)]"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              Reset Session
-            </Button>
-          ) : null}
-        </div>
-
-        <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-4 sm:p-5 space-y-4">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex items-start justify-between gap-3">
             <div>
               <div className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">
                 <Settings2 className="w-3.5 h-3.5" />
                 Session
               </div>
-              <h3 className="mt-1.5 text-base font-semibold text-[var(--text-primary)]">
+              <h2 className="mt-1.5 text-base font-semibold text-[var(--text-primary)]">
                 Transcription Settings
-              </h3>
+              </h2>
             </div>
-            {isStreaming ? <StatusBadge tone="success">Live</StatusBadge> : null}
+            <div className="flex items-center gap-2">
+              {isStreaming ? <StatusBadge tone="success">Live</StatusBadge> : null}
+              {onOpenModelManager ? (
+                <Button
+                  onClick={handleOpenModels}
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 text-xs bg-[var(--bg-surface-1)] border-[var(--border-muted)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface-2)] shadow-sm"
+                >
+                  <Settings2 className="w-4 h-4" />
+                  Models
+                </Button>
+              ) : null}
+            </div>
           </div>
 
-          <div className="space-y-3">
-            <div>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                Language
+          <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3.5 sm:p-4 space-y-3.5">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr),auto] lg:items-end">
+              <div>
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  Language
+                </div>
+                <Select
+                  value={selectedLanguage}
+                  onValueChange={setSelectedLanguage}
+                  disabled={isProcessing}
+                >
+                  <SelectTrigger className="h-10 w-full text-xs bg-[var(--bg-surface-0)] border-[var(--border-muted)]">
+                    <SelectValue placeholder="Language" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LANGUAGE_OPTIONS.map((language) => (
+                      <SelectItem
+                        key={language}
+                        value={language}
+                        className="text-xs"
+                      >
+                        {language}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-              <Select
-                value={selectedLanguage}
-                onValueChange={setSelectedLanguage}
-                disabled={isProcessing}
-              >
-                <SelectTrigger className="h-10 w-full text-xs bg-[var(--bg-surface-1)] border-[var(--border-muted)]">
-                  <SelectValue placeholder="Language" />
-                </SelectTrigger>
-                <SelectContent>
-                  {LANGUAGE_OPTIONS.map((language) => (
-                    <SelectItem
-                      key={language}
-                      value={language}
-                      className="text-xs"
-                    >
-                      {language}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+
+              <div className="flex flex-wrap gap-2 lg:justify-end">
+                <label className="flex items-center gap-2 rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-2 text-xs text-[var(--text-muted)]">
+                  <span className="font-medium">Timestamps</span>
+                  <input
+                    type="checkbox"
+                    checked={includeTimestamps}
+                    onChange={(event) =>
+                      handleIncludeTimestampsChange(event.target.checked)
+                    }
+                    className="app-checkbox h-3.5 w-3.5 disabled:opacity-50"
+                    disabled={isProcessing}
+                  />
+                </label>
+                <label className="flex items-center gap-2 rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-2 text-xs text-[var(--text-muted)]">
+                  <Radio className="w-3.5 h-3.5" />
+                  <span className="font-medium">Stream</span>
+                  <input
+                    type="checkbox"
+                    checked={streamingEnabled}
+                    onChange={(event) =>
+                      handleStreamingEnabledChange(event.target.checked)
+                    }
+                    className="app-checkbox w-3.5 h-3.5 disabled:opacity-50 ml-1"
+                    disabled={isProcessing}
+                  />
+                </label>
+              </div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              <label className="flex items-center gap-2 rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2 text-xs text-[var(--text-muted)]">
-                <span className="font-medium">Timestamps</span>
-                <input
-                  type="checkbox"
-                  checked={includeTimestamps}
-                  onChange={(event) =>
-                    handleIncludeTimestampsChange(event.target.checked)
-                  }
-                  className="app-checkbox h-3.5 w-3.5 disabled:opacity-50"
-                  disabled={isProcessing}
-                />
-              </label>
-              <label className="flex items-center gap-2 rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2 text-xs text-[var(--text-muted)]">
-                <Radio className="w-3.5 h-3.5" />
-                <span className="font-medium">Stream</span>
-                <input
-                  type="checkbox"
-                  checked={streamingEnabled}
-                  onChange={(event) =>
-                    handleStreamingEnabledChange(event.target.checked)
-                  }
-                  className="app-checkbox w-3.5 h-3.5 disabled:opacity-50 ml-1"
-                  disabled={isProcessing}
-                />
-              </label>
+            <div className="space-y-2.5 border-t border-[var(--border-muted)] pt-3.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  <FileAudio className="w-3.5 h-3.5" />
+                  Active Model
+                </div>
+                <StatusBadge tone={selectedModelReady ? "success" : "warning"}>
+                  {selectedModelReady ? "Ready" : "Load model"}
+                </StatusBadge>
+              </div>
+              {modelOptions.length > 0 ? renderModelSelector() : null}
             </div>
           </div>
 
-          <p className="text-xs leading-relaxed text-[var(--text-muted)]">
-            {isTranscriptSessionActive
-              ? "This session is active, so the transcript workspace stays open until you reset it."
-              : "Choose your language and capture settings, then record or upload audio to open the transcript workspace."}
-          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              onClick={() => {
+                if (isRecording) {
+                  stopRecording();
+                } else {
+                  void startRecording();
+                }
+              }}
+              className={cn(
+                "rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4 sm:p-5 text-center transition-all duration-300",
+                "flex min-h-[176px] flex-col items-center justify-center gap-3 hover:border-[var(--border-strong)]",
+                isRecording
+                  ? "border-red-300 bg-red-500/5 shadow-[0_18px_40px_-24px_rgba(239,68,68,0.55)]"
+                  : "hover:bg-[var(--bg-surface-2)] shadow-sm",
+                (!selectedModelReady || isProcessing) &&
+                  "opacity-50 cursor-not-allowed hover:border-[var(--border-muted)] hover:bg-[var(--bg-surface-1)]",
+              )}
+              disabled={!selectedModelReady || isProcessing}
+            >
+              <div
+                className={cn(
+                  "relative flex h-20 w-20 items-center justify-center rounded-full border shadow-md",
+                  isRecording
+                    ? "border-red-400 bg-red-500 text-white shadow-red-500/20"
+                    : "border-[var(--border-muted)] bg-[var(--bg-surface-0)] text-[var(--text-primary)]",
+                )}
+              >
+                {isRecording ? (
+                  <>
+                    <div
+                      className="absolute inset-0 rounded-full bg-red-500/20 animate-ping"
+                      style={{ animationDuration: "1.5s" }}
+                    />
+                    <div
+                      className="absolute inset-[-8px] rounded-full bg-red-500/10 animate-ping"
+                      style={{ animationDuration: "2s" }}
+                    />
+                    <Square className="relative z-10 h-8 w-8 fill-current" />
+                  </>
+                ) : (
+                  <Mic className="h-8 w-8" />
+                )}
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm font-semibold text-[var(--text-primary)]">
+                  {isRecording ? "Recording" : "Record audio"}
+                </p>
+                <p className="text-xs text-[var(--text-muted)]">
+                  {isRecording ? "Tap to stop" : "Use your microphone"}
+                </p>
+              </div>
+            </button>
+
+            <div
+              onClick={() => {
+                if (!requireReadyModel()) return;
+                fileInputRef.current?.click();
+              }}
+              className={cn(
+                "rounded-xl border-2 border-dashed p-4 sm:p-5 transition-all duration-200 cursor-pointer group",
+                "flex min-h-[176px] flex-col items-center justify-center gap-3 text-center",
+                selectedModelReady && !isProcessing
+                  ? "border-[var(--border-strong)] bg-[var(--bg-surface-1)] hover:border-primary hover:bg-[var(--bg-surface-2)] hover:shadow-sm"
+                  : "border-[var(--border-muted)] bg-[var(--bg-surface-1)] opacity-50 cursor-not-allowed",
+              )}
+            >
+              <div className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-3 shadow-sm transition-transform duration-200 group-hover:scale-105">
+                <Upload className="h-5 w-5 text-muted-foreground group-hover:text-primary transition-colors" />
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm font-semibold text-[var(--text-primary)] group-hover:text-primary transition-colors">
+                  Upload audio
+                </p>
+                <p className="text-xs text-[var(--text-muted)]">
+                  WAV, MP3, M4A, AAC
+                </p>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="audio/*"
+                onChange={handleFileUpload}
+                className="hidden"
+                disabled={!selectedModelReady || isProcessing}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end border-t border-[var(--border-muted)] pt-3">
+            {canResetSession ? (
+              <Button
+                onClick={handleReset}
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-2 text-xs border border-transparent hover:border-[var(--border-muted)] bg-transparent hover:bg-[var(--bg-surface-1)]"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Reset Session
+              </Button>
+            ) : null}
+          </div>
 
           {!isTranscriptSessionActive ? (
             <AnimatePresence>{renderErrorAlert()}</AnimatePresence>
