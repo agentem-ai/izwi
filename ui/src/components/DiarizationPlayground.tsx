@@ -612,9 +612,9 @@ export function DiarizationPlayground({
                         Loading...
                       </>
                     ) : pipelineAllLoaded ? (
-                      "Unload All"
+                      "Unload Models"
                     ) : (
-                      "Load All"
+                      "Load Models"
                     )}
                   </Button>
                 ) : null}
