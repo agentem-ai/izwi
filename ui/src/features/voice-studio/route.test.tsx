@@ -15,18 +15,6 @@ vi.mock("@/features/voices/route", () => ({
   ),
 }));
 
-vi.mock("@/components/VoiceCaptureWorkspace", () => ({
-  VoiceCaptureWorkspace: () => (
-    <div data-testid="studio-clone-capture">Capture workspace</div>
-  ),
-}));
-
-vi.mock("@/components/VoiceDesignWorkspace", () => ({
-  VoiceDesignWorkspace: () => (
-    <div data-testid="studio-design">Design workspace</div>
-  ),
-}));
-
 const baseProps = {
   models: [],
   selectedModel: null,
@@ -56,15 +44,12 @@ describe("VoiceStudioPage", () => {
     renderVoiceStudio("/voice-studio");
 
     expect(screen.getByTestId("studio-library")).toBeInTheDocument();
-    expect(screen.queryByTestId("studio-clone-capture")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("studio-design")).not.toBeInTheDocument();
   });
 
   it("ignores legacy tab query and keeps library-first layout", () => {
     renderVoiceStudio("/voice-studio?tab=design");
 
     expect(screen.getByTestId("studio-library")).toBeInTheDocument();
-    expect(screen.queryByTestId("studio-design")).not.toBeInTheDocument();
   });
 
   it("opens creation modal from the page header action", () => {
@@ -73,6 +58,8 @@ describe("VoiceStudioPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "New Voice" }));
 
     expect(screen.getByRole("dialog", { name: "New Voice" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Clone Voice/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Design Voice/i })).toBeInTheDocument();
   });
 
   it("opens creation modal when library add shortcut is used", () => {
