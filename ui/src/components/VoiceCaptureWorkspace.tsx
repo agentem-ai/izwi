@@ -81,6 +81,7 @@ export function VoiceCaptureWorkspace({
         </div>
 
         <VoiceClone
+          workflowMode={layout === "modal" ? "capture" : "full"}
           onVoiceCloneReady={handleReferenceReady}
           onClear={handleReferenceClear}
           onReferenceStateChange={setReferenceState}

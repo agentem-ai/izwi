@@ -41,6 +41,7 @@ interface VoiceCloneProps {
   onClear: () => void;
   onReferenceStateChange?: (state: VoiceCloneReferenceState) => void;
   onSavedVoiceCreated?: (voiceId: string) => void;
+  workflowMode?: "full" | "capture";
 }
 
 function downmixToMono(audioBuffer: AudioBuffer): Float32Array {
@@ -128,6 +129,7 @@ export function VoiceClone({
   onClear,
   onReferenceStateChange,
   onSavedVoiceCreated,
+  workflowMode = "full",
 }: VoiceCloneProps) {
   const [mode, setMode] = useState<"upload" | "record" | "saved" | null>(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -171,6 +173,7 @@ export function VoiceClone({
   const createVoiceRecorderRef = useRef<MediaRecorder | null>(null);
   const createVoiceChunksRef = useRef<Blob[]>([]);
   const isConfirmingRef = useRef(false);
+  const showSavedVoiceTools = workflowMode === "full";
 
   const loadSavedVoices = useCallback(async () => {
     setSavedVoicesLoading(true);
@@ -188,8 +191,11 @@ export function VoiceClone({
   }, []);
 
   useEffect(() => {
+    if (!showSavedVoiceTools) {
+      return;
+    }
     void loadSavedVoices();
-  }, [loadSavedVoices]);
+  }, [loadSavedVoices, showSavedVoiceTools]);
 
   useEffect(() => {
     return () => {
@@ -767,14 +773,21 @@ export function VoiceClone({
           className="textarea text-sm py-3 leading-relaxed bg-[var(--bg-surface-0)]"
         />
         <p className="text-[11px] font-medium text-[var(--text-muted)] mt-1.5">
-          Type transcript text, then upload, record, or choose a saved voice
+          {showSavedVoiceTools
+            ? "Type transcript text, then upload, record, or choose a saved voice"
+            : "Type transcript text, then upload or record a clean sample"}
         </p>
       </div>
 
       {/* Audio controls */}
       {!audioBlob ? (
         <div className="space-y-2 mt-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div
+            className={clsx(
+              "grid grid-cols-1 gap-3",
+              showSavedVoiceTools ? "sm:grid-cols-3" : "sm:grid-cols-2",
+            )}
+          >
             {/* Upload button */}
             <button
               onClick={() => {
@@ -859,55 +872,58 @@ export function VoiceClone({
               )}
             </button>
 
-            {/* Saved voice dropdown */}
-            <button
-              onClick={() => {
-                setMode("saved");
-                setError(null);
-                if (!savedVoices.length && !savedVoicesLoading) {
-                  void loadSavedVoices();
-                }
-              }}
-              className={clsx(
-                "flex flex-col items-center gap-2 p-4 rounded-xl border transition-colors min-h-[96px] justify-center group",
-                mode === "saved"
-                  ? "border-[var(--border-strong)] bg-[var(--bg-surface-1)] shadow-sm"
-                  : "border-[var(--border-muted)] bg-[var(--bg-surface-0)] hover:bg-[var(--bg-surface-1)] hover:border-[var(--border-strong)]",
-              )}
-            >
-              <Library
+            {showSavedVoiceTools ? (
+              <button
+                onClick={() => {
+                  setMode("saved");
+                  setError(null);
+                  if (!savedVoices.length && !savedVoicesLoading) {
+                    void loadSavedVoices();
+                  }
+                }}
                 className={clsx(
-                  "w-6 h-6",
+                  "flex flex-col items-center gap-2 p-4 rounded-xl border transition-colors min-h-[96px] justify-center group",
                   mode === "saved"
-                    ? "text-[var(--text-primary)]"
-                    : "text-[var(--text-muted)] group-hover:text-[var(--text-primary)] transition-colors",
-                )}
-              />
-              <span
-                className={clsx(
-                  "text-xs font-medium",
-                  mode === "saved"
-                    ? "text-[var(--text-primary)]"
-                    : "text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] transition-colors",
+                    ? "border-[var(--border-strong)] bg-[var(--bg-surface-1)] shadow-sm"
+                    : "border-[var(--border-muted)] bg-[var(--bg-surface-0)] hover:bg-[var(--bg-surface-1)] hover:border-[var(--border-strong)]",
                 )}
               >
-                Saved Voice
-              </span>
-            </button>
+                <Library
+                  className={clsx(
+                    "w-6 h-6",
+                    mode === "saved"
+                      ? "text-[var(--text-primary)]"
+                      : "text-[var(--text-muted)] group-hover:text-[var(--text-primary)] transition-colors",
+                  )}
+                />
+                <span
+                  className={clsx(
+                    "text-xs font-medium",
+                    mode === "saved"
+                      ? "text-[var(--text-primary)]"
+                      : "text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] transition-colors",
+                  )}
+                >
+                  Saved Voice
+                </span>
+              </button>
+            ) : null}
           </div>
 
-          <div className="flex justify-end pt-2">
-            <button
-              onClick={openCreateVoiceModal}
-              className="btn btn-secondary text-xs h-9 px-4 gap-1.5 rounded-lg border-[var(--border-muted)]"
-            >
-              <BookmarkPlus className="w-4 h-4" />
-              Save New Voice
-            </button>
-          </div>
+          {showSavedVoiceTools ? (
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={openCreateVoiceModal}
+                className="btn btn-secondary text-xs h-9 px-4 gap-1.5 rounded-lg border-[var(--border-muted)]"
+              >
+                <BookmarkPlus className="w-4 h-4" />
+                Save New Voice
+              </button>
+            </div>
+          ) : null}
 
           <AnimatePresence>
-            {mode === "saved" && (
+            {showSavedVoiceTools && mode === "saved" && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
@@ -1122,7 +1138,7 @@ export function VoiceClone({
       )}
 
       <AnimatePresence>
-        {isCreateVoiceModalOpen && (
+        {showSavedVoiceTools && isCreateVoiceModalOpen && (
           <motion.div
             className="fixed inset-0 z-[70] bg-black/60 p-4 backdrop-blur-sm flex items-center justify-center"
             initial={{ opacity: 0 }}

@@ -69,6 +69,7 @@ export function VoiceCreationModal({
 }: VoiceCreationModalProps) {
   const [step, setStep] = useState<CreationStep>("choice");
   const [hasDraftProgress, setHasDraftProgress] = useState(false);
+  const [showDiscardPrompt, setShowDiscardPrompt] = useState(false);
   const [savedVoiceResult, setSavedVoiceResult] = useState<{
     voiceId: string;
     source: "clone" | "design";
@@ -78,18 +79,15 @@ export function VoiceCreationModal({
     if (!open) {
       setStep("choice");
       setHasDraftProgress(false);
+      setShowDiscardPrompt(false);
       setSavedVoiceResult(null);
     }
   }, [open]);
 
   const requestClose = () => {
     if (hasDraftProgress && step !== "choice" && step !== "success") {
-      const shouldDiscard = window.confirm(
-        "Discard your current voice creation progress?",
-      );
-      if (!shouldDiscard) {
-        return;
-      }
+      setShowDiscardPrompt(true);
+      return;
     }
     onOpenChange(false);
   };
@@ -97,12 +95,14 @@ export function VoiceCreationModal({
   const handleStepSelect = (nextStep: "clone" | "design") => {
     setStep(nextStep);
     setHasDraftProgress(true);
+    setShowDiscardPrompt(false);
     setSavedVoiceResult(null);
   };
 
   const handleSavedVoice = (voiceId: string, source: "clone" | "design") => {
     setSavedVoiceResult({ voiceId, source });
     setHasDraftProgress(false);
+    setShowDiscardPrompt(false);
     setStep("success");
   };
 
@@ -114,6 +114,7 @@ export function VoiceCreationModal({
           requestClose();
           return;
         }
+        setShowDiscardPrompt(false);
         onOpenChange(nextOpen);
       }}
     >
@@ -135,6 +136,7 @@ export function VoiceCreationModal({
                   onClick={() => {
                     setStep("choice");
                     setHasDraftProgress(false);
+                    setShowDiscardPrompt(false);
                     setSavedVoiceResult(null);
                   }}
                 >
@@ -148,11 +150,11 @@ export function VoiceCreationModal({
 
         <div className="max-h-[calc(88vh-104px)] overflow-y-auto px-6 py-5">
           {step === "choice" ? (
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-3">
               <button
                 type="button"
                 onClick={() => handleStepSelect("clone")}
-                className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4 text-left transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-2)]"
+                className="w-full rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4 text-left transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-2)]"
               >
                 <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
                   <AudioLines className="h-4 w-4" />
@@ -167,7 +169,7 @@ export function VoiceCreationModal({
               <button
                 type="button"
                 onClick={() => handleStepSelect("design")}
-                className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4 text-left transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-2)]"
+                className="w-full rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4 text-left transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-2)]"
               >
                 <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
                   <Sparkles className="h-4 w-4" />
@@ -253,6 +255,42 @@ export function VoiceCreationModal({
             </div>
           ) : null}
         </div>
+
+        {showDiscardPrompt ? (
+          <div className="border-t border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-6 py-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-sm font-semibold text-[var(--text-primary)]">
+                  Discard this voice draft?
+                </div>
+                <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                  Your current clone or design inputs will be lost.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-9 rounded-[var(--radius-pill)] px-3 text-xs"
+                  onClick={() => setShowDiscardPrompt(false)}
+                >
+                  Continue Editing
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-9 rounded-[var(--radius-pill)] px-3 text-xs"
+                  onClick={() => {
+                    setShowDiscardPrompt(false);
+                    onOpenChange(false);
+                  }}
+                >
+                  Discard Draft
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </DialogContent>
     </Dialog>
   );

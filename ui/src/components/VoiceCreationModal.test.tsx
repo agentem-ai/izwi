@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { VoiceCreationModal } from "./VoiceCreationModal";
 
 vi.mock("./VoiceCaptureWorkspace", () => ({
@@ -49,10 +49,6 @@ function VoiceCreationModalHarness() {
 }
 
 describe("VoiceCreationModal", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it("moves from flow choice into clone and supports back navigation", () => {
     render(<VoiceCreationModalHarness />);
 
@@ -68,15 +64,35 @@ describe("VoiceCreationModal", () => {
     expect(screen.getByRole("button", { name: /Design Voice/i })).toBeInTheDocument();
   });
 
-  it("protects in-progress draft when closing from clone step", () => {
-    const confirmMock = vi.spyOn(window, "confirm").mockReturnValue(false);
+  it("uses an in-modal discard prompt instead of browser alerts", () => {
     render(<VoiceCreationModalHarness />);
 
     fireEvent.click(screen.getByRole("button", { name: /Clone Voice/i }));
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
 
-    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Discard this voice draft?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue Editing" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Discard Draft" })).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Clone Voice" })).toBeInTheDocument();
+  });
+
+  it("closes after confirming draft discard", () => {
+    render(<VoiceCreationModalHarness />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Clone Voice/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard Draft" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("renders voice creation options as stacked full-width cards", () => {
+    render(<VoiceCreationModalHarness />);
+    const cloneOption = screen.getByRole("button", { name: /Clone Voice/i });
+    const designOption = screen.getByRole("button", { name: /Design Voice/i });
+
+    expect(cloneOption.className).toContain("w-full");
+    expect(designOption.className).toContain("w-full");
   });
 
   it("shows a saved message after clone voice save callback", () => {
