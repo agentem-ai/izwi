@@ -52,7 +52,7 @@ interface VoicePreviewPlayerProps {
 }
 
 const SEEKBAR_CLASS =
-  "relative z-10 h-5 w-full cursor-pointer appearance-none bg-transparent accent-[var(--text-primary)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-45 [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-none [&::-moz-range-thumb]:bg-[var(--text-primary)] [&::-moz-range-thumb]:shadow-sm [&::-moz-range-track]:h-1 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:-mt-1 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-none [&::-webkit-slider-thumb]:bg-[var(--text-primary)] [&::-webkit-slider-thumb]:shadow-sm";
+  "relative z-10 m-0 h-5 w-full cursor-pointer appearance-none bg-transparent align-middle accent-[var(--text-primary)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-45 [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-none [&::-moz-range-thumb]:bg-[var(--text-primary)] [&::-moz-range-thumb]:shadow-sm [&::-moz-range-track]:h-1 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:-mt-1 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-none [&::-webkit-slider-thumb]:bg-[var(--text-primary)] [&::-webkit-slider-thumb]:shadow-sm";
 
 function formatClockTime(value: number): string {
   if (!Number.isFinite(value) || value < 0) {
@@ -64,6 +64,26 @@ function formatClockTime(value: number): string {
   const seconds = rounded % 60;
 
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function resolveAudioDuration(audio: HTMLAudioElement): number {
+  const candidates: number[] = [];
+  if (Number.isFinite(audio.duration) && audio.duration > 0) {
+    candidates.push(audio.duration);
+  }
+  if (audio.seekable.length > 0) {
+    const seekableEnd = audio.seekable.end(audio.seekable.length - 1);
+    if (Number.isFinite(seekableEnd) && seekableEnd > 0) {
+      candidates.push(seekableEnd);
+    }
+  }
+  if (audio.buffered.length > 0) {
+    const bufferedEnd = audio.buffered.end(audio.buffered.length - 1);
+    if (Number.isFinite(bufferedEnd) && bufferedEnd > 0) {
+      candidates.push(bufferedEnd);
+    }
+  }
+  return candidates.length > 0 ? Math.max(...candidates) : 0;
 }
 
 function VoicePreviewPlayer({
@@ -80,7 +100,8 @@ function VoicePreviewPlayer({
 
   const hasPreview = Boolean(item.previewUrl);
   const isPlayable = hasPreview && !item.previewLoading;
-  const progress = duration > 0 ? Math.min(currentTime / duration, 1) : 0;
+  const seekMax = duration > 0 ? duration : Math.max(currentTime + 0.25, 1);
+  const progress = seekMax > 0 ? Math.min(currentTime / seekMax, 1) : 0;
   const hint = audioError ?? item.previewMessage ?? null;
 
   useEffect(() => {
@@ -90,10 +111,16 @@ function VoicePreviewPlayer({
     }
 
     const handleLoadedMetadata = () => {
-      setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
+      setDuration(resolveAudioDuration(audio));
       setAudioError(null);
     };
-    const handleTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const handleTimeUpdate = () => {
+      setCurrentTime(audio.currentTime);
+      setDuration(resolveAudioDuration(audio));
+    };
+    const handleDurationChange = () => {
+      setDuration(resolveAudioDuration(audio));
+    };
     const handlePlay = () => {
       setIsPlaying(true);
       onActivePreviewChange(item.id);
@@ -122,7 +149,10 @@ function VoicePreviewPlayer({
     };
 
     audio.addEventListener("loadedmetadata", handleLoadedMetadata);
+    audio.addEventListener("loadeddata", handleLoadedMetadata);
+    audio.addEventListener("canplay", handleLoadedMetadata);
     audio.addEventListener("timeupdate", handleTimeUpdate);
+    audio.addEventListener("durationchange", handleDurationChange);
     audio.addEventListener("play", handlePlay);
     audio.addEventListener("pause", handlePause);
     audio.addEventListener("ended", handleEnded);
@@ -130,7 +160,10 @@ function VoicePreviewPlayer({
 
     return () => {
       audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
+      audio.removeEventListener("loadeddata", handleLoadedMetadata);
+      audio.removeEventListener("canplay", handleLoadedMetadata);
       audio.removeEventListener("timeupdate", handleTimeUpdate);
+      audio.removeEventListener("durationchange", handleDurationChange);
       audio.removeEventListener("play", handlePlay);
       audio.removeEventListener("pause", handlePause);
       audio.removeEventListener("ended", handleEnded);
@@ -147,7 +180,7 @@ function VoicePreviewPlayer({
     audio.pause();
     audio.currentTime = 0;
     setCurrentTime(0);
-    setDuration(0);
+    setDuration(resolveAudioDuration(audio));
     setIsPlaying(false);
     setAudioError(null);
   }, [item.previewUrl]);
@@ -244,7 +277,7 @@ function VoicePreviewPlayer({
         <span className="min-w-[2.3rem] font-mono text-[10px] font-medium tabular-nums text-[var(--text-muted)]">
           {formatClockTime(currentTime)}
         </span>
-        <div className="group relative flex-1">
+        <div className="group relative flex h-5 flex-1 items-center">
           <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-[var(--bg-surface-3)]" />
           <div
             className="pointer-events-none absolute left-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-[var(--text-primary)]"
@@ -254,11 +287,11 @@ function VoicePreviewPlayer({
             id={seekId}
             type="range"
             min={0}
-            max={duration || 0}
+            max={seekMax}
             step={0.05}
-            value={Math.min(currentTime, duration || 0)}
+            value={Math.min(currentTime, seekMax)}
             onChange={(event) => seek(Number(event.target.value))}
-            disabled={!hasPreview || duration <= 0}
+            disabled={!hasPreview}
             className={SEEKBAR_CLASS}
           />
         </div>
