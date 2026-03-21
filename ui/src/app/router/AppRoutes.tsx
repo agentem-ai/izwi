@@ -135,7 +135,7 @@ export function AppRoutes() {
         />
         <Route
           path="/voice-studio"
-          element={withSuspense(<VoiceStudioPage />)}
+          element={withSuspense(<VoiceStudioPage {...pageProps} />)}
         />
         <Route
           path="/voice-cloning"

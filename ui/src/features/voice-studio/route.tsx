@@ -1,9 +1,11 @@
 import { useMemo } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Library, Sparkles, Users } from "lucide-react";
+import type { ModelInfo } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { WorkspacePanel } from "@/components/ui/workspace";
+import { VoicesPage } from "@/features/voices/route";
 
 type VoiceStudioTab = "library" | "clone" | "design";
 
@@ -31,8 +33,44 @@ function tabIcon(tab: VoiceStudioTab) {
   }
 }
 
-export function VoiceStudioPage() {
+interface VoiceStudioPageProps {
+  models: ModelInfo[];
+  selectedModel: string | null;
+  loading: boolean;
+  downloadProgress: Record<
+    string,
+    {
+      percent: number;
+      currentFile: string;
+      status: string;
+      downloadedBytes: number;
+      totalBytes: number;
+    }
+  >;
+  onDownload: (variant: string) => void;
+  onCancelDownload?: (variant: string) => void;
+  onLoad: (variant: string) => void;
+  onUnload: (variant: string) => void;
+  onDelete: (variant: string) => void;
+  onSelect: (variant: string) => void;
+  onError: (message: string) => void;
+}
+
+export function VoiceStudioPage({
+  models,
+  selectedModel,
+  loading,
+  downloadProgress,
+  onDownload,
+  onCancelDownload,
+  onLoad,
+  onUnload,
+  onDelete,
+  onSelect,
+  onError,
+}: VoiceStudioPageProps) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const activeTab = resolveTab(searchParams.get("tab"));
 
   const title = useMemo(() => TAB_LABELS[activeTab], [activeTab]);
@@ -75,22 +113,46 @@ export function VoiceStudioPage() {
         </TabsList>
       </Tabs>
 
-      <WorkspacePanel className="mt-5 p-5 sm:p-6">
-        <div className="flex items-start gap-3">
-          <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] p-2 text-[var(--text-secondary)]">
-            <Icon className="h-4 w-4" />
-          </div>
-          <div>
-            <h3 className="text-lg font-semibold text-[var(--text-primary)]">
-              {title} workspace
-            </h3>
-            <p className="mt-1 text-sm text-[var(--text-secondary)]">
-              This foundation route is live. Full tab content is added in
-              subsequent rollout commits.
-            </p>
-          </div>
+      {activeTab === "library" ? (
+        <div className="mt-5">
+          <VoicesPage
+            models={models}
+            selectedModel={selectedModel}
+            loading={loading}
+            downloadProgress={downloadProgress}
+            onDownload={onDownload}
+            onCancelDownload={onCancelDownload}
+            onLoad={onLoad}
+            onUnload={onUnload}
+            onDelete={onDelete}
+            onSelect={onSelect}
+            onError={onError}
+            embedded
+            onAddNewVoice={() => {
+              const nextSearchParams = new URLSearchParams(searchParams);
+              nextSearchParams.set("tab", "design");
+              navigate(`/voice-studio?${nextSearchParams.toString()}`);
+            }}
+          />
         </div>
-      </WorkspacePanel>
+      ) : (
+        <WorkspacePanel className="mt-5 p-5 sm:p-6">
+          <div className="flex items-start gap-3">
+            <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-2)] p-2 text-[var(--text-secondary)]">
+              <Icon className="h-4 w-4" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold text-[var(--text-primary)]">
+                {title} workspace
+              </h3>
+              <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                This tab is now wired into Voice Studio and will gain full
+                integrated controls in the next commit.
+              </p>
+            </div>
+          </div>
+        </WorkspacePanel>
+      )}
     </PageShell>
   );
 }
