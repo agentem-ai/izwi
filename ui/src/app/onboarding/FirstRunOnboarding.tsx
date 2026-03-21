@@ -6,8 +6,6 @@ import {
   Loader2,
   MessageSquare,
   Sparkles,
-  Users,
-  Wand2,
 } from "lucide-react";
 
 import { api, type ModelInfo } from "@/api";
@@ -54,14 +52,9 @@ const FEATURE_ITEMS = [
     description: "High-quality speech-to-text with timestamps and speakers.",
   },
   {
-    icon: Users,
-    title: "Voice cloning library",
-    description: "Capture and reuse voices with reference audio.",
-  },
-  {
-    icon: Wand2,
-    title: "Voice design tools",
-    description: "Create custom voices from natural-language prompts.",
+    icon: Sparkles,
+    title: "Voice Studio",
+    description: "Clone, design, and manage reusable voices in one workspace.",
   },
 ];
 
@@ -108,13 +101,13 @@ const CATEGORY_CONFIGS: Array<{
   },
   {
     key: "voice-cloning",
-    title: "Voice Cloning",
-    description: "Base models for reference voice cloning.",
+    title: "Voice Studio: Cloning",
+    description: "Base models for reference voice cloning workflows.",
   },
   {
     key: "voice-design",
-    title: "Voice Design",
-    description: "Create voices from text descriptions.",
+    title: "Voice Studio: Design",
+    description: "Models for text-prompt voice design workflows.",
   },
   {
     key: "transcription",

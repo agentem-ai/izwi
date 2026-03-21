@@ -4,7 +4,6 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Mic,
   Users,
-  Wand2,
   FileText,
   MessageSquare,
   AudioLines,
@@ -72,11 +71,11 @@ const TOP_NAV_ITEMS: NavItem[] = [
 
 const CREATION_NAV_ITEMS: NavItem[] = [
   {
-    id: "voices",
-    label: "Voices",
-    description: "Reusable saved and built-in voice library",
+    id: "voice-studio",
+    label: "Voice Studio",
+    description: "Create, clone, and manage voice assets",
     icon: Library,
-    path: "/voices",
+    path: "/voice-studio",
   },
   {
     id: "text-to-speech",
@@ -84,20 +83,6 @@ const CREATION_NAV_ITEMS: NavItem[] = [
     description: "Output speech from text",
     icon: Mic,
     path: "/text-to-speech",
-  },
-  {
-    id: "voice-cloning",
-    label: "Voice Cloning",
-    description: "Identity personalization from reference audio",
-    icon: Users,
-    path: "/voice-cloning",
-  },
-  {
-    id: "voice-design",
-    label: "Voice Design",
-    description: "Create voices from descriptions",
-    icon: Wand2,
-    path: "/voice-design",
   },
 ];
 
