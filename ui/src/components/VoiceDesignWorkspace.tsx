@@ -10,7 +10,6 @@ import {
   Loader2,
   Settings2,
   Sparkles,
-  Wand2,
 } from "lucide-react";
 import clsx from "clsx";
 import { api, type SpeechHistoryRecord, type TTSGenerationStats } from "../api";
@@ -34,7 +33,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  WorkspaceHeader,
   WorkspacePanel,
 } from "@/components/ui/workspace";
 import { useWorkspaceShortcuts } from "@/hooks/useWorkspaceShortcuts";
@@ -354,31 +352,7 @@ export function VoiceDesignWorkspace({
   return (
     <div className="grid items-start gap-4 pb-4 sm:pb-5">
       <div className="flex flex-col">
-        <WorkspaceHeader
-          icon={Wand2}
-          title="Voice Design"
-          description="Describe a voice, compare nearby candidates, and save the best option for TTS reuse."
-          className="border-none pb-0"
-          actions={
-            <Select value={language} onValueChange={setLanguage}>
-              <SelectTrigger className="w-52 sm:w-56">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Globe className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-                  <SelectValue placeholder="Language" />
-                </div>
-              </SelectTrigger>
-              <SelectContent>
-                {LANGUAGES.map((lang) => (
-                  <SelectItem key={lang.id} value={lang.id}>
-                    {lang.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          }
-        />
-
-        <WorkspacePanel className="mb-4 mt-5 p-4">
+        <WorkspacePanel className="mb-4 p-4">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0 flex-1">
               <div className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
@@ -413,17 +387,35 @@ export function VoiceDesignWorkspace({
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
             <div className="space-y-6">
               <div>
-                <div className="flex items-center justify-between mb-2">
+                <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <label className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
                     Voice Direction
                     <span className="text-red-500 ml-1">*</span>
                   </label>
-                  <button
-                    onClick={() => setShowPresets(!showPresets)}
-                    className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-                  >
-                    {showPresets ? "Hide presets" : "View presets"}
-                  </button>
+                  <div className="flex items-center gap-2 sm:justify-end">
+                    <Select value={language} onValueChange={setLanguage}>
+                      <SelectTrigger className="w-[10.5rem]">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Globe className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+                          <SelectValue placeholder="Language" />
+                        </div>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {LANGUAGES.map((lang) => (
+                          <SelectItem key={lang.id} value={lang.id}>
+                            {lang.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+
+                    <button
+                      onClick={() => setShowPresets(!showPresets)}
+                      className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+                    >
+                      {showPresets ? "Hide presets" : "View presets"}
+                    </button>
+                  </div>
                 </div>
 
                 <AnimatePresence>
