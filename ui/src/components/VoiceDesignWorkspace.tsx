@@ -55,6 +55,8 @@ interface VoiceDesignWorkspaceProps {
   onModelRequired: () => void;
   onUseInTts?: (voiceId: string) => void;
   historyActionContainer?: HTMLElement | null;
+  onVoiceSaved?: (voiceId: string) => void;
+  embeddedInModal?: boolean;
 }
 
 interface VoiceDesignCandidate {
@@ -109,6 +111,8 @@ export function VoiceDesignWorkspace({
   onModelRequired,
   onUseInTts,
   historyActionContainer = null,
+  onVoiceSaved,
+  embeddedInModal = false,
 }: VoiceDesignWorkspaceProps) {
   const [text, setText] = useState(DEFAULT_SAMPLE_TEXT);
   const [voiceDescription, setVoiceDescription] = useState("");
@@ -334,6 +338,7 @@ export function VoiceDesignWorkspace({
       });
 
       setSavedVoiceId(createdVoice.id);
+      onVoiceSaved?.(createdVoice.id);
       setSaveVoiceStatus({
         tone: "success",
         message: `Saved voice profile "${trimmedName}".`,
@@ -350,7 +355,12 @@ export function VoiceDesignWorkspace({
   };
 
   return (
-    <div className="grid items-start gap-4 pb-4 sm:pb-5">
+    <div
+      className={clsx(
+        "grid items-start gap-4",
+        embeddedInModal ? "pb-1" : "pb-4 sm:pb-5",
+      )}
+    >
       <div className="flex flex-col">
         <WorkspacePanel className="mb-4 p-4">
           <div className="flex items-start justify-between gap-4">
@@ -746,13 +756,15 @@ export function VoiceDesignWorkspace({
         </div>
       </div>
 
-      <SpeechHistoryPanel
-        route="voice-design"
-        title="Voice Design History"
-        emptyMessage="No saved voice design generations yet."
-        latestRecord={latestRecord}
-        historyActionContainer={historyActionContainer}
-      />
+      {!embeddedInModal ? (
+        <SpeechHistoryPanel
+          route="voice-design"
+          title="Voice Design History"
+          emptyMessage="No saved voice design generations yet."
+          latestRecord={latestRecord}
+          historyActionContainer={historyActionContainer}
+        />
+      ) : null}
     </div>
   );
 }

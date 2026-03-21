@@ -4,7 +4,14 @@ import type { ModelInfo } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Button } from "@/components/ui/button";
 import { VoiceCreationModal } from "@/components/VoiceCreationModal";
+import {
+  VOICE_DESIGN_PREFERRED_MODELS,
+  resolvePreferredRouteModel,
+} from "@/features/models/catalog/routeModelCatalog";
+import { RouteModelModal } from "@/features/models/components/RouteModelModal";
+import { useRouteModelSelection } from "@/features/models/hooks/useRouteModelSelection";
 import { VoicesPage } from "@/features/voices/route";
+import { VIEW_CONFIGS } from "@/types";
 
 interface VoiceStudioPageProps {
   models: ModelInfo[];
@@ -43,6 +50,30 @@ export function VoiceStudioPage({
   onError,
 }: VoiceStudioPageProps) {
   const [isCreationModalOpen, setIsCreationModalOpen] = useState(false);
+  const designViewConfig = VIEW_CONFIGS["voice-design"];
+  const {
+    routeModels: designRouteModels,
+    resolvedSelectedModel: designResolvedModel,
+    selectedModelReady: designModelReady,
+    isModelModalOpen: isDesignModelModalOpen,
+    intentVariant: designIntentVariant,
+    closeModelModal: closeDesignModelModal,
+    openModelManager: openDesignModelManager,
+    requestModel: requestDesignModel,
+    handleModelSelect: handleDesignModelSelect,
+    modelOptions: designModelOptions,
+  } = useRouteModelSelection({
+    models,
+    selectedModel,
+    onSelect,
+    modelFilter: designViewConfig.modelFilter,
+    resolveSelectedModel: (routeModels, currentModel) =>
+      resolvePreferredRouteModel({
+        models: routeModels,
+        selectedModel: currentModel,
+        preferredVariants: VOICE_DESIGN_PREFERRED_MODELS,
+      }),
+  });
 
   return (
     <PageShell>
@@ -81,6 +112,34 @@ export function VoiceStudioPage({
       <VoiceCreationModal
         open={isCreationModalOpen}
         onOpenChange={setIsCreationModalOpen}
+        designModel={designResolvedModel}
+        designModelReady={designModelReady}
+        designModelOptions={designModelOptions}
+        onSelectDesignModel={handleDesignModelSelect}
+        onOpenDesignModelManager={openDesignModelManager}
+        onDesignModelRequired={() => {
+          requestDesignModel();
+          onError("Select and load a VoiceDesign model to continue.");
+        }}
+      />
+
+      <RouteModelModal
+        isOpen={isDesignModelModalOpen}
+        onClose={closeDesignModelModal}
+        title="Voice Design Models"
+        description="Manage VoiceDesign models for voice creation."
+        models={designRouteModels}
+        loading={loading}
+        selectedVariant={designResolvedModel}
+        intentVariant={designIntentVariant}
+        downloadProgress={downloadProgress}
+        onDownload={onDownload}
+        onCancelDownload={onCancelDownload}
+        onLoad={onLoad}
+        onUnload={onUnload}
+        onDelete={onDelete}
+        onUseModel={onSelect}
+        emptyMessage={designViewConfig.emptyStateDescription}
       />
     </PageShell>
   );

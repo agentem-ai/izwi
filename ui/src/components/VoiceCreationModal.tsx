@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, AudioLines, Sparkles } from "lucide-react";
 import { VoiceCaptureWorkspace } from "@/components/VoiceCaptureWorkspace";
+import { VoiceDesignWorkspace } from "@/components/VoiceDesignWorkspace";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,6 +16,17 @@ type CreationStep = "choice" | "clone" | "design" | "success";
 interface VoiceCreationModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  designModel: string | null;
+  designModelReady: boolean;
+  designModelOptions: Array<{
+    value: string;
+    label: string;
+    statusLabel: string;
+    isReady: boolean;
+  }>;
+  onSelectDesignModel?: (variant: string) => void;
+  onOpenDesignModelManager?: () => void;
+  onDesignModelRequired: () => void;
 }
 
 function stepTitle(step: CreationStep): string {
@@ -43,16 +55,29 @@ function stepDescription(step: CreationStep): string {
   return "Choose how you want to create a new reusable voice profile.";
 }
 
-export function VoiceCreationModal({ open, onOpenChange }: VoiceCreationModalProps) {
+export function VoiceCreationModal({
+  open,
+  onOpenChange,
+  designModel,
+  designModelReady,
+  designModelOptions,
+  onSelectDesignModel,
+  onOpenDesignModelManager,
+  onDesignModelRequired,
+}: VoiceCreationModalProps) {
   const [step, setStep] = useState<CreationStep>("choice");
   const [hasDraftProgress, setHasDraftProgress] = useState(false);
   const [savedCloneVoiceId, setSavedCloneVoiceId] = useState<string | null>(null);
+  const [savedDesignVoiceId, setSavedDesignVoiceId] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     if (!open) {
       setStep("choice");
       setHasDraftProgress(false);
       setSavedCloneVoiceId(null);
+      setSavedDesignVoiceId(null);
     }
   }, [open]);
 
@@ -72,6 +97,7 @@ export function VoiceCreationModal({ open, onOpenChange }: VoiceCreationModalPro
     setStep(nextStep);
     setHasDraftProgress(true);
     setSavedCloneVoiceId(null);
+    setSavedDesignVoiceId(null);
   };
 
   return (
@@ -163,9 +189,25 @@ export function VoiceCreationModal({ open, onOpenChange }: VoiceCreationModalPro
           ) : null}
 
           {step === "design" ? (
-            <div className="rounded-xl border border-dashed border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-8 text-center text-sm text-[var(--text-muted)]">
-              Voice design workflow is being moved into this modal in the next
-              rollout step.
+            <div className="space-y-3">
+              <VoiceDesignWorkspace
+                selectedModel={designModel}
+                selectedModelReady={designModelReady}
+                modelOptions={designModelOptions}
+                onSelectModel={onSelectDesignModel}
+                onOpenModelManager={onOpenDesignModelManager}
+                onModelRequired={onDesignModelRequired}
+                embeddedInModal
+                onVoiceSaved={(voiceId) => {
+                  setSavedDesignVoiceId(voiceId);
+                  setHasDraftProgress(false);
+                }}
+              />
+              {savedDesignVoiceId ? (
+                <div className="rounded-lg border border-[var(--status-positive-border)] bg-[var(--status-positive-bg)] px-3 py-2 text-xs font-medium text-[var(--status-positive-text)]">
+                  Designed voice is saved and available in your library.
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>
