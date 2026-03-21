@@ -18,10 +18,32 @@ vi.mock("./VoiceCaptureWorkspace", () => ({
   ),
 }));
 
+vi.mock("./VoiceDesignWorkspace", () => ({
+  VoiceDesignWorkspace: ({
+    onVoiceSaved,
+  }: {
+    onVoiceSaved?: (voiceId: string) => void;
+  }) => (
+    <div>
+      <div data-testid="design-workspace">Design workspace</div>
+      <button type="button" onClick={() => onVoiceSaved?.("designed-voice-1")}>
+        Save designed voice
+      </button>
+    </div>
+  ),
+}));
+
 function VoiceCreationModalHarness() {
   const [open, setOpen] = useState(true);
   return (
-    <VoiceCreationModal open={open} onOpenChange={setOpen} />
+    <VoiceCreationModal
+      open={open}
+      onOpenChange={setOpen}
+      designModel={null}
+      designModelReady={false}
+      designModelOptions={[]}
+      onDesignModelRequired={vi.fn()}
+    />
   );
 }
 
@@ -64,6 +86,18 @@ describe("VoiceCreationModal", () => {
 
     expect(
       screen.getByText("Saved voice profile is ready in your library."),
+    ).toBeInTheDocument();
+  });
+
+  it("renders design workspace and shows a saved confirmation message", () => {
+    render(<VoiceCreationModalHarness />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Design Voice/i }));
+    expect(screen.getByTestId("design-workspace")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save designed voice" }));
+    expect(
+      screen.getByText("Designed voice is saved and available in your library."),
     ).toBeInTheDocument();
   });
 });

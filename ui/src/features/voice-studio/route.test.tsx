@@ -1,8 +1,20 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { VoiceStudioPage } from "./route";
+
+const hookMocks = vi.hoisted(() => ({
+  useRouteModelSelection: vi.fn(),
+}));
+
+vi.mock("@/features/models/hooks/useRouteModelSelection", () => ({
+  useRouteModelSelection: hookMocks.useRouteModelSelection,
+}));
+
+vi.mock("@/features/models/components/RouteModelModal", () => ({
+  RouteModelModal: () => null,
+}));
 
 vi.mock("@/features/voices/route", () => ({
   VoicesPage: ({ onAddNewVoice }: { onAddNewVoice?: () => void }) => (
@@ -40,6 +52,22 @@ function renderVoiceStudio(initialEntry: string) {
 }
 
 describe("VoiceStudioPage", () => {
+  beforeEach(() => {
+    hookMocks.useRouteModelSelection.mockReset();
+    hookMocks.useRouteModelSelection.mockReturnValue({
+      routeModels: [],
+      resolvedSelectedModel: null,
+      selectedModelReady: false,
+      isModelModalOpen: false,
+      intentVariant: null,
+      closeModelModal: vi.fn(),
+      openModelManager: vi.fn(),
+      requestModel: vi.fn(),
+      handleModelSelect: vi.fn(),
+      modelOptions: [],
+    });
+  });
+
   it("shows the library content by default", () => {
     renderVoiceStudio("/voice-studio");
 
