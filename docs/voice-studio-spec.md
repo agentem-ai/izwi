@@ -64,6 +64,7 @@ Unify voice creation and management workflows under a single `/voice-studio` rou
 
 ## Rollout & Verification
 
+- Runtime rollout flag: `VITE_VOICE_STUDIO_ENABLED` (defaults to `true`).
 - Deliver in incremental commits:
   1. Spec and planning artifact.
   2. Route and navigation foundation with redirects.
