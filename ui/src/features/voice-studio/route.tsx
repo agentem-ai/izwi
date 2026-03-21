@@ -3,13 +3,7 @@ import { Plus } from "lucide-react";
 import type { ModelInfo } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { VoiceCreationModal } from "@/components/VoiceCreationModal";
 import { VoicesPage } from "@/features/voices/route";
 
 interface VoiceStudioPageProps {
@@ -84,20 +78,10 @@ export function VoiceStudioPage({
         />
       </div>
 
-      <Dialog open={isCreationModalOpen} onOpenChange={setIsCreationModalOpen}>
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>New Voice</DialogTitle>
-            <DialogDescription>
-              Choose a workflow to create a new voice profile for Text to Speech.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-3 text-sm text-[var(--text-secondary)]">
-            Voice creation flow setup continues in the next rollout step.
-          </div>
-        </DialogContent>
-      </Dialog>
+      <VoiceCreationModal
+        open={isCreationModalOpen}
+        onOpenChange={setIsCreationModalOpen}
+      />
     </PageShell>
   );
 }
