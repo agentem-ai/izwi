@@ -14,19 +14,9 @@ const TextToSpeechPage = lazy(async () => {
   return { default: module.TextToSpeechPage };
 });
 
-const VoiceCloningPage = lazy(async () => {
-  const module = await import("@/features/voice-cloning/route");
-  return { default: module.VoiceCloningPage };
-});
-
-const VoiceDesignPage = lazy(async () => {
-  const module = await import("@/features/voice-design/route");
-  return { default: module.VoiceDesignPage };
-});
-
-const VoicesPage = lazy(async () => {
-  const module = await import("@/features/voices/route");
-  return { default: module.VoicesPage };
+const VoiceStudioPage = lazy(async () => {
+  const module = await import("@/features/voice-studio/route");
+  return { default: module.VoiceStudioPage };
 });
 
 const TranscriptionPage = lazy(async () => {
@@ -144,16 +134,20 @@ export function AppRoutes() {
           element={withSuspense(<TextToSpeechPage {...pageProps} />)}
         />
         <Route
+          path="/voice-studio"
+          element={withSuspense(<VoiceStudioPage />)}
+        />
+        <Route
           path="/voice-cloning"
-          element={withSuspense(<VoiceCloningPage {...pageProps} />)}
+          element={<Navigate to="/voice-studio?tab=clone" replace />}
         />
         <Route
           path="/voice-design"
-          element={withSuspense(<VoiceDesignPage {...pageProps} />)}
+          element={<Navigate to="/voice-studio?tab=design" replace />}
         />
         <Route
           path="/voices"
-          element={withSuspense(<VoicesPage {...pageProps} />)}
+          element={<Navigate to="/voice-studio?tab=library" replace />}
         />
         <Route
           path="/transcription"
