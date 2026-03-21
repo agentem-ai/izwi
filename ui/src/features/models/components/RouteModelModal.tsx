@@ -228,7 +228,7 @@ export function RouteModelModal({
       {isOpen && (
         <motion.div
           className={clsx(
-            "fixed inset-0 bg-black/70 p-4 backdrop-blur-sm sm:p-6",
+            "fixed inset-0 pointer-events-auto bg-black/70 p-4 backdrop-blur-sm sm:p-6",
             zIndexClassName,
           )}
           initial={{ opacity: 0 }}
