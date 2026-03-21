@@ -93,4 +93,37 @@ describe("VoicePicker", () => {
     fireEvent.click(screen.getByRole("button", { name: /Play preview for Alloy/i }));
     expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
   });
+
+  it("moves the scrubber as playback time advances even before duration metadata resolves", () => {
+    const { container } = render(
+      <VoicePicker
+        items={[
+          {
+            id: "serena",
+            name: "Serena",
+            categoryLabel: "Built-in voice",
+            description: "Clear and natural",
+            previewUrl: "/voices/serena.wav",
+          },
+        ]}
+        emptyTitle="No voices"
+        emptyDescription="Nothing to show"
+      />,
+    );
+
+    const audio = container.querySelector("audio") as HTMLAudioElement | null;
+    expect(audio).not.toBeNull();
+
+    const slider = screen.getByLabelText(/Seek preview for Serena/i);
+    expect(slider).toHaveAttribute("value", "0");
+
+    Object.defineProperty(audio!, "currentTime", {
+      configurable: true,
+      writable: true,
+      value: 5,
+    });
+    fireEvent.timeUpdate(audio!);
+
+    expect(slider).toHaveAttribute("value", "5");
+  });
 });

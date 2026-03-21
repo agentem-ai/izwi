@@ -470,7 +470,7 @@ export function VoicesPage({
               </TabsTrigger>
               <TabsTrigger
                 value="saved"
-                className="h-full rounded-[var(--radius-pill)] px-3 text-[13px] font-semibold text-[var(--text-muted)] data-[state=active]:bg-[var(--bg-surface-1)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-none"
+                className="h-full gap-2 rounded-[var(--radius-pill)] px-3 text-[13px] font-semibold text-[var(--text-muted)] data-[state=active]:bg-[var(--bg-surface-1)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-none"
               >
                 <span>My Voices</span>
                 <span className="rounded-full border border-current/20 px-2 py-0.5 text-[10px] font-semibold">
@@ -479,7 +479,7 @@ export function VoicesPage({
               </TabsTrigger>
               <TabsTrigger
                 value="built-in"
-                className="h-full rounded-[var(--radius-pill)] px-3 text-[13px] font-semibold text-[var(--text-muted)] data-[state=active]:bg-[var(--bg-surface-1)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-none"
+                className="h-full gap-2 rounded-[var(--radius-pill)] px-3 text-[13px] font-semibold text-[var(--text-muted)] data-[state=active]:bg-[var(--bg-surface-1)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-none"
               >
                 <span>Built-in Voices</span>
                 <span className="rounded-full border border-current/20 px-2 py-0.5 text-[10px] font-semibold">
