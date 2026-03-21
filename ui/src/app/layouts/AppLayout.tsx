@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Mic,
   Users,
+  Wand2,
   FileText,
   MessageSquare,
   AudioLines,
@@ -14,7 +15,11 @@ import {
   Sun,
   Moon,
 } from "lucide-react";
-import { APP_ICON_URL, APP_VERSION } from "@/shared/config/runtime";
+import {
+  APP_ICON_URL,
+  APP_VERSION,
+  VOICE_STUDIO_ENABLED,
+} from "@/shared/config/runtime";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { FirstRunOnboarding } from "@/app/onboarding/FirstRunOnboarding";
@@ -69,22 +74,53 @@ const TOP_NAV_ITEMS: NavItem[] = [
   },
 ];
 
-const CREATION_NAV_ITEMS: NavItem[] = [
-  {
-    id: "voice-studio",
-    label: "Voice Studio",
-    description: "Create, clone, and manage voice assets",
-    icon: Library,
-    path: "/voice-studio",
-  },
-  {
-    id: "text-to-speech",
-    label: "Text to Speech",
-    description: "Output speech from text",
-    icon: Mic,
-    path: "/text-to-speech",
-  },
-];
+const CREATION_NAV_ITEMS: NavItem[] = VOICE_STUDIO_ENABLED
+  ? [
+      {
+        id: "voice-studio",
+        label: "Voice Studio",
+        description: "Create, clone, and manage voice assets",
+        icon: Library,
+        path: "/voice-studio",
+      },
+      {
+        id: "text-to-speech",
+        label: "Text to Speech",
+        description: "Output speech from text",
+        icon: Mic,
+        path: "/text-to-speech",
+      },
+    ]
+  : [
+      {
+        id: "voices",
+        label: "Voices",
+        description: "Reusable saved and built-in voice library",
+        icon: Library,
+        path: "/voices",
+      },
+      {
+        id: "text-to-speech",
+        label: "Text to Speech",
+        description: "Output speech from text",
+        icon: Mic,
+        path: "/text-to-speech",
+      },
+      {
+        id: "voice-cloning",
+        label: "Voice Cloning",
+        description: "Identity personalization from reference audio",
+        icon: Users,
+        path: "/voice-cloning",
+      },
+      {
+        id: "voice-design",
+        label: "Voice Design",
+        description: "Create voices from descriptions",
+        icon: Wand2,
+        path: "/voice-design",
+      },
+    ];
 
 const BOTTOM_NAV_ITEMS: NavItem[] = [
   {
