@@ -295,12 +295,16 @@ export function VoiceDesignWorkspace({
         <WorkspacePanel className="p-5">
           <div className="space-y-5">
             <div>
-              <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <label className={VOICE_ROUTE_SECTION_LABEL_CLASS}>
+              <div className="mb-2 space-y-2">
+                <label className={clsx(VOICE_ROUTE_SECTION_LABEL_CLASS, "block")}>
                   Voice Direction
                   <span className="ml-1 text-red-500">*</span>
                 </label>
-                <div className="flex items-center gap-2 sm:justify-end">
+                <p className={VOICE_ROUTE_META_COPY_CLASS}>
+                  Describe the target tone and speaking style, then generate
+                  candidate voices.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
                   <Select value={language} onValueChange={setLanguage}>
                     <SelectTrigger className="w-[10.5rem]">
                       <div className="flex min-w-0 items-center gap-2">
@@ -319,7 +323,7 @@ export function VoiceDesignWorkspace({
 
                   <button
                     onClick={() => setShowPresets((current) => !current)}
-                    className="text-xs font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                    className="btn btn-ghost h-8 rounded-[var(--radius-pill)] px-3 text-xs"
                   >
                     {showPresets ? "Hide presets" : "View presets"}
                   </button>
