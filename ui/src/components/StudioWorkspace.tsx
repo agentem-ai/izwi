@@ -58,6 +58,15 @@ import { Input } from "@/components/ui/input";
 import { RouteHistoryDrawer } from "@/components/RouteHistoryDrawer";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Card } from "@/components/ui/card";
 import { StudioWorkspaceScaffold } from "@/features/studio/components/StudioWorkspaceScaffold";
 import { useDownloadIndicator } from "@/utils/useDownloadIndicator";
 import { getSpeakerProfilesForVariant } from "@/types";
@@ -92,6 +101,7 @@ interface StudioRenderQueueItem {
 }
 
 const STUDIO_RENDER_QUEUE_STORAGE_KEY = "izwi.studio.render.queue.v1";
+const STUDIO_UNFILED_FOLDER_VALUE = "__studio-unfiled-folder__";
 
 const SAVED_VOICE_RENDERER_PREFERRED_MODELS = [
   ...VOICE_CLONING_PREFERRED_MODELS,
@@ -1898,45 +1908,57 @@ export function StudioWorkspace({
                     className="bg-[var(--bg-surface-0)]"
                   />
                   <div className="grid gap-2 sm:grid-cols-2">
-                    <select
+                    <Select
                       value={projectStatusFilter}
-                      onChange={(event) =>
+                      onValueChange={(value) =>
                         setProjectStatusFilter(
-                          event.target.value as "all" | "in_progress" | "ready",
+                          value as "all" | "in_progress" | "ready",
                         )
                       }
-                      className="h-9 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-2 text-xs text-[var(--text-primary)]"
                     >
-                      <option value="all">All statuses</option>
-                      <option value="in_progress">In progress</option>
-                      <option value="ready">Ready to export</option>
-                    </select>
-                    <select
+                      <SelectTrigger className="h-9 bg-[var(--bg-surface-0)] px-2 text-xs">
+                        <SelectValue placeholder="All statuses" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All statuses</SelectItem>
+                        <SelectItem value="in_progress">In progress</SelectItem>
+                        <SelectItem value="ready">Ready to export</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select
                       value={projectSort}
-                      onChange={(event) =>
+                      onValueChange={(value) =>
                         setProjectSort(
-                          event.target.value as "recent" | "name" | "progress",
+                          value as "recent" | "name" | "progress",
                         )
                       }
-                      className="h-9 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-2 text-xs text-[var(--text-primary)]"
                     >
-                      <option value="recent">Sort: Recent</option>
-                      <option value="name">Sort: Name</option>
-                      <option value="progress">Sort: Progress</option>
-                    </select>
+                      <SelectTrigger className="h-9 bg-[var(--bg-surface-0)] px-2 text-xs">
+                        <SelectValue placeholder="Sort: Recent" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="recent">Sort: Recent</SelectItem>
+                        <SelectItem value="name">Sort: Name</SelectItem>
+                        <SelectItem value="progress">Sort: Progress</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
-                  <select
+                  <Select
                     value={projectFolderFilter}
-                    onChange={(event) => setProjectFolderFilter(event.target.value)}
-                    className="h-9 w-full rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-2 text-xs text-[var(--text-primary)]"
+                    onValueChange={setProjectFolderFilter}
                   >
-                    <option value="all">All folders</option>
-                    {projectFolders.map((folder) => (
-                      <option key={folder.id} value={folder.id}>
-                        {folder.name}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger className="h-9 w-full bg-[var(--bg-surface-0)] px-2 text-xs">
+                      <SelectValue placeholder="All folders" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All folders</SelectItem>
+                      {projectFolders.map((folder) => (
+                        <SelectItem key={folder.id} value={folder.id}>
+                          {folder.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 {visibleProjects.length === 0 ? (
                   <div className="app-sidebar-empty">
@@ -2593,18 +2615,18 @@ export function StudioWorkspace({
                           <div className="space-y-1.5">
                             <div className="flex flex-wrap items-center gap-2">
                               <label className="inline-flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
-                                <input
-                                  type="checkbox"
+                                <Switch
                                   checked={isSelected}
-                                  onChange={(event) =>
+                                  onCheckedChange={(checked) =>
                                     setSelectedSegmentIds((current) => {
-                                      if (event.target.checked) {
+                                      if (checked) {
                                         return [...new Set([...current, segment.id])];
                                       }
                                       return current.filter((id) => id !== segment.id);
                                     })
                                   }
-                                  className="h-4 w-4 rounded border-[var(--border-muted)]"
+                                  aria-label={`Select segment ${segment.position + 1}`}
+                                  className="h-5 w-9"
                                 />
                                 Select
                               </label>
@@ -2777,7 +2799,7 @@ export function StudioWorkspace({
             }
             delivery={
               <>
-                <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5">
+                <Card className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 shadow-none">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
@@ -2833,21 +2855,29 @@ export function StudioWorkspace({
                       <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
                         Folder
                       </label>
-                      <select
-                        value={projectFolderId}
-                        onChange={(event) => {
-                          setProjectFolderId(event.target.value);
+                      <Select
+                        value={projectFolderId || STUDIO_UNFILED_FOLDER_VALUE}
+                        onValueChange={(value) => {
+                          setProjectFolderId(
+                            value === STUDIO_UNFILED_FOLDER_VALUE ? "" : value,
+                          );
                           setWorkspaceStatus(null);
                         }}
-                        className="h-10 w-full rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-sm text-[var(--text-primary)]"
                       >
-                        <option value="">Unfiled</option>
-                        {projectFolders.map((folder) => (
-                          <option key={folder.id} value={folder.id}>
-                            {folder.name}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger className="w-full bg-[var(--bg-surface-1)]">
+                          <SelectValue placeholder="Unfiled" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={STUDIO_UNFILED_FOLDER_VALUE}>
+                            Unfiled
+                          </SelectItem>
+                          {projectFolders.map((folder) => (
+                            <SelectItem key={folder.id} value={folder.id}>
+                              {folder.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
 
                     <div className="space-y-2">
@@ -2917,9 +2947,9 @@ export function StudioWorkspace({
                     )}
                     Save profile
                   </Button>
-                </section>
+                </Card>
 
-                <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5">
+                <Card className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 shadow-none">
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     Pronunciation Rules
                   </div>
@@ -2993,9 +3023,9 @@ export function StudioWorkspace({
                       ))
                     )}
                   </div>
-                </section>
+                </Card>
 
-                <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5">
+                <Card className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 shadow-none">
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     Delivery
                   </div>
@@ -3012,39 +3042,51 @@ export function StudioWorkspace({
                   </div>
 
                   <div className="mt-4 grid gap-2">
-                    <select
+                    <Select
                       value={exportFormat}
-                      onChange={(event) =>
+                      onValueChange={(value) =>
                         setExportFormat(
-                          event.target.value as "wav" | "raw_i16" | "raw_f32",
+                          value as "wav" | "raw_i16" | "raw_f32",
                         )
                       }
-                      className="h-9 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2 text-xs text-[var(--text-primary)]"
                     >
-                      <option value="wav">Export format: WAV</option>
-                      <option value="raw_i16">Export format: PCM 16-bit</option>
-                      <option value="raw_f32">Export format: Float 32-bit</option>
-                    </select>
-                    <select
+                      <SelectTrigger className="h-9 bg-[var(--bg-surface-1)] px-2 text-xs">
+                        <SelectValue placeholder="Export format: WAV" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="wav">Export format: WAV</SelectItem>
+                        <SelectItem value="raw_i16">
+                          Export format: PCM 16-bit
+                        </SelectItem>
+                        <SelectItem value="raw_f32">
+                          Export format: Float 32-bit
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select
                       value={exportScope}
-                      onChange={(event) =>
-                        setExportScope(event.target.value as "all" | "selected")
+                      onValueChange={(value) =>
+                        setExportScope(value as "all" | "selected")
                       }
-                      className="h-9 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2 text-xs text-[var(--text-primary)]"
                     >
-                      <option value="all">Scope: Full project</option>
-                      <option value="selected">Scope: Selected segments</option>
-                    </select>
-                    <label className="inline-flex items-center gap-2 text-xs text-[var(--text-secondary)]">
-                      <input
-                        type="checkbox"
+                      <SelectTrigger className="h-9 bg-[var(--bg-surface-1)] px-2 text-xs">
+                        <SelectValue placeholder="Scope: Full project" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Scope: Full project</SelectItem>
+                        <SelectItem value="selected">
+                          Scope: Selected segments
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <label className="inline-flex items-center justify-between gap-2 text-xs text-[var(--text-secondary)]">
+                      <span>Include script sidecar (.txt)</span>
+                      <Switch
                         checked={exportIncludeScript}
-                        onChange={(event) =>
-                          setExportIncludeScript(event.target.checked)
-                        }
-                        className="h-4 w-4 rounded border-[var(--border-muted)]"
+                        onCheckedChange={setExportIncludeScript}
+                        aria-label="Include script sidecar (.txt)"
+                        className="h-5 w-9"
                       />
-                      Include script sidecar (.txt)
                     </label>
                   </div>
 
@@ -3074,9 +3116,9 @@ export function StudioWorkspace({
                       Delete project
                     </Button>
                   </div>
-                </section>
+                </Card>
 
-                <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5">
+                <Card className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 shadow-none">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
@@ -3140,9 +3182,9 @@ export function StudioWorkspace({
                       ))
                     )}
                   </div>
-                </section>
+                </Card>
 
-                <section className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5">
+                <Card className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 shadow-none">
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     Snapshots
                   </div>
@@ -3211,7 +3253,7 @@ export function StudioWorkspace({
                       ))
                     )}
                   </div>
-                </section>
+                </Card>
               </>
             }
           />
