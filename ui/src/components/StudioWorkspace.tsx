@@ -9,6 +9,7 @@ import {
 import { createPortal } from "react-dom";
 import {
   AlertCircle,
+  AlertTriangle,
   ChevronDown,
   ChevronUp,
   CheckCircle2,
@@ -223,6 +224,18 @@ export function StudioWorkspace({
   const [exportScope, setExportScope] = useState<"all" | "selected">("all");
   const [exportIncludeScript, setExportIncludeScript] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
+  const [deleteProjectTarget, setDeleteProjectTarget] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [deleteProjectError, setDeleteProjectError] = useState<string | null>(null);
+  const [deletingSegment, setDeletingSegment] = useState(false);
+  const [deleteSegmentTarget, setDeleteSegmentTarget] = useState<{
+    id: string;
+    position: number;
+    preview: string;
+  } | null>(null);
+  const [deleteSegmentError, setDeleteSegmentError] = useState<string | null>(null);
   const [segmentDrafts, setSegmentDrafts] = useState<Record<string, string>>({});
   const [segmentSelections, setSegmentSelections] = useState<
     Record<string, number | null>
@@ -1216,6 +1229,83 @@ export function StudioWorkspace({
     }
   };
 
+  const openDeleteSegmentConfirm = useCallback(
+    (segmentId: string) => {
+      if (deletingSegment) {
+        return;
+      }
+      if (!selectedProject) {
+        return;
+      }
+      if (selectedProject.segments.length <= 1) {
+        const message = "A project must keep at least one segment.";
+        setWorkspaceError(message);
+        onError(message);
+        return;
+      }
+
+      const segment = selectedProject.segments.find(
+        (candidate) => candidate.id === segmentId,
+      );
+      if (!segment) {
+        return;
+      }
+
+      setDeleteSegmentTarget({
+        id: segment.id,
+        position: segment.position + 1,
+        preview: segment.text,
+      });
+      setDeleteSegmentError(null);
+    },
+    [deletingSegment, onError, selectedProject],
+  );
+
+  const closeDeleteSegmentConfirm = useCallback(() => {
+    if (deletingSegment) {
+      return;
+    }
+    setDeleteSegmentTarget(null);
+    setDeleteSegmentError(null);
+  }, [deletingSegment]);
+
+  const confirmDeleteSegment = useCallback(async () => {
+    if (!selectedProject || !deleteSegmentTarget || deletingSegment) {
+      return;
+    }
+
+    const segment = selectedProject.segments.find(
+      (candidate) => candidate.id === deleteSegmentTarget.id,
+    );
+    const deletedPosition = segment
+      ? segment.position + 1
+      : deleteSegmentTarget.position;
+
+    try {
+      setDeletingSegment(true);
+      setDeleteSegmentError(null);
+      setWorkspaceError(null);
+      const project = await api.deleteTtsProjectSegment(
+        selectedProject.id,
+        deleteSegmentTarget.id,
+      );
+      setSelectedProject(project);
+      setWorkspaceStatus({
+        tone: "success",
+        message: `Deleted segment ${deletedPosition}.`,
+      });
+      setDeleteSegmentTarget(null);
+      await loadProjects();
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to delete the segment.";
+      setDeleteSegmentError(message);
+      onError(message);
+    } finally {
+      setDeletingSegment(false);
+    }
+  }, [deleteSegmentTarget, deletingSegment, loadProjects, onError, selectedProject]);
+
   const handleDeleteSegment = async (segmentId: string) => {
     if (!selectedProject) {
       return;
@@ -1227,35 +1317,7 @@ export function StudioWorkspace({
       return;
     }
 
-    const segment = selectedProject.segments.find((candidate) => candidate.id === segmentId);
-    if (!segment) {
-      return;
-    }
-
-    if (typeof window !== "undefined") {
-      const confirmed = window.confirm(
-        `Delete segment ${segment.position + 1} from "${selectedProject.name}"?`,
-      );
-      if (!confirmed) {
-        return;
-      }
-    }
-
-    try {
-      setWorkspaceError(null);
-      const project = await api.deleteTtsProjectSegment(selectedProject.id, segmentId);
-      setSelectedProject(project);
-      setWorkspaceStatus({
-        tone: "success",
-        message: `Deleted segment ${segment.position + 1}.`,
-      });
-      await loadProjects();
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to delete the segment.";
-      setWorkspaceError(message);
-      onError(message);
-    }
+    openDeleteSegmentConfirm(segmentId);
   };
 
   const queueSegmentsForRender = useCallback(
@@ -1776,14 +1838,9 @@ export function StudioWorkspace({
       if (deletingProject) {
         return;
       }
-      if (typeof window !== "undefined") {
-        const confirmed = window.confirm(`Delete the project "${projectName}"?`);
-        if (!confirmed) {
-          return;
-        }
-      }
       try {
         setDeletingProject(true);
+        setDeleteProjectError(null);
         await api.deleteTtsProject(projectId);
         setWorkspaceStatus({
           tone: "success",
@@ -1791,11 +1848,12 @@ export function StudioWorkspace({
         });
         setSelectedProject((current) => (current?.id === projectId ? null : current));
         setSelectedProjectId((current) => (current === projectId ? null : current));
+        setDeleteProjectTarget(null);
         await loadProjects();
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Failed to delete the project.";
-        setWorkspaceError(message);
+        setDeleteProjectError(message);
         onError(message);
       } finally {
         setDeletingProject(false);
@@ -1804,11 +1862,37 @@ export function StudioWorkspace({
     [deletingProject, loadProjects, onError],
   );
 
-  const handleDeleteProject = async () => {
+  const openDeleteProjectConfirm = useCallback(
+    (projectId: string, projectName: string) => {
+      if (deletingProject) {
+        return;
+      }
+      setDeleteProjectTarget({ id: projectId, name: projectName });
+      setDeleteProjectError(null);
+    },
+    [deletingProject],
+  );
+
+  const closeDeleteProjectConfirm = useCallback(() => {
+    if (deletingProject) {
+      return;
+    }
+    setDeleteProjectTarget(null);
+    setDeleteProjectError(null);
+  }, [deletingProject]);
+
+  const confirmDeleteProject = useCallback(async () => {
+    if (!deleteProjectTarget || deletingProject) {
+      return;
+    }
+    await deleteProjectById(deleteProjectTarget.id, deleteProjectTarget.name);
+  }, [deleteProjectTarget, deleteProjectById, deletingProject]);
+
+  const handleDeleteProject = () => {
     if (!selectedProject) {
       return;
     }
-    await deleteProjectById(selectedProject.id, selectedProject.name);
+    openDeleteProjectConfirm(selectedProject.id, selectedProject.name);
   };
 
   const selectedProjectRenderedCount =
@@ -2030,7 +2114,7 @@ export function StudioWorkspace({
                             onClick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
-                              void deleteProjectById(project.id, project.name);
+                              openDeleteProjectConfirm(project.id, project.name);
                             }}
                             className="app-sidebar-delete-btn"
                             title="Delete project"
@@ -2278,6 +2362,133 @@ export function StudioWorkspace({
             </div>
           </div>
         </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(deleteProjectTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeDeleteProjectConfirm();
+          }
+        }}
+      >
+        {deleteProjectTarget ? (
+          <DialogContent className="max-w-md border-[var(--border-strong)] bg-[var(--bg-surface-1)] p-5">
+            <DialogTitle className="sr-only">Delete project?</DialogTitle>
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-full border border-[var(--danger-border)] bg-[var(--danger-bg)] p-2 text-[var(--danger-text)]">
+                <AlertTriangle className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                  Delete project?
+                </h3>
+                <DialogDescription className="mt-1 text-sm text-[var(--text-muted)]">
+                  This permanently removes project segments, pronunciation rules,
+                  snapshots, and render queue history.
+                </DialogDescription>
+                <p className="mt-2 truncate text-xs text-[var(--text-subtle)]">
+                  {deleteProjectTarget.name}
+                </p>
+              </div>
+            </div>
+
+            {deleteProjectError ? (
+              <div className="mt-4 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
+                {deleteProjectError}
+              </div>
+            ) : null}
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button
+                onClick={closeDeleteProjectConfirm}
+                variant="outline"
+                size="sm"
+                className="h-8 border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface-3)]"
+                disabled={deletingProject}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => void confirmDeleteProject()}
+                variant="destructive"
+                size="sm"
+                className="h-8 gap-1.5"
+                disabled={deletingProject}
+              >
+                {deletingProject ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
+                Delete project
+              </Button>
+            </div>
+          </DialogContent>
+        ) : null}
+      </Dialog>
+
+      <Dialog
+        open={Boolean(deleteSegmentTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeDeleteSegmentConfirm();
+          }
+        }}
+      >
+        {deleteSegmentTarget ? (
+          <DialogContent className="max-w-md border-[var(--border-strong)] bg-[var(--bg-surface-1)] p-5">
+            <DialogTitle className="sr-only">Delete segment?</DialogTitle>
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-full border border-[var(--danger-border)] bg-[var(--danger-bg)] p-2 text-[var(--danger-text)]">
+                <AlertTriangle className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                  Delete segment {deleteSegmentTarget.position}?
+                </h3>
+                <DialogDescription className="mt-1 text-sm text-[var(--text-muted)]">
+                  This permanently removes the segment from the project script.
+                </DialogDescription>
+                <p className="mt-2 line-clamp-3 text-xs text-[var(--text-subtle)]">
+                  {deleteSegmentTarget.preview}
+                </p>
+              </div>
+            </div>
+
+            {deleteSegmentError ? (
+              <div className="mt-4 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
+                {deleteSegmentError}
+              </div>
+            ) : null}
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button
+                onClick={closeDeleteSegmentConfirm}
+                variant="outline"
+                size="sm"
+                className="h-8 border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface-3)]"
+                disabled={deletingSegment}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => void confirmDeleteSegment()}
+                variant="destructive"
+                size="sm"
+                className="h-8 gap-1.5"
+                disabled={deletingSegment}
+              >
+                {deletingSegment ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
+                Delete segment
+              </Button>
+            </div>
+          </DialogContent>
+        ) : null}
       </Dialog>
 
       <div className="space-y-5">
