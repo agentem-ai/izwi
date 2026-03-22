@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Card } from "@/components/ui/card";
 
 interface StudioWorkspaceScaffoldProps {
   library: ReactNode;
@@ -13,20 +14,20 @@ export function StudioWorkspaceScaffold({
 }: StudioWorkspaceScaffoldProps) {
   return (
     <div className="space-y-5">
-      <section
+      <Card
         data-testid="studio-library-pane"
-        className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 sm:p-6"
+        className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 shadow-none sm:p-6"
       >
         {library}
-      </section>
+      </Card>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <section
+        <Card
           data-testid="studio-editor-pane"
-          className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 sm:p-6"
+          className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 shadow-none sm:p-6"
         >
           {editor}
-        </section>
+        </Card>
 
         <aside
           data-testid="studio-delivery-pane"
