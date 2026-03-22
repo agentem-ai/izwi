@@ -2,15 +2,17 @@ import type { ReactNode } from "react";
 import { Card } from "@/components/ui/card";
 
 interface StudioWorkspaceScaffoldProps {
-  library: ReactNode;
+  overview: ReactNode;
   editor: ReactNode;
-  delivery: ReactNode;
+  actionRail?: ReactNode;
+  utilities?: ReactNode;
 }
 
 export function StudioWorkspaceScaffold({
-  library,
+  overview,
   editor,
-  delivery,
+  actionRail,
+  utilities,
 }: StudioWorkspaceScaffoldProps) {
   return (
     <div className="space-y-5">
@@ -18,10 +20,10 @@ export function StudioWorkspaceScaffold({
         data-testid="studio-library-pane"
         className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 shadow-none sm:p-6"
       >
-        {library}
+        {overview}
       </Card>
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px] 2xl:grid-cols-[minmax(0,1fr)_340px]">
         <Card
           data-testid="studio-editor-pane"
           className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 shadow-none sm:p-6"
@@ -29,13 +31,21 @@ export function StudioWorkspaceScaffold({
           {editor}
         </Card>
 
-        <aside
-          data-testid="studio-delivery-pane"
-          className="space-y-5"
-        >
-          {delivery}
-        </aside>
+        {actionRail ? (
+          <aside
+            data-testid="studio-delivery-pane"
+            className="space-y-5 xl:sticky xl:top-4 xl:self-start"
+          >
+            {actionRail}
+          </aside>
+        ) : null}
       </div>
+
+      {utilities ? (
+        <section data-testid="studio-utilities-pane" className="space-y-5">
+          {utilities}
+        </section>
+      ) : null}
     </div>
   );
 }

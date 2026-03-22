@@ -1993,7 +1993,7 @@ export function StudioWorkspace({
   );
 
   const projectLibraryFilters = (
-    <Card className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-4 shadow-none sm:p-5">
+    <Card className="rounded-2xl border-0 bg-[var(--bg-surface-0)] p-4 shadow-none sm:p-5">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
@@ -2007,7 +2007,7 @@ export function StudioWorkspace({
           <Library className="h-4 w-4" />
         </div>
       </div>
-      <div className="mt-4 space-y-2 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3">
+      <div className="mt-4 space-y-2 rounded-xl bg-[var(--bg-surface-1)] p-3">
         <Input
           value={projectSearch}
           onChange={(event) => setProjectSearch(event.target.value)}
@@ -2591,7 +2591,7 @@ export function StudioWorkspace({
           </Card>
         ) : (
           <StudioWorkspaceScaffold
-            library={
+            overview={
               <>
               <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
                 <div className="min-w-0 flex-1">
@@ -3048,7 +3048,7 @@ export function StudioWorkspace({
                 </div>
               </>
             }
-            delivery={
+            actionRail={
               <>
                 <Card className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 shadow-none">
                   <div className="flex items-center justify-between gap-3">
