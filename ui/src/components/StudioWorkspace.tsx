@@ -11,8 +11,6 @@ import {
   AlertCircle,
   AlertTriangle,
   ChevronLeft,
-  ChevronDown,
-  ChevronUp,
   CheckCircle2,
   Download,
   FileAudio,
@@ -20,11 +18,9 @@ import {
   Library,
   Loader2,
   PencilLine,
-  Play,
   Settings2,
   Trash2,
   Upload,
-  Link2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -71,6 +67,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
+import { StudioSegmentEditor } from "@/features/studio/components/StudioSegmentEditor";
 import { StudioWorkspaceScaffold } from "@/features/studio/components/StudioWorkspaceScaffold";
 import { useDownloadIndicator } from "@/utils/useDownloadIndicator";
 import { getSpeakerProfilesForVariant } from "@/types";
@@ -1154,6 +1151,21 @@ export function StudioWorkspace({
     supportsSpeedControl,
   ]);
 
+  const runProjectMutation = async <T,>(
+    mutation: () => Promise<T>,
+    fallbackMessage: string,
+  ): Promise<T | null> => {
+    try {
+      setWorkspaceError(null);
+      return await mutation();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : fallbackMessage;
+      setWorkspaceError(message);
+      onError(message);
+      return null;
+    }
+  };
+
   const handleSaveSegment = async (segmentId: string) => {
     if (!selectedProject) {
       return;
@@ -1213,24 +1225,23 @@ export function StudioWorkspace({
       return;
     }
 
-    try {
-      setWorkspaceError(null);
-      const project = await api.splitTtsProjectSegment(selectedProject.id, segmentId, {
-        before_text: beforeText,
-        after_text: afterText,
-      });
-      setSelectedProject(project);
-      setWorkspaceStatus({
-        tone: "success",
-        message: `Split segment ${segment.position + 1} into two blocks.`,
-      });
-      await loadProjects();
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to split the segment.";
-      setWorkspaceError(message);
-      onError(message);
+    const project = await runProjectMutation(
+      () =>
+        api.splitTtsProjectSegment(selectedProject.id, segmentId, {
+          before_text: beforeText,
+          after_text: afterText,
+        }),
+      "Failed to split the segment.",
+    );
+    if (!project) {
+      return;
     }
+    setSelectedProject(project);
+    setWorkspaceStatus({
+      tone: "success",
+      message: `Split segment ${segment.position + 1} into two blocks.`,
+    });
+    await loadProjects();
   };
 
   const openDeleteSegmentConfirm = useCallback(
@@ -1343,6 +1354,7 @@ export function StudioWorkspace({
         jobId = undefined;
       }
 
+      let addedCount = 0;
       setRenderQueue((current) => {
         const existingKeySet = new Set(
           current
@@ -1364,10 +1376,11 @@ export function StudioWorkspace({
               jobId,
             };
           });
+        addedCount = additions.length;
         return [...current, ...additions];
       });
 
-      return uniqueSegmentIds.length;
+      return addedCount;
     },
     [],
   );
@@ -1534,23 +1547,19 @@ export function StudioWorkspace({
     if (!selectedProject) {
       return;
     }
-    try {
-      const project = await api.mergeTtsProjectSegmentWithNext(
-        selectedProject.id,
-        segmentId,
-      );
-      setSelectedProject(project);
-      setWorkspaceStatus({
-        tone: "success",
-        message: "Merged segment with the next block.",
-      });
-      await loadProjects();
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to merge project segments.";
-      setWorkspaceError(message);
-      onError(message);
+    const project = await runProjectMutation(
+      () => api.mergeTtsProjectSegmentWithNext(selectedProject.id, segmentId),
+      "Failed to merge project segments.",
+    );
+    if (!project) {
+      return;
     }
+    setSelectedProject(project);
+    setWorkspaceStatus({
+      tone: "success",
+      message: "Merged segment with the next block.",
+    });
+    await loadProjects();
   };
 
   const handleMoveSegment = async (
@@ -1572,25 +1581,22 @@ export function StudioWorkspace({
     const reordered = [...ids];
     const [moved] = reordered.splice(index, 1);
     reordered.splice(targetIndex, 0, moved);
-    try {
-      const project = await api.reorderTtsProjectSegments(selectedProject.id, {
-        ordered_segment_ids: reordered,
-      });
-      setSelectedProject(project);
-      setWorkspaceStatus({
-        tone: "success",
-        message:
-          direction === "up"
-            ? "Moved segment up."
-            : "Moved segment down.",
-      });
-      await loadProjects();
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to reorder project segments.";
-      setWorkspaceError(message);
-      onError(message);
+    const project = await runProjectMutation(
+      () =>
+        api.reorderTtsProjectSegments(selectedProject.id, {
+          ordered_segment_ids: reordered,
+        }),
+      "Failed to reorder project segments.",
+    );
+    if (!project) {
+      return;
     }
+    setSelectedProject(project);
+    setWorkspaceStatus({
+      tone: "success",
+      message: direction === "up" ? "Moved segment up." : "Moved segment down.",
+    });
+    await loadProjects();
   };
 
   const handleBulkDeleteSegments = async () => {
@@ -1603,74 +1609,108 @@ export function StudioWorkspace({
       onError(message);
       return;
     }
-    try {
-      const project = await api.bulkDeleteTtsProjectSegments(selectedProject.id, {
-        segment_ids: selectedSegmentIds,
-      });
-      setSelectedProject(project);
-      setSelectedSegmentIds([]);
-      setWorkspaceStatus({
-        tone: "success",
-        message: `Deleted ${selectedSegmentIds.length} selected segment${selectedSegmentIds.length === 1 ? "" : "s"}.`,
-      });
-      await loadProjects();
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to delete selected segments.";
-      setWorkspaceError(message);
-      onError(message);
+    const project = await runProjectMutation(
+      () =>
+        api.bulkDeleteTtsProjectSegments(selectedProject.id, {
+          segment_ids: selectedSegmentIds,
+        }),
+      "Failed to delete selected segments.",
+    );
+    if (!project) {
+      return;
     }
+    setSelectedProject(project);
+    setSelectedSegmentIds([]);
+    setWorkspaceStatus({
+      tone: "success",
+      message: `Deleted ${selectedSegmentIds.length} selected segment${selectedSegmentIds.length === 1 ? "" : "s"}.`,
+    });
+    await loadProjects();
+  };
+
+  const queueRenderForSegments = async (
+    segmentIds: string[],
+  ): Promise<{ queuedCount: number; syncedDraftCount: number } | null> => {
+    if (!selectedProject || segmentIds.length === 0) {
+      return null;
+    }
+
+    const project = await persistProjectSettings();
+    if (!project) {
+      return null;
+    }
+
+    let currentProject = project;
+    let syncedDraftCount = 0;
+    for (const segmentId of segmentIds) {
+      const currentSegment = currentProject.segments.find(
+        (segment) => segment.id === segmentId,
+      );
+      if (!currentSegment) {
+        continue;
+      }
+      const segmentDirty =
+        (segmentDrafts[segmentId] ?? currentSegment.text) !== currentSegment.text;
+      if (!segmentDirty) {
+        continue;
+      }
+      const synced = await persistSegmentDraft(currentProject, segmentId);
+      if (!synced) {
+        return null;
+      }
+      currentProject = synced;
+      syncedDraftCount += 1;
+    }
+
+    const queuedCount = await queueSegmentsForRender(currentProject, segmentIds);
+    return { queuedCount, syncedDraftCount };
   };
 
   const handleRenderSelectedSegments = async () => {
     if (!selectedProject || selectedSegmentIds.length === 0) {
       return;
     }
-    for (const segmentId of selectedSegmentIds) {
-      await handleRenderSegment(segmentId);
+    const renderResult = await runProjectMutation(
+      () => queueRenderForSegments(selectedSegmentIds),
+      "Failed to queue selected segments for rendering.",
+    );
+    if (!renderResult) {
+      return;
     }
+    const { queuedCount, syncedDraftCount } = renderResult;
+    const segmentLabel = `${queuedCount} selected segment${queuedCount === 1 ? "" : "s"}`;
+    setWorkspaceStatus({
+      tone: "success",
+      message:
+        queuedCount > 0
+          ? syncedDraftCount > 0
+            ? `Saved latest edits and queued ${segmentLabel}.`
+            : `Queued ${segmentLabel} for rendering.`
+          : "Selected segments are already in the render queue.",
+    });
   };
 
   const handleRenderSegment = async (segmentId: string) => {
     if (!selectedProject) {
       return;
     }
-    const project = await persistProjectSettings();
-    if (!project) {
+    const renderResult = await runProjectMutation(
+      () => queueRenderForSegments([segmentId]),
+      "Failed to render the segment.",
+    );
+    if (!renderResult) {
       return;
     }
-    try {
-      let currentProject = project;
-      const currentSegment = currentProject.segments.find(
-        (segment) => segment.id === segmentId,
-      );
-      const segmentDirty =
-        currentSegment &&
-        (segmentDrafts[segmentId] ?? currentSegment.text) !== currentSegment.text;
-
-      if (segmentDirty) {
-        const synced = await persistSegmentDraft(currentProject, segmentId);
-        if (!synced) {
-          return;
-        }
-        currentProject = synced;
-      }
-      const queuedCount = await queueSegmentsForRender(currentProject, [segmentId]);
-      setWorkspaceStatus({
-        tone: "success",
-        message:
-          queuedCount > 0
-            ? segmentDirty
-              ? "Saved latest edits and queued the segment for rendering."
-              : "Segment queued for rendering."
-            : "Segment is already in the render queue.",
-      });
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to render the segment.";
-      setWorkspaceError(message);
-      onError(message);
-    }
+    const { queuedCount, syncedDraftCount } = renderResult;
+    setWorkspaceStatus({
+      tone: "success",
+      message:
+        queuedCount > 0
+          ? syncedDraftCount > 0
+            ? "Saved latest edits and queued the segment for rendering."
+            : "Segment queued for rendering."
+          : "Segment is already in the render queue.",
+    });
   };
 
   const handleExport = async (): Promise<boolean> => {
@@ -1819,12 +1859,20 @@ export function StudioWorkspace({
       return draft !== segment.text || !segment.speech_record_id;
     }).length ?? 0;
   const selectedSegmentCount = selectedSegmentIds.length;
+  const selectedSegmentIdSet = useMemo(
+    () => new Set(selectedSegmentIds),
+    [selectedSegmentIds],
+  );
   const readySegmentCount =
     selectedProjectSegmentCount > 0
       ? Math.max(0, selectedProjectSegmentCount - pendingRenderSegmentCount)
       : 0;
-  const activeProjectQueueItems = renderQueue.filter(
-    (item) => selectedProject && item.projectId === selectedProject.id,
+  const activeProjectQueueItems = useMemo(
+    () =>
+      renderQueue.filter(
+        (item) => selectedProject && item.projectId === selectedProject.id,
+      ),
+    [renderQueue, selectedProject],
   );
   const queuedRenderCount = activeProjectQueueItems.filter(
     (item) => item.status === "queued" || item.status === "running",
@@ -1832,10 +1880,14 @@ export function StudioWorkspace({
   const failedRenderCount = activeProjectQueueItems.filter(
     (item) => item.status === "failed",
   ).length;
-  const queuedSegmentIdSet = new Set(
-    activeProjectQueueItems
-      .filter((item) => item.status === "queued" || item.status === "running")
-      .map((item) => item.segmentId),
+  const queuedSegmentIdSet = useMemo(
+    () =>
+      new Set(
+        activeProjectQueueItems
+          .filter((item) => item.status === "queued" || item.status === "running")
+          .map((item) => item.segmentId),
+      ),
+    [activeProjectQueueItems],
   );
   const projectHeaderActions = (
     <div className="flex items-center gap-2">
@@ -1847,16 +1899,18 @@ export function StudioWorkspace({
         <FilePlus2 className="h-4 w-4" />
         New project
       </Button>
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={() => setIsExportDialogOpen(true)}
-        className="h-9 gap-2 rounded-lg bg-[var(--bg-surface-1)]"
-        disabled={!selectedProject}
-      >
-        <Download className="h-4 w-4" />
-        Export
-      </Button>
+      {activeProjectId ? (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setIsExportDialogOpen(true)}
+          className="h-9 gap-2 rounded-lg bg-[var(--bg-surface-1)]"
+          disabled={!selectedProject}
+        >
+          <Download className="h-4 w-4" />
+          Export
+        </Button>
+      ) : null}
     </div>
   );
 
@@ -2712,257 +2766,56 @@ export function StudioWorkspace({
               </div>
             }
             editor={
-              <>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      setSelectedSegmentIds(
-                        selectedSegmentCount === selectedProject.segments.length
-                          ? []
-                          : selectedProject.segments.map((segment) => segment.id),
-                      )
+              <StudioSegmentEditor
+                project={selectedProject}
+                segmentDrafts={segmentDrafts}
+                segmentSelections={segmentSelections}
+                selectedSegmentIdSet={selectedSegmentIdSet}
+                selectedSegmentCount={selectedSegmentCount}
+                queuedSegmentIdSet={queuedSegmentIdSet}
+                savingSegmentId={savingSegmentId}
+                renderingSegmentId={renderingSegmentId}
+                onToggleSelectAll={() =>
+                  setSelectedSegmentIds(
+                    selectedSegmentCount === selectedProject.segments.length
+                      ? []
+                      : selectedProject.segments.map((segment) => segment.id),
+                  )
+                }
+                onRenderSelected={() => void handleRenderSelectedSegments()}
+                onDeleteSelected={() => void handleBulkDeleteSegments()}
+                onToggleSegmentSelection={(segmentId, checked) =>
+                  setSelectedSegmentIds((current) => {
+                    if (checked) {
+                      return [...new Set([...current, segmentId])];
                     }
-                    className="bg-[var(--bg-surface-1)]"
-                  >
-                    {selectedSegmentCount === selectedProject.segments.length
-                      ? "Clear selection"
-                      : "Select all"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void handleRenderSelectedSegments()}
-                    disabled={selectedSegmentCount === 0}
-                    className="bg-[var(--bg-surface-1)]"
-                  >
-                    <Play className="h-4 w-4" />
-                    Render selected
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void handleBulkDeleteSegments()}
-                    disabled={selectedSegmentCount === 0}
-                    className="bg-[var(--bg-surface-1)]"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    Delete selected
-                  </Button>
-                </div>
-
-                <div className="mt-5 space-y-4">
-                  {selectedProject.segments.map((segment) => {
-                    const draft = segmentDrafts[segment.id] ?? segment.text;
-                    const segmentDirty = draft !== segment.text;
-                    const segmentNeedsRender = segmentDirty || !segment.speech_record_id;
-                    const isSaving = savingSegmentId === segment.id;
-                    const isRendering = renderingSegmentId === segment.id;
-                    const segmentQueued = queuedSegmentIdSet.has(segment.id);
-                    const splitIndex = segmentSelections[segment.id];
-                    const canSplitSegment =
-                      typeof splitIndex === "number" &&
-                      splitIndex > 0 &&
-                      splitIndex < draft.length;
-                    const isSelected = selectedSegmentIds.includes(segment.id);
-                    const isFirst = segment.position === 0;
-                    const isLast =
-                      segment.position === selectedProject.segments.length - 1;
-
-                    return (
-                      <div
-                        key={segment.id}
-                        className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4 sm:p-5"
-                      >
-                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                          <div className="space-y-1.5">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <label className="inline-flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
-                                <Switch
-                                  checked={isSelected}
-                                  onCheckedChange={(checked) =>
-                                    setSelectedSegmentIds((current) => {
-                                      if (checked) {
-                                        return [...new Set([...current, segment.id])];
-                                      }
-                                      return current.filter((id) => id !== segment.id);
-                                    })
-                                  }
-                                  aria-label={`Select segment ${segment.position + 1}`}
-                                  className="h-5 w-9"
-                                />
-                                Select
-                              </label>
-                              <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                                Segment {segment.position + 1}
-                              </span>
-                              <span
-                                className={cn(
-                                  "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em]",
-                                  segmentDirty
-                                    ? "border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] text-[var(--status-warning-text)]"
-                                    : segment.speech_record_id
-                                      ? "bg-[var(--status-positive-bg)] border-[var(--status-positive-border)] text-[var(--status-positive-text)]"
-                                      : "bg-[var(--bg-surface-0)] border-[var(--border-muted)] text-[var(--text-muted)]",
-                                )}
-                              >
-                                {segmentDirty
-                                  ? "Edited"
-                                  : segment.speech_record_id
-                                    ? "Rendered"
-                                    : "Needs render"}
-                              </span>
-                            </div>
-                            <div className="text-sm text-[var(--text-secondary)]">
-                              {segment.input_chars} chars
-                              {segment.audio_duration_secs
-                                ? ` · ${segment.audio_duration_secs.toFixed(1)}s audio`
-                                : ""}
-                            </div>
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => void handleSaveSegment(segment.id)}
-                              disabled={!segmentDirty || isSaving}
-                              className="bg-[var(--bg-surface-0)]"
-                            >
-                              {isSaving ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <PencilLine className="h-4 w-4" />
-                              )}
-                              Save draft
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => void handleMoveSegment(segment.id, "up")}
-                              disabled={isFirst}
-                              className="bg-[var(--bg-surface-0)]"
-                            >
-                              <ChevronUp className="h-4 w-4" />
-                              Move up
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => void handleMoveSegment(segment.id, "down")}
-                              disabled={isLast}
-                              className="bg-[var(--bg-surface-0)]"
-                            >
-                              <ChevronDown className="h-4 w-4" />
-                              Move down
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => void handleMergeSegmentWithNext(segment.id)}
-                              disabled={isLast}
-                              className="bg-[var(--bg-surface-0)]"
-                            >
-                              <Link2 className="h-4 w-4" />
-                              Merge next
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => void handleSplitSegment(segment.id)}
-                              disabled={!canSplitSegment}
-                              className="bg-[var(--bg-surface-0)]"
-                            >
-                              Split at cursor
-                            </Button>
-                            <Button
-                              size="sm"
-                              onClick={() => void handleRenderSegment(segment.id)}
-                              disabled={isRendering || segmentQueued}
-                            >
-                              {isRendering ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <Play className="h-4 w-4" />
-                              )}
-                              {segmentQueued
-                                ? "Queued"
-                                : segmentDirty
-                                ? "Save & render"
-                                : segmentNeedsRender
-                                  ? "Render block"
-                                  : "Re-render"}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => void handleDeleteSegment(segment.id)}
-                              disabled={selectedProject.segments.length <= 1}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                              Delete
-                            </Button>
-                          </div>
-                        </div>
-
-                        <Textarea
-                          className="mt-4 bg-[var(--bg-surface-0)] border-[var(--border-muted)]"
-                          value={draft}
-                          onChange={(event) =>
-                            setSegmentDrafts((current) => ({
-                              ...current,
-                              [segment.id]: event.target.value,
-                            }))
-                          }
-                          onSelect={(event) =>
-                            setSegmentSelections((current) => ({
-                              ...current,
-                              [segment.id]: event.currentTarget.selectionStart,
-                            }))
-                          }
-                        />
-
-                        <div className="mt-2 text-xs text-[var(--text-muted)]">
-                          {canSplitSegment
-                            ? "Split will create a new block where the cursor is placed."
-                            : "Place the text cursor inside this block to enable splitting."}
-                        </div>
-
-                        {segmentDirty ? (
-                          <div className="mt-4 rounded-xl border border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] px-3 py-2 text-xs text-[var(--status-warning-text)]">
-                            This block has local edits. Rendering will save the latest
-                            text first and then refresh the audio.
-                          </div>
-                        ) : null}
-
-                        {segment.speech_record_id ? (
-                          <div className="mt-4 space-y-2 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-3">
-                            <audio
-                              src={api.textToSpeechRecordAudioUrl(segment.speech_record_id)}
-                              controls
-                              preload="none"
-                              className="h-10 w-full"
-                            />
-                            <div className="text-xs text-[var(--text-muted)]">
-                              {segmentDirty
-                                ? "Preview reflects the last rendered audio until you render this edited block again."
-                                : `Linked generation: ${segment.speech_record_id}`}
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="mt-4 rounded-xl border border-dashed border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-2 text-xs text-[var(--text-muted)]">
-                            Render this segment to attach audio and include it in the merged export.
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
+                    return current.filter((id) => id !== segmentId);
+                  })
+                }
+                onSaveSegment={(segmentId) => void handleSaveSegment(segmentId)}
+                onMoveSegment={(segmentId, direction) =>
+                  void handleMoveSegment(segmentId, direction)
+                }
+                onMergeSegmentWithNext={(segmentId) =>
+                  void handleMergeSegmentWithNext(segmentId)
+                }
+                onSplitSegment={(segmentId) => void handleSplitSegment(segmentId)}
+                onRenderSegment={(segmentId) => void handleRenderSegment(segmentId)}
+                onDeleteSegment={(segmentId) => void handleDeleteSegment(segmentId)}
+                onChangeSegmentDraft={(segmentId, value) =>
+                  setSegmentDrafts((current) => ({
+                    ...current,
+                    [segmentId]: value,
+                  }))
+                }
+                onChangeSegmentCursor={(segmentId, cursor) =>
+                  setSegmentSelections((current) => ({
+                    ...current,
+                    [segmentId]: cursor,
+                  }))
+                }
+                audioUrlForRecordId={(recordId) => api.textToSpeechRecordAudioUrl(recordId)}
+              />
             }
             actionRail={
               <div className="space-y-8">
