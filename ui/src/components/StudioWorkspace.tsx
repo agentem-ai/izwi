@@ -110,12 +110,17 @@ function sourceLabel(source: SavedVoiceSummary["source_route_kind"]): string {
   return source === "voice_cloning" ? "Cloned voice" : "Designed voice";
 }
 
-function projectAudioFilename(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug ? `${slug}.wav` : "tts-project.wav";
+function downloadTextFile(filename: string, text: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  window.URL.revokeObjectURL(url);
 }
 
 export function StudioWorkspace({
@@ -191,6 +196,11 @@ export function StudioWorkspace({
   const [renderQueue, setRenderQueue] = useState<StudioRenderQueueItem[]>([]);
   const [renderQueueReady, setRenderQueueReady] = useState(false);
   const [processingRenderQueue, setProcessingRenderQueue] = useState(false);
+  const [exportFormat, setExportFormat] = useState<"wav" | "raw_i16" | "raw_f32">(
+    "wav",
+  );
+  const [exportScope, setExportScope] = useState<"all" | "selected">("all");
+  const [exportIncludeScript, setExportIncludeScript] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
   const [segmentDrafts, setSegmentDrafts] = useState<Record<string, string>>({});
   const [segmentSelections, setSegmentSelections] = useState<
@@ -1622,12 +1632,48 @@ export function StudioWorkspace({
     if (!selectedProject || isDownloading) {
       return;
     }
+    const segmentIds =
+      exportScope === "selected" ? selectedSegmentIds : [];
+    if (exportScope === "selected" && segmentIds.length === 0) {
+      const message = "Select at least one segment to export a partial audio file.";
+      setWorkspaceError(message);
+      onError(message);
+      return;
+    }
     beginDownload();
     try {
+      const extension =
+        exportFormat === "wav"
+          ? "wav"
+          : exportFormat === "raw_i16"
+            ? "pcm"
+            : "f32";
+      const baseSlug = selectedProject.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      const filename = baseSlug ? `${baseSlug}.${extension}` : `tts-project.${extension}`;
       await api.downloadAudioFile(
-        api.ttsProjectAudioUrl(selectedProject.id, { download: true }),
-        projectAudioFilename(selectedProject.name),
+        api.ttsProjectAudioUrl(selectedProject.id, {
+          download: true,
+          format: exportFormat,
+          segment_ids: segmentIds,
+        }),
+        filename,
       );
+      if (exportIncludeScript) {
+        const scriptSource =
+          exportScope === "selected"
+            ? selectedProject.segments
+                .filter((segment) => segmentIds.includes(segment.id))
+                .map((segment) => segment.text)
+                .join("\n\n")
+            : selectedProject.source_text;
+        downloadTextFile(
+          `${baseSlug || "tts-project"}-script.txt`,
+          scriptSource,
+        );
+      }
       completeDownload();
     } catch (err) {
       failDownload(err);
@@ -2259,7 +2305,7 @@ export function StudioWorkspace({
                     ) : (
                       <Download className="h-4 w-4" />
                     )}
-                    Export merged WAV
+                    Export audio
                   </Button>
                 </div>
               </div>
@@ -2869,6 +2915,43 @@ export function StudioWorkspace({
                   <div className="mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">
                     Use export once the project sounds right. If you changed text in a
                     block, re-render that block before downloading the merged file.
+                  </div>
+
+                  <div className="mt-4 grid gap-2">
+                    <select
+                      value={exportFormat}
+                      onChange={(event) =>
+                        setExportFormat(
+                          event.target.value as "wav" | "raw_i16" | "raw_f32",
+                        )
+                      }
+                      className="h-9 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2 text-xs text-[var(--text-primary)]"
+                    >
+                      <option value="wav">Export format: WAV</option>
+                      <option value="raw_i16">Export format: PCM 16-bit</option>
+                      <option value="raw_f32">Export format: Float 32-bit</option>
+                    </select>
+                    <select
+                      value={exportScope}
+                      onChange={(event) =>
+                        setExportScope(event.target.value as "all" | "selected")
+                      }
+                      className="h-9 rounded-md border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2 text-xs text-[var(--text-primary)]"
+                    >
+                      <option value="all">Scope: Full project</option>
+                      <option value="selected">Scope: Selected segments</option>
+                    </select>
+                    <label className="inline-flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                      <input
+                        type="checkbox"
+                        checked={exportIncludeScript}
+                        onChange={(event) =>
+                          setExportIncludeScript(event.target.checked)
+                        }
+                        className="h-4 w-4 rounded border-[var(--border-muted)]"
+                      />
+                      Include script sidecar (.txt)
+                    </label>
                   </div>
 
                   <div className="mt-5 grid gap-2">

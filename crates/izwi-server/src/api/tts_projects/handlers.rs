@@ -5,6 +5,7 @@ use axum::{
     response::Response,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use crate::api::request_context::RequestContext;
 use crate::api::speech_history::{synthesize_record, CreateSpeechHistoryRecordRequest};
@@ -29,6 +30,10 @@ const PROJECT_LIST_LIMIT: usize = 100;
 pub(crate) struct ProjectAudioQuery {
     #[serde(default)]
     download: bool,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    segment_ids: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -766,14 +771,24 @@ pub async fn get_tts_project_audio(
         .map_err(map_store_error)?
         .ok_or_else(|| ApiError::not_found("TTS project not found"))?;
 
-    if project.segments.is_empty() {
+    let segment_filter = parse_segment_filter(query.segment_ids.as_deref());
+    let segments_for_export = if let Some(filter) = segment_filter.as_ref() {
+        project
+            .segments
+            .iter()
+            .filter(|segment| filter.contains(segment.id.as_str()))
+            .collect::<Vec<_>>()
+    } else {
+        project.segments.iter().collect::<Vec<_>>()
+    };
+
+    if segments_for_export.is_empty() {
         return Err(ApiError::bad_request(
-            "Render at least one project segment before exporting audio.",
+            "Render at least one selected project segment before exporting audio.",
         ));
     }
 
-    let missing_count = project
-        .segments
+    let missing_count = segments_for_export
         .iter()
         .filter(|segment| segment.speech_record_id.is_none())
         .count();
@@ -786,7 +801,7 @@ pub async fn get_tts_project_audio(
     let mut merged_samples = Vec::new();
     let mut merged_sample_rate: Option<u32> = None;
 
-    for segment in &project.segments {
+    for segment in segments_for_export {
         let record_id = segment
             .speech_record_id
             .as_deref()
@@ -815,8 +830,9 @@ pub async fn get_tts_project_audio(
     let sample_rate = merged_sample_rate.ok_or_else(|| {
         ApiError::bad_request("Project export did not contain any renderable segment audio.")
     })?;
+    let export_format = parse_project_audio_format(query.format.as_deref())?;
     let wav_bytes = AudioEncoder::new(sample_rate, 1)
-        .encode(merged_samples.as_slice(), AudioFormat::Wav)
+        .encode(merged_samples.as_slice(), export_format)
         .map_err(|err| {
             ApiError::internal(format!("Failed to encode merged project audio: {err}"))
         })?;
@@ -824,8 +840,8 @@ pub async fn get_tts_project_audio(
     Ok(audio_response(
         StoredSpeechAudio {
             audio_bytes: wav_bytes,
-            audio_mime_type: AudioEncoder::content_type(AudioFormat::Wav).to_string(),
-            audio_filename: Some(project_audio_filename(project.name.as_str())),
+            audio_mime_type: AudioEncoder::content_type(export_format).to_string(),
+            audio_filename: Some(project_audio_filename(project.name.as_str(), export_format)),
         },
         query.download,
     ))
@@ -982,7 +998,7 @@ fn default_project_name(source_text: &str) -> String {
     }
 }
 
-fn project_audio_filename(name: &str) -> String {
+fn project_audio_filename(name: &str, format: AudioFormat) -> String {
     let slug = name
         .chars()
         .map(|ch| {
@@ -997,10 +1013,15 @@ fn project_audio_filename(name: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("-");
+    let extension = match format {
+        AudioFormat::Wav => "wav",
+        AudioFormat::RawI16 => "pcm",
+        AudioFormat::RawF32 => "f32",
+    };
     if slug.is_empty() {
-        "tts-project.wav".to_string()
+        format!("tts-project.{extension}")
     } else {
-        format!("{slug}.wav")
+        format!("{slug}.{extension}")
     }
 }
 
@@ -1129,4 +1150,28 @@ async fn apply_project_pronunciations(
         output = output.replace(entry.source_text.as_str(), entry.replacement_text.as_str());
     }
     Ok(output)
+}
+
+fn parse_project_audio_format(raw: Option<&str>) -> Result<AudioFormat, ApiError> {
+    let value = raw.unwrap_or("wav").trim().to_lowercase();
+    match value.as_str() {
+        "" | "wav" => Ok(AudioFormat::Wav),
+        "raw_i16" | "pcm" => Ok(AudioFormat::RawI16),
+        "raw_f32" | "f32" => Ok(AudioFormat::RawF32),
+        _ => Err(ApiError::bad_request(format!(
+            "Unsupported project export format: {value}.",
+        ))),
+    }
+}
+
+fn parse_segment_filter(raw: Option<&str>) -> Option<HashSet<String>> {
+    raw.map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| entry.to_string())
+            .collect::<HashSet<_>>()
+    })
+    .filter(|entries| !entries.is_empty())
 }
