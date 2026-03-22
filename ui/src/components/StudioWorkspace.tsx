@@ -2983,7 +2983,7 @@ export function StudioWorkspace({
                     <AccordionTrigger className="py-3 text-left hover:no-underline">
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="text-sm font-semibold text-[var(--text-primary)]">
-                          Project Profile
+                          Project settings
                         </span>
                         {projectDirty || projectFolderDirty ? (
                           <span className="rounded-full border border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--status-warning-text)]">
