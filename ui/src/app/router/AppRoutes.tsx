@@ -15,9 +15,9 @@ const TextToSpeechPage = lazy(async () => {
   return { default: module.TextToSpeechPage };
 });
 
-const TextToSpeechProjectsPage = lazy(async () => {
-  const module = await import("@/features/text-to-speech-projects/route");
-  return { default: module.TextToSpeechProjectsPage };
+const StudioPage = lazy(async () => {
+  const module = await import("@/features/studio/route");
+  return { default: module.StudioPage };
 });
 
 const VoiceCloningPage = lazy(async () => {
@@ -156,7 +156,7 @@ export function AppRoutes() {
         />
         <Route
           path="/studio"
-          element={withSuspense(<TextToSpeechProjectsPage {...pageProps} />)}
+          element={withSuspense(<StudioPage {...pageProps} />)}
         />
         <Route path="/tts-projects" element={<Navigate to="/studio" replace />} />
         <Route

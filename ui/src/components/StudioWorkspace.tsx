@@ -60,7 +60,7 @@ interface ModelOption {
   isReady: boolean;
 }
 
-interface TextToSpeechProjectsWorkspaceProps {
+interface StudioWorkspaceProps {
   selectedModel: string | null;
   selectedModelInfo: ModelInfo | null;
   availableModels: ModelInfo[];
@@ -99,7 +99,7 @@ function projectAudioFilename(name: string): string {
   return slug ? `${slug}.wav` : "tts-project.wav";
 }
 
-export function TextToSpeechProjectsWorkspace({
+export function StudioWorkspace({
   selectedModel,
   selectedModelInfo,
   availableModels,
@@ -109,7 +109,7 @@ export function TextToSpeechProjectsWorkspace({
   onOpenModelManager,
   onModelRequired,
   onError,
-}: TextToSpeechProjectsWorkspaceProps) {
+}: StudioWorkspaceProps) {
   const [projects, setProjects] = useState<TtsProjectSummary[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
