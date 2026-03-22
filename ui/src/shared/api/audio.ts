@@ -1397,15 +1397,25 @@ export class AudioApiClient {
 
   ttsProjectAudioUrl(
     projectId: string,
-    options?: { download?: boolean },
+    options?: {
+      download?: boolean;
+      format?: "wav" | "raw_i16" | "raw_f32";
+      segment_ids?: string[];
+    },
   ): string {
-    const base = this.http.url(
-      `${this.ttsProjectPath(projectId)}/audio`,
-    );
+    const base = this.http.url(`${this.ttsProjectPath(projectId)}/audio`);
+    const params = new URLSearchParams();
     if (options?.download) {
-      return `${base}?download=true`;
+      params.set("download", "true");
     }
-    return base;
+    if (options?.format) {
+      params.set("format", options.format);
+    }
+    if (options?.segment_ids && options.segment_ids.length > 0) {
+      params.set("segment_ids", options.segment_ids.join(","));
+    }
+    const query = params.toString();
+    return query ? `${base}?${query}` : base;
   }
 
   async deleteTtsProject(
