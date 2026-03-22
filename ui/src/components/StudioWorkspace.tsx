@@ -622,6 +622,17 @@ export function StudioWorkspace({
   ]);
 
   useEffect(() => {
+    if (!workspaceStatus) {
+      return;
+    }
+    const timeoutMs = workspaceStatus.tone === "success" ? 3500 : 6000;
+    const timeoutId = window.setTimeout(() => {
+      setWorkspaceStatus(null);
+    }, timeoutMs);
+    return () => window.clearTimeout(timeoutId);
+  }, [workspaceStatus]);
+
+  useEffect(() => {
     if (selectedProject || !projectModelId) {
       return;
     }
@@ -1915,7 +1926,7 @@ export function StudioWorkspace({
   );
 
   const projectLibraryFilters = (
-    <Card className="rounded-2xl border-0 bg-[var(--bg-surface-0)] p-4 shadow-none sm:p-5">
+    <Card className="rounded-2xl border-0 bg-[var(--bg-surface-0)] p-0 shadow-none">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
