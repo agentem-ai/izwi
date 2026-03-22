@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { TextToSpeechProjectsWorkspace } from "@/components/TextToSpeechProjectsWorkspace";
+import { StudioWorkspace } from "@/components/StudioWorkspace";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import {
   TEXT_TO_SPEECH_PREFERRED_MODELS,
@@ -10,7 +10,7 @@ import { RouteModelModal } from "@/features/models/components/RouteModelModal";
 import { useRouteModelSelection } from "@/features/models/hooks/useRouteModelSelection";
 import type { SharedPageProps } from "@/app/router/types";
 
-export function TextToSpeechProjectsPage({
+export function StudioPage({
   models,
   selectedModel,
   loading,
@@ -91,7 +91,7 @@ export function TextToSpeechProjectsPage({
         }
       />
 
-      <TextToSpeechProjectsWorkspace
+      <StudioWorkspace
         selectedModel={resolvedSelectedModel}
         selectedModelInfo={selectedModelInfo}
         availableModels={routeModels}

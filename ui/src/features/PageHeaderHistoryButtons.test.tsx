@@ -3,7 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TextToSpeechPage } from "./text-to-speech/route";
-import { TextToSpeechProjectsPage } from "./text-to-speech-projects/route";
+import { StudioPage } from "./studio/route";
 import { VoiceCloningPage } from "./voice-cloning/route";
 import { DiarizationPage } from "./diarization/route";
 import { TranscriptionPage } from "./transcription/route";
@@ -121,10 +121,10 @@ describe("Page header history buttons", () => {
     );
   });
 
-  it("TextToSpeechProjectsPage renders project actions in the page header slot", async () => {
+  it("StudioPage renders project actions in the page header slot", async () => {
     render(
       <MemoryRouter>
-        <TextToSpeechProjectsPage {...baseProps} />
+        <StudioPage {...baseProps} />
       </MemoryRouter>,
     );
 
