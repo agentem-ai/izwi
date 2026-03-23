@@ -167,6 +167,10 @@ pub struct TtsProjectSegmentRecord {
     pub project_id: String,
     pub position: usize,
     pub text: String,
+    pub model_id: Option<String>,
+    pub voice_mode: Option<TtsProjectVoiceMode>,
+    pub speaker: Option<String>,
+    pub saved_voice_id: Option<String>,
     pub input_chars: usize,
     pub speech_record_id: Option<String>,
     pub updated_at: u64,
@@ -195,6 +199,10 @@ pub struct TtsProjectRecord {
 pub struct NewTtsProjectSegment {
     pub position: usize,
     pub text: String,
+    pub model_id: Option<String>,
+    pub voice_mode: Option<TtsProjectVoiceMode>,
+    pub speaker: Option<String>,
+    pub saved_voice_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -301,6 +309,10 @@ impl TtsProjectStore {
                 project_id TEXT NOT NULL,
                 position INTEGER NOT NULL,
                 text TEXT NOT NULL,
+                model_id TEXT NULL,
+                voice_mode TEXT NULL,
+                speaker TEXT NULL,
+                saved_voice_id TEXT NULL,
                 speech_record_id TEXT NULL,
                 updated_at INTEGER NOT NULL,
                 FOREIGN KEY(project_id) REFERENCES tts_projects(id) ON DELETE CASCADE
@@ -372,6 +384,8 @@ impl TtsProjectStore {
             "#,
         )
         .context("Failed to initialize TTS project database schema")?;
+
+        ensure_tts_project_segment_settings_columns(&conn)?;
 
         Ok(Self { db_path })
     }
@@ -486,15 +500,23 @@ impl TtsProjectStore {
                         project_id,
                         position,
                         text,
+                        model_id,
+                        voice_mode,
+                        speaker,
+                        saved_voice_id,
                         speech_record_id,
                         updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, NULL, ?5)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)
                     "#,
                     params![
                         segment_id,
                         project_id,
                         usize_to_i64(segment.position),
                         segment.text,
+                        segment.model_id,
+                        segment.voice_mode.map(|value| value.as_db_value()),
+                        segment.speaker,
+                        segment.saved_voice_id,
                         now,
                     ],
                 )?;
@@ -624,6 +646,55 @@ impl TtsProjectStore {
         .await
     }
 
+    pub async fn update_segment_settings(
+        &self,
+        project_id: String,
+        segment_id: String,
+        model_id: String,
+        voice_mode: TtsProjectVoiceMode,
+        speaker: Option<String>,
+        saved_voice_id: Option<String>,
+    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+        self.run_blocking(move |db_path| {
+            let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
+            let tx = conn.transaction()?;
+            let now = now_unix_millis_i64();
+
+            let updated = tx.execute(
+                r#"
+                UPDATE tts_project_segments
+                SET
+                    model_id = ?3,
+                    voice_mode = ?4,
+                    speaker = ?5,
+                    saved_voice_id = ?6,
+                    speech_record_id = NULL,
+                    updated_at = ?7
+                WHERE project_id = ?1 AND id = ?2
+                "#,
+                params![
+                    project_id.as_str(),
+                    segment_id.as_str(),
+                    model_id,
+                    voice_mode.as_db_value(),
+                    speaker,
+                    saved_voice_id,
+                    now,
+                ],
+            )?;
+
+            if updated == 0 {
+                tx.rollback()?;
+                return Ok(None);
+            }
+
+            touch_project(&tx, project_id.as_str(), now)?;
+            tx.commit()?;
+            fetch_project(&conn, &project_id)
+        })
+        .await
+    }
+
     pub async fn split_segment(
         &self,
         project_id: String,
@@ -636,19 +707,36 @@ impl TtsProjectStore {
             let tx = conn.transaction()?;
             let now = now_unix_millis_i64();
 
-            let position = tx
+            let segment_state = tx
                 .query_row(
                     r#"
-                    SELECT position
+                    SELECT
+                        position,
+                        model_id,
+                        voice_mode,
+                        speaker,
+                        saved_voice_id
                     FROM tts_project_segments
                     WHERE project_id = ?1 AND id = ?2
                     "#,
                     params![project_id.as_str(), segment_id.as_str()],
-                    |row| row.get::<_, i64>(0),
+                    |row| {
+                        let voice_mode_raw: Option<String> = row.get(2)?;
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            voice_mode_raw
+                                .as_deref()
+                                .and_then(TtsProjectVoiceMode::from_db_value),
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                        ))
+                    },
                 )
                 .optional()?;
 
-            let Some(position) = position else {
+            let Some((position, model_id, voice_mode, speaker, saved_voice_id)) = segment_state
+            else {
                 tx.rollback()?;
                 return Ok(None);
             };
@@ -682,15 +770,23 @@ impl TtsProjectStore {
                     project_id,
                     position,
                     text,
+                    model_id,
+                    voice_mode,
+                    speaker,
+                    saved_voice_id,
                     speech_record_id,
                     updated_at
-                ) VALUES (?1, ?2, ?3, ?4, NULL, ?5)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)
                 "#,
                 params![
                     next_segment_id,
                     project_id.as_str(),
                     position + 1,
                     after_text,
+                    model_id,
+                    voice_mode.map(|value| value.as_db_value()),
+                    speaker,
+                    saved_voice_id,
                     now
                 ],
             )?;
@@ -1487,15 +1583,23 @@ impl TtsProjectStore {
                         project_id,
                         position,
                         text,
+                        model_id,
+                        voice_mode,
+                        speaker,
+                        saved_voice_id,
                         speech_record_id,
                         updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                     "#,
                     params![
                         segment.id,
                         project_id.as_str(),
                         usize_to_i64(segment.position),
                         segment.text,
+                        segment.model_id,
+                        segment.voice_mode.map(|value| value.as_db_value()),
+                        segment.speaker,
+                        segment.saved_voice_id,
                         segment.speech_record_id,
                         now,
                     ],
@@ -1744,6 +1848,10 @@ fn fetch_project(conn: &Connection, project_id: &str) -> anyhow::Result<Option<T
             s.project_id,
             s.position,
             s.text,
+            s.model_id,
+            s.voice_mode,
+            s.speaker,
+            s.saved_voice_id,
             s.speech_record_id,
             s.updated_at,
             h.generation_time_ms,
@@ -1813,18 +1921,67 @@ fn map_project_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectRecord> {
 
 fn map_segment_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectSegmentRecord> {
     let text: String = row.get(3)?;
+    let voice_mode_raw: Option<String> = row.get(5)?;
     Ok(TtsProjectSegmentRecord {
         id: row.get(0)?,
         project_id: row.get(1)?,
         position: i64_to_usize(row.get(2)?).unwrap_or_default(),
         input_chars: text.chars().count(),
         text,
-        speech_record_id: row.get(4)?,
-        updated_at: i64_to_u64(row.get(5)?),
-        generation_time_ms: row.get(6)?,
-        audio_duration_secs: row.get(7)?,
-        audio_filename: row.get(8)?,
+        model_id: row.get(4)?,
+        voice_mode: voice_mode_raw
+            .as_deref()
+            .and_then(TtsProjectVoiceMode::from_db_value),
+        speaker: row.get(6)?,
+        saved_voice_id: row.get(7)?,
+        speech_record_id: row.get(8)?,
+        updated_at: i64_to_u64(row.get(9)?),
+        generation_time_ms: row.get(10)?,
+        audio_duration_secs: row.get(11)?,
+        audio_filename: row.get(12)?,
     })
+}
+
+fn sqlite_table_has_column(
+    conn: &Connection,
+    table_name: &str,
+    column_name: &str,
+) -> anyhow::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column_name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn ensure_sqlite_table_column(
+    conn: &Connection,
+    table_name: &str,
+    column_name: &str,
+    column_definition: &str,
+) -> anyhow::Result<()> {
+    if sqlite_table_has_column(conn, table_name, column_name)? {
+        return Ok(());
+    }
+    conn.execute(
+        &format!(
+            "ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+        ),
+        [],
+    )?;
+    Ok(())
+}
+
+fn ensure_tts_project_segment_settings_columns(conn: &Connection) -> anyhow::Result<()> {
+    ensure_sqlite_table_column(conn, "tts_project_segments", "model_id", "TEXT NULL")?;
+    ensure_sqlite_table_column(conn, "tts_project_segments", "voice_mode", "TEXT NULL")?;
+    ensure_sqlite_table_column(conn, "tts_project_segments", "speaker", "TEXT NULL")?;
+    ensure_sqlite_table_column(conn, "tts_project_segments", "saved_voice_id", "TEXT NULL")?;
+    Ok(())
 }
 
 fn fetch_project_meta(
@@ -2070,10 +2227,18 @@ mod tests {
                     NewTtsProjectSegment {
                         position: 0,
                         text: "Hello world.".to_string(),
+                        model_id: Some("Qwen3-TTS".to_string()),
+                        voice_mode: Some(TtsProjectVoiceMode::BuiltIn),
+                        speaker: Some("Vivian".to_string()),
+                        saved_voice_id: None,
                     },
                     NewTtsProjectSegment {
                         position: 1,
                         text: "Another sentence.".to_string(),
+                        model_id: Some("Qwen3-TTS".to_string()),
+                        voice_mode: Some(TtsProjectVoiceMode::BuiltIn),
+                        speaker: Some("Vivian".to_string()),
+                        saved_voice_id: None,
                     },
                 ],
             })
@@ -2169,10 +2334,18 @@ mod tests {
                     NewTtsProjectSegment {
                         position: 0,
                         text: "Hello world. Another sentence.".to_string(),
+                        model_id: Some("Qwen3-TTS".to_string()),
+                        voice_mode: Some(TtsProjectVoiceMode::BuiltIn),
+                        speaker: Some("Vivian".to_string()),
+                        saved_voice_id: None,
                     },
                     NewTtsProjectSegment {
                         position: 1,
                         text: "Closing line.".to_string(),
+                        model_id: Some("Qwen3-TTS".to_string()),
+                        voice_mode: Some(TtsProjectVoiceMode::BuiltIn),
+                        speaker: Some("Vivian".to_string()),
+                        saved_voice_id: None,
                     },
                 ],
             })

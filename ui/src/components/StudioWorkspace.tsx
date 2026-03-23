@@ -63,6 +63,13 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Card } from "@/components/ui/card";
 import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
   Accordion,
   AccordionContent,
   AccordionItem,
@@ -238,6 +245,16 @@ export function StudioWorkspace({
     Record<string, number | null>
   >({});
   const [selectedSegmentIds, setSelectedSegmentIds] = useState<string[]>([]);
+  const [segmentSettingsSegmentId, setSegmentSettingsSegmentId] = useState<
+    string | null
+  >(null);
+  const [segmentSettingsModelId, setSegmentSettingsModelId] = useState("");
+  const [segmentSettingsVoiceMode, setSegmentSettingsVoiceMode] =
+    useState<TtsProjectVoiceMode>("built_in");
+  const [segmentSettingsSpeaker, setSegmentSettingsSpeaker] = useState("");
+  const [segmentSettingsSavedVoiceId, setSegmentSettingsSavedVoiceId] =
+    useState("");
+  const [savingSegmentSettings, setSavingSegmentSettings] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const {
     downloadState,
@@ -567,6 +584,11 @@ export function StudioWorkspace({
       setSegmentDrafts({});
       setSegmentSelections({});
       setSelectedSegmentIds([]);
+      setSegmentSettingsSegmentId(null);
+      setSegmentSettingsModelId("");
+      setSegmentSettingsVoiceMode("built_in");
+      setSegmentSettingsSpeaker("");
+      setSegmentSettingsSavedVoiceId("");
       return;
     }
 
@@ -759,10 +781,202 @@ export function StudioWorkspace({
     projectVoiceMode,
     savedVoiceItems,
   ]);
+  const segmentSettingsOpen = Boolean(segmentSettingsSegmentId);
+  const segmentSettingsSegment = useMemo(() => {
+    if (!selectedProject || !segmentSettingsSegmentId) {
+      return null;
+    }
+    return (
+      selectedProject.segments.find(
+        (segment) => segment.id === segmentSettingsSegmentId,
+      ) ?? null
+    );
+  }, [segmentSettingsSegmentId, selectedProject]);
+  const segmentSettingsLabel = segmentSettingsSegment
+    ? `Segment ${segmentSettingsSegment.position + 1}`
+    : "Segment";
+
+  const segmentSettingsModelInfo = useMemo(
+    () =>
+      availableModels.find((model) => model.variant === segmentSettingsModelId) ??
+      null,
+    [availableModels, segmentSettingsModelId],
+  );
+  const segmentSettingsCapabilities =
+    segmentSettingsModelInfo?.speech_capabilities ?? null;
+  const segmentSupportsBuiltInVoices =
+    segmentSettingsCapabilities?.supports_builtin_voices ?? false;
+  const segmentSupportsSavedVoices =
+    segmentSettingsCapabilities?.supports_reference_voice ?? false;
+  const segmentAvailableSpeakers = useMemo(
+    () =>
+      segmentSupportsBuiltInVoices
+        ? getSpeakerProfilesForVariant(segmentSettingsModelId)
+        : [],
+    [segmentSettingsModelId, segmentSupportsBuiltInVoices],
+  );
+
+  const segmentBuiltInVoiceItems: VoicePickerItem[] = segmentAvailableSpeakers.map(
+    (voice) => ({
+      id: voice.id,
+      name: voice.name,
+      categoryLabel: segmentSettingsModelInfo?.variant ?? "Built-in voice",
+      description: voice.description,
+      meta: [voice.language],
+      selected:
+        segmentSettingsVoiceMode === "built_in" &&
+        segmentSettingsSpeaker === voice.id,
+      onSelect: () => {
+        setSegmentSettingsVoiceMode("built_in");
+        setSegmentSettingsSpeaker(voice.id);
+        setWorkspaceStatus(null);
+      },
+    }),
+  );
+  const segmentSavedVoiceItems: VoicePickerItem[] = savedVoices.map((voice) => ({
+    id: voice.id,
+    name: voice.name,
+    categoryLabel: sourceLabel(voice.source_route_kind),
+    description: voice.reference_text_preview,
+    meta: [
+      `${voice.reference_text_chars} chars`,
+      formatRelativeDate(voice.updated_at || voice.created_at),
+    ],
+    previewUrl: api.savedVoiceAudioUrl(voice.id),
+    selected:
+      segmentSettingsVoiceMode === "saved" &&
+      segmentSettingsSavedVoiceId === voice.id,
+    onSelect: () => {
+      setSegmentSettingsVoiceMode("saved");
+      setSegmentSettingsSavedVoiceId(voice.id);
+      setWorkspaceStatus(null);
+    },
+  }));
+  const segmentSelectedVoiceItem = useMemo(() => {
+    if (segmentSettingsVoiceMode === "saved") {
+      return (
+        segmentSavedVoiceItems.find(
+          (item) => item.id === segmentSettingsSavedVoiceId,
+        ) ?? null
+      );
+    }
+    return (
+      segmentBuiltInVoiceItems.find((item) => item.id === segmentSettingsSpeaker) ??
+      null
+    );
+  }, [
+    segmentBuiltInVoiceItems,
+    segmentSavedVoiceItems,
+    segmentSettingsSavedVoiceId,
+    segmentSettingsSpeaker,
+    segmentSettingsVoiceMode,
+  ]);
+  const segmentSettingsDirty = useMemo(() => {
+    if (!selectedProject || !segmentSettingsSegment) {
+      return false;
+    }
+
+    const initialModelId =
+      segmentSettingsSegment.model_id ?? selectedProject.model_id ?? "";
+    const initialVoiceMode =
+      segmentSettingsSegment.voice_mode ?? selectedProject.voice_mode;
+    const initialSpeaker =
+      segmentSettingsSegment.speaker ?? selectedProject.speaker ?? "";
+    const initialSavedVoiceId =
+      segmentSettingsSegment.saved_voice_id ?? selectedProject.saved_voice_id ?? "";
+
+    return (
+      segmentSettingsModelId !== initialModelId ||
+      segmentSettingsVoiceMode !== initialVoiceMode ||
+      (segmentSettingsVoiceMode === "built_in"
+        ? segmentSettingsSpeaker !== initialSpeaker
+        : segmentSettingsSavedVoiceId !== initialSavedVoiceId)
+    );
+  }, [
+    segmentSettingsModelId,
+    segmentSettingsSavedVoiceId,
+    segmentSettingsSegment,
+    segmentSettingsSpeaker,
+    segmentSettingsVoiceMode,
+    selectedProject,
+  ]);
   const settingsFieldClass = "space-y-2.5";
   const settingsLabelClass =
     "text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]";
   const settingsControlHeightClass = "h-11";
+
+  useEffect(() => {
+    if (!segmentSettingsOpen) {
+      return;
+    }
+    if (!selectedProject || !segmentSettingsSegmentId) {
+      setSegmentSettingsSegmentId(null);
+      return;
+    }
+    const stillExists = selectedProject.segments.some(
+      (segment) => segment.id === segmentSettingsSegmentId,
+    );
+    if (!stillExists) {
+      setSegmentSettingsSegmentId(null);
+    }
+  }, [segmentSettingsOpen, segmentSettingsSegmentId, selectedProject]);
+
+  useEffect(() => {
+    if (!segmentSettingsOpen) {
+      return;
+    }
+    if (
+      segmentSettingsVoiceMode === "saved" &&
+      !segmentSupportsSavedVoices &&
+      segmentSupportsBuiltInVoices
+    ) {
+      setSegmentSettingsVoiceMode("built_in");
+      return;
+    }
+    if (
+      segmentSettingsVoiceMode === "built_in" &&
+      !segmentSupportsBuiltInVoices &&
+      segmentSupportsSavedVoices
+    ) {
+      setSegmentSettingsVoiceMode("saved");
+    }
+  }, [
+    segmentSettingsOpen,
+    segmentSettingsVoiceMode,
+    segmentSupportsBuiltInVoices,
+    segmentSupportsSavedVoices,
+  ]);
+
+  useEffect(() => {
+    if (!segmentSettingsOpen || segmentSettingsVoiceMode !== "built_in") {
+      return;
+    }
+    if (
+      segmentAvailableSpeakers.length > 0 &&
+      !segmentAvailableSpeakers.some((voice) => voice.id === segmentSettingsSpeaker)
+    ) {
+      setSegmentSettingsSpeaker(segmentAvailableSpeakers[0]?.id ?? "");
+    }
+  }, [
+    segmentAvailableSpeakers,
+    segmentSettingsOpen,
+    segmentSettingsSpeaker,
+    segmentSettingsVoiceMode,
+  ]);
+
+  useEffect(() => {
+    if (!segmentSettingsOpen || segmentSettingsVoiceMode !== "saved") {
+      return;
+    }
+    if (!segmentSettingsSavedVoiceId && savedVoices.length > 0) {
+      setSegmentSettingsSavedVoiceId(savedVoices[0]?.id ?? "");
+    }
+  }, [
+    savedVoices,
+    segmentSettingsOpen,
+    segmentSettingsSavedVoiceId,
+    segmentSettingsVoiceMode,
+  ]);
 
   const normalizeImportedText = useCallback(
     (filename: string, text: string): string => {
@@ -1036,6 +1250,132 @@ export function StudioWorkspace({
     },
     [onError, segmentDrafts],
   );
+
+  const closeSegmentSettingsDrawer = useCallback(() => {
+    if (savingSegmentSettings) {
+      return;
+    }
+    setSegmentSettingsSegmentId(null);
+  }, [savingSegmentSettings]);
+
+  const openSegmentSettingsDrawer = useCallback(
+    (segmentId: string) => {
+      if (!selectedProject) {
+        return;
+      }
+      const segment = selectedProject.segments.find(
+        (candidate) => candidate.id === segmentId,
+      );
+      if (!segment) {
+        return;
+      }
+
+      const modelId = segment.model_id ?? selectedProject.model_id ?? "";
+      if (!modelId) {
+        onModelRequired();
+        const message = "Select a model before configuring segment settings.";
+        setWorkspaceError(message);
+        onError(message);
+        return;
+      }
+
+      const voiceMode = segment.voice_mode ?? selectedProject.voice_mode;
+      const fallbackSpeaker = getSpeakerProfilesForVariant(modelId)[0]?.id ?? "Vivian";
+      const speaker = segment.speaker ?? selectedProject.speaker ?? fallbackSpeaker;
+      const savedVoiceId =
+        segment.saved_voice_id ??
+        selectedProject.saved_voice_id ??
+        savedVoices[0]?.id ??
+        "";
+
+      setSegmentSettingsModelId(modelId);
+      setSegmentSettingsVoiceMode(voiceMode);
+      setSegmentSettingsSpeaker(speaker);
+      setSegmentSettingsSavedVoiceId(savedVoiceId);
+      setSegmentSettingsSegmentId(segmentId);
+      setWorkspaceError(null);
+      setWorkspaceStatus(null);
+    },
+    [onError, onModelRequired, savedVoices, selectedProject],
+  );
+
+  const persistSegmentSettings = useCallback(async () => {
+    if (!selectedProject || !segmentSettingsSegmentId || !segmentSettingsSegment) {
+      return null;
+    }
+
+    if (!segmentSettingsModelId) {
+      const message = "Choose a model before saving segment settings.";
+      setWorkspaceError(message);
+      onError(message);
+      return null;
+    }
+    if (segmentSettingsVoiceMode === "built_in" && !segmentSettingsSpeaker) {
+      const message = "Choose a built-in voice for this segment.";
+      setWorkspaceError(message);
+      onError(message);
+      return null;
+    }
+    if (segmentSettingsVoiceMode === "saved" && !segmentSettingsSavedVoiceId) {
+      const message = "Choose a saved voice for this segment.";
+      setWorkspaceError(message);
+      onError(message);
+      return null;
+    }
+    if (!segmentSettingsDirty) {
+      setSegmentSettingsSegmentId(null);
+      return selectedProject;
+    }
+
+    try {
+      setSavingSegmentSettings(true);
+      const project = await api.updateTtsProjectSegment(
+        selectedProject.id,
+        segmentSettingsSegmentId,
+        {
+          model_id: segmentSettingsModelId,
+          voice_mode: segmentSettingsVoiceMode,
+          speaker:
+            segmentSettingsVoiceMode === "built_in"
+              ? segmentSettingsSpeaker
+              : undefined,
+          saved_voice_id:
+            segmentSettingsVoiceMode === "saved"
+              ? segmentSettingsSavedVoiceId
+              : undefined,
+        },
+      );
+      setSelectedProject(project);
+      setSegmentSettingsSegmentId(null);
+      setWorkspaceStatus({
+        tone: "success",
+        message: `Saved settings for segment ${segmentSettingsSegment.position + 1}.`,
+      });
+      await loadProjects();
+      return project;
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to save segment settings.";
+      setWorkspaceError(message);
+      onError(message);
+      return null;
+    } finally {
+      setSavingSegmentSettings(false);
+    }
+  }, [
+    loadProjects,
+    onError,
+    segmentSettingsDirty,
+    segmentSettingsModelId,
+    segmentSettingsSavedVoiceId,
+    segmentSettingsSegment,
+    segmentSettingsSegmentId,
+    segmentSettingsSpeaker,
+    segmentSettingsVoiceMode,
+    selectedProject,
+  ]);
 
   const persistProjectSettings = useCallback(async () => {
     if (!selectedProject) {
@@ -2364,6 +2704,107 @@ export function StudioWorkspace({
         ) : null}
       </Dialog>
 
+      <Sheet
+        open={segmentSettingsOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeSegmentSettingsDrawer();
+          }
+        }}
+      >
+        <SheetContent
+          side="right"
+          className="w-[min(92vw,30rem)] max-w-[30rem] gap-0 border-l border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-0"
+        >
+          <SheetHeader className="gap-0 border-b border-[var(--border-muted)] px-5 py-5 pr-14 sm:px-6">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+              Segment settings
+            </div>
+            <SheetTitle className="mt-2 text-base text-[var(--text-primary)]">
+              {segmentSettingsLabel}
+            </SheetTitle>
+            <SheetDescription className="mt-1 text-sm text-[var(--text-muted)]">
+              Set a custom model and voice for this segment. Leaving project
+              defaults in place keeps behavior shared across all segments.
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="space-y-4 overflow-y-auto px-5 py-4 sm:px-6 sm:py-5">
+              <div className={settingsFieldClass}>
+                <label className={settingsLabelClass}>Render model</label>
+                <RouteModelSelect
+                  value={segmentSettingsModelId}
+                  options={projectModelOptions}
+                  onSelect={(value) => {
+                    setSegmentSettingsModelId(value);
+                    setWorkspaceStatus(null);
+                  }}
+                  className="w-full"
+                  triggerClassName={settingsControlHeightClass}
+                  menuPlacement="top"
+                />
+              </div>
+
+              <div className={settingsFieldClass}>
+                <label className={settingsLabelClass}>Segment voice</label>
+                <VoiceSelect
+                  voiceMode={segmentSettingsVoiceMode}
+                  onVoiceModeChange={(value) => {
+                    setSegmentSettingsVoiceMode(value);
+                    setWorkspaceStatus(null);
+                  }}
+                  savedVoiceItems={segmentSavedVoiceItems}
+                  builtInVoiceItems={segmentBuiltInVoiceItems}
+                  selectedItem={segmentSelectedVoiceItem}
+                  savedVoicesLoading={savedVoicesLoading}
+                  savedVoicesError={savedVoicesError}
+                  savedEnabled={segmentSupportsSavedVoices}
+                  builtInEnabled={segmentSupportsBuiltInVoices}
+                  disabled={!segmentSettingsModelId}
+                  modelLabel={
+                    segmentSettingsModelInfo?.variant ?? segmentSettingsModelId
+                  }
+                  hideModelInTriggerSubtitle
+                />
+              </div>
+
+              <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-2.5 text-xs leading-relaxed text-[var(--text-muted)]">
+                Saving segment settings clears this segment audio link so the next
+                render uses the updated model and voice.
+              </div>
+            </div>
+
+            <div className="border-t border-[var(--border-muted)] px-5 py-4 sm:px-6">
+              <div className="flex items-center justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={closeSegmentSettingsDrawer}
+                  disabled={savingSegmentSettings}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void persistSegmentSettings()}
+                  disabled={savingSegmentSettings || !segmentSettingsDirty}
+                >
+                  {savingSegmentSettings ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Settings2 className="h-4 w-4" />
+                  )}
+                  Save settings
+                </Button>
+              </div>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
+
       <div className="space-y-5">
         {workspaceError ? (
           <div className="flex items-start gap-2 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-3 text-sm text-[var(--danger-text)]">
@@ -2768,6 +3209,9 @@ export function StudioWorkspace({
                 onSplitSegment={(segmentId) => void handleSplitSegment(segmentId)}
                 onRenderSegment={(segmentId) => void handleRenderSegment(segmentId)}
                 onDeleteSegment={(segmentId) => void handleDeleteSegment(segmentId)}
+                onOpenSegmentSettings={(segmentId) =>
+                  openSegmentSettingsDrawer(segmentId)
+                }
                 onChangeSegmentDraft={(segmentId, value) =>
                   setSegmentDrafts((current) => ({
                     ...current,

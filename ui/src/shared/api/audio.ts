@@ -248,6 +248,10 @@ export interface TtsProjectSegmentRecord {
   project_id: string;
   position: number;
   text: string;
+  model_id: string | null;
+  voice_mode: TtsProjectVoiceMode | null;
+  speaker: string | null;
+  saved_voice_id: string | null;
   input_chars: number;
   speech_record_id: string | null;
   updated_at: number;
@@ -292,7 +296,11 @@ export interface TtsProjectUpdateRequest {
 }
 
 export interface TtsProjectSegmentUpdateRequest {
-  text: string;
+  text?: string;
+  model_id?: string;
+  voice_mode?: TtsProjectVoiceMode;
+  speaker?: string;
+  saved_voice_id?: string;
 }
 
 export interface TtsProjectSegmentSplitRequest {
@@ -1317,6 +1325,10 @@ export class AudioApiClient {
       method: "PATCH",
       body: JSON.stringify({
         text: request.text,
+        model_id: request.model_id,
+        voice_mode: request.voice_mode,
+        speaker: request.speaker,
+        saved_voice_id: request.saved_voice_id,
       }),
     });
   }
