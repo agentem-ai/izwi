@@ -760,6 +760,10 @@ export function StudioWorkspace({
     projectVoiceMode,
     savedVoiceItems,
   ]);
+  const settingsFieldClass = "space-y-2.5";
+  const settingsLabelClass =
+    "text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]";
+  const settingsControlHeightClass = "h-11";
 
   const normalizeImportedText = useCallback(
     (filename: string, text: string): string => {
@@ -2815,32 +2819,34 @@ export function StudioWorkspace({
                       </p>
 
                       <div className="mt-4 space-y-4">
-                        <div className="space-y-2">
-                          <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+                        <div className={settingsFieldClass}>
+                          <label className={settingsLabelClass}>
                             Project name
                           </label>
                           <Input
+                            className={settingsControlHeightClass}
                             value={projectName}
                             onChange={(event) => setProjectName(event.target.value)}
                           />
                         </div>
 
-                        <div className="space-y-2">
-                          <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
-                            Models
-                          </label>
-                          {onOpenModelManager ? (
+                        {onOpenModelManager ? (
+                          <div className={settingsFieldClass}>
+                            <label className={settingsLabelClass}>Models</label>
                             <Button
                               variant="outline"
-                              size="sm"
-                              className="h-11 w-full justify-center rounded-[14px] border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 text-[15px] font-semibold shadow-none hover:bg-[var(--bg-surface-1)]"
+                              size="lg"
+                              className="w-full justify-center rounded-[14px] border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 text-[15px] shadow-none hover:bg-[var(--bg-surface-1)]"
                               onClick={onOpenModelManager}
                             >
                               <SlidersHorizontal className="h-4 w-4" />
                               Models
                             </Button>
-                          ) : null}
-                          <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+                          </div>
+                        ) : null}
+
+                        <div className={settingsFieldClass}>
+                          <label className={settingsLabelClass}>
                             Render model
                           </label>
                           <RouteModelSelect
@@ -2851,11 +2857,12 @@ export function StudioWorkspace({
                               setWorkspaceStatus(null);
                             }}
                             className="w-full"
+                            triggerClassName={settingsControlHeightClass}
                           />
                         </div>
 
-                        <div className="space-y-2">
-                          <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+                        <div className={settingsFieldClass}>
+                          <label className={settingsLabelClass}>
                             Folder
                           </label>
                           <Select
@@ -2867,7 +2874,9 @@ export function StudioWorkspace({
                               setWorkspaceStatus(null);
                             }}
                           >
-                            <SelectTrigger className="w-full bg-[var(--bg-surface-0)]">
+                            <SelectTrigger
+                              className={`${settingsControlHeightClass} w-full bg-[var(--bg-surface-0)]`}
+                            >
                               <SelectValue placeholder="Unfiled" />
                             </SelectTrigger>
                             <SelectContent>
@@ -2883,8 +2892,8 @@ export function StudioWorkspace({
                           </Select>
                         </div>
 
-                        <div className="space-y-2">
-                          <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+                        <div className={settingsFieldClass}>
+                          <label className={settingsLabelClass}>
                             Project voice
                           </label>
                           <VoiceSelect
@@ -2936,6 +2945,7 @@ export function StudioWorkspace({
 
                       <Button
                         variant="outline"
+                        size="lg"
                         onClick={() => void persistProjectSettings()}
                         disabled={(!projectDirty && !projectFolderDirty) || savingProject}
                         className="mt-4 w-full justify-center bg-[var(--bg-surface-0)]"
@@ -2951,6 +2961,7 @@ export function StudioWorkspace({
                       <div className="mt-3">
                         <Button
                           variant="outline"
+                          size="lg"
                           onClick={() => void handleDeleteProject()}
                           disabled={deletingProject}
                           className="w-full justify-center border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)] hover:bg-[var(--danger-bg-hover)] hover:text-[var(--danger-text)]"
