@@ -509,10 +509,12 @@ pub async fn create_tts_project(
                 .map(|(position, text)| NewTtsProjectSegment {
                     position,
                     text,
-                    model_id: Some(model_id.clone()),
-                    voice_mode: Some(voice_mode),
-                    speaker: project_speaker.clone(),
-                    saved_voice_id: project_saved_voice_id.clone(),
+                    // Keep segment settings unset at creation so project-level
+                    // model/voice defaults continue to apply globally.
+                    model_id: None,
+                    voice_mode: None,
+                    speaker: None,
+                    saved_voice_id: None,
                 })
                 .collect(),
         })
@@ -652,14 +654,6 @@ pub async fn update_tts_project_segment(
 
     let mut updated_project: Option<TtsProjectRecord> = None;
 
-    if let Some(text) = text_update {
-        updated_project = state
-            .studio_store
-            .update_segment_text(project_id.clone(), segment_id.clone(), text)
-            .await
-            .map_err(map_store_error)?;
-    }
-
     if has_settings_update {
         let next_model_id = req
             .model_id
@@ -691,16 +685,38 @@ pub async fn update_tts_project_segment(
         )
         .await?;
 
+        updated_project = if let Some(text) = text_update {
+            state
+                .studio_store
+                .update_segment_text_and_settings(
+                    project_id.clone(),
+                    segment_id.clone(),
+                    text,
+                    next_model_id,
+                    next_voice_mode,
+                    voice_mode_speaker(next_voice_mode, next_speaker),
+                    voice_mode_saved_voice_id(next_voice_mode, next_saved_voice_id),
+                )
+                .await
+                .map_err(map_store_error)?
+        } else {
+            state
+                .studio_store
+                .update_segment_settings(
+                    project_id.clone(),
+                    segment_id.clone(),
+                    next_model_id,
+                    next_voice_mode,
+                    voice_mode_speaker(next_voice_mode, next_speaker),
+                    voice_mode_saved_voice_id(next_voice_mode, next_saved_voice_id),
+                )
+                .await
+                .map_err(map_store_error)?
+        };
+    } else if let Some(text) = text_update {
         updated_project = state
             .studio_store
-            .update_segment_settings(
-                project_id.clone(),
-                segment_id.clone(),
-                next_model_id,
-                next_voice_mode,
-                voice_mode_speaker(next_voice_mode, next_speaker),
-                voice_mode_saved_voice_id(next_voice_mode, next_saved_voice_id),
-            )
+            .update_segment_text(project_id.clone(), segment_id.clone(), text)
             .await
             .map_err(map_store_error)?;
     }

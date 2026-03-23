@@ -695,6 +695,59 @@ impl TtsProjectStore {
         .await
     }
 
+    pub async fn update_segment_text_and_settings(
+        &self,
+        project_id: String,
+        segment_id: String,
+        text: String,
+        model_id: String,
+        voice_mode: TtsProjectVoiceMode,
+        speaker: Option<String>,
+        saved_voice_id: Option<String>,
+    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+        self.run_blocking(move |db_path| {
+            let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
+            let tx = conn.transaction()?;
+            let now = now_unix_millis_i64();
+
+            let updated = tx.execute(
+                r#"
+                UPDATE tts_project_segments
+                SET
+                    text = ?3,
+                    model_id = ?4,
+                    voice_mode = ?5,
+                    speaker = ?6,
+                    saved_voice_id = ?7,
+                    speech_record_id = NULL,
+                    updated_at = ?8
+                WHERE project_id = ?1 AND id = ?2
+                "#,
+                params![
+                    project_id.as_str(),
+                    segment_id.as_str(),
+                    text,
+                    model_id,
+                    voice_mode.as_db_value(),
+                    speaker,
+                    saved_voice_id,
+                    now,
+                ],
+            )?;
+
+            if updated == 0 {
+                tx.rollback()?;
+                return Ok(None);
+            }
+
+            sync_project_source_text(&tx, project_id.as_str())?;
+            touch_project(&tx, project_id.as_str(), now)?;
+            tx.commit()?;
+            fetch_project(&conn, &project_id)
+        })
+        .await
+    }
+
     pub async fn split_segment(
         &self,
         project_id: String,
