@@ -39,6 +39,7 @@ interface VoiceSelectProps {
   disabled?: boolean;
   modelLabel?: string | null;
   compact?: boolean;
+  hideModelInTriggerSubtitle?: boolean;
 }
 
 const MODE_COPY: Record<
@@ -104,6 +105,7 @@ export function VoiceSelect({
   disabled = false,
   modelLabel = null,
   compact = false,
+  hideModelInTriggerSubtitle = false,
 }: VoiceSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -197,7 +199,14 @@ export function VoiceSelect({
   };
 
   const triggerSubtitle = selectedItem
-    ? [selectedItem.categoryLabel, selectedItem.meta?.[0]]
+    ? [
+        hideModelInTriggerSubtitle &&
+        modelLabel &&
+        selectedItem.categoryLabel === modelLabel
+          ? null
+          : selectedItem.categoryLabel,
+        selectedItem.meta?.[0],
+      ]
         .filter((value): value is string => Boolean(value))
         .join(" · ")
     : canOpen
@@ -279,7 +288,7 @@ export function VoiceSelect({
               {MODE_COPY[activeMode].triggerLabel}
             </span>
           </div>
-          {!compact ? (
+          {!compact && triggerSubtitle ? (
             <div className={cn(VOICE_ROUTE_META_COPY_CLASS, "mt-0.5 truncate")}>
               {triggerSubtitle}
             </div>
