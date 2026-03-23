@@ -19,6 +19,7 @@ import {
   Loader2,
   PencilLine,
   Settings2,
+  SlidersHorizontal,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -317,20 +318,6 @@ export function StudioWorkspace({
       supportsBuiltInVoices ? getSpeakerProfilesForVariant(projectModelId) : [],
     [projectModelId, supportsBuiltInVoices],
   );
-  const selectedVoiceName = useMemo(() => {
-    if (projectVoiceMode === "saved") {
-      return (
-        savedVoices.find((voice) => voice.id === projectSavedVoiceId)?.name ?? null
-      );
-    }
-    return availableSpeakers.find((voice) => voice.id === projectSpeaker)?.name ?? null;
-  }, [
-    availableSpeakers,
-    projectSavedVoiceId,
-    projectSpeaker,
-    projectVoiceMode,
-    savedVoices,
-  ]);
 
   const selectedProjectSummary = useMemo(
     () =>
@@ -571,7 +558,7 @@ export function StudioWorkspace({
   useEffect(() => {
     if (!selectedProject) {
       setProjectName("");
-      setProjectModelId(selectedModel ?? "");
+      setProjectModelId("");
       setProjectFolderId("");
       setProjectVoiceMode("built_in");
       setProjectSpeaker("Vivian");
@@ -584,7 +571,7 @@ export function StudioWorkspace({
     }
 
     setProjectName(selectedProject.name);
-    setProjectModelId(selectedProject.model_id ?? selectedModel ?? "");
+    setProjectModelId(selectedProject.model_id ?? "");
     setProjectFolderId(projectMetaById[selectedProject.id]?.folder_id ?? "");
     setProjectVoiceMode(selectedProject.voice_mode);
     setProjectSpeaker(selectedProject.speaker ?? "Vivian");
@@ -597,7 +584,14 @@ export function StudioWorkspace({
     );
     setSegmentSelections({});
     setSelectedSegmentIds([]);
-  }, [projectMetaById, selectedModel, selectedProject]);
+  }, [projectMetaById, selectedProject]);
+
+  useEffect(() => {
+    if (selectedProject) {
+      return;
+    }
+    setProjectModelId(selectedModel ?? "");
+  }, [selectedModel, selectedProject]);
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -733,48 +727,6 @@ export function StudioWorkspace({
       setWorkspaceStatus(null);
     },
   }));
-
-  const projectVoiceNotice = useMemo(() => {
-    if (!projectModelId) {
-      return "Choose a render model before assigning a project voice.";
-    }
-
-    if (!supportsBuiltInVoices && !supportsSavedVoices) {
-      return `${projectModelId} is not currently supported in Projects. Choose a model with built-in or saved-voice rendering.`;
-    }
-
-    if (projectVoiceMode === "saved") {
-      if (!supportsSavedVoices) {
-        return `${projectModelId} does not support reusable saved voices.`;
-      }
-      if (savedVoicesLoading) {
-        return "Loading your saved voice library.";
-      }
-      return selectedVoiceName
-        ? `Project voice set to "${selectedVoiceName}".`
-        : "Choose a saved voice for this project.";
-    }
-
-    if (!supportsBuiltInVoices) {
-      return `${projectModelId} does not expose built-in speakers on this route.`;
-    }
-
-    if (availableSpeakers.length === 0) {
-      return `No built-in speakers are currently mapped for ${projectModelId}.`;
-    }
-
-    return selectedVoiceName
-      ? `Project voice set to "${selectedVoiceName}".`
-      : "Choose a built-in speaker for this project.";
-  }, [
-    availableSpeakers.length,
-    projectModelId,
-    projectVoiceMode,
-    savedVoicesLoading,
-    selectedVoiceName,
-    supportsBuiltInVoices,
-    supportsSavedVoices,
-  ]);
 
   const savedVoiceItems: VoicePickerItem[] = savedVoices.map((voice) => ({
     id: voice.id,
@@ -2875,6 +2827,20 @@ export function StudioWorkspace({
 
                         <div className="space-y-2">
                           <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+                            Models
+                          </label>
+                          {onOpenModelManager ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-11 w-full justify-center rounded-[14px] border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 text-[15px] font-semibold shadow-none hover:bg-[var(--bg-surface-1)]"
+                              onClick={onOpenModelManager}
+                            >
+                              <SlidersHorizontal className="h-4 w-4" />
+                              Models
+                            </Button>
+                          ) : null}
+                          <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
                             Render model
                           </label>
                           <RouteModelSelect
@@ -2936,11 +2902,8 @@ export function StudioWorkspace({
                             builtInEnabled={supportsBuiltInVoices}
                             disabled={!projectModelId}
                             modelLabel={currentProjectModelInfo?.variant ?? projectModelId}
+                            hideModelInTriggerSubtitle
                           />
-                        </div>
-
-                        <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 py-4 text-sm leading-relaxed text-[var(--text-secondary)]">
-                          {projectVoiceNotice}
                         </div>
 
                         <div className="rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-4">
@@ -2985,23 +2948,12 @@ export function StudioWorkspace({
                         Save profile
                       </Button>
 
-                      <div className="mt-3 grid gap-2">
-                        {onOpenModelManager ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="w-full justify-center bg-[var(--bg-surface-0)]"
-                            onClick={onOpenModelManager}
-                          >
-                            <Settings2 className="h-4 w-4" />
-                            Open model manager
-                          </Button>
-                        ) : null}
+                      <div className="mt-3">
                         <Button
-                          variant="ghost"
+                          variant="outline"
                           onClick={() => void handleDeleteProject()}
                           disabled={deletingProject}
-                          className="w-full justify-center"
+                          className="w-full justify-center border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)] hover:bg-[var(--danger-bg-hover)] hover:text-[var(--danger-text)]"
                         >
                           {deletingProject ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
