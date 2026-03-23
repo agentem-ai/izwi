@@ -27,6 +27,7 @@ interface RouteModelSelectProps {
   onSelect?: (value: string) => void;
   placeholder?: string;
   className?: string;
+  triggerClassName?: string;
   disabled?: boolean;
   menuPlacement?: "top" | "bottom";
 }
@@ -97,6 +98,7 @@ export function RouteModelSelect({
   onSelect,
   placeholder = "Select model",
   className,
+  triggerClassName,
   disabled = false,
   menuPlacement = "bottom",
 }: RouteModelSelectProps) {
@@ -138,7 +140,8 @@ export function RouteModelSelect({
         }}
         disabled={disabled || options.length === 0}
         className={cn(
-          "h-10 w-full justify-between rounded-[var(--radius-md)] border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3.5 font-normal text-[var(--text-primary)] shadow-[var(--shadow-soft)] transition-[border-color,background-color,box-shadow] hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-1)]",
+          "w-full justify-between rounded-[var(--radius-md)] border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3.5 font-normal text-[var(--text-primary)] shadow-[var(--shadow-soft)] transition-[border-color,background-color,box-shadow] hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-1)]",
+          triggerClassName ?? "h-10",
           isOpen && "border-ring/50 ring-2 ring-ring/35",
         )}
       >
