@@ -572,7 +572,6 @@ export function StudioWorkspace({
 
     setProjectName(selectedProject.name);
     setProjectModelId(selectedProject.model_id ?? "");
-    setProjectFolderId(projectMetaById[selectedProject.id]?.folder_id ?? "");
     setProjectVoiceMode(selectedProject.voice_mode);
     setProjectSpeaker(selectedProject.speaker ?? "Vivian");
     setProjectSavedVoiceId(selectedProject.saved_voice_id ?? "");
@@ -584,7 +583,7 @@ export function StudioWorkspace({
     );
     setSegmentSelections({});
     setSelectedSegmentIds([]);
-  }, [projectMetaById, selectedProject]);
+  }, [selectedProject]);
 
   useEffect(() => {
     if (selectedProject) {
