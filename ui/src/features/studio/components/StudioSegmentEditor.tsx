@@ -7,7 +7,7 @@ import {
   PencilLine,
   Play,
   Scissors,
-  SlidersHorizontal,
+  Settings,
   Trash2,
 } from "lucide-react";
 import type { TtsProjectRecord, TtsProjectSegmentRecord } from "@/api";
@@ -257,13 +257,13 @@ export function StudioSegmentEditor({
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap sm:justify-end sm:gap-1.5 md:gap-2">
+                <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap sm:justify-end sm:gap-1.5 md:gap-2">
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => onSaveSegment(segment.id)}
                     disabled={!segmentDirty || isSaving}
-                    className="bg-[var(--bg-surface-0)]"
+                    className="min-w-0 flex-1 basis-[calc(50%-0.25rem)] justify-center bg-[var(--bg-surface-0)] sm:basis-auto sm:flex-none"
                   >
                     {isSaving ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -276,6 +276,7 @@ export function StudioSegmentEditor({
                     size="sm"
                     onClick={() => onRenderSegment(segment.id)}
                     disabled={isRendering || segmentQueued}
+                    className="min-w-0 flex-1 basis-[calc(50%-0.25rem)] justify-center sm:basis-auto sm:flex-none"
                   >
                     {isRendering ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -288,22 +289,24 @@ export function StudioSegmentEditor({
                     variant="outline"
                     size="icon"
                     onClick={() => onOpenSegmentSettings(segment.id)}
-                    className="h-9 w-9 bg-[var(--bg-surface-0)]"
+                    className="order-2 ml-auto h-9 w-9 bg-[var(--bg-surface-0)] sm:order-none sm:ml-0"
                     aria-label={`Open settings for segment ${segment.position + 1}`}
                   >
-                    <SlidersHorizontal className="h-4 w-4" />
+                    <Settings className="h-4 w-4" />
                   </Button>
-                  <SegmentActionsMenu
-                    segment={segment}
-                    isFirst={isFirst}
-                    isLast={isLast}
-                    canSplitSegment={canSplitSegment}
-                    canDeleteSegment={canDeleteSegment}
-                    onMoveSegment={onMoveSegment}
-                    onMergeSegmentWithNext={onMergeSegmentWithNext}
-                    onSplitSegment={onSplitSegment}
-                    onDeleteSegment={onDeleteSegment}
-                  />
+                  <div className="order-2 sm:order-none">
+                    <SegmentActionsMenu
+                      segment={segment}
+                      isFirst={isFirst}
+                      isLast={isLast}
+                      canSplitSegment={canSplitSegment}
+                      canDeleteSegment={canDeleteSegment}
+                      onMoveSegment={onMoveSegment}
+                      onMergeSegmentWithNext={onMergeSegmentWithNext}
+                      onSplitSegment={onSplitSegment}
+                      onDeleteSegment={onDeleteSegment}
+                    />
+                  </div>
                 </div>
               </div>
 
