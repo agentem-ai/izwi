@@ -7,6 +7,7 @@ import {
   PencilLine,
   Play,
   Scissors,
+  SlidersHorizontal,
   Trash2,
 } from "lucide-react";
 import type { TtsProjectRecord, TtsProjectSegmentRecord } from "@/api";
@@ -41,6 +42,7 @@ interface StudioSegmentEditorProps {
   onSplitSegment: (segmentId: string) => void;
   onRenderSegment: (segmentId: string) => void;
   onDeleteSegment: (segmentId: string) => void;
+  onOpenSegmentSettings: (segmentId: string) => void;
   onChangeSegmentDraft: (segmentId: string, value: string) => void;
   onChangeSegmentCursor: (segmentId: string, cursor: number | null) => void;
   audioUrlForRecordId: (recordId: string) => string;
@@ -137,6 +139,7 @@ export function StudioSegmentEditor({
   onSplitSegment,
   onRenderSegment,
   onDeleteSegment,
+  onOpenSegmentSettings,
   onChangeSegmentDraft,
   onChangeSegmentCursor,
   audioUrlForRecordId,
@@ -280,6 +283,15 @@ export function StudioSegmentEditor({
                       <Play className="h-4 w-4" />
                     )}
                     {renderButtonLabel}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => onOpenSegmentSettings(segment.id)}
+                    className="h-9 w-9 bg-[var(--bg-surface-0)]"
+                    aria-label={`Open settings for segment ${segment.position + 1}`}
+                  >
+                    <SlidersHorizontal className="h-4 w-4" />
                   </Button>
                   <SegmentActionsMenu
                     segment={segment}

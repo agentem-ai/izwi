@@ -81,9 +81,18 @@ pub struct UpdateTtsProjectRequest {
     pub speed: Option<f32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct UpdateTtsProjectSegmentRequest {
-    pub text: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub voice_mode: Option<TtsProjectVoiceMode>,
+    #[serde(default)]
+    pub speaker: Option<String>,
+    #[serde(default)]
+    pub saved_voice_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -477,6 +486,9 @@ pub async fn create_tts_project(
             "Project script did not produce any renderable segments.",
         ));
     }
+    let project_speaker = voice_mode_speaker(voice_mode, req.speaker.clone());
+    let project_saved_voice_id =
+        voice_mode_saved_voice_id(voice_mode, req.saved_voice_id.clone());
 
     let project = state
         .studio_store
@@ -486,15 +498,22 @@ pub async fn create_tts_project(
                 .unwrap_or_else(|| default_project_name(source_text.as_str())),
             source_filename: req.source_filename,
             source_text,
-            model_id: Some(model_id),
+            model_id: Some(model_id.clone()),
             voice_mode,
-            speaker: voice_mode_speaker(voice_mode, req.speaker),
-            saved_voice_id: voice_mode_saved_voice_id(voice_mode, req.saved_voice_id),
+            speaker: project_speaker.clone(),
+            saved_voice_id: project_saved_voice_id.clone(),
             speed: req.speed.map(f64::from),
             segments: chunks
                 .into_iter()
                 .enumerate()
-                .map(|(position, text)| NewTtsProjectSegment { position, text })
+                .map(|(position, text)| NewTtsProjectSegment {
+                    position,
+                    text,
+                    model_id: Some(model_id.clone()),
+                    voice_mode: Some(voice_mode),
+                    speaker: project_speaker.clone(),
+                    saved_voice_id: project_saved_voice_id.clone(),
+                })
                 .collect(),
         })
         .await
@@ -599,12 +618,94 @@ pub async fn update_tts_project_segment(
     Path((project_id, segment_id)): Path<(String, String)>,
     Json(req): Json<UpdateTtsProjectSegmentRequest>,
 ) -> Result<Json<TtsProjectRecord>, ApiError> {
-    let text = required_trimmed(Some(req.text.as_str()), "text")?;
-    let project = state
+    let req = normalize_segment_update_request(req);
+    let text_update = match req.text {
+        Some(text) if text.trim().is_empty() => {
+            return Err(ApiError::bad_request("Segment text cannot be empty."));
+        }
+        Some(text) => Some(text.trim().to_string()),
+        None => None,
+    };
+    let has_settings_update = req.model_id.is_some()
+        || req.voice_mode.is_some()
+        || req.speaker.is_some()
+        || req.saved_voice_id.is_some();
+
+    if text_update.is_none() && !has_settings_update {
+        return Err(ApiError::bad_request(
+            "Segment update requires text or settings changes.",
+        ));
+    }
+
+    let base_project = state
         .studio_store
-        .update_segment_text(project_id, segment_id, text)
+        .get_project(project_id.clone())
         .await
         .map_err(map_store_error)?
+        .ok_or_else(|| ApiError::not_found("TTS project not found"))?;
+    let segment = base_project
+        .segments
+        .iter()
+        .find(|candidate| candidate.id == segment_id)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found("TTS project segment not found"))?;
+
+    let mut updated_project: Option<TtsProjectRecord> = None;
+
+    if let Some(text) = text_update {
+        updated_project = state
+            .studio_store
+            .update_segment_text(project_id.clone(), segment_id.clone(), text)
+            .await
+            .map_err(map_store_error)?;
+    }
+
+    if has_settings_update {
+        let next_model_id = req
+            .model_id
+            .clone()
+            .or_else(|| segment.model_id.clone())
+            .or_else(|| base_project.model_id.clone())
+            .ok_or_else(|| ApiError::bad_request("TTS project is missing a model selection."))?;
+        let next_voice_mode = req
+            .voice_mode
+            .or(segment.voice_mode)
+            .unwrap_or(base_project.voice_mode);
+        let next_speaker = req
+            .speaker
+            .clone()
+            .or_else(|| segment.speaker.clone())
+            .or_else(|| base_project.speaker.clone());
+        let next_saved_voice_id = req
+            .saved_voice_id
+            .clone()
+            .or_else(|| segment.saved_voice_id.clone())
+            .or_else(|| base_project.saved_voice_id.clone());
+
+        validate_project_voice_state(
+            &state,
+            next_model_id.as_str(),
+            next_voice_mode,
+            next_speaker.as_deref(),
+            next_saved_voice_id.as_deref(),
+        )
+        .await?;
+
+        updated_project = state
+            .studio_store
+            .update_segment_settings(
+                project_id.clone(),
+                segment_id.clone(),
+                next_model_id,
+                next_voice_mode,
+                voice_mode_speaker(next_voice_mode, next_speaker),
+                voice_mode_saved_voice_id(next_voice_mode, next_saved_voice_id),
+            )
+            .await
+            .map_err(map_store_error)?;
+    }
+
+    let project = updated_project
         .ok_or_else(|| ApiError::not_found("TTS project segment not found"))?;
     Ok(Json(project))
 }
@@ -725,21 +826,46 @@ pub async fn render_tts_project_segment(
         .cloned()
         .ok_or_else(|| ApiError::not_found("TTS project segment not found"))?;
 
-    let model_id = project
+    let project_model_id = project
         .model_id
         .clone()
         .ok_or_else(|| ApiError::bad_request("TTS project is missing a model selection."))?;
+    let segment_model_id = segment.model_id.clone().unwrap_or(project_model_id);
+    let segment_voice_mode = segment.voice_mode.unwrap_or(project.voice_mode);
+    let segment_speaker = if segment_voice_mode == TtsProjectVoiceMode::BuiltIn {
+        segment.speaker.clone().or_else(|| project.speaker.clone())
+    } else {
+        None
+    };
+    let segment_saved_voice_id = if segment_voice_mode == TtsProjectVoiceMode::Saved {
+        segment
+            .saved_voice_id
+            .clone()
+            .or_else(|| project.saved_voice_id.clone())
+    } else {
+        None
+    };
+
+    validate_project_voice_state(
+        &state,
+        segment_model_id.as_str(),
+        segment_voice_mode,
+        segment_speaker.as_deref(),
+        segment_saved_voice_id.as_deref(),
+    )
+    .await?;
+
     let rendered_text =
         apply_project_pronunciations(&state, project.id.as_str(), segment.text.as_str()).await?;
     let request = CreateSpeechHistoryRecordRequest {
-        model_id: Some(model_id),
+        model_id: Some(segment_model_id),
         text: Some(rendered_text),
-        speaker: project.speaker.clone(),
+        speaker: segment_speaker,
         language: None,
         voice_description: None,
         reference_audio: None,
         reference_text: None,
-        saved_voice_id: project.saved_voice_id.clone(),
+        saved_voice_id: segment_saved_voice_id,
         temperature: None,
         speed: project.speed.map(|value| value as f32),
         max_tokens: Some(0),
@@ -879,6 +1005,16 @@ fn normalize_create_request(mut req: CreateTtsProjectRequest) -> CreateTtsProjec
 
 fn normalize_update_request(mut req: UpdateTtsProjectRequest) -> UpdateTtsProjectRequest {
     req.name = normalize_optional_trimmed(req.name);
+    req.model_id = normalize_optional_trimmed(req.model_id);
+    req.speaker = normalize_optional_trimmed(req.speaker);
+    req.saved_voice_id = normalize_optional_trimmed(req.saved_voice_id);
+    req
+}
+
+fn normalize_segment_update_request(
+    mut req: UpdateTtsProjectSegmentRequest,
+) -> UpdateTtsProjectSegmentRequest {
+    req.text = normalize_optional_trimmed(req.text);
     req.model_id = normalize_optional_trimmed(req.model_id);
     req.speaker = normalize_optional_trimmed(req.speaker);
     req.saved_voice_id = normalize_optional_trimmed(req.saved_voice_id);
