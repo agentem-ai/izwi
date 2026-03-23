@@ -66,6 +66,7 @@ import {
   Sheet,
   SheetContent,
   SheetDescription,
+  SheetFooter,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
@@ -2730,7 +2731,7 @@ export function StudioWorkspace({
           </SheetHeader>
 
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="space-y-4 overflow-y-auto px-5 py-4 sm:px-6 sm:py-5">
+            <div className="space-y-4 px-5 py-4 sm:px-6 sm:py-5">
               <div className={settingsFieldClass}>
                 <label className={settingsLabelClass}>Render model</label>
                 <RouteModelSelect
@@ -2742,7 +2743,6 @@ export function StudioWorkspace({
                   }}
                   className="w-full"
                   triggerClassName={settingsControlHeightClass}
-                  menuPlacement="top"
                 />
               </div>
 
@@ -2775,8 +2775,8 @@ export function StudioWorkspace({
               </div>
             </div>
 
-            <div className="border-t border-[var(--border-muted)] px-5 py-4 sm:px-6">
-              <div className="flex items-center justify-end gap-2">
+            <SheetFooter className="mt-auto border-t border-[var(--border-muted)] px-5 py-4 sm:px-6 sm:space-x-0">
+              <div className="flex w-full items-center justify-end gap-2">
                 <Button
                   type="button"
                   variant="outline"
@@ -2800,7 +2800,7 @@ export function StudioWorkspace({
                   Save settings
                 </Button>
               </div>
-            </div>
+            </SheetFooter>
           </div>
         </SheetContent>
       </Sheet>
