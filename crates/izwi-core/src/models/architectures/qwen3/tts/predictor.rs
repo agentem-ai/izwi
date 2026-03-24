@@ -494,9 +494,7 @@ impl Attention {
         q = self.apply_rope(q, start_pos)?;
         k = self.apply_rope(k, start_pos)?;
 
-        let k = repeat_kv(&k, self.num_heads, self.num_kv_heads)?;
-        let v = repeat_kv(&v, self.num_heads, self.num_kv_heads)?;
-
+        // Store cache pages in KV-head layout so paged decode can expand exactly once.
         let (mut k, mut v) = if let Some(cache) = cache {
             cache.append(layer_idx, k, v)?;
 
@@ -520,6 +518,10 @@ impl Attention {
         } else {
             (k, v)
         };
+
+        // Attention compute paths below expect K/V expanded to query-head count.
+        k = repeat_kv(&k, self.num_heads, self.num_kv_heads)?;
+        v = repeat_kv(&v, self.num_heads, self.num_kv_heads)?;
 
         if use_batched {
             let q = q.reshape((bsz, seq_len, self.num_heads * self.head_dim))?;
