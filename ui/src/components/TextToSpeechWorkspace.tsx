@@ -17,6 +17,7 @@ import {
   type ModelInfo,
   type SavedVoiceSummary,
   type SpeechHistoryRecord,
+  type SpeechHistoryRoute,
   type TTSGenerationStats,
 } from "@/api";
 import {
@@ -75,11 +76,54 @@ const ABORT_ERROR_NAME = "AbortError";
 const SAVED_VOICE_RENDERER_PREFERRED_MODELS = [
   ...VOICE_CLONING_PREFERRED_MODELS,
 ] as const;
+const HISTORY_COPY: Record<
+  SpeechHistoryRoute,
+  { title: string; emptyMessage: string }
+> = {
+  "text-to-speech": {
+    title: "Text to Speech History",
+    emptyMessage: "No saved text-to-speech generations yet.",
+  },
+  "voice-cloning": {
+    title: "Voice Cloning History",
+    emptyMessage: "No saved voice-cloning generations yet.",
+  },
+  "voice-design": {
+    title: "Voice Design History",
+    emptyMessage: "No saved voice-design generations yet.",
+  },
+};
 
 function createAbortError(message: string): Error {
   const error = new Error(message);
   error.name = ABORT_ERROR_NAME;
   return error;
+}
+
+function resolveGenerationRoute(
+  capabilities: ModelInfo["speech_capabilities"] | null,
+): SpeechHistoryRoute {
+  if (!capabilities) {
+    return "text-to-speech";
+  }
+
+  if (
+    capabilities.supports_reference_voice &&
+    !capabilities.supports_builtin_voices &&
+    !capabilities.supports_voice_description
+  ) {
+    return "voice-cloning";
+  }
+
+  if (
+    capabilities.supports_voice_description &&
+    !capabilities.supports_builtin_voices &&
+    !capabilities.supports_reference_voice
+  ) {
+    return "voice-design";
+  }
+
+  return "text-to-speech";
 }
 
 function decodePcmI16Base64(base64Data: string): Int16Array {
@@ -235,6 +279,8 @@ export function TextToSpeechWorkspace({
   const [latestRecord, setLatestRecord] = useState<SpeechHistoryRecord | null>(
     null,
   );
+  const [latestRecordRoute, setLatestRecordRoute] =
+    useState<SpeechHistoryRoute | null>(null);
   const [savedVoices, setSavedVoices] = useState<SavedVoiceSummary[]>([]);
   const [savedVoicesLoading, setSavedVoicesLoading] = useState(false);
   const [savedVoicesError, setSavedVoicesError] = useState<string | null>(null);
@@ -279,11 +325,18 @@ export function TextToSpeechWorkspace({
   const supportsVoiceDescription =
     capabilities?.supports_voice_description ?? false;
   const supportsStreaming = capabilities?.supports_streaming ?? false;
+  const generationRoute = useMemo(
+    () => resolveGenerationRoute(capabilities),
+    [capabilities],
+  );
+  const historyCopy = HISTORY_COPY[generationRoute];
   const supportsSpeedControl = capabilities?.supports_speed_control ?? false;
   const supportsVoiceSelection =
     supportsBuiltInVoices || supportsReferenceVoices;
   const requiresVoiceDescriptionOnly =
     supportsVoiceDescription && !supportsVoiceSelection;
+  const supportsRouteStreaming =
+    generationRoute === "text-to-speech" && supportsStreaming;
 
   const availableSpeakers = useMemo(
     () =>
@@ -298,10 +351,10 @@ export function TextToSpeechWorkspace({
   }, [availableSpeakers, defaultSpeaker, speaker]);
 
   useEffect(() => {
-    if (!supportsStreaming && streamingEnabled) {
+    if (!supportsRouteStreaming && streamingEnabled) {
       setStreamingEnabled(false);
     }
-  }, [streamingEnabled, supportsStreaming]);
+  }, [streamingEnabled, supportsRouteStreaming]);
 
   useEffect(() => {
     if (requiresVoiceDescriptionOnly) {
@@ -589,14 +642,17 @@ export function TextToSpeechWorkspace({
             : undefined,
       };
 
-      if (!streamingEnabled || !supportsStreaming) {
-        const record = await api.createTextToSpeechRecord({
+      if (!streamingEnabled || !supportsRouteStreaming) {
+        const record = await api.createSpeechHistoryRecord(generationRoute, {
           ...requestBase,
           text: trimmedText,
         });
-        replaceAudioUrl(api.textToSpeechRecordAudioUrl(record.id));
+        replaceAudioUrl(
+          api.speechHistoryRecordAudioUrl(generationRoute, record.id),
+        );
         setGenerationStats(mapRecordToStats(record));
         setLatestRecord(record);
+        setLatestRecordRoute(generationRoute);
 
         setTimeout(() => {
           audioRef.current?.play().catch(() => {});
@@ -685,7 +741,8 @@ export function TextToSpeechWorkspace({
             reject(streamError);
           };
 
-          streamAbortRef.current = api.createTextToSpeechRecordStream(
+          streamAbortRef.current = api.createSpeechHistoryRecordStream(
+            generationRoute,
             {
               ...requestBase,
               text: trimmedText,
@@ -748,6 +805,7 @@ export function TextToSpeechWorkspace({
       const finalRecord = finalRecordRef.current;
       if (finalRecord) {
         setLatestRecord(finalRecord);
+        setLatestRecordRoute(generationRoute);
       }
 
       if (
@@ -762,7 +820,9 @@ export function TextToSpeechWorkspace({
         );
         replaceAudioUrl(URL.createObjectURL(wavBlob));
       } else if (finalRecord?.id) {
-        replaceAudioUrl(api.textToSpeechRecordAudioUrl(finalRecord.id));
+        replaceAudioUrl(
+          api.speechHistoryRecordAudioUrl(generationRoute, finalRecord.id),
+        );
       }
 
       setIsStreaming(false);
@@ -800,9 +860,13 @@ export function TextToSpeechWorkspace({
     beginDownload();
     try {
       if (record) {
-        const downloadUrl = api.textToSpeechRecordAudioUrl(record.id, {
-          download: true,
-        });
+        const downloadUrl = api.speechHistoryRecordAudioUrl(
+          generationRoute,
+          record.id,
+          {
+            download: true,
+          },
+        );
         const voiceTag = requiresVoiceDescriptionOnly
           ? "voice-direction"
           : voiceMode === "built_in"
@@ -1097,8 +1161,8 @@ export function TextToSpeechWorkspace({
                 </div>
                 <div className={VOICE_ROUTE_BODY_COPY_CLASS}>
                   {supportsSpeedControl
-                    ? "Speed is saved with the generation history. Streaming appears only when the selected model exposes it."
-                    : "This model uses a fixed speaking rate. Streaming appears only when the selected model exposes it."}
+                    ? "Speed is saved with the generation history. Streaming appears only when the selected model and route support it."
+                    : "This model uses a fixed speaking rate. Streaming appears only when the selected model and route support it."}
                 </div>
               </div>
 
@@ -1125,11 +1189,11 @@ export function TextToSpeechWorkspace({
                 <label className="grid grid-cols-[16px_minmax(0,1fr)] items-start gap-x-3 border-t border-[var(--border-muted)] pt-3">
                   <input
                     type="checkbox"
-                    checked={streamingEnabled && supportsStreaming}
+                    checked={streamingEnabled && supportsRouteStreaming}
                     onChange={(event) =>
                       setStreamingEnabled(event.target.checked)
                     }
-                    disabled={!supportsStreaming}
+                    disabled={!supportsRouteStreaming}
                     className="app-checkbox mt-0.5 h-4 w-4 shrink-0 self-start"
                   />
                   <span className="min-w-0">
@@ -1137,9 +1201,11 @@ export function TextToSpeechWorkspace({
                       Stream audio
                     </span>
                     <span className="mt-0.5 block text-xs leading-4 text-[var(--text-muted)]">
-                      {supportsStreaming
+                      {supportsRouteStreaming
                         ? "Play chunks as they arrive."
-                        : "Current model does not expose streaming on this route."}
+                        : supportsStreaming
+                          ? "Streaming is only available on text-to-speech generation resources."
+                          : "Current model does not expose streaming on this route."}
                     </span>
                   </span>
                 </label>
@@ -1234,10 +1300,12 @@ export function TextToSpeechWorkspace({
         </div>
       </div>
       <SpeechHistoryPanel
-        route="text-to-speech"
-        title="Text to Speech History"
-        emptyMessage="No saved text-to-speech generations yet."
-        latestRecord={latestRecord}
+        route={generationRoute}
+        title={historyCopy.title}
+        emptyMessage={historyCopy.emptyMessage}
+        latestRecord={
+          latestRecordRoute === generationRoute ? latestRecord : null
+        }
         historyActionContainer={historyActionContainer}
       />
     </div>
