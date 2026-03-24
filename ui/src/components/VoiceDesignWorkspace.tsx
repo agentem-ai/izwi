@@ -117,11 +117,7 @@ export function VoiceDesignWorkspace({
   useEffect(() => {
     if (!selectedCandidate) {
       setSaveVoiceName("");
-      return;
     }
-    setSaveVoiceName((current) =>
-      current.trim() ? current : `${selectedCandidate.label} voice`,
-    );
     setSaveVoiceStatus(null);
   }, [selectedCandidate?.id]);
 
@@ -485,11 +481,12 @@ export function VoiceDesignWorkspace({
               <div className="mt-3">
                 <label className="mb-1.5 block text-[11px] font-medium text-[var(--text-secondary)]">
                   Voice Name
+                  <span className="ml-1 text-red-500">*</span>
                 </label>
                 <input
                   value={saveVoiceName}
                   onChange={(event) => setSaveVoiceName(event.target.value)}
-                  placeholder="e.g. Support Voice"
+                  placeholder="e.g. Customer Support Voice"
                   className="input h-10 w-full border-[var(--border-muted)] bg-[var(--bg-surface-0)] text-sm"
                   disabled={savingVoice}
                 />
