@@ -218,23 +218,23 @@ export interface SavedVoiceCreateRequest {
   source_record_id?: string;
 }
 
-export type TtsProjectVoiceMode = "built_in" | "saved";
-export type TtsProjectExportFormat = "wav" | "mp3" | "flac";
-export type TtsProjectRenderJobStatus =
+export type StudioProjectVoiceMode = "built_in" | "saved";
+export type StudioProjectExportFormat = "wav" | "mp3" | "flac";
+export type StudioProjectRenderJobStatus =
   | "queued"
   | "running"
   | "completed"
   | "failed"
   | "cancelled";
 
-export interface TtsProjectSummary {
+export interface StudioProjectSummary {
   id: string;
   created_at: number;
   updated_at: number;
   name: string;
   source_filename: string | null;
   model_id: string | null;
-  voice_mode: TtsProjectVoiceMode;
+  voice_mode: StudioProjectVoiceMode;
   speaker: string | null;
   saved_voice_id: string | null;
   speed: number | null;
@@ -243,13 +243,13 @@ export interface TtsProjectSummary {
   total_chars: number;
 }
 
-export interface TtsProjectSegmentRecord {
+export interface StudioProjectSegmentRecord {
   id: string;
   project_id: string;
   position: number;
   text: string;
   model_id: string | null;
-  voice_mode: TtsProjectVoiceMode | null;
+  voice_mode: StudioProjectVoiceMode | null;
   speaker: string | null;
   saved_voice_id: string | null;
   input_chars: number;
@@ -260,7 +260,7 @@ export interface TtsProjectSegmentRecord {
   audio_filename: string | null;
 }
 
-export interface TtsProjectRecord {
+export interface StudioProjectRecord {
   id: string;
   created_at: number;
   updated_at: number;
@@ -268,55 +268,55 @@ export interface TtsProjectRecord {
   source_filename: string | null;
   source_text: string;
   model_id: string | null;
-  voice_mode: TtsProjectVoiceMode;
+  voice_mode: StudioProjectVoiceMode;
   speaker: string | null;
   saved_voice_id: string | null;
   speed: number | null;
-  segments: TtsProjectSegmentRecord[];
+  segments: StudioProjectSegmentRecord[];
 }
 
-export interface TtsProjectCreateRequest {
+export interface StudioProjectCreateRequest {
   name?: string;
   source_filename?: string;
   source_text: string;
   model_id: string;
-  voice_mode?: TtsProjectVoiceMode;
+  voice_mode?: StudioProjectVoiceMode;
   speaker?: string;
   saved_voice_id?: string;
   speed?: number;
 }
 
-export interface TtsProjectUpdateRequest {
+export interface StudioProjectUpdateRequest {
   name?: string;
   model_id?: string;
-  voice_mode?: TtsProjectVoiceMode;
+  voice_mode?: StudioProjectVoiceMode;
   speaker?: string;
   saved_voice_id?: string;
   speed?: number;
 }
 
-export interface TtsProjectSegmentUpdateRequest {
+export interface StudioProjectSegmentUpdateRequest {
   text?: string;
   model_id?: string;
-  voice_mode?: TtsProjectVoiceMode;
+  voice_mode?: StudioProjectVoiceMode;
   speaker?: string;
   saved_voice_id?: string;
 }
 
-export interface TtsProjectSegmentSplitRequest {
+export interface StudioProjectSegmentSplitRequest {
   before_text: string;
   after_text: string;
 }
 
-export interface TtsProjectSegmentReorderRequest {
+export interface StudioProjectSegmentReorderRequest {
   ordered_segment_ids: string[];
 }
 
-export interface TtsProjectSegmentBulkDeleteRequest {
+export interface StudioProjectSegmentBulkDeleteRequest {
   segment_ids: string[];
 }
 
-export interface TtsProjectFolderRecord {
+export interface StudioProjectFolderRecord {
   id: string;
   created_at: number;
   updated_at: number;
@@ -325,30 +325,30 @@ export interface TtsProjectFolderRecord {
   sort_order: number;
 }
 
-export interface TtsProjectFolderCreateRequest {
+export interface StudioProjectFolderCreateRequest {
   name: string;
   parent_id?: string;
   sort_order?: number;
 }
 
-export interface TtsProjectMetaRecord {
+export interface StudioProjectMetaRecord {
   project_id: string;
   folder_id: string | null;
   tags: string[];
-  default_export_format: TtsProjectExportFormat;
+  default_export_format: StudioProjectExportFormat;
   last_render_job_id: string | null;
   last_rendered_at: number | null;
 }
 
-export interface TtsProjectMetaUpdateRequest {
+export interface StudioProjectMetaUpdateRequest {
   folder_id?: string;
   tags?: string[];
-  default_export_format?: TtsProjectExportFormat;
+  default_export_format?: StudioProjectExportFormat;
   last_render_job_id?: string;
   last_rendered_at?: number;
 }
 
-export interface TtsProjectPronunciationRecord {
+export interface StudioProjectPronunciationRecord {
   id: string;
   project_id: string;
   source_text: string;
@@ -358,13 +358,13 @@ export interface TtsProjectPronunciationRecord {
   updated_at: number;
 }
 
-export interface TtsProjectPronunciationCreateRequest {
+export interface StudioProjectPronunciationCreateRequest {
   source_text: string;
   replacement_text: string;
   locale?: string;
 }
 
-export interface TtsProjectSnapshotRecord {
+export interface StudioProjectSnapshotRecord {
   id: string;
   project_id: string;
   created_at: number;
@@ -372,26 +372,26 @@ export interface TtsProjectSnapshotRecord {
   project_name: string;
 }
 
-export interface TtsProjectSnapshotCreateRequest {
+export interface StudioProjectSnapshotCreateRequest {
   label?: string;
 }
 
-export interface TtsProjectRenderJobRecord {
+export interface StudioProjectRenderJobRecord {
   id: string;
   project_id: string;
   created_at: number;
   updated_at: number;
-  status: TtsProjectRenderJobStatus;
+  status: StudioProjectRenderJobStatus;
   error_message: string | null;
   queued_segment_ids: string[];
 }
 
-export interface TtsProjectRenderJobCreateRequest {
+export interface StudioProjectRenderJobCreateRequest {
   queued_segment_ids?: string[];
 }
 
-export interface TtsProjectRenderJobUpdateRequest {
-  status?: TtsProjectRenderJobStatus;
+export interface StudioProjectRenderJobUpdateRequest {
+  status?: StudioProjectRenderJobStatus;
   error_message?: string;
 }
 
@@ -844,62 +844,62 @@ export class AudioApiClient {
     return `${this.diarizationCollectionPath()}/${encodeURIComponent(recordId)}`;
   }
 
-  private ttsProjectsCollectionPath(): string {
-    return "/tts-projects";
+  private studioProjectsCollectionPath(): string {
+    return "/studio/projects";
   }
 
-  private ttsProjectFoldersPath(): string {
-    return "/tts-project-folders";
+  private studioProjectFoldersPath(): string {
+    return "/studio/folders";
   }
 
-  private ttsProjectPath(projectId: string): string {
-    return `${this.ttsProjectsCollectionPath()}/${encodeURIComponent(projectId)}`;
+  private studioProjectPath(projectId: string): string {
+    return `${this.studioProjectsCollectionPath()}/${encodeURIComponent(projectId)}`;
   }
 
-  private ttsProjectMetaPath(projectId: string): string {
-    return `${this.ttsProjectPath(projectId)}/meta`;
+  private studioProjectMetaPath(projectId: string): string {
+    return `${this.studioProjectPath(projectId)}/meta`;
   }
 
-  private ttsProjectSegmentPath(projectId: string, segmentId: string): string {
-    return `${this.ttsProjectPath(projectId)}/segments/${encodeURIComponent(segmentId)}`;
+  private studioProjectSegmentPath(projectId: string, segmentId: string): string {
+    return `${this.studioProjectPath(projectId)}/segments/${encodeURIComponent(segmentId)}`;
   }
 
-  private ttsProjectSegmentsReorderPath(projectId: string): string {
-    return `${this.ttsProjectPath(projectId)}/segments/reorder`;
+  private studioProjectSegmentsReorderPath(projectId: string): string {
+    return `${this.studioProjectPath(projectId)}/segments/reorder`;
   }
 
-  private ttsProjectSegmentsBulkDeletePath(projectId: string): string {
-    return `${this.ttsProjectPath(projectId)}/segments/bulk-delete`;
+  private studioProjectSegmentsBulkDeletePath(projectId: string): string {
+    return `${this.studioProjectPath(projectId)}/segments/bulk-delete`;
   }
 
-  private ttsProjectPronunciationsPath(projectId: string): string {
-    return `${this.ttsProjectPath(projectId)}/pronunciations`;
+  private studioProjectPronunciationsPath(projectId: string): string {
+    return `${this.studioProjectPath(projectId)}/pronunciations`;
   }
 
-  private ttsProjectPronunciationPath(
+  private studioProjectPronunciationPath(
     projectId: string,
     pronunciationId: string,
   ): string {
-    return `${this.ttsProjectPronunciationsPath(projectId)}/${encodeURIComponent(pronunciationId)}`;
+    return `${this.studioProjectPronunciationsPath(projectId)}/${encodeURIComponent(pronunciationId)}`;
   }
 
-  private ttsProjectSnapshotsPath(projectId: string): string {
-    return `${this.ttsProjectPath(projectId)}/snapshots`;
+  private studioProjectSnapshotsPath(projectId: string): string {
+    return `${this.studioProjectPath(projectId)}/snapshots`;
   }
 
-  private ttsProjectSnapshotRestorePath(
+  private studioProjectSnapshotRestorePath(
     projectId: string,
     snapshotId: string,
   ): string {
-    return `${this.ttsProjectSnapshotsPath(projectId)}/${encodeURIComponent(snapshotId)}/restore`;
+    return `${this.studioProjectSnapshotsPath(projectId)}/${encodeURIComponent(snapshotId)}/restore`;
   }
 
-  private ttsProjectRenderJobsPath(projectId: string): string {
-    return `${this.ttsProjectPath(projectId)}/render-jobs`;
+  private studioProjectRenderJobsPath(projectId: string): string {
+    return `${this.studioProjectPath(projectId)}/render-jobs`;
   }
 
-  private ttsProjectRenderJobPath(projectId: string, jobId: string): string {
-    return `${this.ttsProjectRenderJobsPath(projectId)}/${encodeURIComponent(jobId)}`;
+  private studioProjectRenderJobPath(projectId: string, jobId: string): string {
+    return `${this.studioProjectRenderJobsPath(projectId)}/${encodeURIComponent(jobId)}`;
   }
 
   private buildSpeechHistoryRecordCreateBody(
@@ -1270,17 +1270,17 @@ export class AudioApiClient {
     });
   }
 
-  async listTtsProjects(): Promise<TtsProjectSummary[]> {
-    const payload = await this.http.request<{ projects: TtsProjectSummary[] }>(
-      this.ttsProjectsCollectionPath(),
+  async listStudioProjects(): Promise<StudioProjectSummary[]> {
+    const payload = await this.http.request<{ projects: StudioProjectSummary[] }>(
+      this.studioProjectsCollectionPath(),
     );
     return payload.projects ?? [];
   }
 
-  async createTtsProject(
-    request: TtsProjectCreateRequest,
-  ): Promise<TtsProjectRecord> {
-    return this.http.request(this.ttsProjectsCollectionPath(), {
+  async createStudioProject(
+    request: StudioProjectCreateRequest,
+  ): Promise<StudioProjectRecord> {
+    return this.http.request(this.studioProjectsCollectionPath(), {
       method: "POST",
       body: JSON.stringify({
         name: request.name,
@@ -1295,15 +1295,15 @@ export class AudioApiClient {
     });
   }
 
-  async getTtsProject(projectId: string): Promise<TtsProjectRecord> {
-    return this.http.request(this.ttsProjectPath(projectId));
+  async getStudioProject(projectId: string): Promise<StudioProjectRecord> {
+    return this.http.request(this.studioProjectPath(projectId));
   }
 
-  async updateTtsProject(
+  async updateStudioProject(
     projectId: string,
-    request: TtsProjectUpdateRequest,
-  ): Promise<TtsProjectRecord> {
-    return this.http.request(this.ttsProjectPath(projectId), {
+    request: StudioProjectUpdateRequest,
+  ): Promise<StudioProjectRecord> {
+    return this.http.request(this.studioProjectPath(projectId), {
       method: "PATCH",
       body: JSON.stringify({
         name: request.name,
@@ -1316,12 +1316,12 @@ export class AudioApiClient {
     });
   }
 
-  async updateTtsProjectSegment(
+  async updateStudioProjectSegment(
     projectId: string,
     segmentId: string,
-    request: TtsProjectSegmentUpdateRequest,
-  ): Promise<TtsProjectRecord> {
-    return this.http.request(this.ttsProjectSegmentPath(projectId, segmentId), {
+    request: StudioProjectSegmentUpdateRequest,
+  ): Promise<StudioProjectRecord> {
+    return this.http.request(this.studioProjectSegmentPath(projectId, segmentId), {
       method: "PATCH",
       body: JSON.stringify({
         text: request.text,
@@ -1333,13 +1333,13 @@ export class AudioApiClient {
     });
   }
 
-  async splitTtsProjectSegment(
+  async splitStudioProjectSegment(
     projectId: string,
     segmentId: string,
-    request: TtsProjectSegmentSplitRequest,
-  ): Promise<TtsProjectRecord> {
+    request: StudioProjectSegmentSplitRequest,
+  ): Promise<StudioProjectRecord> {
     return this.http.request(
-      `${this.ttsProjectSegmentPath(projectId, segmentId)}/split`,
+      `${this.studioProjectSegmentPath(projectId, segmentId)}/split`,
       {
         method: "POST",
         body: JSON.stringify({
@@ -1350,23 +1350,23 @@ export class AudioApiClient {
     );
   }
 
-  async mergeTtsProjectSegmentWithNext(
+  async mergeStudioProjectSegmentWithNext(
     projectId: string,
     segmentId: string,
-  ): Promise<TtsProjectRecord> {
+  ): Promise<StudioProjectRecord> {
     return this.http.request(
-      `${this.ttsProjectSegmentPath(projectId, segmentId)}/merge-next`,
+      `${this.studioProjectSegmentPath(projectId, segmentId)}/merge-next`,
       {
         method: "POST",
       },
     );
   }
 
-  async reorderTtsProjectSegments(
+  async reorderStudioProjectSegments(
     projectId: string,
-    request: TtsProjectSegmentReorderRequest,
-  ): Promise<TtsProjectRecord> {
-    return this.http.request(this.ttsProjectSegmentsReorderPath(projectId), {
+    request: StudioProjectSegmentReorderRequest,
+  ): Promise<StudioProjectRecord> {
+    return this.http.request(this.studioProjectSegmentsReorderPath(projectId), {
       method: "PATCH",
       body: JSON.stringify({
         ordered_segment_ids: request.ordered_segment_ids,
@@ -1374,11 +1374,11 @@ export class AudioApiClient {
     });
   }
 
-  async bulkDeleteTtsProjectSegments(
+  async bulkDeleteStudioProjectSegments(
     projectId: string,
-    request: TtsProjectSegmentBulkDeleteRequest,
-  ): Promise<TtsProjectRecord> {
-    return this.http.request(this.ttsProjectSegmentsBulkDeletePath(projectId), {
+    request: StudioProjectSegmentBulkDeleteRequest,
+  ): Promise<StudioProjectRecord> {
+    return this.http.request(this.studioProjectSegmentsBulkDeletePath(projectId), {
       method: "POST",
       body: JSON.stringify({
         segment_ids: request.segment_ids,
@@ -1386,28 +1386,28 @@ export class AudioApiClient {
     });
   }
 
-  async deleteTtsProjectSegment(
+  async deleteStudioProjectSegment(
     projectId: string,
     segmentId: string,
-  ): Promise<TtsProjectRecord> {
-    return this.http.request(this.ttsProjectSegmentPath(projectId, segmentId), {
+  ): Promise<StudioProjectRecord> {
+    return this.http.request(this.studioProjectSegmentPath(projectId, segmentId), {
       method: "DELETE",
     });
   }
 
-  async renderTtsProjectSegment(
+  async renderStudioProjectSegment(
     projectId: string,
     segmentId: string,
-  ): Promise<TtsProjectRecord> {
+  ): Promise<StudioProjectRecord> {
     return this.http.request(
-      `${this.ttsProjectSegmentPath(projectId, segmentId)}/render`,
+      `${this.studioProjectSegmentPath(projectId, segmentId)}/render`,
       {
         method: "POST",
       },
     );
   }
 
-  ttsProjectAudioUrl(
+  studioProjectAudioUrl(
     projectId: string,
     options?: {
       download?: boolean;
@@ -1415,7 +1415,7 @@ export class AudioApiClient {
       segment_ids?: string[];
     },
   ): string {
-    const base = this.http.url(`${this.ttsProjectPath(projectId)}/audio`);
+    const base = this.http.url(`${this.studioProjectPath(projectId)}/audio`);
     const params = new URLSearchParams();
     if (options?.download) {
       params.set("download", "true");
@@ -1430,25 +1430,25 @@ export class AudioApiClient {
     return query ? `${base}?${query}` : base;
   }
 
-  async deleteTtsProject(
+  async deleteStudioProject(
     projectId: string,
   ): Promise<{ id: string; deleted: boolean }> {
-    return this.http.request(this.ttsProjectPath(projectId), {
+    return this.http.request(this.studioProjectPath(projectId), {
       method: "DELETE",
     });
   }
 
-  async listTtsProjectFolders(): Promise<TtsProjectFolderRecord[]> {
+  async listStudioProjectFolders(): Promise<StudioProjectFolderRecord[]> {
     const payload = await this.http.request<{
-      folders: TtsProjectFolderRecord[];
-    }>(this.ttsProjectFoldersPath());
+      folders: StudioProjectFolderRecord[];
+    }>(this.studioProjectFoldersPath());
     return payload.folders ?? [];
   }
 
-  async createTtsProjectFolder(
-    request: TtsProjectFolderCreateRequest,
-  ): Promise<TtsProjectFolderRecord> {
-    return this.http.request(this.ttsProjectFoldersPath(), {
+  async createStudioProjectFolder(
+    request: StudioProjectFolderCreateRequest,
+  ): Promise<StudioProjectFolderRecord> {
+    return this.http.request(this.studioProjectFoldersPath(), {
       method: "POST",
       body: JSON.stringify({
         name: request.name,
@@ -1458,15 +1458,15 @@ export class AudioApiClient {
     });
   }
 
-  async getTtsProjectMeta(projectId: string): Promise<TtsProjectMetaRecord> {
-    return this.http.request(this.ttsProjectMetaPath(projectId));
+  async getStudioProjectMeta(projectId: string): Promise<StudioProjectMetaRecord> {
+    return this.http.request(this.studioProjectMetaPath(projectId));
   }
 
-  async updateTtsProjectMeta(
+  async updateStudioProjectMeta(
     projectId: string,
-    request: TtsProjectMetaUpdateRequest,
-  ): Promise<TtsProjectMetaRecord> {
-    return this.http.request(this.ttsProjectMetaPath(projectId), {
+    request: StudioProjectMetaUpdateRequest,
+  ): Promise<StudioProjectMetaRecord> {
+    return this.http.request(this.studioProjectMetaPath(projectId), {
       method: "PATCH",
       body: JSON.stringify({
         folder_id: request.folder_id,
@@ -1478,20 +1478,20 @@ export class AudioApiClient {
     });
   }
 
-  async listTtsProjectPronunciations(
+  async listStudioProjectPronunciations(
     projectId: string,
-  ): Promise<TtsProjectPronunciationRecord[]> {
+  ): Promise<StudioProjectPronunciationRecord[]> {
     const payload = await this.http.request<{
-      entries: TtsProjectPronunciationRecord[];
-    }>(this.ttsProjectPronunciationsPath(projectId));
+      entries: StudioProjectPronunciationRecord[];
+    }>(this.studioProjectPronunciationsPath(projectId));
     return payload.entries ?? [];
   }
 
-  async createTtsProjectPronunciation(
+  async createStudioProjectPronunciation(
     projectId: string,
-    request: TtsProjectPronunciationCreateRequest,
-  ): Promise<TtsProjectPronunciationRecord> {
-    return this.http.request(this.ttsProjectPronunciationsPath(projectId), {
+    request: StudioProjectPronunciationCreateRequest,
+  ): Promise<StudioProjectPronunciationRecord> {
+    return this.http.request(this.studioProjectPronunciationsPath(projectId), {
       method: "POST",
       body: JSON.stringify({
         source_text: request.source_text,
@@ -1501,32 +1501,32 @@ export class AudioApiClient {
     });
   }
 
-  async deleteTtsProjectPronunciation(
+  async deleteStudioProjectPronunciation(
     projectId: string,
     pronunciationId: string,
   ): Promise<{ id: string; deleted: boolean }> {
     return this.http.request(
-      this.ttsProjectPronunciationPath(projectId, pronunciationId),
+      this.studioProjectPronunciationPath(projectId, pronunciationId),
       {
         method: "DELETE",
       },
     );
   }
 
-  async listTtsProjectSnapshots(
+  async listStudioProjectSnapshots(
     projectId: string,
-  ): Promise<TtsProjectSnapshotRecord[]> {
+  ): Promise<StudioProjectSnapshotRecord[]> {
     const payload = await this.http.request<{
-      snapshots: TtsProjectSnapshotRecord[];
-    }>(this.ttsProjectSnapshotsPath(projectId));
+      snapshots: StudioProjectSnapshotRecord[];
+    }>(this.studioProjectSnapshotsPath(projectId));
     return payload.snapshots ?? [];
   }
 
-  async createTtsProjectSnapshot(
+  async createStudioProjectSnapshot(
     projectId: string,
-    request?: TtsProjectSnapshotCreateRequest,
-  ): Promise<TtsProjectSnapshotRecord> {
-    return this.http.request(this.ttsProjectSnapshotsPath(projectId), {
+    request?: StudioProjectSnapshotCreateRequest,
+  ): Promise<StudioProjectSnapshotRecord> {
+    return this.http.request(this.studioProjectSnapshotsPath(projectId), {
       method: "POST",
       body: JSON.stringify({
         label: request?.label,
@@ -1534,32 +1534,32 @@ export class AudioApiClient {
     });
   }
 
-  async restoreTtsProjectSnapshot(
+  async restoreStudioProjectSnapshot(
     projectId: string,
     snapshotId: string,
-  ): Promise<TtsProjectRecord> {
+  ): Promise<StudioProjectRecord> {
     return this.http.request(
-      this.ttsProjectSnapshotRestorePath(projectId, snapshotId),
+      this.studioProjectSnapshotRestorePath(projectId, snapshotId),
       {
         method: "POST",
       },
     );
   }
 
-  async listTtsProjectRenderJobs(
+  async listStudioProjectRenderJobs(
     projectId: string,
-  ): Promise<TtsProjectRenderJobRecord[]> {
+  ): Promise<StudioProjectRenderJobRecord[]> {
     const payload = await this.http.request<{
-      jobs: TtsProjectRenderJobRecord[];
-    }>(this.ttsProjectRenderJobsPath(projectId));
+      jobs: StudioProjectRenderJobRecord[];
+    }>(this.studioProjectRenderJobsPath(projectId));
     return payload.jobs ?? [];
   }
 
-  async createTtsProjectRenderJob(
+  async createStudioProjectRenderJob(
     projectId: string,
-    request?: TtsProjectRenderJobCreateRequest,
-  ): Promise<TtsProjectRenderJobRecord> {
-    return this.http.request(this.ttsProjectRenderJobsPath(projectId), {
+    request?: StudioProjectRenderJobCreateRequest,
+  ): Promise<StudioProjectRenderJobRecord> {
+    return this.http.request(this.studioProjectRenderJobsPath(projectId), {
       method: "POST",
       body: JSON.stringify({
         queued_segment_ids: request?.queued_segment_ids ?? [],
@@ -1567,12 +1567,12 @@ export class AudioApiClient {
     });
   }
 
-  async updateTtsProjectRenderJob(
+  async updateStudioProjectRenderJob(
     projectId: string,
     jobId: string,
-    request: TtsProjectRenderJobUpdateRequest,
-  ): Promise<TtsProjectRenderJobRecord> {
-    return this.http.request(this.ttsProjectRenderJobPath(projectId, jobId), {
+    request: StudioProjectRenderJobUpdateRequest,
+  ): Promise<StudioProjectRenderJobRecord> {
+    return this.http.request(this.studioProjectRenderJobPath(projectId, jobId), {
       method: "PATCH",
       body: JSON.stringify({
         status: request.status,
