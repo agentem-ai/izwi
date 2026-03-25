@@ -510,6 +510,23 @@ These routes back the desktop UI's saved history and reusable assets. Canonical 
 | `GET, POST` | `/v1/voices` | List or create reusable saved voices |
 | `GET, DELETE` | `/v1/voices/:voice_id` | Fetch or delete a saved voice |
 | `GET` | `/v1/voices/:voice_id/audio` | Fetch saved voice reference audio |
+| `GET, POST` | `/v1/studio/projects` | List or create persisted Studio projects |
+| `GET, PATCH, DELETE` | `/v1/studio/projects/:project_id` | Fetch, update, or delete a Studio project |
+| `GET` | `/v1/studio/projects/:project_id/audio` | Fetch combined Studio project audio |
+| `GET, PATCH` | `/v1/studio/projects/:project_id/meta` | Fetch or update Studio project metadata |
+| `GET, POST` | `/v1/studio/projects/:project_id/pronunciations` | List or create Studio project pronunciation overrides |
+| `DELETE` | `/v1/studio/projects/:project_id/pronunciations/:pronunciation_id` | Delete a Studio project pronunciation override |
+| `GET, POST` | `/v1/studio/projects/:project_id/snapshots` | List or create Studio project snapshots |
+| `POST` | `/v1/studio/projects/:project_id/snapshots/:snapshot_id/restore` | Restore a Studio project from a snapshot |
+| `GET, POST` | `/v1/studio/projects/:project_id/render-jobs` | List or create Studio project render jobs |
+| `PATCH` | `/v1/studio/projects/:project_id/render-jobs/:job_id` | Update Studio project render job status |
+| `GET, PATCH, DELETE` | `/v1/studio/projects/:project_id/segments/:segment_id` | Fetch, update, or delete a Studio project segment |
+| `POST` | `/v1/studio/projects/:project_id/segments/:segment_id/split` | Split a Studio project segment |
+| `POST` | `/v1/studio/projects/:project_id/segments/:segment_id/merge-next` | Merge a Studio project segment with the next segment |
+| `PATCH` | `/v1/studio/projects/:project_id/segments/reorder` | Reorder Studio project segments |
+| `POST` | `/v1/studio/projects/:project_id/segments/bulk-delete` | Bulk delete Studio project segments |
+| `POST` | `/v1/studio/projects/:project_id/segments/:segment_id/render` | Render a Studio project segment |
+| `GET, POST` | `/v1/studio/folders` | List or create Studio project folders |
 
 ### 10.2 OpenAI-Compatible Endpoints
 
