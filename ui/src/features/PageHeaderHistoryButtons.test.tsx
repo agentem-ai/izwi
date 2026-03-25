@@ -21,7 +21,7 @@ const apiMocks = vi.hoisted(() => ({
   getTranscriptionRecord: vi.fn(),
   deleteTranscriptionRecord: vi.fn(),
   transcriptionRecordAudioUrl: vi.fn(),
-  listTtsProjects: vi.fn(),
+  listStudioProjects: vi.fn(),
   listSavedVoices: vi.fn(),
 }));
 
@@ -39,7 +39,7 @@ vi.mock("@/api", () => ({
     getTranscriptionRecord: apiMocks.getTranscriptionRecord,
     deleteTranscriptionRecord: apiMocks.deleteTranscriptionRecord,
     transcriptionRecordAudioUrl: apiMocks.transcriptionRecordAudioUrl,
-    listTtsProjects: apiMocks.listTtsProjects,
+    listStudioProjects: apiMocks.listStudioProjects,
     listSavedVoices: apiMocks.listSavedVoices,
   },
 }));
@@ -57,7 +57,7 @@ vi.mock("../api", () => ({
     getTranscriptionRecord: apiMocks.getTranscriptionRecord,
     deleteTranscriptionRecord: apiMocks.deleteTranscriptionRecord,
     transcriptionRecordAudioUrl: apiMocks.transcriptionRecordAudioUrl,
-    listTtsProjects: apiMocks.listTtsProjects,
+    listStudioProjects: apiMocks.listStudioProjects,
     listSavedVoices: apiMocks.listSavedVoices,
   },
 }));
@@ -76,13 +76,13 @@ describe("Page header history buttons", () => {
     apiMocks.getTranscriptionRecord.mockReset();
     apiMocks.deleteTranscriptionRecord.mockReset();
     apiMocks.transcriptionRecordAudioUrl.mockReset();
-    apiMocks.listTtsProjects.mockReset();
+    apiMocks.listStudioProjects.mockReset();
     apiMocks.listSavedVoices.mockReset();
 
     apiMocks.listSpeechHistoryRecords.mockResolvedValue([]);
     apiMocks.listDiarizationRecords.mockResolvedValue([]);
     apiMocks.listTranscriptionRecords.mockResolvedValue([]);
-    apiMocks.listTtsProjects.mockResolvedValue([]);
+    apiMocks.listStudioProjects.mockResolvedValue([]);
     apiMocks.listSavedVoices.mockResolvedValue([]);
 
     HTMLElement.prototype.scrollIntoView = vi.fn();
@@ -136,7 +136,7 @@ describe("Page header history buttons", () => {
       ).toBeInTheDocument(),
     );
     expect(
-      within(slot).getByRole("button", { name: /Project Library/i }),
-    ).toBeInTheDocument();
+      within(slot).queryByRole("button", { name: /Project Library/i }),
+    ).not.toBeInTheDocument();
   });
 });

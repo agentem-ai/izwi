@@ -28,12 +28,12 @@ import {
   api,
   type ModelInfo,
   type SavedVoiceSummary,
-  type TtsProjectFolderRecord,
-  type TtsProjectMetaRecord,
-  type TtsProjectPronunciationRecord,
-  type TtsProjectRecord,
-  type TtsProjectSummary,
-  type TtsProjectVoiceMode,
+  type StudioProjectFolderRecord,
+  type StudioProjectMetaRecord,
+  type StudioProjectPronunciationRecord,
+  type StudioProjectRecord,
+  type StudioProjectSummary,
+  type StudioProjectVoiceMode,
 } from "@/api";
 import {
   TEXT_TO_SPEECH_PREFERRED_MODELS,
@@ -160,11 +160,11 @@ export function StudioWorkspace({
   onModelRequired,
   onError,
 }: StudioWorkspaceProps) {
-  const [projects, setProjects] = useState<TtsProjectSummary[]>([]);
+  const [projects, setProjects] = useState<StudioProjectSummary[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
-  const [projectFolders, setProjectFolders] = useState<TtsProjectFolderRecord[]>([]);
+  const [projectFolders, setProjectFolders] = useState<StudioProjectFolderRecord[]>([]);
   const [projectMetaById, setProjectMetaById] = useState<
-    Record<string, TtsProjectMetaRecord>
+    Record<string, StudioProjectMetaRecord>
   >({});
   const [projectSearch, setProjectSearch] = useState("");
   const [projectStatusFilter, setProjectStatusFilter] = useState<
@@ -178,7 +178,7 @@ export function StudioWorkspace({
     string | null
   >(null);
   const [projectPronunciations, setProjectPronunciations] = useState<
-    TtsProjectPronunciationRecord[]
+    StudioProjectPronunciationRecord[]
   >([]);
   const [projectPronunciationsLoading, setProjectPronunciationsLoading] =
     useState(false);
@@ -186,7 +186,7 @@ export function StudioWorkspace({
   const [newPronunciationReplacement, setNewPronunciationReplacement] =
     useState("");
   const [savingPronunciation, setSavingPronunciation] = useState(false);
-  const [selectedProject, setSelectedProject] = useState<TtsProjectRecord | null>(
+  const [selectedProject, setSelectedProject] = useState<StudioProjectRecord | null>(
     null,
   );
   const [projectLoading, setProjectLoading] = useState(false);
@@ -211,7 +211,7 @@ export function StudioWorkspace({
   const [projectModelId, setProjectModelId] = useState(selectedModel ?? "");
   const [projectFolderId, setProjectFolderId] = useState("");
   const [projectVoiceMode, setProjectVoiceMode] =
-    useState<TtsProjectVoiceMode>("built_in");
+    useState<StudioProjectVoiceMode>("built_in");
   const [projectSpeaker, setProjectSpeaker] = useState("Vivian");
   const [projectSavedVoiceId, setProjectSavedVoiceId] = useState("");
   const [projectSpeed, setProjectSpeed] = useState(1);
@@ -251,7 +251,7 @@ export function StudioWorkspace({
   >(null);
   const [segmentSettingsModelId, setSegmentSettingsModelId] = useState("");
   const [segmentSettingsVoiceMode, setSegmentSettingsVoiceMode] =
-    useState<TtsProjectVoiceMode>("built_in");
+    useState<StudioProjectVoiceMode>("built_in");
   const [segmentSettingsSpeaker, setSegmentSettingsSpeaker] = useState("");
   const [segmentSettingsSavedVoiceId, setSegmentSettingsSavedVoiceId] =
     useState("");
@@ -437,7 +437,7 @@ export function StudioWorkspace({
   const loadProjects = useCallback(async () => {
     setProjectsLoading(true);
     try {
-      const records = await api.listTtsProjects();
+      const records = await api.listStudioProjects();
       setProjects(records);
       if (activeProjectId !== undefined) {
         if (
@@ -456,7 +456,7 @@ export function StudioWorkspace({
       });
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Failed to load TTS projects.";
+        err instanceof Error ? err.message : "Failed to load Studio projects.";
       setWorkspaceError(message);
       onError(message);
     } finally {
@@ -480,14 +480,14 @@ export function StudioWorkspace({
 
   const loadProjectFolders = useCallback(async () => {
     try {
-      const folders = await api.listTtsProjectFolders();
+      const folders = await api.listStudioProjectFolders();
       setProjectFolders(folders);
     } catch {
       setProjectFolders([]);
     }
   }, []);
 
-  const loadProjectMeta = useCallback(async (records: TtsProjectSummary[]) => {
+  const loadProjectMeta = useCallback(async (records: StudioProjectSummary[]) => {
     if (records.length === 0) {
       setProjectMetaById({});
       return;
@@ -496,7 +496,7 @@ export function StudioWorkspace({
     const entries = await Promise.all(
       records.map(async (project) => {
         try {
-          const meta = await api.getTtsProjectMeta(project.id);
+          const meta = await api.getStudioProjectMeta(project.id);
           return [project.id, meta] as const;
         } catch {
           return [
@@ -521,10 +521,10 @@ export function StudioWorkspace({
     async (projectId: string) => {
       setProjectLoading(true);
       try {
-        setSelectedProject(await api.getTtsProject(projectId));
+        setSelectedProject(await api.getStudioProject(projectId));
       } catch (err) {
         const message =
-          err instanceof Error ? err.message : "Failed to load the TTS project.";
+          err instanceof Error ? err.message : "Failed to load the Studio project.";
         setWorkspaceError(message);
         onError(message);
       } finally {
@@ -542,7 +542,7 @@ export function StudioWorkspace({
     try {
       setProjectPronunciationsLoading(true);
       setProjectPronunciations(
-        await api.listTtsProjectPronunciations(projectId),
+        await api.listStudioProjectPronunciations(projectId),
       );
     } catch {
       setProjectPronunciations([]);
@@ -1168,7 +1168,7 @@ export function StudioWorkspace({
     if (!defaults) {
       onModelRequired();
       const message =
-        "Load a built-in voice model or saved-voice renderer before creating a TTS project.";
+        "Load a built-in voice model or saved-voice renderer before creating a Studio project.";
       setWorkspaceError(message);
       onError(message);
       return;
@@ -1182,7 +1182,7 @@ export function StudioWorkspace({
         availableModels.find((model) => model.variant === defaults.modelId)
           ?.speech_capabilities?.supports_speed_control ?? false;
 
-      const project = await api.createTtsProject({
+      const project = await api.createStudioProject({
         name: newProjectName.trim() || undefined,
         source_filename: newProjectFilename || undefined,
         source_text: newProjectText,
@@ -1207,7 +1207,7 @@ export function StudioWorkspace({
       await loadProjects();
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Failed to create the TTS project.";
+        err instanceof Error ? err.message : "Failed to create the Studio project.";
       setWorkspaceError(message);
       onError(message);
     } finally {
@@ -1217,7 +1217,7 @@ export function StudioWorkspace({
 
   const persistSegmentDraft = useCallback(
     async (
-      project: TtsProjectRecord,
+      project: StudioProjectRecord,
       segmentId: string,
       options?: {
         requireChanges?: boolean;
@@ -1243,7 +1243,7 @@ export function StudioWorkspace({
         return project;
       }
 
-      const updated = await api.updateTtsProjectSegment(project.id, segmentId, {
+      const updated = await api.updateStudioProjectSegment(project.id, segmentId, {
         text,
       });
       setSelectedProject(updated);
@@ -1330,7 +1330,7 @@ export function StudioWorkspace({
 
     try {
       setSavingSegmentSettings(true);
-      const project = await api.updateTtsProjectSegment(
+      const project = await api.updateStudioProjectSegment(
         selectedProject.id,
         segmentSettingsSegmentId,
         {
@@ -1406,7 +1406,7 @@ export function StudioWorkspace({
       setSavingProject(true);
       let project = selectedProject;
       if (projectDirty) {
-        project = await api.updateTtsProject(selectedProject.id, {
+        project = await api.updateStudioProject(selectedProject.id, {
           name: projectName.trim(),
           model_id: projectModelId,
           voice_mode: projectVoiceMode,
@@ -1417,7 +1417,7 @@ export function StudioWorkspace({
         });
       }
       if (projectFolderDirty) {
-        const meta = await api.updateTtsProjectMeta(selectedProject.id, {
+        const meta = await api.updateStudioProjectMeta(selectedProject.id, {
           folder_id: projectFolderId || undefined,
         });
         setProjectMetaById((current) => ({
@@ -1534,7 +1534,7 @@ export function StudioWorkspace({
 
     const project = await runProjectMutation(
       () =>
-        api.splitTtsProjectSegment(selectedProject.id, segmentId, {
+        api.splitStudioProjectSegment(selectedProject.id, segmentId, {
           before_text: beforeText,
           after_text: afterText,
         }),
@@ -1607,7 +1607,7 @@ export function StudioWorkspace({
       setDeletingSegment(true);
       setDeleteSegmentError(null);
       setWorkspaceError(null);
-      const project = await api.deleteTtsProjectSegment(
+      const project = await api.deleteStudioProjectSegment(
         selectedProject.id,
         deleteSegmentTarget.id,
       );
@@ -1643,7 +1643,7 @@ export function StudioWorkspace({
   };
 
   const queueSegmentsForRender = useCallback(
-    async (project: TtsProjectRecord, segmentIds: string[]) => {
+    async (project: StudioProjectRecord, segmentIds: string[]) => {
       const uniqueSegmentIds = Array.from(
         new Set(segmentIds.filter((id) => id.trim().length > 0)),
       );
@@ -1653,7 +1653,7 @@ export function StudioWorkspace({
 
       let jobId: string | undefined;
       try {
-        const job = await api.createTtsProjectRenderJob(project.id, {
+        const job = await api.createStudioProjectRenderJob(project.id, {
           queued_segment_ids: uniqueSegmentIds,
         });
         jobId = job.id;
@@ -1713,7 +1713,7 @@ export function StudioWorkspace({
 
     const process = async () => {
       try {
-        const project = await api.renderTtsProjectSegment(
+        const project = await api.renderStudioProjectSegment(
           nextItem.projectId,
           nextItem.segmentId,
         );
@@ -1734,7 +1734,7 @@ export function StudioWorkspace({
               (item.status === "queued" || item.status === "running"),
           );
           if (!hasPendingForJob) {
-            await api.updateTtsProjectRenderJob(nextItem.projectId, nextItem.jobId, {
+            await api.updateStudioProjectRenderJob(nextItem.projectId, nextItem.jobId, {
               status: "completed",
             });
           }
@@ -1751,7 +1751,7 @@ export function StudioWorkspace({
         );
         if (nextItem.jobId) {
           try {
-            await api.updateTtsProjectRenderJob(nextItem.projectId, nextItem.jobId, {
+            await api.updateStudioProjectRenderJob(nextItem.projectId, nextItem.jobId, {
               status: "failed",
               error_message: message,
             });
@@ -1789,7 +1789,7 @@ export function StudioWorkspace({
     setRenderQueue((current) => current.filter((entry) => entry.id !== queueId));
     if (item?.jobId) {
       try {
-        await api.updateTtsProjectRenderJob(item.projectId, item.jobId, {
+        await api.updateStudioProjectRenderJob(item.projectId, item.jobId, {
           status: "cancelled",
         });
       } catch {
@@ -1812,7 +1812,7 @@ export function StudioWorkspace({
     }
     try {
       setSavingPronunciation(true);
-      const created = await api.createTtsProjectPronunciation(selectedProject.id, {
+      const created = await api.createStudioProjectPronunciation(selectedProject.id, {
         source_text: source,
         replacement_text: replacement,
       });
@@ -1838,7 +1838,7 @@ export function StudioWorkspace({
       return;
     }
     try {
-      await api.deleteTtsProjectPronunciation(selectedProject.id, entryId);
+      await api.deleteStudioProjectPronunciation(selectedProject.id, entryId);
       setProjectPronunciations((current) =>
         current.filter((entry) => entry.id !== entryId),
       );
@@ -1855,7 +1855,7 @@ export function StudioWorkspace({
       return;
     }
     const project = await runProjectMutation(
-      () => api.mergeTtsProjectSegmentWithNext(selectedProject.id, segmentId),
+      () => api.mergeStudioProjectSegmentWithNext(selectedProject.id, segmentId),
       "Failed to merge project segments.",
     );
     if (!project) {
@@ -1890,7 +1890,7 @@ export function StudioWorkspace({
     reordered.splice(targetIndex, 0, moved);
     const project = await runProjectMutation(
       () =>
-        api.reorderTtsProjectSegments(selectedProject.id, {
+        api.reorderStudioProjectSegments(selectedProject.id, {
           ordered_segment_ids: reordered,
         }),
       "Failed to reorder project segments.",
@@ -1918,7 +1918,7 @@ export function StudioWorkspace({
     }
     const project = await runProjectMutation(
       () =>
-        api.bulkDeleteTtsProjectSegments(selectedProject.id, {
+        api.bulkDeleteStudioProjectSegments(selectedProject.id, {
           segment_ids: selectedSegmentIds,
         }),
       "Failed to delete selected segments.",
@@ -2044,9 +2044,9 @@ export function StudioWorkspace({
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "");
-      const filename = baseSlug ? `${baseSlug}.${extension}` : `tts-project.${extension}`;
+      const filename = baseSlug ? `${baseSlug}.${extension}` : `studio-project.${extension}`;
       await api.downloadAudioFile(
-        api.ttsProjectAudioUrl(selectedProject.id, {
+        api.studioProjectAudioUrl(selectedProject.id, {
           download: true,
           format: exportFormat,
           segment_ids: segmentIds,
@@ -2062,7 +2062,7 @@ export function StudioWorkspace({
                 .join("\n\n")
             : selectedProject.source_text;
         downloadTextFile(
-          `${baseSlug || "tts-project"}-script.txt`,
+          `${baseSlug || "studio-project"}-script.txt`,
           scriptSource,
         );
       }
@@ -2089,7 +2089,7 @@ export function StudioWorkspace({
       try {
         setDeletingProject(true);
         setDeleteProjectError(null);
-        await api.deleteTtsProject(projectId);
+        await api.deleteStudioProject(projectId);
         setWorkspaceStatus({
           tone: "success",
           message: `Deleted project "${projectName}".`,
@@ -2317,7 +2317,7 @@ export function StudioWorkspace({
         }}
       >
         <DialogContent className="max-w-4xl border-[var(--border-strong)] bg-[var(--bg-surface-0)] p-0">
-          <DialogTitle className="sr-only">Create TTS project</DialogTitle>
+          <DialogTitle className="sr-only">Create Studio project</DialogTitle>
           <div className="border-b border-[var(--border-muted)] px-5 py-4 sm:px-6">
             <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
               New Project
@@ -2468,7 +2468,7 @@ export function StudioWorkspace({
                         : ""}
                     </>
                   ) : (
-                    "Choose a compatible model before creating a TTS project."
+                    "Choose a compatible model before creating a Studio project."
                   )}
                 </div>
                 <p className="mt-2 text-xs leading-relaxed text-[var(--text-muted)]">
