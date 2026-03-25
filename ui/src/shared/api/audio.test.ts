@@ -264,7 +264,7 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     );
   });
 
-  it("posts TTS projects to the canonical projects collection", async () => {
+  it("posts Studio projects to the canonical projects collection", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -293,7 +293,7 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new AudioApiClient(new ApiHttpClient("http://localhost/v1"));
-    await client.createTtsProject({
+    await client.createStudioProject({
       name: "Narration",
       source_filename: "script.txt",
       source_text: "Hello world.",
@@ -304,7 +304,7 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost/v1/tts-projects",
+      "http://localhost/v1/studio/projects",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
@@ -321,7 +321,7 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     );
   });
 
-  it("posts TTS project segment splits to the canonical split route", async () => {
+  it("posts Studio project segment splits to the canonical split route", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -350,13 +350,13 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new AudioApiClient(new ApiHttpClient("http://localhost/v1"));
-    await client.splitTtsProjectSegment("ttsp-1", "ttss-1", {
+    await client.splitStudioProjectSegment("ttsp-1", "ttss-1", {
       before_text: "Hello world.",
       after_text: "Another sentence.",
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost/v1/tts-projects/ttsp-1/segments/ttss-1/split",
+      "http://localhost/v1/studio/projects/ttsp-1/segments/ttss-1/split",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
@@ -367,7 +367,7 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     );
   });
 
-  it("deletes TTS project segments through the canonical segment route", async () => {
+  it("deletes Studio project segments through the canonical segment route", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -396,30 +396,30 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new AudioApiClient(new ApiHttpClient("http://localhost/v1"));
-    await client.deleteTtsProjectSegment("ttsp-1", "ttss-1");
+    await client.deleteStudioProjectSegment("ttsp-1", "ttss-1");
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost/v1/tts-projects/ttsp-1/segments/ttss-1",
+      "http://localhost/v1/studio/projects/ttsp-1/segments/ttss-1",
       expect.objectContaining({
         method: "DELETE",
       }),
     );
   });
 
-  it("builds canonical TTS project export urls", () => {
+  it("builds canonical Studio project export urls", () => {
     const client = new AudioApiClient(new ApiHttpClient("http://localhost/v1"));
 
-    expect(client.ttsProjectAudioUrl("ttsp-1")).toBe(
-      "http://localhost/v1/tts-projects/ttsp-1/audio",
+    expect(client.studioProjectAudioUrl("ttsp-1")).toBe(
+      "http://localhost/v1/studio/projects/ttsp-1/audio",
     );
     expect(
-      client.ttsProjectAudioUrl("ttsp-1", {
+      client.studioProjectAudioUrl("ttsp-1", {
         download: true,
         format: "raw_i16",
         segment_ids: ["a", "b"],
       }),
     ).toBe(
-      "http://localhost/v1/tts-projects/ttsp-1/audio?download=true&format=raw_i16&segment_ids=a%2Cb",
+      "http://localhost/v1/studio/projects/ttsp-1/audio?download=true&format=raw_i16&segment_ids=a%2Cb",
     );
   });
 
@@ -442,12 +442,12 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new AudioApiClient(new ApiHttpClient("http://localhost/v1"));
-    await client.reorderTtsProjectSegments("ttsp-1", {
+    await client.reorderStudioProjectSegments("ttsp-1", {
       ordered_segment_ids: ["ttss-2", "ttss-1"],
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost/v1/tts-projects/ttsp-1/segments/reorder",
+      "http://localhost/v1/studio/projects/ttsp-1/segments/reorder",
       expect.objectContaining({
         method: "PATCH",
         body: JSON.stringify({
@@ -476,12 +476,12 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new AudioApiClient(new ApiHttpClient("http://localhost/v1"));
-    await client.bulkDeleteTtsProjectSegments("ttsp-1", {
+    await client.bulkDeleteStudioProjectSegments("ttsp-1", {
       segment_ids: ["ttss-1", "ttss-2"],
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost/v1/tts-projects/ttsp-1/segments/bulk-delete",
+      "http://localhost/v1/studio/projects/ttsp-1/segments/bulk-delete",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
@@ -515,13 +515,13 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new AudioApiClient(new ApiHttpClient("http://localhost/v1"));
-    await client.updateTtsProjectRenderJob("ttsp-1", "ttsj-1", {
+    await client.updateStudioProjectRenderJob("ttsp-1", "ttsj-1", {
       status: "failed",
       error_message: "boom",
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost/v1/tts-projects/ttsp-1/render-jobs/ttsj-1",
+      "http://localhost/v1/studio/projects/ttsp-1/render-jobs/ttsj-1",
       expect.objectContaining({
         method: "PATCH",
         body: JSON.stringify({
