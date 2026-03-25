@@ -27,6 +27,7 @@ Izwi is a privacy-focused audio AI platform that runs entirely on your machine. 
 
 - **Voice Mode** — Real-time voice conversations with AI
 - **Text-to-Speech** — Generate natural speech from text
+- **Studio** — Build long-form TTS projects and exports
 - **Speech Recognition** — Convert audio to text with high accuracy
 - **Speaker Diarization** — Identify and separate multiple speakers
 - **Voice Cloning** — Clone any voice from a short audio sample
@@ -88,7 +89,7 @@ izwi tts "Hello from Izwi!" --output hello.wav
 ### 4. Transcribe audio
 
 ```bash
-izwi pull Qwen3-ASR-0.6B
+izwi pull Parakeet-TDT-0.6B-v3
 izwi transcribe audio.wav
 ```
 
@@ -110,11 +111,12 @@ IZWI_ASR_CHUNK_OVERLAP_SECS=3
 
 | Category | Models |
 |----------|--------|
-| **TTS** | Qwen3-TTS (0.6B, 1.7B), Kokoro-82M |
-| **ASR** | Qwen3-ASR (0.6B, 1.7B), Parakeet TDT |
+| **TTS** | Qwen3-TTS 12Hz (0.6B Base/CustomVoice, 1.7B Base/CustomVoice/VoiceDesign), Kokoro-82M |
+| **ASR** | Parakeet-TDT-0.6B-v3, Whisper-Large-v3-Turbo |
 | **Diarization** | Sortformer 4-speaker |
-| **Chat** | Qwen3 (0.6B, 1.7B), Gemma 3 (1B, 4B) |
-| **Alignment** | Qwen3-ForcedAligner |
+| **Chat** | Qwen3 GGUF (0.6B, 1.7B, 4B, 8B), Qwen3.5 GGUF (0.8B, 2B, 4B, 9B), LFM2.5 (1.2B Instruct/Thinking GGUF), Gemma 3 (1B) |
+| **Audio** | LFM2.5-Audio-1.5B-GGUF |
+| **Alignment** | Qwen3-ForcedAligner-0.6B (full, 4-bit) |
 
 Run `izwi list` to see all available models.
 
