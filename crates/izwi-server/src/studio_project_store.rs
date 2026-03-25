@@ -11,12 +11,12 @@ use crate::storage_layout::{self};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TtsProjectVoiceMode {
+pub enum StudioProjectVoiceMode {
     BuiltIn,
     Saved,
 }
 
-impl TtsProjectVoiceMode {
+impl StudioProjectVoiceMode {
     pub const fn as_db_value(self) -> &'static str {
         match self {
             Self::BuiltIn => "built_in",
@@ -35,13 +35,13 @@ impl TtsProjectVoiceMode {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TtsProjectExportFormat {
+pub enum StudioProjectExportFormat {
     Wav,
     Mp3,
     Flac,
 }
 
-impl TtsProjectExportFormat {
+impl StudioProjectExportFormat {
     pub const fn as_db_value(self) -> &'static str {
         match self {
             Self::Wav => "wav",
@@ -62,7 +62,7 @@ impl TtsProjectExportFormat {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TtsProjectRenderJobStatus {
+pub enum StudioProjectRenderJobStatus {
     Queued,
     Running,
     Completed,
@@ -70,7 +70,7 @@ pub enum TtsProjectRenderJobStatus {
     Cancelled,
 }
 
-impl TtsProjectRenderJobStatus {
+impl StudioProjectRenderJobStatus {
     pub const fn as_db_value(self) -> &'static str {
         match self {
             Self::Queued => "queued",
@@ -94,7 +94,7 @@ impl TtsProjectRenderJobStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TtsProjectFolderRecord {
+pub struct StudioProjectFolderRecord {
     pub id: String,
     pub created_at: u64,
     pub updated_at: u64,
@@ -104,17 +104,17 @@ pub struct TtsProjectFolderRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TtsProjectMetaRecord {
+pub struct StudioProjectMetaRecord {
     pub project_id: String,
     pub folder_id: Option<String>,
     pub tags: Vec<String>,
-    pub default_export_format: TtsProjectExportFormat,
+    pub default_export_format: StudioProjectExportFormat,
     pub last_render_job_id: Option<String>,
     pub last_rendered_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TtsProjectPronunciationRecord {
+pub struct StudioProjectPronunciationRecord {
     pub id: String,
     pub project_id: String,
     pub source_text: String,
@@ -125,7 +125,7 @@ pub struct TtsProjectPronunciationRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TtsProjectSnapshotRecord {
+pub struct StudioProjectSnapshotRecord {
     pub id: String,
     pub project_id: String,
     pub created_at: u64,
@@ -134,25 +134,25 @@ pub struct TtsProjectSnapshotRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TtsProjectRenderJobRecord {
+pub struct StudioProjectRenderJobRecord {
     pub id: String,
     pub project_id: String,
     pub created_at: u64,
     pub updated_at: u64,
-    pub status: TtsProjectRenderJobStatus,
+    pub status: StudioProjectRenderJobStatus,
     pub error_message: Option<String>,
     pub queued_segment_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TtsProjectSummary {
+pub struct StudioProjectSummary {
     pub id: String,
     pub created_at: u64,
     pub updated_at: u64,
     pub name: String,
     pub source_filename: Option<String>,
     pub model_id: Option<String>,
-    pub voice_mode: TtsProjectVoiceMode,
+    pub voice_mode: StudioProjectVoiceMode,
     pub speaker: Option<String>,
     pub saved_voice_id: Option<String>,
     pub speed: Option<f64>,
@@ -162,13 +162,13 @@ pub struct TtsProjectSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TtsProjectSegmentRecord {
+pub struct StudioProjectSegmentRecord {
     pub id: String,
     pub project_id: String,
     pub position: usize,
     pub text: String,
     pub model_id: Option<String>,
-    pub voice_mode: Option<TtsProjectVoiceMode>,
+    pub voice_mode: Option<StudioProjectVoiceMode>,
     pub speaker: Option<String>,
     pub saved_voice_id: Option<String>,
     pub input_chars: usize,
@@ -180,7 +180,7 @@ pub struct TtsProjectSegmentRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TtsProjectRecord {
+pub struct StudioProjectRecord {
     pub id: String,
     pub created_at: u64,
     pub updated_at: u64,
@@ -188,91 +188,91 @@ pub struct TtsProjectRecord {
     pub source_filename: Option<String>,
     pub source_text: String,
     pub model_id: Option<String>,
-    pub voice_mode: TtsProjectVoiceMode,
+    pub voice_mode: StudioProjectVoiceMode,
     pub speaker: Option<String>,
     pub saved_voice_id: Option<String>,
     pub speed: Option<f64>,
-    pub segments: Vec<TtsProjectSegmentRecord>,
+    pub segments: Vec<StudioProjectSegmentRecord>,
 }
 
 #[derive(Debug, Clone)]
-pub struct NewTtsProjectSegment {
+pub struct NewStudioProjectSegment {
     pub position: usize,
     pub text: String,
     pub model_id: Option<String>,
-    pub voice_mode: Option<TtsProjectVoiceMode>,
+    pub voice_mode: Option<StudioProjectVoiceMode>,
     pub speaker: Option<String>,
     pub saved_voice_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct NewTtsProjectRecord {
+pub struct NewStudioProjectRecord {
     pub name: String,
     pub source_filename: Option<String>,
     pub source_text: String,
     pub model_id: Option<String>,
-    pub voice_mode: TtsProjectVoiceMode,
+    pub voice_mode: StudioProjectVoiceMode,
     pub speaker: Option<String>,
     pub saved_voice_id: Option<String>,
     pub speed: Option<f64>,
-    pub segments: Vec<NewTtsProjectSegment>,
+    pub segments: Vec<NewStudioProjectSegment>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct UpdateTtsProjectRecord {
+pub struct UpdateStudioProjectRecord {
     pub name: Option<String>,
     pub model_id: Option<String>,
-    pub voice_mode: Option<TtsProjectVoiceMode>,
+    pub voice_mode: Option<StudioProjectVoiceMode>,
     pub speaker: Option<Option<String>>,
     pub saved_voice_id: Option<Option<String>>,
     pub speed: Option<Option<f64>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct NewTtsProjectFolderRecord {
+pub struct NewStudioProjectFolderRecord {
     pub name: String,
     pub parent_id: Option<String>,
     pub sort_order: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct UpsertTtsProjectMetaRecord {
+pub struct UpsertStudioProjectMetaRecord {
     pub folder_id: Option<Option<String>>,
     pub tags: Option<Vec<String>>,
-    pub default_export_format: Option<TtsProjectExportFormat>,
+    pub default_export_format: Option<StudioProjectExportFormat>,
     pub last_render_job_id: Option<Option<String>>,
     pub last_rendered_at: Option<Option<u64>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct NewTtsProjectPronunciationRecord {
+pub struct NewStudioProjectPronunciationRecord {
     pub source_text: String,
     pub replacement_text: String,
     pub locale: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct NewTtsProjectSnapshotRecord {
+pub struct NewStudioProjectSnapshotRecord {
     pub label: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct NewTtsProjectRenderJobRecord {
+pub struct NewStudioProjectRenderJobRecord {
     pub queued_segment_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct UpdateTtsProjectRenderJobRecord {
-    pub status: Option<TtsProjectRenderJobStatus>,
+pub struct UpdateStudioProjectRenderJobRecord {
+    pub status: Option<StudioProjectRenderJobStatus>,
     pub error_message: Option<Option<String>>,
 }
 
 #[derive(Clone)]
-pub struct TtsProjectStore {
+pub struct StudioProjectStore {
     db_path: PathBuf,
 }
 
-impl TtsProjectStore {
+impl StudioProjectStore {
     pub fn initialize() -> anyhow::Result<Self> {
         let db_path = storage_layout::resolve_db_path();
         let media_root = storage_layout::resolve_media_root();
@@ -282,15 +282,16 @@ impl TtsProjectStore {
 
     fn initialize_at(db_path: PathBuf, media_root: PathBuf) -> anyhow::Result<Self> {
         storage_layout::ensure_storage_dirs(&db_path, &media_root)
-            .context("Failed to prepare TTS project storage layout")?;
+            .context("Failed to prepare Studio project storage layout")?;
 
         let conn = storage_layout::open_sqlite_connection(&db_path).with_context(|| {
-            format!("Failed to open TTS project database: {}", db_path.display())
+            format!("Failed to open Studio project database: {}", db_path.display())
         })?;
+        migrate_legacy_tts_schema(&conn)?;
 
         conn.execute_batch(
             r#"
-            CREATE TABLE IF NOT EXISTS tts_projects (
+            CREATE TABLE IF NOT EXISTS studio_projects (
                 id TEXT PRIMARY KEY,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -304,7 +305,7 @@ impl TtsProjectStore {
                 speed REAL NULL
             );
 
-            CREATE TABLE IF NOT EXISTS tts_project_segments (
+            CREATE TABLE IF NOT EXISTS studio_project_segments (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
                 position INTEGER NOT NULL,
@@ -315,10 +316,10 @@ impl TtsProjectStore {
                 saved_voice_id TEXT NULL,
                 speech_record_id TEXT NULL,
                 updated_at INTEGER NOT NULL,
-                FOREIGN KEY(project_id) REFERENCES tts_projects(id) ON DELETE CASCADE
+                FOREIGN KEY(project_id) REFERENCES studio_projects(id) ON DELETE CASCADE
             );
 
-            CREATE TABLE IF NOT EXISTS tts_project_folders (
+            CREATE TABLE IF NOT EXISTS studio_project_folders (
                 id TEXT PRIMARY KEY,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -327,18 +328,18 @@ impl TtsProjectStore {
                 sort_order INTEGER NOT NULL DEFAULT 0
             );
 
-            CREATE TABLE IF NOT EXISTS tts_project_meta (
+            CREATE TABLE IF NOT EXISTS studio_project_meta (
                 project_id TEXT PRIMARY KEY,
                 folder_id TEXT NULL,
                 tags_json TEXT NOT NULL DEFAULT '[]',
                 default_export_format TEXT NOT NULL DEFAULT 'wav',
                 last_render_job_id TEXT NULL,
                 last_rendered_at INTEGER NULL,
-                FOREIGN KEY(project_id) REFERENCES tts_projects(id) ON DELETE CASCADE,
-                FOREIGN KEY(folder_id) REFERENCES tts_project_folders(id) ON DELETE SET NULL
+                FOREIGN KEY(project_id) REFERENCES studio_projects(id) ON DELETE CASCADE,
+                FOREIGN KEY(folder_id) REFERENCES studio_project_folders(id) ON DELETE SET NULL
             );
 
-            CREATE TABLE IF NOT EXISTS tts_project_pronunciations (
+            CREATE TABLE IF NOT EXISTS studio_project_pronunciations (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
                 source_text TEXT NOT NULL,
@@ -346,19 +347,19 @@ impl TtsProjectStore {
                 locale TEXT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
-                FOREIGN KEY(project_id) REFERENCES tts_projects(id) ON DELETE CASCADE
+                FOREIGN KEY(project_id) REFERENCES studio_projects(id) ON DELETE CASCADE
             );
 
-            CREATE TABLE IF NOT EXISTS tts_project_snapshots (
+            CREATE TABLE IF NOT EXISTS studio_project_snapshots (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 label TEXT NULL,
                 project_json TEXT NOT NULL,
-                FOREIGN KEY(project_id) REFERENCES tts_projects(id) ON DELETE CASCADE
+                FOREIGN KEY(project_id) REFERENCES studio_projects(id) ON DELETE CASCADE
             );
 
-            CREATE TABLE IF NOT EXISTS tts_project_render_jobs (
+            CREATE TABLE IF NOT EXISTS studio_project_render_jobs (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
@@ -366,31 +367,31 @@ impl TtsProjectStore {
                 status TEXT NOT NULL,
                 error_message TEXT NULL,
                 queued_segment_ids_json TEXT NOT NULL DEFAULT '[]',
-                FOREIGN KEY(project_id) REFERENCES tts_projects(id) ON DELETE CASCADE
+                FOREIGN KEY(project_id) REFERENCES studio_projects(id) ON DELETE CASCADE
             );
 
-            CREATE INDEX IF NOT EXISTS idx_tts_projects_updated_at
-                ON tts_projects(updated_at DESC, id DESC);
-            CREATE INDEX IF NOT EXISTS idx_tts_project_segments_project_position
-                ON tts_project_segments(project_id, position ASC);
-            CREATE INDEX IF NOT EXISTS idx_tts_project_folders_parent
-                ON tts_project_folders(parent_id, sort_order ASC, updated_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_tts_project_pronunciations_project
-                ON tts_project_pronunciations(project_id, updated_at DESC, id DESC);
-            CREATE INDEX IF NOT EXISTS idx_tts_project_snapshots_project
-                ON tts_project_snapshots(project_id, created_at DESC, id DESC);
-            CREATE INDEX IF NOT EXISTS idx_tts_project_render_jobs_project
-                ON tts_project_render_jobs(project_id, created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_studio_projects_updated_at
+                ON studio_projects(updated_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_studio_project_segments_project_position
+                ON studio_project_segments(project_id, position ASC);
+            CREATE INDEX IF NOT EXISTS idx_studio_project_folders_parent
+                ON studio_project_folders(parent_id, sort_order ASC, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_studio_project_pronunciations_project
+                ON studio_project_pronunciations(project_id, updated_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_studio_project_snapshots_project
+                ON studio_project_snapshots(project_id, created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_studio_project_render_jobs_project
+                ON studio_project_render_jobs(project_id, created_at DESC, id DESC);
             "#,
         )
-        .context("Failed to initialize TTS project database schema")?;
+        .context("Failed to initialize Studio project database schema")?;
 
-        ensure_tts_project_segment_settings_columns(&conn)?;
+        ensure_studio_project_segment_settings_columns(&conn)?;
 
         Ok(Self { db_path })
     }
 
-    pub async fn list_projects(&self, limit: usize) -> anyhow::Result<Vec<TtsProjectSummary>> {
+    pub async fn list_projects(&self, limit: usize) -> anyhow::Result<Vec<StudioProjectSummary>> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let list_limit = i64::try_from(limit.clamp(1, 200).max(1)).unwrap_or(100);
@@ -410,8 +411,8 @@ impl TtsProjectStore {
                     COUNT(s.id) AS segment_count,
                     COALESCE(SUM(CASE WHEN s.speech_record_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS rendered_segment_count,
                     COALESCE(SUM(LENGTH(s.text)), 0) AS total_chars
-                FROM tts_projects p
-                LEFT JOIN tts_project_segments s ON s.project_id = p.id
+                FROM studio_projects p
+                LEFT JOIN studio_project_segments s ON s.project_id = p.id
                 GROUP BY
                     p.id,
                     p.created_at,
@@ -441,7 +442,7 @@ impl TtsProjectStore {
     pub async fn get_project(
         &self,
         project_id: String,
-    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             fetch_project(&conn, &project_id)
@@ -451,8 +452,8 @@ impl TtsProjectStore {
 
     pub async fn create_project(
         &self,
-        record: NewTtsProjectRecord,
-    ) -> anyhow::Result<TtsProjectRecord> {
+        record: NewStudioProjectRecord,
+    ) -> anyhow::Result<StudioProjectRecord> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -462,7 +463,7 @@ impl TtsProjectStore {
 
             tx.execute(
                 r#"
-                INSERT INTO tts_projects (
+                INSERT INTO studio_projects (
                     id,
                     created_at,
                     updated_at,
@@ -495,7 +496,7 @@ impl TtsProjectStore {
                 let segment_id = format!("ttss_{}", uuid::Uuid::new_v4().simple());
                 tx.execute(
                     r#"
-                    INSERT INTO tts_project_segments (
+                    INSERT INTO studio_project_segments (
                         id,
                         project_id,
                         position,
@@ -524,7 +525,7 @@ impl TtsProjectStore {
 
             tx.commit()?;
             fetch_project(&conn, &project_id)?
-                .ok_or_else(|| anyhow::anyhow!("Created TTS project was not found"))
+                .ok_or_else(|| anyhow::anyhow!("Created Studio project was not found"))
         })
         .await
     }
@@ -532,8 +533,8 @@ impl TtsProjectStore {
     pub async fn update_project(
         &self,
         project_id: String,
-        update: UpdateTtsProjectRecord,
-    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+        update: UpdateStudioProjectRecord,
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -548,7 +549,7 @@ impl TtsProjectStore {
                         speaker,
                         saved_voice_id,
                         speed
-                    FROM tts_projects
+                    FROM studio_projects
                     WHERE id = ?1
                     "#,
                     params![project_id.as_str()],
@@ -557,8 +558,8 @@ impl TtsProjectStore {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, Option<String>>(1)?,
-                            TtsProjectVoiceMode::from_db_value(voice_mode_raw.as_str())
-                                .unwrap_or(TtsProjectVoiceMode::BuiltIn),
+                            StudioProjectVoiceMode::from_db_value(voice_mode_raw.as_str())
+                                .unwrap_or(StudioProjectVoiceMode::BuiltIn),
                             row.get::<_, Option<String>>(3)?,
                             row.get::<_, Option<String>>(4)?,
                             row.get::<_, Option<f64>>(5)?,
@@ -581,7 +582,7 @@ impl TtsProjectStore {
 
             tx.execute(
                 r#"
-                UPDATE tts_projects
+                UPDATE studio_projects
                 SET
                     updated_at = ?2,
                     name = ?3,
@@ -615,7 +616,7 @@ impl TtsProjectStore {
         project_id: String,
         segment_id: String,
         text: String,
-    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -623,7 +624,7 @@ impl TtsProjectStore {
 
             let updated = tx.execute(
                 r#"
-                UPDATE tts_project_segments
+                UPDATE studio_project_segments
                 SET
                     text = ?3,
                     speech_record_id = NULL,
@@ -651,10 +652,10 @@ impl TtsProjectStore {
         project_id: String,
         segment_id: String,
         model_id: String,
-        voice_mode: TtsProjectVoiceMode,
+        voice_mode: StudioProjectVoiceMode,
         speaker: Option<String>,
         saved_voice_id: Option<String>,
-    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -662,7 +663,7 @@ impl TtsProjectStore {
 
             let updated = tx.execute(
                 r#"
-                UPDATE tts_project_segments
+                UPDATE studio_project_segments
                 SET
                     model_id = ?3,
                     voice_mode = ?4,
@@ -701,10 +702,10 @@ impl TtsProjectStore {
         segment_id: String,
         text: String,
         model_id: String,
-        voice_mode: TtsProjectVoiceMode,
+        voice_mode: StudioProjectVoiceMode,
         speaker: Option<String>,
         saved_voice_id: Option<String>,
-    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -712,7 +713,7 @@ impl TtsProjectStore {
 
             let updated = tx.execute(
                 r#"
-                UPDATE tts_project_segments
+                UPDATE studio_project_segments
                 SET
                     text = ?3,
                     model_id = ?4,
@@ -754,7 +755,7 @@ impl TtsProjectStore {
         segment_id: String,
         before_text: String,
         after_text: String,
-    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -769,7 +770,7 @@ impl TtsProjectStore {
                         voice_mode,
                         speaker,
                         saved_voice_id
-                    FROM tts_project_segments
+                    FROM studio_project_segments
                     WHERE project_id = ?1 AND id = ?2
                     "#,
                     params![project_id.as_str(), segment_id.as_str()],
@@ -780,7 +781,7 @@ impl TtsProjectStore {
                             row.get::<_, Option<String>>(1)?,
                             voice_mode_raw
                                 .as_deref()
-                                .and_then(TtsProjectVoiceMode::from_db_value),
+                                .and_then(StudioProjectVoiceMode::from_db_value),
                             row.get::<_, Option<String>>(3)?,
                             row.get::<_, Option<String>>(4)?,
                         ))
@@ -796,7 +797,7 @@ impl TtsProjectStore {
 
             tx.execute(
                 r#"
-                UPDATE tts_project_segments
+                UPDATE studio_project_segments
                 SET position = position + 1
                 WHERE project_id = ?1 AND position > ?2
                 "#,
@@ -805,7 +806,7 @@ impl TtsProjectStore {
 
             tx.execute(
                 r#"
-                UPDATE tts_project_segments
+                UPDATE studio_project_segments
                 SET
                     text = ?3,
                     speech_record_id = NULL,
@@ -818,7 +819,7 @@ impl TtsProjectStore {
             let next_segment_id = format!("ttss_{}", uuid::Uuid::new_v4().simple());
             tx.execute(
                 r#"
-                INSERT INTO tts_project_segments (
+                INSERT INTO studio_project_segments (
                     id,
                     project_id,
                     position,
@@ -856,7 +857,7 @@ impl TtsProjectStore {
         &self,
         project_id: String,
         segment_id: String,
-    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -866,7 +867,7 @@ impl TtsProjectStore {
                 .query_row(
                     r#"
                     SELECT position
-                    FROM tts_project_segments
+                    FROM studio_project_segments
                     WHERE project_id = ?1 AND id = ?2
                     "#,
                     params![project_id.as_str(), segment_id.as_str()],
@@ -881,7 +882,7 @@ impl TtsProjectStore {
 
             let deleted = tx.execute(
                 r#"
-                DELETE FROM tts_project_segments
+                DELETE FROM studio_project_segments
                 WHERE project_id = ?1 AND id = ?2
                 "#,
                 params![project_id.as_str(), segment_id.as_str()],
@@ -894,7 +895,7 @@ impl TtsProjectStore {
 
             tx.execute(
                 r#"
-                UPDATE tts_project_segments
+                UPDATE studio_project_segments
                 SET position = position - 1
                 WHERE project_id = ?1 AND position > ?2
                 "#,
@@ -913,7 +914,7 @@ impl TtsProjectStore {
         &self,
         project_id: String,
         segment_id: String,
-    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -923,7 +924,7 @@ impl TtsProjectStore {
                 .query_row(
                     r#"
                     SELECT id, position, text
-                    FROM tts_project_segments
+                    FROM studio_project_segments
                     WHERE project_id = ?1 AND id = ?2
                     "#,
                     params![project_id.as_str(), segment_id.as_str()],
@@ -945,7 +946,7 @@ impl TtsProjectStore {
                 .query_row(
                     r#"
                     SELECT id, position, text
-                    FROM tts_project_segments
+                    FROM studio_project_segments
                     WHERE project_id = ?1 AND position = ?2
                     "#,
                     params![project_id.as_str(), current_position + 1],
@@ -968,7 +969,7 @@ impl TtsProjectStore {
                 .to_string();
             tx.execute(
                 r#"
-                UPDATE tts_project_segments
+                UPDATE studio_project_segments
                 SET
                     text = ?3,
                     speech_record_id = NULL,
@@ -980,7 +981,7 @@ impl TtsProjectStore {
 
             tx.execute(
                 r#"
-                DELETE FROM tts_project_segments
+                DELETE FROM studio_project_segments
                 WHERE project_id = ?1 AND id = ?2
                 "#,
                 params![project_id.as_str(), next_id.as_str()],
@@ -988,7 +989,7 @@ impl TtsProjectStore {
 
             tx.execute(
                 r#"
-                UPDATE tts_project_segments
+                UPDATE studio_project_segments
                 SET position = position - 1
                 WHERE project_id = ?1 AND position > ?2
                 "#,
@@ -1007,7 +1008,7 @@ impl TtsProjectStore {
         &self,
         project_id: String,
         ordered_segment_ids: Vec<String>,
-    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -1016,7 +1017,7 @@ impl TtsProjectStore {
                 let mut stmt = tx.prepare(
                     r#"
                     SELECT id
-                    FROM tts_project_segments
+                    FROM studio_project_segments
                     WHERE project_id = ?1
                     ORDER BY position ASC, id ASC
                     "#,
@@ -1049,7 +1050,7 @@ impl TtsProjectStore {
             for (position, segment_id) in ordered_segment_ids.iter().enumerate() {
                 tx.execute(
                     r#"
-                    UPDATE tts_project_segments
+                    UPDATE studio_project_segments
                     SET position = ?3, updated_at = ?4, speech_record_id = NULL
                     WHERE project_id = ?1 AND id = ?2
                     "#,
@@ -1074,7 +1075,7 @@ impl TtsProjectStore {
         &self,
         project_id: String,
         segment_ids: Vec<String>,
-    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -1082,7 +1083,7 @@ impl TtsProjectStore {
                 let mut stmt = tx.prepare(
                     r#"
                     SELECT id, position
-                    FROM tts_project_segments
+                    FROM studio_project_segments
                     WHERE project_id = ?1
                     ORDER BY position ASC, id ASC
                     "#,
@@ -1121,7 +1122,7 @@ impl TtsProjectStore {
                 if remove_set.contains(segment_id) {
                     tx.execute(
                         r#"
-                        DELETE FROM tts_project_segments
+                        DELETE FROM studio_project_segments
                         WHERE project_id = ?1 AND id = ?2
                         "#,
                         params![project_id.as_str(), segment_id.as_str()],
@@ -1136,7 +1137,7 @@ impl TtsProjectStore {
                 }
                 tx.execute(
                     r#"
-                    UPDATE tts_project_segments
+                    UPDATE studio_project_segments
                     SET position = ?3
                     WHERE project_id = ?1 AND id = ?2
                     "#,
@@ -1159,7 +1160,7 @@ impl TtsProjectStore {
         project_id: String,
         segment_id: String,
         speech_record_id: String,
-    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -1167,7 +1168,7 @@ impl TtsProjectStore {
 
             let updated = tx.execute(
                 r#"
-                UPDATE tts_project_segments
+                UPDATE studio_project_segments
                 SET
                     speech_record_id = ?3,
                     updated_at = ?4
@@ -1198,11 +1199,11 @@ impl TtsProjectStore {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
             tx.execute(
-                "DELETE FROM tts_project_segments WHERE project_id = ?1",
+                "DELETE FROM studio_project_segments WHERE project_id = ?1",
                 params![project_id.as_str()],
             )?;
             let deleted = tx.execute(
-                "DELETE FROM tts_projects WHERE id = ?1",
+                "DELETE FROM studio_projects WHERE id = ?1",
                 params![project_id.as_str()],
             )?;
             tx.commit()?;
@@ -1211,13 +1212,13 @@ impl TtsProjectStore {
         .await
     }
 
-    pub async fn list_folders(&self) -> anyhow::Result<Vec<TtsProjectFolderRecord>> {
+    pub async fn list_folders(&self) -> anyhow::Result<Vec<StudioProjectFolderRecord>> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let mut stmt = conn.prepare(
                 r#"
                 SELECT id, created_at, updated_at, name, parent_id, sort_order
-                FROM tts_project_folders
+                FROM studio_project_folders
                 ORDER BY
                     CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END ASC,
                     parent_id ASC,
@@ -1238,15 +1239,15 @@ impl TtsProjectStore {
 
     pub async fn create_folder(
         &self,
-        record: NewTtsProjectFolderRecord,
-    ) -> anyhow::Result<TtsProjectFolderRecord> {
+        record: NewStudioProjectFolderRecord,
+    ) -> anyhow::Result<StudioProjectFolderRecord> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let now = now_unix_millis_i64();
             let id = format!("ttpf_{}", uuid::Uuid::new_v4().simple());
             conn.execute(
                 r#"
-                INSERT INTO tts_project_folders (id, created_at, updated_at, name, parent_id, sort_order)
+                INSERT INTO studio_project_folders (id, created_at, updated_at, name, parent_id, sort_order)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                 "#,
                 params![
@@ -1261,7 +1262,7 @@ impl TtsProjectStore {
             conn.query_row(
                 r#"
                 SELECT id, created_at, updated_at, name, parent_id, sort_order
-                FROM tts_project_folders
+                FROM studio_project_folders
                 WHERE id = ?1
                 "#,
                 params![id.as_str()],
@@ -1275,7 +1276,7 @@ impl TtsProjectStore {
     pub async fn get_project_meta(
         &self,
         project_id: String,
-    ) -> anyhow::Result<Option<TtsProjectMetaRecord>> {
+    ) -> anyhow::Result<Option<StudioProjectMetaRecord>> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             fetch_project_meta(&conn, project_id.as_str())
@@ -1286,14 +1287,14 @@ impl TtsProjectStore {
     pub async fn upsert_project_meta(
         &self,
         project_id: String,
-        update: UpsertTtsProjectMetaRecord,
-    ) -> anyhow::Result<Option<TtsProjectMetaRecord>> {
+        update: UpsertStudioProjectMetaRecord,
+    ) -> anyhow::Result<Option<StudioProjectMetaRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
             let exists = tx
                 .query_row(
-                    "SELECT 1 FROM tts_projects WHERE id = ?1",
+                    "SELECT 1 FROM studio_projects WHERE id = ?1",
                     params![project_id.as_str()],
                     |_| Ok(()),
                 )
@@ -1308,7 +1309,7 @@ impl TtsProjectStore {
                 .query_row(
                     r#"
                     SELECT folder_id, tags_json, default_export_format, last_render_job_id, last_rendered_at
-                    FROM tts_project_meta
+                    FROM studio_project_meta
                     WHERE project_id = ?1
                     "#,
                     params![project_id.as_str()],
@@ -1327,8 +1328,8 @@ impl TtsProjectStore {
             let default_current_export = current
                 .as_ref()
                 .and_then(|(_, _, format, _, _)| format.as_deref())
-                .and_then(TtsProjectExportFormat::from_db_value)
-                .unwrap_or(TtsProjectExportFormat::Wav);
+                .and_then(StudioProjectExportFormat::from_db_value)
+                .unwrap_or(StudioProjectExportFormat::Wav);
             let next_folder_id = update.folder_id.unwrap_or_else(|| {
                 current
                     .as_ref()
@@ -1358,7 +1359,7 @@ impl TtsProjectStore {
 
             tx.execute(
                 r#"
-                INSERT INTO tts_project_meta (
+                INSERT INTO studio_project_meta (
                     project_id,
                     folder_id,
                     tags_json,
@@ -1393,13 +1394,13 @@ impl TtsProjectStore {
     pub async fn list_project_pronunciations(
         &self,
         project_id: String,
-    ) -> anyhow::Result<Vec<TtsProjectPronunciationRecord>> {
+    ) -> anyhow::Result<Vec<StudioProjectPronunciationRecord>> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let mut stmt = conn.prepare(
                 r#"
                 SELECT id, project_id, source_text, replacement_text, locale, created_at, updated_at
-                FROM tts_project_pronunciations
+                FROM studio_project_pronunciations
                 WHERE project_id = ?1
                 ORDER BY updated_at DESC, id DESC
                 "#,
@@ -1417,13 +1418,13 @@ impl TtsProjectStore {
     pub async fn create_project_pronunciation(
         &self,
         project_id: String,
-        record: NewTtsProjectPronunciationRecord,
-    ) -> anyhow::Result<Option<TtsProjectPronunciationRecord>> {
+        record: NewStudioProjectPronunciationRecord,
+    ) -> anyhow::Result<Option<StudioProjectPronunciationRecord>> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let exists = conn
                 .query_row(
-                    "SELECT 1 FROM tts_projects WHERE id = ?1",
+                    "SELECT 1 FROM studio_projects WHERE id = ?1",
                     params![project_id.as_str()],
                     |_| Ok(()),
                 )
@@ -1437,7 +1438,7 @@ impl TtsProjectStore {
             let id = format!("ttpp_{}", uuid::Uuid::new_v4().simple());
             conn.execute(
                 r#"
-                INSERT INTO tts_project_pronunciations (
+                INSERT INTO studio_project_pronunciations (
                     id, project_id, source_text, replacement_text, locale, created_at, updated_at
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 "#,
@@ -1455,7 +1456,7 @@ impl TtsProjectStore {
             conn.query_row(
                 r#"
                 SELECT id, project_id, source_text, replacement_text, locale, created_at, updated_at
-                FROM tts_project_pronunciations
+                FROM studio_project_pronunciations
                 WHERE id = ?1
                 "#,
                 params![id.as_str()],
@@ -1476,7 +1477,7 @@ impl TtsProjectStore {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let deleted = conn.execute(
                 r#"
-                DELETE FROM tts_project_pronunciations
+                DELETE FROM studio_project_pronunciations
                 WHERE project_id = ?1 AND id = ?2
                 "#,
                 params![project_id.as_str(), pronunciation_id.as_str()],
@@ -1489,7 +1490,7 @@ impl TtsProjectStore {
     pub async fn list_project_snapshots(
         &self,
         project_id: String,
-    ) -> anyhow::Result<Vec<TtsProjectSnapshotRecord>> {
+    ) -> anyhow::Result<Vec<StudioProjectSnapshotRecord>> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let mut stmt = conn.prepare(
@@ -1500,8 +1501,8 @@ impl TtsProjectStore {
                     s.created_at,
                     s.label,
                     COALESCE(json_extract(s.project_json, '$.name'), p.name) AS project_name
-                FROM tts_project_snapshots s
-                LEFT JOIN tts_projects p ON p.id = s.project_id
+                FROM studio_project_snapshots s
+                LEFT JOIN studio_projects p ON p.id = s.project_id
                 WHERE s.project_id = ?1
                 ORDER BY s.created_at DESC, s.id DESC
                 "#,
@@ -1519,8 +1520,8 @@ impl TtsProjectStore {
     pub async fn create_project_snapshot(
         &self,
         project_id: String,
-        record: NewTtsProjectSnapshotRecord,
-    ) -> anyhow::Result<Option<TtsProjectSnapshotRecord>> {
+        record: NewStudioProjectSnapshotRecord,
+    ) -> anyhow::Result<Option<StudioProjectSnapshotRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -1534,7 +1535,7 @@ impl TtsProjectStore {
             let snapshot_id = format!("ttps_{}", uuid::Uuid::new_v4().simple());
             tx.execute(
                 r#"
-                INSERT INTO tts_project_snapshots (id, project_id, created_at, label, project_json)
+                INSERT INTO studio_project_snapshots (id, project_id, created_at, label, project_json)
                 VALUES (?1, ?2, ?3, ?4, ?5)
                 "#,
                 params![
@@ -1555,8 +1556,8 @@ impl TtsProjectStore {
                     s.created_at,
                     s.label,
                     COALESCE(json_extract(s.project_json, '$.name'), p.name) AS project_name
-                FROM tts_project_snapshots s
-                LEFT JOIN tts_projects p ON p.id = s.project_id
+                FROM studio_project_snapshots s
+                LEFT JOIN studio_projects p ON p.id = s.project_id
                 WHERE s.id = ?1
                 "#,
                 params![snapshot_id.as_str()],
@@ -1572,7 +1573,7 @@ impl TtsProjectStore {
         &self,
         project_id: String,
         snapshot_id: String,
-    ) -> anyhow::Result<Option<TtsProjectRecord>> {
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -1580,7 +1581,7 @@ impl TtsProjectStore {
                 .query_row(
                     r#"
                     SELECT project_json
-                    FROM tts_project_snapshots
+                    FROM studio_project_snapshots
                     WHERE id = ?1 AND project_id = ?2
                     "#,
                     params![snapshot_id.as_str(), project_id.as_str()],
@@ -1592,12 +1593,12 @@ impl TtsProjectStore {
                 return Ok(None);
             };
 
-            let snapshot: TtsProjectRecord = serde_json::from_str(snapshot_json.as_str())
+            let snapshot: StudioProjectRecord = serde_json::from_str(snapshot_json.as_str())
                 .context("Failed to decode project snapshot payload")?;
             let now = now_unix_millis_i64();
             tx.execute(
                 r#"
-                UPDATE tts_projects
+                UPDATE studio_projects
                 SET
                     updated_at = ?2,
                     name = ?3,
@@ -1625,13 +1626,13 @@ impl TtsProjectStore {
             )?;
 
             tx.execute(
-                "DELETE FROM tts_project_segments WHERE project_id = ?1",
+                "DELETE FROM studio_project_segments WHERE project_id = ?1",
                 params![project_id.as_str()],
             )?;
             for segment in snapshot.segments {
                 tx.execute(
                     r#"
-                    INSERT INTO tts_project_segments (
+                    INSERT INTO studio_project_segments (
                         id,
                         project_id,
                         position,
@@ -1668,7 +1669,7 @@ impl TtsProjectStore {
     pub async fn list_project_render_jobs(
         &self,
         project_id: String,
-    ) -> anyhow::Result<Vec<TtsProjectRenderJobRecord>> {
+    ) -> anyhow::Result<Vec<StudioProjectRenderJobRecord>> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let mut stmt = conn.prepare(
@@ -1681,7 +1682,7 @@ impl TtsProjectStore {
                     status,
                     error_message,
                     queued_segment_ids_json
-                FROM tts_project_render_jobs
+                FROM studio_project_render_jobs
                 WHERE project_id = ?1
                 ORDER BY created_at DESC, id DESC
                 "#,
@@ -1699,14 +1700,14 @@ impl TtsProjectStore {
     pub async fn create_project_render_job(
         &self,
         project_id: String,
-        record: NewTtsProjectRenderJobRecord,
-    ) -> anyhow::Result<Option<TtsProjectRenderJobRecord>> {
+        record: NewStudioProjectRenderJobRecord,
+    ) -> anyhow::Result<Option<StudioProjectRenderJobRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
             let exists = tx
                 .query_row(
-                    "SELECT 1 FROM tts_projects WHERE id = ?1",
+                    "SELECT 1 FROM studio_projects WHERE id = ?1",
                     params![project_id.as_str()],
                     |_| Ok(()),
                 )
@@ -1720,7 +1721,7 @@ impl TtsProjectStore {
             let job_id = format!("ttsj_{}", uuid::Uuid::new_v4().simple());
             tx.execute(
                 r#"
-                INSERT INTO tts_project_render_jobs (
+                INSERT INTO studio_project_render_jobs (
                     id,
                     project_id,
                     created_at,
@@ -1735,14 +1736,14 @@ impl TtsProjectStore {
                     project_id.as_str(),
                     now,
                     now,
-                    TtsProjectRenderJobStatus::Queued.as_db_value(),
+                    StudioProjectRenderJobStatus::Queued.as_db_value(),
                     encode_json_string_vec(record.queued_segment_ids.as_slice()),
                 ],
             )?;
 
             tx.execute(
                 r#"
-                INSERT INTO tts_project_meta (
+                INSERT INTO studio_project_meta (
                     project_id,
                     folder_id,
                     tags_json,
@@ -1752,11 +1753,11 @@ impl TtsProjectStore {
                 )
                 VALUES (
                     ?1,
-                    (SELECT folder_id FROM tts_project_meta WHERE project_id = ?1),
-                    COALESCE((SELECT tags_json FROM tts_project_meta WHERE project_id = ?1), '[]'),
-                    COALESCE((SELECT default_export_format FROM tts_project_meta WHERE project_id = ?1), 'wav'),
+                    (SELECT folder_id FROM studio_project_meta WHERE project_id = ?1),
+                    COALESCE((SELECT tags_json FROM studio_project_meta WHERE project_id = ?1), '[]'),
+                    COALESCE((SELECT default_export_format FROM studio_project_meta WHERE project_id = ?1), 'wav'),
                     ?2,
-                    (SELECT last_rendered_at FROM tts_project_meta WHERE project_id = ?1)
+                    (SELECT last_rendered_at FROM studio_project_meta WHERE project_id = ?1)
                 )
                 ON CONFLICT(project_id) DO UPDATE SET
                     last_render_job_id = excluded.last_render_job_id
@@ -1774,8 +1775,8 @@ impl TtsProjectStore {
         &self,
         project_id: String,
         job_id: String,
-        update: UpdateTtsProjectRenderJobRecord,
-    ) -> anyhow::Result<Option<TtsProjectRenderJobRecord>> {
+        update: UpdateStudioProjectRenderJobRecord,
+    ) -> anyhow::Result<Option<StudioProjectRenderJobRecord>> {
         self.run_blocking(move |db_path| {
             let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
             let tx = conn.transaction()?;
@@ -1783,7 +1784,7 @@ impl TtsProjectStore {
                 .query_row(
                     r#"
                     SELECT status, error_message
-                    FROM tts_project_render_jobs
+                    FROM studio_project_render_jobs
                     WHERE project_id = ?1 AND id = ?2
                     "#,
                     params![project_id.as_str(), job_id.as_str()],
@@ -1802,13 +1803,13 @@ impl TtsProjectStore {
 
             let next_status = update
                 .status
-                .or_else(|| TtsProjectRenderJobStatus::from_db_value(current_status.as_str()))
-                .unwrap_or(TtsProjectRenderJobStatus::Queued);
+                .or_else(|| StudioProjectRenderJobStatus::from_db_value(current_status.as_str()))
+                .unwrap_or(StudioProjectRenderJobStatus::Queued);
             let next_error = update.error_message.unwrap_or(current_error);
             let now = now_unix_millis_i64();
             tx.execute(
                 r#"
-                UPDATE tts_project_render_jobs
+                UPDATE studio_project_render_jobs
                 SET updated_at = ?3, status = ?4, error_message = ?5
                 WHERE project_id = ?1 AND id = ?2
                 "#,
@@ -1821,10 +1822,10 @@ impl TtsProjectStore {
                 ],
             )?;
 
-            if next_status == TtsProjectRenderJobStatus::Completed {
+            if next_status == StudioProjectRenderJobStatus::Completed {
                 tx.execute(
                     r#"
-                    INSERT INTO tts_project_meta (
+                    INSERT INTO studio_project_meta (
                         project_id,
                         folder_id,
                         tags_json,
@@ -1834,9 +1835,9 @@ impl TtsProjectStore {
                     )
                     VALUES (
                         ?1,
-                        (SELECT folder_id FROM tts_project_meta WHERE project_id = ?1),
-                        COALESCE((SELECT tags_json FROM tts_project_meta WHERE project_id = ?1), '[]'),
-                        COALESCE((SELECT default_export_format FROM tts_project_meta WHERE project_id = ?1), 'wav'),
+                        (SELECT folder_id FROM studio_project_meta WHERE project_id = ?1),
+                        COALESCE((SELECT tags_json FROM studio_project_meta WHERE project_id = ?1), '[]'),
+                        COALESCE((SELECT default_export_format FROM studio_project_meta WHERE project_id = ?1), 'wav'),
                         ?2,
                         ?3
                     )
@@ -1862,11 +1863,53 @@ impl TtsProjectStore {
         let db_path = self.db_path.clone();
         task::spawn_blocking(move || work(db_path))
             .await
-            .context("TTS project storage task join error")?
+            .context("Studio project storage task join error")?
     }
 }
 
-fn fetch_project(conn: &Connection, project_id: &str) -> anyhow::Result<Option<TtsProjectRecord>> {
+fn migrate_legacy_tts_schema(conn: &Connection) -> anyhow::Result<()> {
+    let legacy_exists = sqlite_table_exists(conn, "tts_projects")?;
+    let studio_exists = sqlite_table_exists(conn, "studio_projects")?;
+
+    if !legacy_exists || studio_exists {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+        ALTER TABLE tts_projects RENAME TO studio_projects;
+        ALTER TABLE tts_project_segments RENAME TO studio_project_segments;
+        ALTER TABLE tts_project_folders RENAME TO studio_project_folders;
+        ALTER TABLE tts_project_meta RENAME TO studio_project_meta;
+        ALTER TABLE tts_project_pronunciations RENAME TO studio_project_pronunciations;
+        ALTER TABLE tts_project_snapshots RENAME TO studio_project_snapshots;
+        ALTER TABLE tts_project_render_jobs RENAME TO studio_project_render_jobs;
+
+        DROP INDEX IF EXISTS idx_tts_projects_updated_at;
+        DROP INDEX IF EXISTS idx_tts_project_segments_project_position;
+        DROP INDEX IF EXISTS idx_tts_project_folders_parent;
+        DROP INDEX IF EXISTS idx_tts_project_pronunciations_project;
+        DROP INDEX IF EXISTS idx_tts_project_snapshots_project;
+        DROP INDEX IF EXISTS idx_tts_project_render_jobs_project;
+        "#,
+    )
+    .context("Failed to migrate legacy TTS project schema to Studio naming")?;
+
+    Ok(())
+}
+
+fn sqlite_table_exists(conn: &Connection, table_name: &str) -> anyhow::Result<bool> {
+    let marker: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+            params![table_name],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(marker.is_some())
+}
+
+fn fetch_project(conn: &Connection, project_id: &str) -> anyhow::Result<Option<StudioProjectRecord>> {
     let project = conn
         .query_row(
             r#"
@@ -1882,7 +1925,7 @@ fn fetch_project(conn: &Connection, project_id: &str) -> anyhow::Result<Option<T
                 speaker,
                 saved_voice_id,
                 speed
-            FROM tts_projects
+            FROM studio_projects
             WHERE id = ?1
             "#,
             params![project_id],
@@ -1910,7 +1953,7 @@ fn fetch_project(conn: &Connection, project_id: &str) -> anyhow::Result<Option<T
             h.generation_time_ms,
             h.audio_duration_secs,
             h.audio_filename
-        FROM tts_project_segments s
+        FROM studio_project_segments s
         LEFT JOIN speech_history_records h
             ON h.id = s.speech_record_id
            AND h.route_kind = 'text_to_speech'
@@ -1929,21 +1972,21 @@ fn fetch_project(conn: &Connection, project_id: &str) -> anyhow::Result<Option<T
     Ok(Some(project))
 }
 
-fn map_project_summary_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectSummary> {
+fn map_project_summary_row(row: &Row<'_>) -> rusqlite::Result<StudioProjectSummary> {
     let voice_mode_raw: String = row.get(6)?;
     let segment_count = row.get::<_, i64>(10)?;
     let rendered_segment_count = row.get::<_, i64>(11)?;
     let total_chars = row.get::<_, i64>(12)?;
 
-    Ok(TtsProjectSummary {
+    Ok(StudioProjectSummary {
         id: row.get(0)?,
         created_at: i64_to_u64(row.get(1)?),
         updated_at: i64_to_u64(row.get(2)?),
         name: row.get(3)?,
         source_filename: row.get(4)?,
         model_id: row.get(5)?,
-        voice_mode: TtsProjectVoiceMode::from_db_value(voice_mode_raw.as_str())
-            .unwrap_or(TtsProjectVoiceMode::BuiltIn),
+        voice_mode: StudioProjectVoiceMode::from_db_value(voice_mode_raw.as_str())
+            .unwrap_or(StudioProjectVoiceMode::BuiltIn),
         speaker: row.get(7)?,
         saved_voice_id: row.get(8)?,
         speed: row.get(9)?,
@@ -1953,9 +1996,9 @@ fn map_project_summary_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectSummary>
     })
 }
 
-fn map_project_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectRecord> {
+fn map_project_row(row: &Row<'_>) -> rusqlite::Result<StudioProjectRecord> {
     let voice_mode_raw: String = row.get(7)?;
-    Ok(TtsProjectRecord {
+    Ok(StudioProjectRecord {
         id: row.get(0)?,
         created_at: i64_to_u64(row.get(1)?),
         updated_at: i64_to_u64(row.get(2)?),
@@ -1963,8 +2006,8 @@ fn map_project_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectRecord> {
         source_filename: row.get(4)?,
         source_text: row.get(5)?,
         model_id: row.get(6)?,
-        voice_mode: TtsProjectVoiceMode::from_db_value(voice_mode_raw.as_str())
-            .unwrap_or(TtsProjectVoiceMode::BuiltIn),
+        voice_mode: StudioProjectVoiceMode::from_db_value(voice_mode_raw.as_str())
+            .unwrap_or(StudioProjectVoiceMode::BuiltIn),
         speaker: row.get(8)?,
         saved_voice_id: row.get(9)?,
         speed: row.get(10)?,
@@ -1972,10 +2015,10 @@ fn map_project_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectRecord> {
     })
 }
 
-fn map_segment_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectSegmentRecord> {
+fn map_segment_row(row: &Row<'_>) -> rusqlite::Result<StudioProjectSegmentRecord> {
     let text: String = row.get(3)?;
     let voice_mode_raw: Option<String> = row.get(5)?;
-    Ok(TtsProjectSegmentRecord {
+    Ok(StudioProjectSegmentRecord {
         id: row.get(0)?,
         project_id: row.get(1)?,
         position: i64_to_usize(row.get(2)?).unwrap_or_default(),
@@ -1984,7 +2027,7 @@ fn map_segment_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectSegmentRecord> {
         model_id: row.get(4)?,
         voice_mode: voice_mode_raw
             .as_deref()
-            .and_then(TtsProjectVoiceMode::from_db_value),
+            .and_then(StudioProjectVoiceMode::from_db_value),
         speaker: row.get(6)?,
         saved_voice_id: row.get(7)?,
         speech_record_id: row.get(8)?,
@@ -2029,18 +2072,18 @@ fn ensure_sqlite_table_column(
     Ok(())
 }
 
-fn ensure_tts_project_segment_settings_columns(conn: &Connection) -> anyhow::Result<()> {
-    ensure_sqlite_table_column(conn, "tts_project_segments", "model_id", "TEXT NULL")?;
-    ensure_sqlite_table_column(conn, "tts_project_segments", "voice_mode", "TEXT NULL")?;
-    ensure_sqlite_table_column(conn, "tts_project_segments", "speaker", "TEXT NULL")?;
-    ensure_sqlite_table_column(conn, "tts_project_segments", "saved_voice_id", "TEXT NULL")?;
+fn ensure_studio_project_segment_settings_columns(conn: &Connection) -> anyhow::Result<()> {
+    ensure_sqlite_table_column(conn, "studio_project_segments", "model_id", "TEXT NULL")?;
+    ensure_sqlite_table_column(conn, "studio_project_segments", "voice_mode", "TEXT NULL")?;
+    ensure_sqlite_table_column(conn, "studio_project_segments", "speaker", "TEXT NULL")?;
+    ensure_sqlite_table_column(conn, "studio_project_segments", "saved_voice_id", "TEXT NULL")?;
     Ok(())
 }
 
 fn fetch_project_meta(
     conn: &Connection,
     project_id: &str,
-) -> anyhow::Result<Option<TtsProjectMetaRecord>> {
+) -> anyhow::Result<Option<StudioProjectMetaRecord>> {
     conn.query_row(
         r#"
         SELECT
@@ -2050,7 +2093,7 @@ fn fetch_project_meta(
             default_export_format,
             last_render_job_id,
             last_rendered_at
-        FROM tts_project_meta
+        FROM studio_project_meta
         WHERE project_id = ?1
         "#,
         params![project_id],
@@ -2064,7 +2107,7 @@ fn fetch_render_job(
     conn: &Connection,
     project_id: &str,
     job_id: &str,
-) -> anyhow::Result<Option<TtsProjectRenderJobRecord>> {
+) -> anyhow::Result<Option<StudioProjectRenderJobRecord>> {
     conn.query_row(
         r#"
         SELECT
@@ -2075,7 +2118,7 @@ fn fetch_render_job(
             status,
             error_message,
             queued_segment_ids_json
-        FROM tts_project_render_jobs
+        FROM studio_project_render_jobs
         WHERE project_id = ?1 AND id = ?2
         "#,
         params![project_id, job_id],
@@ -2085,8 +2128,8 @@ fn fetch_render_job(
     .map_err(Into::into)
 }
 
-fn map_folder_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectFolderRecord> {
-    Ok(TtsProjectFolderRecord {
+fn map_folder_row(row: &Row<'_>) -> rusqlite::Result<StudioProjectFolderRecord> {
+    Ok(StudioProjectFolderRecord {
         id: row.get(0)?,
         created_at: i64_to_u64(row.get(1)?),
         updated_at: i64_to_u64(row.get(2)?),
@@ -2096,25 +2139,25 @@ fn map_folder_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectFolderRecord> {
     })
 }
 
-fn map_meta_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectMetaRecord> {
+fn map_meta_row(row: &Row<'_>) -> rusqlite::Result<StudioProjectMetaRecord> {
     let tags_json = row.get::<_, Option<String>>(2)?;
     let export_format_raw = row.get::<_, Option<String>>(3)?;
     let last_rendered_at = row.get::<_, Option<i64>>(5)?;
-    Ok(TtsProjectMetaRecord {
+    Ok(StudioProjectMetaRecord {
         project_id: row.get(0)?,
         folder_id: row.get(1)?,
         tags: parse_json_string_vec(tags_json),
         default_export_format: export_format_raw
             .as_deref()
-            .and_then(TtsProjectExportFormat::from_db_value)
-            .unwrap_or(TtsProjectExportFormat::Wav),
+            .and_then(StudioProjectExportFormat::from_db_value)
+            .unwrap_or(StudioProjectExportFormat::Wav),
         last_render_job_id: row.get(4)?,
         last_rendered_at: last_rendered_at.map(i64_to_u64),
     })
 }
 
-fn map_pronunciation_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectPronunciationRecord> {
-    Ok(TtsProjectPronunciationRecord {
+fn map_pronunciation_row(row: &Row<'_>) -> rusqlite::Result<StudioProjectPronunciationRecord> {
+    Ok(StudioProjectPronunciationRecord {
         id: row.get(0)?,
         project_id: row.get(1)?,
         source_text: row.get(2)?,
@@ -2125,8 +2168,8 @@ fn map_pronunciation_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectPronunciat
     })
 }
 
-fn map_snapshot_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectSnapshotRecord> {
-    Ok(TtsProjectSnapshotRecord {
+fn map_snapshot_row(row: &Row<'_>) -> rusqlite::Result<StudioProjectSnapshotRecord> {
+    Ok(StudioProjectSnapshotRecord {
         id: row.get(0)?,
         project_id: row.get(1)?,
         created_at: i64_to_u64(row.get(2)?),
@@ -2135,16 +2178,16 @@ fn map_snapshot_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectSnapshotRecord>
     })
 }
 
-fn map_render_job_row(row: &Row<'_>) -> rusqlite::Result<TtsProjectRenderJobRecord> {
+fn map_render_job_row(row: &Row<'_>) -> rusqlite::Result<StudioProjectRenderJobRecord> {
     let status_raw: String = row.get(4)?;
     let queued_segment_ids_json = row.get::<_, Option<String>>(6)?;
-    Ok(TtsProjectRenderJobRecord {
+    Ok(StudioProjectRenderJobRecord {
         id: row.get(0)?,
         project_id: row.get(1)?,
         created_at: i64_to_u64(row.get(2)?),
         updated_at: i64_to_u64(row.get(3)?),
-        status: TtsProjectRenderJobStatus::from_db_value(status_raw.as_str())
-            .unwrap_or(TtsProjectRenderJobStatus::Queued),
+        status: StudioProjectRenderJobStatus::from_db_value(status_raw.as_str())
+            .unwrap_or(StudioProjectRenderJobStatus::Queued),
         error_message: row.get(5)?,
         queued_segment_ids: parse_json_string_vec(queued_segment_ids_json),
     })
@@ -2161,7 +2204,7 @@ fn encode_json_string_vec(values: &[String]) -> String {
 
 fn touch_project(conn: &Connection, project_id: &str, updated_at: i64) -> anyhow::Result<()> {
     conn.execute(
-        "UPDATE tts_projects SET updated_at = ?2 WHERE id = ?1",
+        "UPDATE studio_projects SET updated_at = ?2 WHERE id = ?1",
         params![project_id, updated_at],
     )?;
     Ok(())
@@ -2171,7 +2214,7 @@ fn sync_project_source_text(conn: &Connection, project_id: &str) -> anyhow::Resu
     let mut stmt = conn.prepare(
         r#"
         SELECT text
-        FROM tts_project_segments
+        FROM studio_project_segments
         WHERE project_id = ?1
         ORDER BY position ASC, id ASC
         "#,
@@ -2184,7 +2227,7 @@ fn sync_project_source_text(conn: &Connection, project_id: &str) -> anyhow::Resu
     }
 
     conn.execute(
-        "UPDATE tts_projects SET source_text = ?2 WHERE id = ?1",
+        "UPDATE studio_projects SET source_text = ?2 WHERE id = ?1",
         params![project_id, segment_texts.join("\n\n")],
     )?;
     Ok(())
@@ -2213,8 +2256,8 @@ fn usize_to_i64(value: usize) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        NewTtsProjectRecord, NewTtsProjectSegment, TtsProjectStore, TtsProjectVoiceMode,
-        UpdateTtsProjectRecord,
+        NewStudioProjectRecord, NewStudioProjectSegment, StudioProjectStore, StudioProjectVoiceMode,
+        UpdateStudioProjectRecord,
     };
     use crate::storage_layout;
     use std::path::PathBuf;
@@ -2232,13 +2275,13 @@ mod tests {
 
     #[tokio::test]
     async fn create_and_update_project_round_trips_segments() {
-        let root = test_env_root("tts-project-store");
+        let root = test_env_root("studio-project-store");
         let db_path = root.join("test.sqlite3");
         let media_dir = root.join("media");
         std::fs::create_dir_all(&root).expect("root should be created");
 
         let store =
-            TtsProjectStore::initialize_at(db_path, media_dir).expect("store should initialize");
+            StudioProjectStore::initialize_at(db_path, media_dir).expect("store should initialize");
         let conn = storage_layout::open_sqlite_connection(&store.db_path)
             .expect("speech schema connection should open");
         conn.execute_batch(
@@ -2267,29 +2310,29 @@ mod tests {
         )
         .expect("speech schema should initialize");
         let created = store
-            .create_project(NewTtsProjectRecord {
+            .create_project(NewStudioProjectRecord {
                 name: "Narration project".to_string(),
                 source_filename: Some("script.txt".to_string()),
                 source_text: "Hello world. Another sentence.".to_string(),
                 model_id: Some("Qwen3-TTS".to_string()),
-                voice_mode: TtsProjectVoiceMode::BuiltIn,
+                voice_mode: StudioProjectVoiceMode::BuiltIn,
                 speaker: Some("Vivian".to_string()),
                 saved_voice_id: None,
                 speed: Some(1.1),
                 segments: vec![
-                    NewTtsProjectSegment {
+                    NewStudioProjectSegment {
                         position: 0,
                         text: "Hello world.".to_string(),
                         model_id: Some("Qwen3-TTS".to_string()),
-                        voice_mode: Some(TtsProjectVoiceMode::BuiltIn),
+                        voice_mode: Some(StudioProjectVoiceMode::BuiltIn),
                         speaker: Some("Vivian".to_string()),
                         saved_voice_id: None,
                     },
-                    NewTtsProjectSegment {
+                    NewStudioProjectSegment {
                         position: 1,
                         text: "Another sentence.".to_string(),
                         model_id: Some("Qwen3-TTS".to_string()),
-                        voice_mode: Some(TtsProjectVoiceMode::BuiltIn),
+                        voice_mode: Some(StudioProjectVoiceMode::BuiltIn),
                         speaker: Some("Vivian".to_string()),
                         saved_voice_id: None,
                     },
@@ -2304,18 +2347,18 @@ mod tests {
         let updated = store
             .update_project(
                 created.id.clone(),
-                UpdateTtsProjectRecord {
-                    voice_mode: Some(TtsProjectVoiceMode::Saved),
+                UpdateStudioProjectRecord {
+                    voice_mode: Some(StudioProjectVoiceMode::Saved),
                     speaker: Some(None),
                     saved_voice_id: Some(Some("voice-1".to_string())),
-                    ..UpdateTtsProjectRecord::default()
+                    ..UpdateStudioProjectRecord::default()
                 },
             )
             .await
             .expect("update should succeed")
             .expect("project should exist");
 
-        assert_eq!(updated.voice_mode, TtsProjectVoiceMode::Saved);
+        assert_eq!(updated.voice_mode, StudioProjectVoiceMode::Saved);
         assert_eq!(updated.saved_voice_id.as_deref(), Some("voice-1"));
         assert_eq!(updated.speaker, None);
 
@@ -2338,13 +2381,13 @@ mod tests {
 
     #[tokio::test]
     async fn split_and_delete_segment_reorders_project_blocks() {
-        let root = test_env_root("tts-project-segment-ops");
+        let root = test_env_root("studio-project-segment-ops");
         let db_path = root.join("test.sqlite3");
         let media_dir = root.join("media");
         std::fs::create_dir_all(&root).expect("root should be created");
 
         let store =
-            TtsProjectStore::initialize_at(db_path, media_dir).expect("store should initialize");
+            StudioProjectStore::initialize_at(db_path, media_dir).expect("store should initialize");
         let conn = storage_layout::open_sqlite_connection(&store.db_path)
             .expect("speech schema connection should open");
         conn.execute_batch(
@@ -2374,29 +2417,29 @@ mod tests {
         .expect("speech schema should initialize");
 
         let created = store
-            .create_project(NewTtsProjectRecord {
+            .create_project(NewStudioProjectRecord {
                 name: "Narration project".to_string(),
                 source_filename: Some("script.txt".to_string()),
                 source_text: "Hello world. Another sentence.".to_string(),
                 model_id: Some("Qwen3-TTS".to_string()),
-                voice_mode: TtsProjectVoiceMode::BuiltIn,
+                voice_mode: StudioProjectVoiceMode::BuiltIn,
                 speaker: Some("Vivian".to_string()),
                 saved_voice_id: None,
                 speed: Some(1.0),
                 segments: vec![
-                    NewTtsProjectSegment {
+                    NewStudioProjectSegment {
                         position: 0,
                         text: "Hello world. Another sentence.".to_string(),
                         model_id: Some("Qwen3-TTS".to_string()),
-                        voice_mode: Some(TtsProjectVoiceMode::BuiltIn),
+                        voice_mode: Some(StudioProjectVoiceMode::BuiltIn),
                         speaker: Some("Vivian".to_string()),
                         saved_voice_id: None,
                     },
-                    NewTtsProjectSegment {
+                    NewStudioProjectSegment {
                         position: 1,
                         text: "Closing line.".to_string(),
                         model_id: Some("Qwen3-TTS".to_string()),
-                        voice_mode: Some(TtsProjectVoiceMode::BuiltIn),
+                        voice_mode: Some(StudioProjectVoiceMode::BuiltIn),
                         speaker: Some("Vivian".to_string()),
                         saved_voice_id: None,
                     },

@@ -16,7 +16,7 @@ mod saved_voice_store;
 mod speech_history_store;
 mod state;
 mod storage_layout;
-mod studio_store;
+mod studio_project_store;
 mod transcription_store;
 mod voice_defaults;
 mod voice_memory;
