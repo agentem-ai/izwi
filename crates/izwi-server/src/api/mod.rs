@@ -12,9 +12,9 @@ pub mod request_context;
 mod router;
 pub mod saved_voices;
 pub mod speech_history;
+pub mod studio;
 pub mod transcription;
 pub(crate) mod tts_long_form;
-pub mod tts_projects;
 pub mod voice;
 pub mod voice_realtime;
 

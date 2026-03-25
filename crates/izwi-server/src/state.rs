@@ -5,7 +5,7 @@ use crate::diarization_store::DiarizationStore;
 use crate::onboarding_store::OnboardingStore;
 use crate::saved_voice_store::SavedVoiceStore;
 use crate::speech_history_store::SpeechHistoryStore;
-use crate::studio_store::TtsProjectStore;
+use crate::studio_project_store::StudioProjectStore;
 use crate::transcription_store::TranscriptionStore;
 use crate::voice_observation_store::VoiceObservationStore;
 use crate::voice_store::VoiceStore;
@@ -81,8 +81,8 @@ pub struct AppState {
     pub saved_voice_store: Arc<SavedVoiceStore>,
     /// SQLite-backed onboarding completion store.
     pub onboarding_store: Arc<OnboardingStore>,
-    /// SQLite-backed TTS project store.
-    pub studio_store: Arc<TtsProjectStore>,
+    /// SQLite-backed Studio project store.
+    pub studio_store: Arc<StudioProjectStore>,
     /// SQLite-backed voice profile/session store.
     pub voice_store: Arc<VoiceStore>,
     /// SQLite-backed voice observation store.
@@ -106,7 +106,7 @@ impl AppState {
         let diarization_store = Arc::new(DiarizationStore::initialize()?);
         let speech_history_store = Arc::new(SpeechHistoryStore::initialize()?);
         let saved_voice_store = Arc::new(SavedVoiceStore::initialize()?);
-        let studio_store = Arc::new(TtsProjectStore::initialize()?);
+        let studio_store = Arc::new(StudioProjectStore::initialize()?);
         let voice_store = Arc::new(VoiceStore::initialize()?);
         let voice_observation_store = Arc::new(VoiceObservationStore::initialize()?);
         let onboarding_store = Arc::new(OnboardingStore::initialize()?);
