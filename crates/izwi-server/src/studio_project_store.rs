@@ -287,7 +287,6 @@ impl StudioProjectStore {
         let conn = storage_layout::open_sqlite_connection(&db_path).with_context(|| {
             format!("Failed to open Studio project database: {}", db_path.display())
         })?;
-        migrate_legacy_tts_schema(&conn)?;
 
         conn.execute_batch(
             r#"
@@ -1865,48 +1864,6 @@ impl StudioProjectStore {
             .await
             .context("Studio project storage task join error")?
     }
-}
-
-fn migrate_legacy_tts_schema(conn: &Connection) -> anyhow::Result<()> {
-    let legacy_exists = sqlite_table_exists(conn, "tts_projects")?;
-    let studio_exists = sqlite_table_exists(conn, "studio_projects")?;
-
-    if !legacy_exists || studio_exists {
-        return Ok(());
-    }
-
-    conn.execute_batch(
-        r#"
-        ALTER TABLE tts_projects RENAME TO studio_projects;
-        ALTER TABLE tts_project_segments RENAME TO studio_project_segments;
-        ALTER TABLE tts_project_folders RENAME TO studio_project_folders;
-        ALTER TABLE tts_project_meta RENAME TO studio_project_meta;
-        ALTER TABLE tts_project_pronunciations RENAME TO studio_project_pronunciations;
-        ALTER TABLE tts_project_snapshots RENAME TO studio_project_snapshots;
-        ALTER TABLE tts_project_render_jobs RENAME TO studio_project_render_jobs;
-
-        DROP INDEX IF EXISTS idx_tts_projects_updated_at;
-        DROP INDEX IF EXISTS idx_tts_project_segments_project_position;
-        DROP INDEX IF EXISTS idx_tts_project_folders_parent;
-        DROP INDEX IF EXISTS idx_tts_project_pronunciations_project;
-        DROP INDEX IF EXISTS idx_tts_project_snapshots_project;
-        DROP INDEX IF EXISTS idx_tts_project_render_jobs_project;
-        "#,
-    )
-    .context("Failed to migrate legacy TTS project schema to Studio naming")?;
-
-    Ok(())
-}
-
-fn sqlite_table_exists(conn: &Connection, table_name: &str) -> anyhow::Result<bool> {
-    let marker: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
-            params![table_name],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(marker.is_some())
 }
 
 fn fetch_project(conn: &Connection, project_id: &str) -> anyhow::Result<Option<StudioProjectRecord>> {
