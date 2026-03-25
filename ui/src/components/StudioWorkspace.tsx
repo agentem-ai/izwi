@@ -28,7 +28,6 @@ import {
   api,
   type ModelInfo,
   type SavedVoiceSummary,
-  type StudioProjectFolderRecord,
   type StudioProjectMetaRecord,
   type StudioProjectPronunciationRecord,
   type StudioProjectRecord,
@@ -113,7 +112,6 @@ interface StudioRenderQueueItem {
 }
 
 const STUDIO_RENDER_QUEUE_STORAGE_KEY = "izwi.studio.render.queue.v1";
-const STUDIO_UNFILED_FOLDER_VALUE = "__studio-unfiled-folder__";
 
 const SAVED_VOICE_RENDERER_PREFERRED_MODELS = [
   ...VOICE_CLONING_PREFERRED_MODELS,
@@ -162,7 +160,6 @@ export function StudioWorkspace({
 }: StudioWorkspaceProps) {
   const [projects, setProjects] = useState<StudioProjectSummary[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
-  const [projectFolders, setProjectFolders] = useState<StudioProjectFolderRecord[]>([]);
   const [projectMetaById, setProjectMetaById] = useState<
     Record<string, StudioProjectMetaRecord>
   >({});
@@ -173,7 +170,6 @@ export function StudioWorkspace({
   const [projectSort, setProjectSort] = useState<"recent" | "name" | "progress">(
     "recent",
   );
-  const [projectFolderFilter, setProjectFolderFilter] = useState("all");
   const [selectedProjectIdState, setSelectedProjectIdState] = useState<
     string | null
   >(null);
@@ -207,7 +203,6 @@ export function StudioWorkspace({
   } | null>(null);
   const [projectName, setProjectName] = useState("");
   const [projectModelId, setProjectModelId] = useState(selectedModel ?? "");
-  const [projectFolderId, setProjectFolderId] = useState("");
   const [projectVoiceMode, setProjectVoiceMode] =
     useState<StudioProjectVoiceMode>("built_in");
   const [projectSpeaker, setProjectSpeaker] = useState("Vivian");
@@ -341,21 +336,10 @@ export function StudioWorkspace({
     [projects, selectedProjectId],
   );
 
-  const selectedProjectMeta = selectedProjectId
-    ? projectMetaById[selectedProjectId] ?? null
-    : null;
-
-  const folderNameById = useMemo(
-    () =>
-      Object.fromEntries(projectFolders.map((folder) => [folder.id, folder.name] as const)),
-    [projectFolders],
-  );
-
   const visibleProjects = useMemo(() => {
     const search = projectSearch.trim().toLowerCase();
     const filtered = projects.filter((project) => {
       const meta = projectMetaById[project.id];
-      const folderId = meta?.folder_id ?? null;
       const tags = meta?.tags ?? [];
       const completionReady =
         project.segment_count > 0 &&
@@ -364,14 +348,12 @@ export function StudioWorkspace({
         projectStatusFilter === "all" ||
         (projectStatusFilter === "ready" && completionReady) ||
         (projectStatusFilter === "in_progress" && !completionReady);
-      const folderMatch =
-        projectFolderFilter === "all" || folderId === projectFolderFilter;
       const searchMatch =
         !search ||
         project.name.toLowerCase().includes(search) ||
         project.model_id?.toLowerCase().includes(search) ||
         tags.some((tag) => tag.toLowerCase().includes(search));
-      return statusMatch && folderMatch && searchMatch;
+      return statusMatch && searchMatch;
     });
 
     const sorted = [...filtered];
@@ -395,14 +377,7 @@ export function StudioWorkspace({
     }
     sorted.sort((left, right) => right.updated_at - left.updated_at);
     return sorted;
-  }, [
-    projectFolderFilter,
-    projectMetaById,
-    projectSearch,
-    projectSort,
-    projectStatusFilter,
-    projects,
-  ]);
+  }, [projectMetaById, projectSearch, projectSort, projectStatusFilter, projects]);
 
   const projectDirty = useMemo(() => {
     if (!selectedProject) {
@@ -429,9 +404,6 @@ export function StudioWorkspace({
     selectedProject,
     supportsSpeedControl,
   ]);
-  const projectFolderDirty =
-    (selectedProjectMeta?.folder_id ?? "") !== projectFolderId;
-
   const loadProjects = useCallback(async () => {
     setProjectsLoading(true);
     try {
@@ -473,15 +445,6 @@ export function StudioWorkspace({
       );
     } finally {
       setSavedVoicesLoading(false);
-    }
-  }, []);
-
-  const loadProjectFolders = useCallback(async () => {
-    try {
-      const folders = await api.listStudioProjectFolders();
-      setProjectFolders(folders);
-    } catch {
-      setProjectFolders([]);
     }
   }, []);
 
@@ -552,8 +515,7 @@ export function StudioWorkspace({
   useEffect(() => {
     void loadProjects();
     void loadSavedVoices();
-    void loadProjectFolders();
-  }, [loadProjectFolders, loadProjects, loadSavedVoices]);
+  }, [loadProjects, loadSavedVoices]);
 
   useEffect(() => {
     void loadProjectMeta(projects);
@@ -575,7 +537,6 @@ export function StudioWorkspace({
     if (!selectedProject) {
       setProjectName("");
       setProjectModelId("");
-      setProjectFolderId("");
       setProjectVoiceMode("built_in");
       setProjectSpeaker("Vivian");
       setProjectSavedVoiceId("");
@@ -612,13 +573,6 @@ export function StudioWorkspace({
     }
     setProjectModelId(selectedModel ?? "");
   }, [selectedModel, selectedProject]);
-
-  useEffect(() => {
-    if (!selectedProjectId) {
-      return;
-    }
-    setProjectFolderId(projectMetaById[selectedProjectId]?.folder_id ?? "");
-  }, [projectMetaById, selectedProjectId]);
 
   useEffect(() => {
     if (projectVoiceMode === "saved" && !supportsSavedVoices && supportsBuiltInVoices) {
@@ -1352,7 +1306,7 @@ export function StudioWorkspace({
       onError(message);
       return null;
     }
-    if (!projectDirty && !projectFolderDirty) {
+    if (!projectDirty) {
       return selectedProject;
     }
 
@@ -1369,15 +1323,6 @@ export function StudioWorkspace({
             projectVoiceMode === "saved" ? projectSavedVoiceId : undefined,
           speed: supportsSpeedControl ? projectSpeed : undefined,
         });
-      }
-      if (projectFolderDirty) {
-        const meta = await api.updateStudioProjectMeta(selectedProject.id, {
-          folder_id: projectFolderId || undefined,
-        });
-        setProjectMetaById((current) => ({
-          ...current,
-          [selectedProject.id]: meta,
-        }));
       }
       setSelectedProject(project);
       setWorkspaceStatus({
@@ -1400,8 +1345,6 @@ export function StudioWorkspace({
     onError,
     onModelRequired,
     projectDirty,
-    projectFolderDirty,
-    projectFolderId,
     projectModelId,
     projectName,
     projectSavedVoiceId,
@@ -2197,7 +2140,7 @@ export function StudioWorkspace({
           placeholder="Search projects, models, or tags"
           className="bg-[var(--bg-surface-0)]"
         />
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-2">
           <Select
             value={projectStatusFilter}
             onValueChange={(value) =>
@@ -2226,19 +2169,6 @@ export function StudioWorkspace({
               <SelectItem value="recent">Sort: Recent</SelectItem>
               <SelectItem value="name">Sort: Name</SelectItem>
               <SelectItem value="progress">Sort: Progress</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select value={projectFolderFilter} onValueChange={setProjectFolderFilter}>
-            <SelectTrigger className="h-9 w-full bg-[var(--bg-surface-0)] px-2 text-xs">
-              <SelectValue placeholder="All folders" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All folders</SelectItem>
-              {projectFolders.map((folder) => (
-                <SelectItem key={folder.id} value={folder.id}>
-                  {folder.name}
-                </SelectItem>
-              ))}
             </SelectContent>
           </Select>
         </div>
@@ -2817,7 +2747,6 @@ export function StudioWorkspace({
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                 {visibleProjects.map((project) => {
                   const meta = projectMetaById[project.id];
-                  const folderName = meta?.folder_id ? folderNameById[meta.folder_id] : null;
                   const progressPercent =
                     project.segment_count > 0
                       ? Math.round(
@@ -2884,11 +2813,6 @@ export function StudioWorkspace({
                         >
                           {projectStatus}
                         </span>
-                        {folderName ? (
-                          <span className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2 py-0.5 text-[var(--text-muted)]">
-                            {folderName}
-                          </span>
-                        ) : null}
                       </div>
 
                       <div className="mt-3 flex items-center gap-2">
@@ -3173,7 +3097,7 @@ export function StudioWorkspace({
                         <span className="text-sm font-semibold text-[var(--text-primary)]">
                           Project settings
                         </span>
-                        {projectDirty || projectFolderDirty ? (
+                        {projectDirty ? (
                           <span className="rounded-full border border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--status-warning-text)]">
                             Unsaved
                           </span>
@@ -3231,37 +3155,6 @@ export function StudioWorkspace({
 
                         <div className={settingsFieldClass}>
                           <label className={settingsLabelClass}>
-                            Folder
-                          </label>
-                          <Select
-                            value={projectFolderId || STUDIO_UNFILED_FOLDER_VALUE}
-                            onValueChange={(value) => {
-                              setProjectFolderId(
-                                value === STUDIO_UNFILED_FOLDER_VALUE ? "" : value,
-                              );
-                              setWorkspaceStatus(null);
-                            }}
-                          >
-                            <SelectTrigger
-                              className={`${settingsControlHeightClass} w-full bg-[var(--bg-surface-0)]`}
-                            >
-                              <SelectValue placeholder="Unfiled" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value={STUDIO_UNFILED_FOLDER_VALUE}>
-                                Unfiled
-                              </SelectItem>
-                              {projectFolders.map((folder) => (
-                                <SelectItem key={folder.id} value={folder.id}>
-                                  {folder.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-
-                        <div className={settingsFieldClass}>
-                          <label className={settingsLabelClass}>
                             Project voice
                           </label>
                           <VoiceSelect
@@ -3315,7 +3208,7 @@ export function StudioWorkspace({
                         variant="outline"
                         size="lg"
                         onClick={() => void persistProjectSettings()}
-                        disabled={(!projectDirty && !projectFolderDirty) || savingProject}
+                        disabled={!projectDirty || savingProject}
                         className="mt-4 w-full justify-center bg-[var(--bg-surface-0)]"
                       >
                         {savingProject ? (
