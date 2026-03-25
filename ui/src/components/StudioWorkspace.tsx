@@ -196,8 +196,6 @@ export function StudioWorkspace({
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectText, setNewProjectText] = useState("");
   const [newProjectFilename, setNewProjectFilename] = useState("");
-  const [newProjectSourceUrl, setNewProjectSourceUrl] = useState("");
-  const [importingFromUrl, setImportingFromUrl] = useState(false);
   const [isCreateProjectDialogOpen, setIsCreateProjectDialogOpen] =
     useState(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
@@ -1040,49 +1038,6 @@ export function StudioWorkspace({
     }
   };
 
-  const handleImportFromUrl = async () => {
-    const sourceUrl = newProjectSourceUrl.trim();
-    if (!sourceUrl) {
-      const message = "Enter a URL to import a script.";
-      setWorkspaceError(message);
-      onError(message);
-      return;
-    }
-    try {
-      setImportingFromUrl(true);
-      setWorkspaceError(null);
-      const response = await fetch(sourceUrl);
-      if (!response.ok) {
-        throw new Error(`Failed to load URL (${response.status}).`);
-      }
-      const html = await response.text();
-      const text = normalizeImportedText(`${sourceUrl}.html`, html);
-      if (!text.trim()) {
-        throw new Error("The URL did not return extractable text.");
-      }
-      setNewProjectText(text);
-      if (!newProjectName.trim()) {
-        try {
-          const url = new URL(sourceUrl);
-          setNewProjectName(url.hostname);
-        } catch {
-          setNewProjectName("Imported URL");
-        }
-      }
-      setWorkspaceStatus({
-        tone: "success",
-        message: `Imported script content from ${sourceUrl}.`,
-      });
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to import script from URL.";
-      setWorkspaceError(message);
-      onError(message);
-    } finally {
-      setImportingFromUrl(false);
-    }
-  };
-
   const resolveNewProjectDefaults = useCallback(() => {
     const currentVariant = selectedModelInfo?.variant ?? selectedModel ?? "";
     if (
@@ -1198,7 +1153,6 @@ export function StudioWorkspace({
       setNewProjectName("");
       setNewProjectText("");
       setNewProjectFilename("");
-      setNewProjectSourceUrl("");
       setIsCreateProjectDialogOpen(false);
       setWorkspaceStatus({
         tone: "success",
@@ -2349,35 +2303,6 @@ export function StudioWorkspace({
                 <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
                   Source script
                 </label>
-                <div className="flex flex-col gap-2 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3">
-                  <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                    Import from URL
-                  </label>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Input
-                      value={newProjectSourceUrl}
-                      onChange={(event) =>
-                        setNewProjectSourceUrl(event.target.value)
-                      }
-                      placeholder="https://example.com/article"
-                      className="flex-1 min-w-[200px] bg-[var(--bg-surface-0)]"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => void handleImportFromUrl()}
-                      disabled={importingFromUrl}
-                      className="bg-[var(--bg-surface-0)]"
-                    >
-                      {importingFromUrl ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Upload className="h-4 w-4" />
-                      )}
-                      Import URL
-                    </Button>
-                  </div>
-                </div>
                 <Textarea
                   value={newProjectText}
                   onChange={(event) => setNewProjectText(event.target.value)}
