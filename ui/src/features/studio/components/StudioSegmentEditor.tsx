@@ -10,7 +10,7 @@ import {
   Settings,
   Trash2,
 } from "lucide-react";
-import type { TtsProjectRecord, TtsProjectSegmentRecord } from "@/api";
+import type { StudioProjectRecord, StudioProjectSegmentRecord } from "@/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,7 +24,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 
 interface StudioSegmentEditorProps {
-  project: TtsProjectRecord;
+  project: StudioProjectRecord;
   segmentDrafts: Record<string, string>;
   segmentSelections: Record<string, number | null>;
   selectedSegmentIdSet: ReadonlySet<string>;
@@ -59,7 +59,7 @@ function SegmentActionsMenu({
   onSplitSegment,
   onDeleteSegment,
 }: {
-  segment: TtsProjectSegmentRecord;
+  segment: StudioProjectSegmentRecord;
   isFirst: boolean;
   isLast: boolean;
   canSplitSegment: boolean;
