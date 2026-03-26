@@ -21,6 +21,10 @@ use crate::models::shared::attention::paged::{
     append_to_pages, default_kv_page_size, default_kv_quantization, materialize_pages,
     paged_decode_attention, KvCacheQuantization, KvPage,
 };
+use crate::models::shared::telemetry::{
+    record_decode_attention_path, record_prefill_sequence_span, record_rope_manual,
+    DecodeAttentionPath,
+};
 use crate::models::shared::weights::gguf::GgufLoader;
 
 use super::chat::Qwen35TextConfig;
@@ -284,6 +288,7 @@ impl Qwen35TextModel {
                 position_ids.len()
             )));
         }
+        record_prefill_sequence_span(token_ids.len());
 
         // Pre-initialize all lazy layer states before the hot loop to avoid
         // allocation costs inside the per-token iteration. This moves all
@@ -606,6 +611,7 @@ impl Qwen35FullAttention {
             && !k_pages.is_empty()
             && !v_pages.is_empty()
             && !qwen35_use_dense_decode_attention(query_states.device(), k_pages.len());
+        let is_decode_step = query_states.dim(1)? == 1;
         let attn_output = if use_paged_decode {
             paged_decode_attention(
                 &query_states,
@@ -619,6 +625,9 @@ impl Qwen35FullAttention {
         } else {
             let key_states = materialize_pages(k_pages)?;
             let value_states = materialize_pages(v_pages)?;
+            if is_decode_step {
+                record_decode_attention_path(DecodeAttentionPath::Dense);
+            }
 
             // Expand materialized GQA states to full attention heads for math
             let key_states = repeat_kv(&key_states, self.num_heads, self.num_kv_heads)?;
@@ -660,6 +669,7 @@ impl Qwen35FullAttention {
         if self.rope_dim == 0 {
             return Ok((query_states.clone(), key_states.clone()));
         }
+        record_rope_manual();
 
         let (cos, sin) =
             self.cached_mrope(position_ids, query_states.device(), query_states.dtype())?;

@@ -9,6 +9,7 @@ use candle_transformers::quantized_nn::RmsNorm;
 use candle_transformers::utils::repeat_kv as candle_repeat_kv;
 
 use crate::error::{Error, Result};
+use crate::models::shared::telemetry::record_rope_kernel;
 use crate::models::shared::weights::gguf::GgufLoader;
 
 use super::config::Lfm2BackboneConfig;
@@ -126,6 +127,7 @@ impl AttentionLayer {
         let (_, _, seq_len, _) = x.dims4()?;
         let cos = self.cos.narrow(0, index_pos, seq_len)?;
         let sin = self.sin.narrow(0, index_pos, seq_len)?;
+        record_rope_kernel();
         candle_nn::rotary_emb::rope(&x.contiguous()?, &cos, &sin).map_err(Error::from)
     }
 
