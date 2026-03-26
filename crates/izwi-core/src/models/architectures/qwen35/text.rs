@@ -22,8 +22,8 @@ use crate::models::shared::attention::paged::{
     paged_decode_attention, KvCacheQuantization, KvPage,
 };
 use crate::models::shared::telemetry::{
-    record_decode_attention_path, record_prefill_sequence_span, record_rope_manual,
-    DecodeAttentionPath,
+    record_decode_attention_path, record_prefill_sequence_span, record_prefill_token_mode_step,
+    record_rope_manual, DecodeAttentionPath,
 };
 use crate::models::shared::weights::gguf::GgufLoader;
 
@@ -465,13 +465,7 @@ impl Qwen35Layer {
         let hidden_states = match &self.mixer {
             Qwen35Mixer::Linear(mixer) => mixer.forward_sequence(&hidden_states, state)?,
             Qwen35Mixer::Full(mixer) => {
-                let mut outputs = Vec::with_capacity(seq_len);
-                for (idx, &position_id) in position_ids.iter().enumerate() {
-                    let token_hidden = hidden_states.narrow(1, idx, 1)?;
-                    outputs.push(mixer.forward(&token_hidden, state, position_id)?);
-                }
-                let output_refs: Vec<&Tensor> = outputs.iter().collect();
-                Tensor::cat(&output_refs, 1)?
+                mixer.forward_sequence(&hidden_states, state, position_ids)?
             }
         };
         let hidden_states = (&residual + &hidden_states)?;
@@ -660,6 +654,138 @@ impl Qwen35FullAttention {
         self.o_proj.forward(&attn_output).map_err(Error::from)
     }
 
+    fn forward_sequence(
+        &self,
+        hidden_states: &Tensor,
+        state: &mut Qwen35LayerRuntimeState,
+        position_ids: &[[usize; 3]],
+    ) -> Result<Tensor> {
+        let seq_len = hidden_states.dim(1)?;
+        if seq_len == 1 {
+            let position_id = *position_ids.first().ok_or_else(|| {
+                Error::InvalidInput(
+                    "Qwen3.5 full-attention sequence expected at least one position id".to_string(),
+                )
+            })?;
+            return self.forward(hidden_states, state, position_id);
+        }
+        if seq_len != position_ids.len() {
+            return Err(Error::InvalidInput(format!(
+                "Qwen3.5 full-attention sequence mismatch: seq_len={}, position_ids={}",
+                seq_len,
+                position_ids.len()
+            )));
+        }
+
+        let has_prefix_pages = match state {
+            Qwen35LayerRuntimeState::Full { k_pages, v_pages } => {
+                !k_pages.is_empty() || !v_pages.is_empty()
+            }
+            _ => {
+                return Err(Error::InferenceError(
+                    "Qwen3.5 layer runtime state does not match full-attention layer".to_string(),
+                ))
+            }
+        };
+
+        // Safe fallback: if the layer already has cached prefix pages (for example after
+        // multimodal placeholder spans), keep the token-step semantics to preserve
+        // attention offset correctness.
+        if has_prefix_pages {
+            let mut outputs = Vec::with_capacity(seq_len);
+            for (idx, &position_id) in position_ids.iter().enumerate() {
+                let token_hidden = hidden_states.narrow(1, idx, 1)?;
+                record_prefill_token_mode_step();
+                outputs.push(self.forward(&token_hidden, state, position_id)?);
+            }
+            let refs: Vec<&Tensor> = outputs.iter().collect();
+            return Tensor::cat(&refs, 1).map_err(Error::from);
+        }
+
+        let (k_pages, v_pages) = match state {
+            Qwen35LayerRuntimeState::Full { k_pages, v_pages } => (k_pages, v_pages),
+            _ => {
+                return Err(Error::InferenceError(
+                    "Qwen3.5 layer runtime state does not match full-attention layer".to_string(),
+                ))
+            }
+        };
+
+        let q_proj = self.q_proj.forward(hidden_states)?.reshape((
+            1,
+            seq_len,
+            self.num_heads,
+            self.head_dim * 2,
+        ))?;
+        let query_states = q_proj.narrow(3, 0, self.head_dim)?;
+        let gate = q_proj.narrow(3, self.head_dim, self.head_dim)?.reshape((
+            1,
+            seq_len,
+            self.num_heads * self.head_dim,
+        ))?;
+        let key_states = self.k_proj.forward(hidden_states)?.reshape((
+            1,
+            seq_len,
+            self.num_kv_heads,
+            self.head_dim,
+        ))?;
+        let value_states_kv = self.v_proj.forward(hidden_states)?.reshape((
+            1,
+            seq_len,
+            self.num_kv_heads,
+            self.head_dim,
+        ))?;
+
+        let query_states = self.q_norm.forward(&query_states.contiguous()?)?;
+        let key_states = self.k_norm.forward(&key_states.contiguous()?)?;
+        let (query_states, key_states_kv) =
+            self.apply_rope_sequence(&query_states, &key_states, position_ids)?;
+
+        let key_states = repeat_kv(&key_states_kv, self.num_heads, self.num_kv_heads)?;
+        let value_states = repeat_kv(&value_states_kv, self.num_heads, self.num_kv_heads)?;
+        let query_states = query_states.transpose(1, 2)?.contiguous()?;
+        let key_states = key_states.transpose(1, 2)?.contiguous()?;
+        let value_states = value_states.transpose(1, 2)?.contiguous()?;
+        let attn_output = if let Some(out) = try_fused_self_attention(
+            &query_states,
+            &key_states,
+            &value_states,
+            None,
+            self.head_dim,
+            true,
+        )? {
+            out
+        } else {
+            let key_states_t = key_states.transpose(2, 3)?.contiguous()?;
+            let attn = query_states.matmul(&key_states_t)?;
+            let attn = (attn / (self.head_dim as f64).sqrt())?;
+            let attn = ops::softmax_last_dim(&attn)?;
+            attn.contiguous()?.matmul(&value_states)?
+        };
+        let attn_output =
+            attn_output
+                .transpose(1, 2)?
+                .reshape((1, seq_len, self.num_heads * self.head_dim))?;
+        let attn_output = (&attn_output * &ops::sigmoid(&gate)?)?;
+        let output = self.o_proj.forward(&attn_output)?;
+
+        // Persist newly computed KV after the sequence attention pass.
+        append_to_pages(
+            self.kv_page_size,
+            k_pages,
+            &key_states_kv,
+            self.kv_quantization,
+        )?;
+        append_to_pages(
+            self.kv_page_size,
+            v_pages,
+            &value_states_kv,
+            self.kv_quantization,
+        )?;
+
+        Ok(output)
+    }
+
     fn apply_rope(
         &self,
         query_states: &Tensor,
@@ -689,6 +815,54 @@ impl Qwen35FullAttention {
             Tensor::cat(&[&query_rot, &query_pass], 3)?,
             Tensor::cat(&[&key_rot, &key_pass], 3)?,
         ))
+    }
+
+    fn apply_rope_sequence(
+        &self,
+        query_states: &Tensor,
+        key_states: &Tensor,
+        position_ids: &[[usize; 3]],
+    ) -> Result<(Tensor, Tensor)> {
+        let seq_len = query_states.dim(1)?;
+        if seq_len != position_ids.len() {
+            return Err(Error::InvalidInput(format!(
+                "Qwen3.5 rotary sequence mismatch: seq_len={}, position_ids={}",
+                seq_len,
+                position_ids.len()
+            )));
+        }
+        if self.rope_dim == 0 {
+            return Ok((query_states.clone(), key_states.clone()));
+        }
+
+        let mut query_tokens = Vec::with_capacity(seq_len);
+        let mut key_tokens = Vec::with_capacity(seq_len);
+        for (idx, &position_id) in position_ids.iter().enumerate() {
+            record_rope_manual();
+            let query_token = query_states.narrow(1, idx, 1)?;
+            let key_token = key_states.narrow(1, idx, 1)?;
+            let (cos, sin) =
+                self.cached_mrope(position_id, query_states.device(), query_states.dtype())?;
+            let query_rot = query_token.narrow(3, 0, self.rope_dim)?;
+            let key_rot = key_token.narrow(3, 0, self.rope_dim)?;
+            let query_rot = apply_rotary_emb(&query_rot, &cos, &sin)?;
+            let key_rot = apply_rotary_emb(&key_rot, &cos, &sin)?;
+
+            if self.rope_dim == self.head_dim {
+                query_tokens.push(query_rot);
+                key_tokens.push(key_rot);
+            } else {
+                let query_pass =
+                    query_token.narrow(3, self.rope_dim, self.head_dim - self.rope_dim)?;
+                let key_pass = key_token.narrow(3, self.rope_dim, self.head_dim - self.rope_dim)?;
+                query_tokens.push(Tensor::cat(&[&query_rot, &query_pass], 3)?);
+                key_tokens.push(Tensor::cat(&[&key_rot, &key_pass], 3)?);
+            }
+        }
+
+        let query_refs: Vec<&Tensor> = query_tokens.iter().collect();
+        let key_refs: Vec<&Tensor> = key_tokens.iter().collect();
+        Ok((Tensor::cat(&query_refs, 1)?, Tensor::cat(&key_refs, 1)?))
     }
 
     fn cached_mrope(
