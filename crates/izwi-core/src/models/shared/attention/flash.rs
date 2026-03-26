@@ -10,6 +10,10 @@
 use candle_core::Tensor;
 
 use crate::error::Result;
+use crate::models::shared::telemetry::{
+    record_fused_attention_attempt, record_fused_attention_fallback,
+    record_fused_attention_success, AttentionFallbackReason,
+};
 
 /// Runtime opt-in for fused attention paths.
 pub fn flash_attention_requested() -> bool {
@@ -46,30 +50,57 @@ pub fn try_fused_self_attention(
     causal: bool,
 ) -> Result<Option<Tensor>> {
     let scale = 1.0f32 / (head_dim as f32).sqrt();
+    record_fused_attention_attempt();
+    let mut fallback_reason = AttentionFallbackReason::UnsupportedBackend;
 
     #[cfg(feature = "flash-attn")]
     {
-        if should_enable_flash_attention_v2(q.device())
-            && mask.is_none()
-            && dtype_supported_for_flash(q.dtype())
-            && q.dtype() == k.dtype()
-            && k.dtype() == v.dtype()
-        {
-            let q = q.transpose(1, 2)?.contiguous()?;
-            let k = k.transpose(1, 2)?.contiguous()?;
-            let v = v.transpose(1, 2)?.contiguous()?;
-            if let Ok(out) = candle_flash_attn::flash_attn(&q, &k, &v, scale, causal) {
-                return Ok(Some(out.transpose(1, 2)?));
+        if should_enable_flash_attention_v2(q.device()) {
+            if mask.is_none() {
+                if dtype_supported_for_flash(q.dtype()) {
+                    if q.dtype() == k.dtype() && k.dtype() == v.dtype() {
+                        let q = q.transpose(1, 2)?.contiguous()?;
+                        let k = k.transpose(1, 2)?.contiguous()?;
+                        let v = v.transpose(1, 2)?.contiguous()?;
+                        if let Ok(out) = candle_flash_attn::flash_attn(&q, &k, &v, scale, causal) {
+                            record_fused_attention_success();
+                            return Ok(Some(out.transpose(1, 2)?));
+                        }
+                        fallback_reason = AttentionFallbackReason::FlashRuntimeError;
+                    } else {
+                        fallback_reason = AttentionFallbackReason::FlashDTypeMismatch;
+                    }
+                } else {
+                    fallback_reason = AttentionFallbackReason::FlashDTypeUnsupported;
+                }
+            } else {
+                fallback_reason = AttentionFallbackReason::FlashMaskUnsupported;
             }
+        } else if q.device().is_cuda() {
+            fallback_reason = AttentionFallbackReason::FlashNotRequested;
+        }
+    }
+
+    #[cfg(not(feature = "flash-attn"))]
+    {
+        if q.device().is_cuda() {
+            fallback_reason = if flash_attention_requested() {
+                AttentionFallbackReason::FlashNotCompiled
+            } else {
+                AttentionFallbackReason::FlashNotRequested
+            };
         }
     }
 
     if q.device().is_metal() {
         if let Ok(out) = candle_nn::ops::sdpa(q, k, v, mask, causal, scale, 1.0) {
+            record_fused_attention_success();
             return Ok(Some(out));
         }
+        fallback_reason = AttentionFallbackReason::MetalSdpaRuntimeError;
     }
 
+    record_fused_attention_fallback(fallback_reason);
     Ok(None)
 }
 

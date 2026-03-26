@@ -16,6 +16,7 @@ use crate::backends::{BackendKind, DeviceProfile};
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::shared::chat::{ChatGenerationConfig, ChatMessage, ChatRole};
+use crate::models::shared::telemetry::record_prefill_token_mode_step;
 use crate::models::shared::weights::gguf::{GgufLoader, GgufModelInfo};
 use crate::tokenizer::Tokenizer;
 
@@ -599,6 +600,7 @@ impl Qwen35ChatModel {
                     .narrow(0, vision_embedding_index, 1)?
                     .reshape((1, 1, self.text_model.hidden_size()))?;
                 vision_embedding_index += 1;
+                record_prefill_token_mode_step();
                 if is_last {
                     logits = Some(self.text_model.forward_input_embedding_at(
                         &embedding,

@@ -33,6 +33,22 @@ struct RuntimeTelemetrySnapshot {
     end_to_end_ms_avg: f64,
     end_to_end_ms_p50: f64,
     end_to_end_ms_p95: f64,
+    #[serde(default)]
+    kernel_path: KernelPathTelemetrySnapshot,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct KernelPathTelemetrySnapshot {
+    prefill_token_mode_steps_total: u64,
+    prefill_sequence_spans_total: u64,
+    prefill_sequence_tokens_total: u64,
+    decode_attention_dense_total: u64,
+    decode_attention_paged_total: u64,
+    rope_kernel_total: u64,
+    rope_manual_total: u64,
+    fused_attention_attempts_total: u64,
+    fused_attention_success_total: u64,
+    fused_attention_fallback_total: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -724,6 +740,62 @@ fn print_runtime_delta(
     println!(
         "  End-to-end (avg/p50/p95): {:.2} / {:.2} / {:.2} ms",
         after.end_to_end_ms_avg, after.end_to_end_ms_p50, after.end_to_end_ms_p95
+    );
+    let kernel_before = &before.kernel_path;
+    let kernel_after = &after.kernel_path;
+    let prefill_token_mode_delta = kernel_after
+        .prefill_token_mode_steps_total
+        .saturating_sub(kernel_before.prefill_token_mode_steps_total);
+    let prefill_sequence_spans_delta = kernel_after
+        .prefill_sequence_spans_total
+        .saturating_sub(kernel_before.prefill_sequence_spans_total);
+    let prefill_sequence_tokens_delta = kernel_after
+        .prefill_sequence_tokens_total
+        .saturating_sub(kernel_before.prefill_sequence_tokens_total);
+    let dense_decode_delta = kernel_after
+        .decode_attention_dense_total
+        .saturating_sub(kernel_before.decode_attention_dense_total);
+    let paged_decode_delta = kernel_after
+        .decode_attention_paged_total
+        .saturating_sub(kernel_before.decode_attention_paged_total);
+    let rope_kernel_delta = kernel_after
+        .rope_kernel_total
+        .saturating_sub(kernel_before.rope_kernel_total);
+    let rope_manual_delta = kernel_after
+        .rope_manual_total
+        .saturating_sub(kernel_before.rope_manual_total);
+    let fused_attempts_delta = kernel_after
+        .fused_attention_attempts_total
+        .saturating_sub(kernel_before.fused_attention_attempts_total);
+    let fused_success_delta = kernel_after
+        .fused_attention_success_total
+        .saturating_sub(kernel_before.fused_attention_success_total);
+    let fused_fallback_delta = kernel_after
+        .fused_attention_fallback_total
+        .saturating_sub(kernel_before.fused_attention_fallback_total);
+    let decode_total = dense_decode_delta + paged_decode_delta;
+    println!(
+        "  Prefill path counts (token-mode/sequence-spans/sequence-tokens): {} / {} / {}",
+        prefill_token_mode_delta, prefill_sequence_spans_delta, prefill_sequence_tokens_delta
+    );
+    println!(
+        "  Decode path counts (dense/paged): {} / {}",
+        dense_decode_delta, paged_decode_delta
+    );
+    if decode_total > 0 {
+        println!(
+            "  Decode path share (dense/paged): {:.2}% / {:.2}%",
+            100.0 * dense_decode_delta as f64 / decode_total as f64,
+            100.0 * paged_decode_delta as f64 / decode_total as f64
+        );
+    }
+    println!(
+        "  RoPE path counts (kernel/manual): {} / {}",
+        rope_kernel_delta, rope_manual_delta
+    );
+    println!(
+        "  Fused attention (attempt/success/fallback): {} / {} / {}",
+        fused_attempts_delta, fused_success_delta, fused_fallback_delta
     );
 }
 

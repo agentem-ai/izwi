@@ -3,6 +3,7 @@
 use candle_core::{DType, Tensor, D};
 
 use crate::error::{Error, Result};
+use crate::models::shared::telemetry::{record_decode_attention_path, DecodeAttentionPath};
 
 const Q4_0_BLOCK_SIZE: usize = 32;
 
@@ -435,6 +436,7 @@ pub fn paged_decode_attention(
             num_heads, num_kv_heads
         )));
     }
+    record_decode_attention_path(DecodeAttentionPath::Paged);
 
     let repeats = num_heads / num_kv_heads;
     let scale = (head_dim as f64).sqrt();

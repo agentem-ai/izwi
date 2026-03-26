@@ -51,6 +51,7 @@ pub use engine::{
 // Legacy re-exports for backward compatibility
 pub use config::EngineConfig;
 pub use error::{Error, Result};
+pub use models::shared::telemetry::KernelPathTelemetrySnapshot;
 pub use runtime::{
     AsrTranscription, ChatGeneration, ChunkStats, DiarizationConfig, DiarizationResult,
     DiarizationSegment, DiarizationTranscriptResult, DiarizationUtterance, DiarizationWord,

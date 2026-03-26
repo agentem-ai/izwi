@@ -23,8 +23,12 @@ use crate::engine::{
     WorkerConfig,
 };
 use crate::error::{Error, Result};
+use crate::models::shared::telemetry::{
+    prometheus as kernel_path_prometheus, snapshot as kernel_path_telemetry_snapshot,
+};
 use crate::runtime_models::ModelRegistry;
 use crate::tokenizer::Tokenizer;
+use crate::KernelPathTelemetrySnapshot;
 
 fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(msg) = payload.downcast_ref::<&str>() {
@@ -60,6 +64,7 @@ pub struct RuntimeTelemetrySnapshot {
     pub end_to_end_ms_avg: f64,
     pub end_to_end_ms_p50: f64,
     pub end_to_end_ms_p95: f64,
+    pub kernel_path: KernelPathTelemetrySnapshot,
 }
 
 #[derive(Debug)]
@@ -196,12 +201,13 @@ impl RuntimeTelemetryCollector {
             end_to_end_ms_avg: mean(&end_to_end),
             end_to_end_ms_p50: percentile(&end_to_end, 0.50),
             end_to_end_ms_p95: percentile(&end_to_end, 0.95),
+            kernel_path: kernel_path_telemetry_snapshot(),
         }
     }
 
     async fn prometheus(&self) -> String {
         let snapshot = self.snapshot().await;
-        format!(
+        let mut payload = format!(
             "# TYPE izwi_requests_queued_total counter\nizwi_requests_queued_total {}\n\
 # TYPE izwi_requests_completed_total counter\nizwi_requests_completed_total {}\n\
 # TYPE izwi_requests_failed_total counter\nizwi_requests_failed_total {}\n\
@@ -234,7 +240,9 @@ impl RuntimeTelemetryCollector {
             snapshot.end_to_end_ms_avg,
             snapshot.end_to_end_ms_p50,
             snapshot.end_to_end_ms_p95,
-        )
+        );
+        payload.push_str(&kernel_path_prometheus());
+        payload
     }
 
     async fn push_sample(buffer: &Mutex<VecDeque<f64>>, max_samples: usize, value: f64) {

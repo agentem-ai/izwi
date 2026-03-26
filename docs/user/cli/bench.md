@@ -136,6 +136,45 @@ Benchmarks report:
 
 ---
 
+## Repeatable Kernel Performance Protocol
+
+For regression tracking, use a fixed protocol so TTFT/TPS comparisons remain apples-to-apples:
+
+1. Start from a warmed server and unchanged model weights.
+2. Run both a short and long prompt profile with the same iterations and max tokens.
+3. Capture both `izwi bench chat` output and `/internal/metrics/prometheus`.
+
+### Recommended command set
+
+```bash
+# Short prompt profile (TTFT-sensitive)
+izwi bench chat \
+  --model Qwen3.5-4B \
+  --iterations 20 \
+  --max-tokens 128 \
+  --warmup \
+  --prompt "Summarize why batching helps transformer prefill in two concise bullet points."
+
+# Long prompt profile (decode-path-sensitive)
+izwi bench chat \
+  --model Qwen3.5-4B \
+  --iterations 20 \
+  --max-tokens 128 \
+  --warmup \
+  --prompt "You are optimizing an inference runtime. Explain, in detail, how prefill and decode differ for attention kernels, why page-based KV caches help memory at long context, what tradeoffs they can introduce for throughput, and how to design a benchmark protocol that separates TTFT improvements from decode TPS improvements."
+
+# Kernel-path counter snapshot
+curl -sS http://127.0.0.1:11435/internal/metrics/prometheus | rg '^izwi_kernel_'
+```
+
+The `izwi bench chat` runtime delta now includes kernel-path counts for:
+- prefill token-mode vs sequence-mode activity,
+- dense vs paged decode attention routing,
+- RoPE kernel vs manual path usage,
+- fused attention attempts/success/fallback totals.
+
+---
+
 ## See Also
 
 - [`izwi status`](./status.md) — System status
