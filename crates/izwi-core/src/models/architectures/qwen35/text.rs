@@ -35,6 +35,9 @@ pub struct Qwen35TextModel {
     layers: Vec<Qwen35Layer>,
     output_norm: RmsNorm,
     output: QMatMul,
+    block_fusion_decode_enabled: bool,
+    block_fusion_prefill_enabled: bool,
+    block_fusion_prefill_min_tokens: usize,
 }
 
 pub struct Qwen35TextRuntimeState {
@@ -94,6 +97,7 @@ struct Qwen35FullAttention {
     kv_quantization: KvCacheQuantization,
     dense_decode_attention_enabled: bool,
     dense_decode_max_pages: usize,
+    rope_kernel_enabled: bool,
     rope_inv_freqs: Vec<f32>,
     rope_cache: Mutex<HashMap<[usize; 3], (Tensor, Tensor)>>,
 }
@@ -115,6 +119,8 @@ struct Qwen35LinearAttention {
     head_v_dim: usize,
     conv_dim: usize,
     kernel_size: usize,
+    tiled_recurrence_enabled: bool,
+    tiled_recurrence_tile_size_override: Option<usize>,
 }
 
 struct Qwen35GatedRmsNorm {
@@ -160,6 +166,9 @@ impl Qwen35TextModel {
         } else {
             load_qmatmul(loader, device, "token_embd.weight")?
         };
+        let block_fusion_decode_enabled = qwen35_block_fusion_decode_enabled(device);
+        let (block_fusion_prefill_enabled, block_fusion_prefill_min_tokens) =
+            qwen35_block_fusion_prefill_policy(device);
 
         let mut layers = Vec::with_capacity(cfg.block_count);
         for layer_idx in 0..cfg.block_count {
@@ -193,6 +202,9 @@ impl Qwen35TextModel {
             layers,
             output_norm,
             output,
+            block_fusion_decode_enabled,
+            block_fusion_prefill_enabled,
+            block_fusion_prefill_min_tokens,
         })
     }
 
@@ -248,8 +260,7 @@ impl Qwen35TextModel {
         let mut hidden = input_embedding.clone();
         let mut layer_idx = 0usize;
         while layer_idx < self.layers.len() {
-            if qwen35_use_block_fusion_decode(&self.device) && self.has_linear_triplet_at(layer_idx)
-            {
+            if self.block_fusion_decode_enabled && self.has_linear_triplet_at(layer_idx) {
                 for offset in 0..3 {
                     let idx = layer_idx + offset;
                     let layer_state = state.layers.get_mut(idx).ok_or_else(|| {
@@ -305,7 +316,8 @@ impl Qwen35TextModel {
         let input = Tensor::from_vec(token_ids.to_vec(), (1, token_ids.len()), &self.device)?;
         let mut hidden = self.token_embeddings.forward(&input)?;
         let mut layer_idx = 0usize;
-        let can_fuse_prefill = qwen35_use_block_fusion_prefill(&self.device, token_ids.len());
+        let can_fuse_prefill = self.block_fusion_prefill_enabled
+            && token_ids.len() >= self.block_fusion_prefill_min_tokens;
         while layer_idx < self.layers.len() {
             if can_fuse_prefill && self.has_linear_triplet_at(layer_idx) {
                 for offset in 0..3 {
@@ -542,6 +554,7 @@ impl Qwen35FullAttention {
             kv_quantization: default_kv_quantization(),
             dense_decode_attention_enabled,
             dense_decode_max_pages,
+            rope_kernel_enabled: qwen35_rope_kernel_enabled(device),
             rope_inv_freqs: build_rope_inv_freqs(
                 cfg.rope_dimension_count.min(cfg.attention_key_length),
                 cfg.rope_freq_base,
@@ -881,11 +894,7 @@ impl Qwen35FullAttention {
 
         let query_rot = query_states.narrow(3, 0, self.rope_dim)?.contiguous()?;
         let key_rot = key_states.narrow(3, 0, self.rope_dim)?.contiguous()?;
-        let (query_rot, key_rot) = if qwen35_should_try_rope_kernel(
-            query_states.device(),
-            query_states.dtype(),
-            self.rope_dim,
-        ) {
+        let (query_rot, key_rot) = if self.should_try_rope_kernel(query_states.dtype()) {
             match try_apply_rope_thd(&query_rot, &key_rot, &cos, &sin)? {
                 Some((query_rot, key_rot)) => {
                     record_rope_kernel();
@@ -952,11 +961,7 @@ impl Qwen35FullAttention {
 
         let query_rot = query_states.narrow(3, 0, self.rope_dim)?.contiguous()?;
         let key_rot = key_states.narrow(3, 0, self.rope_dim)?.contiguous()?;
-        let (query_rot, key_rot) = if qwen35_should_try_rope_kernel(
-            query_states.device(),
-            query_states.dtype(),
-            self.rope_dim,
-        ) {
+        let (query_rot, key_rot) = if self.should_try_rope_kernel(query_states.dtype()) {
             match try_apply_rope_thd(&query_rot, &key_rot, &cos, &sin)? {
                 Some((query_rot, key_rot)) => {
                     for _ in 0..seq_len {
@@ -1020,6 +1025,16 @@ impl Qwen35FullAttention {
             cache.insert(position_ids, (cos.clone(), sin.clone()));
         }
         Ok((cos, sin))
+    }
+
+    fn should_try_rope_kernel(&self, dtype: DType) -> bool {
+        if !self.rope_kernel_enabled {
+            return false;
+        }
+        if self.rope_dim == 0 || self.rope_dim % 2 != 0 {
+            return false;
+        }
+        matches!(dtype, DType::F16 | DType::BF16 | DType::F32)
     }
 }
 
@@ -1089,6 +1104,8 @@ impl Qwen35LinearAttention {
             head_v_dim,
             conv_dim,
             kernel_size: cfg.ssm_conv_kernel,
+            tiled_recurrence_enabled: qwen35_tiled_recurrence_enabled(),
+            tiled_recurrence_tile_size_override: qwen35_tiled_recurrence_tile_size_override(),
         })
     }
 
@@ -1248,8 +1265,9 @@ impl Qwen35LinearAttention {
 
         let beta = beta.reshape((1, seq_len, self.num_v_heads))?;
         let g = g.reshape((1, seq_len, self.num_v_heads))?;
-        let tile_size = qwen35_tiled_recurrence_tile_size(seq_len);
-        let (output, next_state) = if qwen35_use_tiled_recurrence() {
+        let tile_size =
+            qwen35_tiled_recurrence_tile_size(seq_len, self.tiled_recurrence_tile_size_override);
+        let (output, next_state) = if self.tiled_recurrence_enabled {
             if let Some((tiled_output, tiled_state)) = try_tiled_deltanet_recurrence(
                 &query,
                 &key,
@@ -1649,28 +1667,26 @@ fn qwen35_env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-fn qwen35_use_tiled_recurrence() -> bool {
+fn qwen35_tiled_recurrence_enabled() -> bool {
     qwen35_env_bool("IZWI_QWEN35_TILED_RECURRENCE", true)
 }
 
-fn qwen35_should_try_rope_kernel(device: &Device, dtype: DType, rope_dim: usize) -> bool {
-    if rope_dim == 0 || rope_dim % 2 != 0 {
-        return false;
-    }
-    if !device.is_metal() {
-        return false;
-    }
-    if !qwen35_env_bool("IZWI_QWEN35_ROPE_KERNEL", true) {
-        return false;
-    }
-    matches!(dtype, DType::F16 | DType::BF16 | DType::F32)
+fn qwen35_rope_kernel_enabled(device: &Device) -> bool {
+    device.is_metal() && qwen35_env_bool("IZWI_QWEN35_ROPE_KERNEL", true)
 }
 
-fn qwen35_tiled_recurrence_tile_size(seq_len: usize) -> usize {
+fn qwen35_tiled_recurrence_tile_size_override() -> Option<usize> {
     if let Ok(raw) = std::env::var("IZWI_QWEN35_TILED_RECURRENCE_TILE_SIZE") {
         if let Ok(parsed) = raw.trim().parse::<usize>() {
-            return parsed.max(1).min(seq_len.max(1));
+            return Some(parsed.max(1));
         }
+    }
+    None
+}
+
+fn qwen35_tiled_recurrence_tile_size(seq_len: usize, override_size: Option<usize>) -> usize {
+    if let Some(override_size) = override_size {
+        return override_size.min(seq_len.max(1));
     }
 
     if seq_len >= 256 {
@@ -1684,24 +1700,22 @@ fn qwen35_tiled_recurrence_tile_size(seq_len: usize) -> usize {
     }
 }
 
-fn qwen35_use_block_fusion_decode(device: &Device) -> bool {
+fn qwen35_block_fusion_decode_enabled(device: &Device) -> bool {
     device.is_metal()
         && use_block_fusion()
         && qwen35_env_bool("IZWI_QWEN35_BLOCK_FUSION_DECODE", true)
 }
 
-fn qwen35_use_block_fusion_prefill(device: &Device, seq_len: usize) -> bool {
+fn qwen35_block_fusion_prefill_policy(device: &Device) -> (bool, usize) {
     if !device.is_metal() || !use_block_fusion() {
-        return false;
+        return (false, 8);
     }
-    if !qwen35_env_bool("IZWI_QWEN35_BLOCK_FUSION_PREFILL", true) {
-        return false;
-    }
+    let enabled = qwen35_env_bool("IZWI_QWEN35_BLOCK_FUSION_PREFILL", true);
     let min_tokens = std::env::var("IZWI_QWEN35_BLOCK_FUSION_PREFILL_MIN_TOKENS")
         .ok()
         .and_then(|raw| raw.trim().parse::<usize>().ok())
         .unwrap_or(8);
-    seq_len >= min_tokens
+    (enabled, min_tokens)
 }
 
 fn qwen35_use_dense_decode_attention(
