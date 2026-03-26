@@ -54,6 +54,8 @@ enum Qwen35LayerRuntimeState {
     Full {
         k_pages: Vec<KvPage>,
         v_pages: Vec<KvPage>,
+        dense_k_cache: Option<Tensor>,
+        dense_v_cache: Option<Tensor>,
     },
 }
 
@@ -368,6 +370,8 @@ impl Qwen35Layer {
             Qwen35Mixer::Full(_) => Qwen35LayerRuntimeState::Full {
                 k_pages: Vec::new(),
                 v_pages: Vec::new(),
+                dense_k_cache: None,
+                dense_v_cache: None,
             },
         }
     }
@@ -546,8 +550,13 @@ impl Qwen35FullAttention {
         state: &mut Qwen35LayerRuntimeState,
         position_ids: [usize; 3],
     ) -> Result<Tensor> {
-        let (k_pages, v_pages) = match state {
-            Qwen35LayerRuntimeState::Full { k_pages, v_pages } => (k_pages, v_pages),
+        let (k_pages, v_pages, dense_k_cache, dense_v_cache) = match state {
+            Qwen35LayerRuntimeState::Full {
+                k_pages,
+                v_pages,
+                dense_k_cache,
+                dense_v_cache,
+            } => (k_pages, v_pages, dense_k_cache, dense_v_cache),
             _ => {
                 return Err(Error::InferenceError(
                     "Qwen3.5 layer runtime state does not match full-attention layer".to_string(),
@@ -600,6 +609,10 @@ impl Qwen35FullAttention {
             &value_states,
             self.kv_quantization,
         )?;
+        if qwen35_use_dense_decode_attention_feature(query_states.device()) {
+            append_dense_kv_cache(dense_k_cache, &key_states)?;
+            append_dense_kv_cache(dense_v_cache, &value_states)?;
+        }
 
         let use_paged_decode = query_states.dim(1)? == 1
             && !k_pages.is_empty()
@@ -607,6 +620,9 @@ impl Qwen35FullAttention {
             && !qwen35_use_dense_decode_attention(query_states.device(), k_pages.len());
         let is_decode_step = query_states.dim(1)? == 1;
         let attn_output = if use_paged_decode {
+            // Once decode switches to paged attention, we do not need dense caches anymore.
+            *dense_k_cache = None;
+            *dense_v_cache = None;
             paged_decode_attention(
                 &query_states,
                 k_pages,
@@ -617,8 +633,24 @@ impl Qwen35FullAttention {
             )?
             .reshape((1, 1, self.num_heads * self.head_dim))?
         } else {
-            let key_states = materialize_pages(k_pages)?;
-            let value_states = materialize_pages(v_pages)?;
+            let key_states = if let Some(cached) = dense_k_cache.as_ref() {
+                cached.clone()
+            } else {
+                let materialized = materialize_pages(k_pages)?;
+                if qwen35_use_dense_decode_attention_feature(query_states.device()) {
+                    *dense_k_cache = Some(materialized.clone());
+                }
+                materialized
+            };
+            let value_states = if let Some(cached) = dense_v_cache.as_ref() {
+                cached.clone()
+            } else {
+                let materialized = materialize_pages(v_pages)?;
+                if qwen35_use_dense_decode_attention_feature(query_states.device()) {
+                    *dense_v_cache = Some(materialized.clone());
+                }
+                materialized
+            };
             if is_decode_step {
                 record_decode_attention_path(DecodeAttentionPath::Dense);
             }
@@ -678,9 +710,9 @@ impl Qwen35FullAttention {
         }
 
         let has_prefix_pages = match state {
-            Qwen35LayerRuntimeState::Full { k_pages, v_pages } => {
-                !k_pages.is_empty() || !v_pages.is_empty()
-            }
+            Qwen35LayerRuntimeState::Full {
+                k_pages, v_pages, ..
+            } => !k_pages.is_empty() || !v_pages.is_empty(),
             _ => {
                 return Err(Error::InferenceError(
                     "Qwen3.5 layer runtime state does not match full-attention layer".to_string(),
@@ -702,8 +734,13 @@ impl Qwen35FullAttention {
             return Tensor::cat(&refs, 1).map_err(Error::from);
         }
 
-        let (k_pages, v_pages) = match state {
-            Qwen35LayerRuntimeState::Full { k_pages, v_pages } => (k_pages, v_pages),
+        let (k_pages, v_pages, dense_k_cache, dense_v_cache) = match state {
+            Qwen35LayerRuntimeState::Full {
+                k_pages,
+                v_pages,
+                dense_k_cache,
+                dense_v_cache,
+            } => (k_pages, v_pages, dense_k_cache, dense_v_cache),
             _ => {
                 return Err(Error::InferenceError(
                     "Qwen3.5 layer runtime state does not match full-attention layer".to_string(),
@@ -782,6 +819,10 @@ impl Qwen35FullAttention {
             &value_states_kv,
             self.kv_quantization,
         )?;
+        if qwen35_use_dense_decode_attention_feature(hidden_states.device()) {
+            append_dense_kv_cache(dense_k_cache, &key_states_kv)?;
+            append_dense_kv_cache(dense_v_cache, &value_states_kv)?;
+        }
 
         Ok(output)
     }
@@ -1624,14 +1665,32 @@ fn qwen35_use_block_fusion_prefill(device: &Device, seq_len: usize) -> bool {
 }
 
 fn qwen35_use_dense_decode_attention(device: &Device, page_count: usize) -> bool {
-    if !device.is_metal() {
-        return false;
-    }
-    if !qwen35_env_bool("IZWI_QWEN35_DENSE_DECODE_ATTENTION", true) {
+    if !qwen35_use_dense_decode_attention_feature(device) {
         return false;
     }
     let max_pages = qwen35_dense_decode_max_pages();
     page_count <= max_pages.max(1)
+}
+
+fn qwen35_use_dense_decode_attention_feature(device: &Device) -> bool {
+    device.is_metal() && qwen35_env_bool("IZWI_QWEN35_DENSE_DECODE_ATTENTION", true)
+}
+
+fn append_dense_kv_cache(cache: &mut Option<Tensor>, append: &Tensor) -> Result<()> {
+    if append.dim(1)? == 0 {
+        return Ok(());
+    }
+    let append = append.contiguous()?;
+    match cache {
+        Some(existing) => {
+            let existing_ref: &Tensor = &*existing;
+            *cache = Some(Tensor::cat(&[existing_ref, &append], 1)?);
+        }
+        None => {
+            *cache = Some(append);
+        }
+    }
+    Ok(())
 }
 
 fn qwen35_dense_decode_max_pages() -> usize {
@@ -1733,8 +1792,8 @@ fn recurrent_gated_delta(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_rotary_emb, build_mrope, qwen35_dense_decode_max_pages, repeat_head_states,
-        repeat_head_states_seq,
+        append_dense_kv_cache, apply_rotary_emb, build_mrope, qwen35_dense_decode_max_pages,
+        repeat_head_states, repeat_head_states_seq,
     };
     use candle_core::{DType, Device, Tensor};
     use candle_nn::rotary_emb;
@@ -1880,5 +1939,21 @@ mod tests {
         for (manual, kernel) in manual_vals.iter().zip(kernel_vals.iter()) {
             assert!((manual - kernel).abs() < 1e-5);
         }
+    }
+
+    #[test]
+    fn dense_kv_cache_appends_sequence_along_token_axis() {
+        let device = Device::Cpu;
+        let mut cache: Option<Tensor> = None;
+        let first = Tensor::from_vec(vec![1f32, 2.0, 3.0, 4.0], (1, 1, 1, 4), &device).unwrap();
+        let second = Tensor::from_vec(vec![5f32, 6.0, 7.0, 8.0], (1, 1, 1, 4), &device).unwrap();
+
+        append_dense_kv_cache(&mut cache, &first).expect("append first");
+        append_dense_kv_cache(&mut cache, &second).expect("append second");
+
+        let cache = cache.expect("cache should exist");
+        assert_eq!(cache.dims(), &[1, 2, 1, 4]);
+        let flat = cache.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert_eq!(flat, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
     }
 }
