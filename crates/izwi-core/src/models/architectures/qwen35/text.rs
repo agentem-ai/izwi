@@ -655,23 +655,24 @@ impl Qwen35FullAttention {
                 record_decode_attention_path(DecodeAttentionPath::Dense);
             }
 
-            // Expand materialized GQA states to full attention heads for math
-            let key_states = repeat_kv(&key_states, self.num_heads, self.num_kv_heads)?;
-            let value_states = repeat_kv(&value_states, self.num_heads, self.num_kv_heads)?;
-
             let query_states = query_states.transpose(1, 2)?.contiguous()?;
-            let key_states = key_states.transpose(1, 2)?.contiguous()?;
-            let value_states = value_states.transpose(1, 2)?.contiguous()?;
+            let key_states_h = key_states.transpose(1, 2)?.contiguous()?;
+            let value_states_h = value_states.transpose(1, 2)?.contiguous()?;
             let attn_output = if let Some(out) = try_fused_self_attention(
                 &query_states,
-                &key_states,
-                &value_states,
+                &key_states_h,
+                &value_states_h,
                 None,
                 self.head_dim,
                 true,
             )? {
                 out
             } else {
+                // Unfused fallback path still expects explicit KV expansion.
+                let key_states = repeat_kv(&key_states, self.num_heads, self.num_kv_heads)?;
+                let value_states = repeat_kv(&value_states, self.num_heads, self.num_kv_heads)?;
+                let key_states = key_states.transpose(1, 2)?.contiguous()?;
+                let value_states = value_states.transpose(1, 2)?.contiguous()?;
                 let key_states_t = key_states.transpose(2, 3)?.contiguous()?;
                 let attn = query_states.matmul(&key_states_t)?;
                 let attn = (attn / (self.head_dim as f64).sqrt())?;
@@ -778,21 +779,24 @@ impl Qwen35FullAttention {
         let (query_states, key_states_kv) =
             self.apply_rope_sequence(&query_states, &key_states, position_ids)?;
 
-        let key_states = repeat_kv(&key_states_kv, self.num_heads, self.num_kv_heads)?;
-        let value_states = repeat_kv(&value_states_kv, self.num_heads, self.num_kv_heads)?;
         let query_states = query_states.transpose(1, 2)?.contiguous()?;
-        let key_states = key_states.transpose(1, 2)?.contiguous()?;
-        let value_states = value_states.transpose(1, 2)?.contiguous()?;
+        let key_states_h = key_states_kv.transpose(1, 2)?.contiguous()?;
+        let value_states_h = value_states_kv.transpose(1, 2)?.contiguous()?;
         let attn_output = if let Some(out) = try_fused_self_attention(
             &query_states,
-            &key_states,
-            &value_states,
+            &key_states_h,
+            &value_states_h,
             None,
             self.head_dim,
             true,
         )? {
             out
         } else {
+            // Unfused fallback path still expects explicit KV expansion.
+            let key_states = repeat_kv(&key_states_kv, self.num_heads, self.num_kv_heads)?;
+            let value_states = repeat_kv(&value_states_kv, self.num_heads, self.num_kv_heads)?;
+            let key_states = key_states.transpose(1, 2)?.contiguous()?;
+            let value_states = value_states.transpose(1, 2)?.contiguous()?;
             let key_states_t = key_states.transpose(2, 3)?.contiguous()?;
             let attn = query_states.matmul(&key_states_t)?;
             let attn = (attn / (self.head_dim as f64).sqrt())?;
