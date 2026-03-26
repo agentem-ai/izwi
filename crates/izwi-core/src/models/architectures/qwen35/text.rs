@@ -92,6 +92,8 @@ struct Qwen35FullAttention {
     mrope_sections: Vec<usize>,
     kv_page_size: usize,
     kv_quantization: KvCacheQuantization,
+    dense_decode_attention_enabled: bool,
+    dense_decode_max_pages: usize,
     rope_inv_freqs: Vec<f32>,
     rope_cache: Mutex<HashMap<[usize; 3], (Tensor, Tensor)>>,
 }
@@ -515,6 +517,8 @@ impl Qwen35FullAttention {
         prefix: &str,
         cfg: &Qwen35TextConfig,
     ) -> Result<Self> {
+        let (dense_decode_attention_enabled, dense_decode_max_pages) =
+            qwen35_dense_decode_policy(device);
         Ok(Self {
             q_proj: load_qmatmul(loader, device, &format!("{prefix}.attn_q.weight"))?,
             k_proj: load_qmatmul(loader, device, &format!("{prefix}.attn_k.weight"))?,
@@ -536,6 +540,8 @@ impl Qwen35FullAttention {
                 .collect(),
             kv_page_size: default_kv_page_size(),
             kv_quantization: default_kv_quantization(),
+            dense_decode_attention_enabled,
+            dense_decode_max_pages,
             rope_inv_freqs: build_rope_inv_freqs(
                 cfg.rope_dimension_count.min(cfg.attention_key_length),
                 cfg.rope_freq_base,
@@ -596,19 +602,17 @@ impl Qwen35FullAttention {
 
         // Keep KV in dense head-major cache while dense decode remains active.
         // We lazily migrate to paged KV once dense threshold is exceeded.
-        if qwen35_use_dense_decode_attention_feature(query_states.device())
-            && k_pages.is_empty()
-            && v_pages.is_empty()
-        {
+        if self.dense_decode_attention_enabled && k_pages.is_empty() && v_pages.is_empty() {
             append_dense_kv_cache_h(dense_k_cache_h, &key_states.transpose(1, 2)?.contiguous()?)?;
             append_dense_kv_cache_h(
                 dense_v_cache_h,
                 &value_states.transpose(1, 2)?.contiguous()?,
             )?;
             maybe_materialize_dense_kv_pages(
-                query_states.device(),
                 self.kv_page_size,
                 self.kv_quantization,
+                self.dense_decode_attention_enabled,
+                self.dense_decode_max_pages,
                 k_pages,
                 v_pages,
                 dense_k_cache_h,
@@ -632,7 +636,11 @@ impl Qwen35FullAttention {
         let use_paged_decode = query_states.dim(1)? == 1
             && !k_pages.is_empty()
             && !v_pages.is_empty()
-            && !qwen35_use_dense_decode_attention(query_states.device(), k_pages.len());
+            && !qwen35_use_dense_decode_attention(
+                self.dense_decode_attention_enabled,
+                self.dense_decode_max_pages,
+                k_pages.len(),
+            );
         let is_decode_step = query_states.dim(1)? == 1;
         let attn_output = if use_paged_decode {
             // Once decode switches to paged attention, we do not need dense caches anymore.
@@ -653,7 +661,7 @@ impl Qwen35FullAttention {
             } else {
                 let materialized = materialize_pages(k_pages)?;
                 let materialized_h = materialized.transpose(1, 2)?.contiguous()?;
-                if qwen35_use_dense_decode_attention_feature(query_states.device()) {
+                if self.dense_decode_attention_enabled {
                     *dense_k_cache_h = Some(materialized_h.clone());
                 }
                 materialized_h
@@ -663,7 +671,7 @@ impl Qwen35FullAttention {
             } else {
                 let materialized = materialize_pages(v_pages)?;
                 let materialized_h = materialized.transpose(1, 2)?.contiguous()?;
-                if qwen35_use_dense_decode_attention_feature(query_states.device()) {
+                if self.dense_decode_attention_enabled {
                     *dense_v_cache_h = Some(materialized_h.clone());
                 }
                 materialized_h
@@ -828,16 +836,14 @@ impl Qwen35FullAttention {
         let output = self.o_proj.forward(&attn_output)?;
 
         // Persist newly computed KV after the sequence attention pass.
-        if qwen35_use_dense_decode_attention_feature(hidden_states.device())
-            && k_pages.is_empty()
-            && v_pages.is_empty()
-        {
+        if self.dense_decode_attention_enabled && k_pages.is_empty() && v_pages.is_empty() {
             append_dense_kv_cache_h(dense_k_cache_h, &key_states_h)?;
             append_dense_kv_cache_h(dense_v_cache_h, &value_states_h)?;
             maybe_materialize_dense_kv_pages(
-                hidden_states.device(),
                 self.kv_page_size,
                 self.kv_quantization,
+                self.dense_decode_attention_enabled,
+                self.dense_decode_max_pages,
                 k_pages,
                 v_pages,
                 dense_k_cache_h,
@@ -1698,12 +1704,21 @@ fn qwen35_use_block_fusion_prefill(device: &Device, seq_len: usize) -> bool {
     seq_len >= min_tokens
 }
 
-fn qwen35_use_dense_decode_attention(device: &Device, page_count: usize) -> bool {
-    if !qwen35_use_dense_decode_attention_feature(device) {
+fn qwen35_use_dense_decode_attention(
+    dense_decode_attention_enabled: bool,
+    dense_decode_max_pages: usize,
+    page_count: usize,
+) -> bool {
+    if !dense_decode_attention_enabled {
         return false;
     }
+    page_count <= dense_decode_max_pages.max(1)
+}
+
+fn qwen35_dense_decode_policy(device: &Device) -> (bool, usize) {
+    let enabled = qwen35_use_dense_decode_attention_feature(device);
     let max_pages = qwen35_dense_decode_max_pages();
-    page_count <= max_pages.max(1)
+    (enabled, max_pages)
 }
 
 fn qwen35_use_dense_decode_attention_feature(device: &Device) -> bool {
@@ -1728,9 +1743,10 @@ fn append_dense_kv_cache_h(cache: &mut Option<Tensor>, append: &Tensor) -> Resul
 }
 
 fn maybe_materialize_dense_kv_pages(
-    device: &Device,
     page_size: usize,
     quantization: KvCacheQuantization,
+    dense_decode_attention_enabled: bool,
+    dense_decode_max_pages: usize,
     k_pages: &mut Vec<KvPage>,
     v_pages: &mut Vec<KvPage>,
     dense_k_cache_h: &mut Option<Tensor>,
@@ -1758,7 +1774,11 @@ fn maybe_materialize_dense_kv_pages(
     }
 
     let page_count = qwen35_page_count_for_tokens(seq_len, page_size)?;
-    if qwen35_use_dense_decode_attention(device, page_count) {
+    if qwen35_use_dense_decode_attention(
+        dense_decode_attention_enabled,
+        dense_decode_max_pages,
+        page_count,
+    ) {
         return Ok(());
     }
 
