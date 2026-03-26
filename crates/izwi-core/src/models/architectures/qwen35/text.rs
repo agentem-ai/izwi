@@ -33,6 +33,7 @@ pub struct Qwen35TextModel {
     device: Device,
     token_embeddings: Embedding,
     layers: Vec<Qwen35Layer>,
+    linear_triplet_starts: Vec<bool>,
     output_norm: RmsNorm,
     output: QMatMul,
     block_fusion_decode_enabled: bool,
@@ -195,11 +196,20 @@ impl Qwen35TextModel {
                 mlp,
             });
         }
+        let linear_triplet_starts = (0..layers.len())
+            .map(|layer_idx| {
+                layer_idx + 2 < layers.len()
+                    && layers[layer_idx].is_linear()
+                    && layers[layer_idx + 1].is_linear()
+                    && layers[layer_idx + 2].is_linear()
+            })
+            .collect();
 
         Ok(Self {
             device: device.clone(),
             token_embeddings,
             layers,
+            linear_triplet_starts,
             output_norm,
             output,
             block_fusion_decode_enabled,
@@ -257,28 +267,19 @@ impl Qwen35TextModel {
         position_ids: [usize; 3],
         state: &mut Qwen35TextRuntimeState,
     ) -> Result<Tensor> {
+        self.validate_runtime_state(state)?;
         let mut hidden = input_embedding.clone();
         let mut layer_idx = 0usize;
         while layer_idx < self.layers.len() {
-            if self.block_fusion_decode_enabled && self.has_linear_triplet_at(layer_idx) {
+            if self.block_fusion_decode_enabled && self.linear_triplet_starts[layer_idx] {
                 for offset in 0..3 {
                     let idx = layer_idx + offset;
-                    let layer_state = state.layers.get_mut(idx).ok_or_else(|| {
-                        Error::InferenceError(format!(
-                            "Qwen3.5 missing runtime state for layer index {}",
-                            idx
-                        ))
-                    })?;
+                    let layer_state = &mut state.layers[idx];
                     hidden = self.layers[idx].forward(&hidden, layer_state, position_ids)?;
                 }
                 layer_idx += 3;
             } else {
-                let layer_state = state.layers.get_mut(layer_idx).ok_or_else(|| {
-                    Error::InferenceError(format!(
-                        "Qwen3.5 missing runtime state for layer index {}",
-                        layer_idx
-                    ))
-                })?;
+                let layer_state = &mut state.layers[layer_idx];
                 hidden = self.layers[layer_idx].forward(&hidden, layer_state, position_ids)?;
                 layer_idx += 1;
             }
@@ -303,6 +304,7 @@ impl Qwen35TextModel {
                 position_ids.len()
             )));
         }
+        self.validate_runtime_state(state)?;
         record_prefill_sequence_span(token_ids.len());
 
         // Pre-initialize all lazy layer states before the hot loop to avoid
@@ -319,26 +321,16 @@ impl Qwen35TextModel {
         let can_fuse_prefill = self.block_fusion_prefill_enabled
             && token_ids.len() >= self.block_fusion_prefill_min_tokens;
         while layer_idx < self.layers.len() {
-            if can_fuse_prefill && self.has_linear_triplet_at(layer_idx) {
+            if can_fuse_prefill && self.linear_triplet_starts[layer_idx] {
                 for offset in 0..3 {
                     let idx = layer_idx + offset;
-                    let layer_state = state.layers.get_mut(idx).ok_or_else(|| {
-                        Error::InferenceError(format!(
-                            "Qwen3.5 missing runtime state for layer index {}",
-                            idx
-                        ))
-                    })?;
+                    let layer_state = &mut state.layers[idx];
                     hidden =
                         self.layers[idx].forward_sequence(&hidden, layer_state, position_ids)?;
                 }
                 layer_idx += 3;
             } else {
-                let layer_state = state.layers.get_mut(layer_idx).ok_or_else(|| {
-                    Error::InferenceError(format!(
-                        "Qwen3.5 missing runtime state for layer index {}",
-                        layer_idx
-                    ))
-                })?;
+                let layer_state = &mut state.layers[layer_idx];
                 hidden =
                     self.layers[layer_idx].forward_sequence(&hidden, layer_state, position_ids)?;
                 layer_idx += 1;
@@ -360,13 +352,15 @@ impl Qwen35TextModel {
         logits.i((0, 0)).map_err(Error::from)
     }
 
-    fn has_linear_triplet_at(&self, layer_idx: usize) -> bool {
-        if layer_idx + 2 >= self.layers.len() {
-            return false;
+    fn validate_runtime_state(&self, state: &Qwen35TextRuntimeState) -> Result<()> {
+        if state.layers.len() != self.layers.len() {
+            return Err(Error::InferenceError(format!(
+                "Qwen3.5 runtime state layer mismatch: state has {}, model has {}",
+                state.layers.len(),
+                self.layers.len()
+            )));
         }
-        self.layers[layer_idx].is_linear()
-            && self.layers[layer_idx + 1].is_linear()
-            && self.layers[layer_idx + 2].is_linear()
+        Ok(())
     }
 }
 
