@@ -594,26 +594,38 @@ impl Qwen35FullAttention {
         let (query_states, key_states) =
             self.apply_rope(&query_states, &key_states, position_ids)?;
 
-        // Phase 4 Optimization: DO NOT expand KV states before storing them in pages.
-        // This saves enormous memory bandwidth and cache capacity for GQA models.
-        // We will expand them at query time instead.
-        append_to_pages(
-            self.kv_page_size,
-            k_pages,
-            &key_states,
-            self.kv_quantization,
-        )?;
-        append_to_pages(
-            self.kv_page_size,
-            v_pages,
-            &value_states,
-            self.kv_quantization,
-        )?;
-        if qwen35_use_dense_decode_attention_feature(query_states.device()) {
+        // Keep KV in dense head-major cache while dense decode remains active.
+        // We lazily migrate to paged KV once dense threshold is exceeded.
+        if qwen35_use_dense_decode_attention_feature(query_states.device())
+            && k_pages.is_empty()
+            && v_pages.is_empty()
+        {
             append_dense_kv_cache_h(dense_k_cache_h, &key_states.transpose(1, 2)?.contiguous()?)?;
             append_dense_kv_cache_h(
                 dense_v_cache_h,
                 &value_states.transpose(1, 2)?.contiguous()?,
+            )?;
+            maybe_materialize_dense_kv_pages(
+                query_states.device(),
+                self.kv_page_size,
+                self.kv_quantization,
+                k_pages,
+                v_pages,
+                dense_k_cache_h,
+                dense_v_cache_h,
+            )?;
+        } else {
+            append_to_pages(
+                self.kv_page_size,
+                k_pages,
+                &key_states,
+                self.kv_quantization,
+            )?;
+            append_to_pages(
+                self.kv_page_size,
+                v_pages,
+                &value_states,
+                self.kv_quantization,
             )?;
         }
 
@@ -816,21 +828,34 @@ impl Qwen35FullAttention {
         let output = self.o_proj.forward(&attn_output)?;
 
         // Persist newly computed KV after the sequence attention pass.
-        append_to_pages(
-            self.kv_page_size,
-            k_pages,
-            &key_states_kv,
-            self.kv_quantization,
-        )?;
-        append_to_pages(
-            self.kv_page_size,
-            v_pages,
-            &value_states_kv,
-            self.kv_quantization,
-        )?;
-        if qwen35_use_dense_decode_attention_feature(hidden_states.device()) {
+        if qwen35_use_dense_decode_attention_feature(hidden_states.device())
+            && k_pages.is_empty()
+            && v_pages.is_empty()
+        {
             append_dense_kv_cache_h(dense_k_cache_h, &key_states_h)?;
             append_dense_kv_cache_h(dense_v_cache_h, &value_states_h)?;
+            maybe_materialize_dense_kv_pages(
+                hidden_states.device(),
+                self.kv_page_size,
+                self.kv_quantization,
+                k_pages,
+                v_pages,
+                dense_k_cache_h,
+                dense_v_cache_h,
+            )?;
+        } else {
+            append_to_pages(
+                self.kv_page_size,
+                k_pages,
+                &key_states_kv,
+                self.kv_quantization,
+            )?;
+            append_to_pages(
+                self.kv_page_size,
+                v_pages,
+                &value_states_kv,
+                self.kv_quantization,
+            )?;
         }
 
         Ok(output)
@@ -1702,6 +1727,63 @@ fn append_dense_kv_cache_h(cache: &mut Option<Tensor>, append: &Tensor) -> Resul
     Ok(())
 }
 
+fn maybe_materialize_dense_kv_pages(
+    device: &Device,
+    page_size: usize,
+    quantization: KvCacheQuantization,
+    k_pages: &mut Vec<KvPage>,
+    v_pages: &mut Vec<KvPage>,
+    dense_k_cache_h: &mut Option<Tensor>,
+    dense_v_cache_h: &mut Option<Tensor>,
+) -> Result<()> {
+    if !k_pages.is_empty() || !v_pages.is_empty() {
+        return Ok(());
+    }
+
+    let Some(k_cache_h) = dense_k_cache_h.as_ref() else {
+        return Ok(());
+    };
+    let Some(v_cache_h) = dense_v_cache_h.as_ref() else {
+        return Ok(());
+    };
+
+    let seq_len = k_cache_h.dim(2)?;
+    if seq_len == 0 {
+        return Ok(());
+    }
+    if v_cache_h.dim(2)? != seq_len {
+        return Err(Error::InferenceError(
+            "Qwen3.5 dense KV cache sequence mismatch".to_string(),
+        ));
+    }
+
+    let page_count = qwen35_page_count_for_tokens(seq_len, page_size)?;
+    if qwen35_use_dense_decode_attention(device, page_count) {
+        return Ok(());
+    }
+
+    let k_cache_h = dense_k_cache_h.take().ok_or_else(|| {
+        Error::InferenceError("Qwen3.5 missing dense key cache during page migration".to_string())
+    })?;
+    let v_cache_h = dense_v_cache_h.take().ok_or_else(|| {
+        Error::InferenceError("Qwen3.5 missing dense value cache during page migration".to_string())
+    })?;
+    let k_dense = k_cache_h.transpose(1, 2)?.contiguous()?;
+    let v_dense = v_cache_h.transpose(1, 2)?.contiguous()?;
+    append_to_pages(page_size, k_pages, &k_dense, quantization)?;
+    append_to_pages(page_size, v_pages, &v_dense, quantization)?;
+    Ok(())
+}
+
+fn qwen35_page_count_for_tokens(seq_len: usize, page_size: usize) -> Result<usize> {
+    if page_size == 0 {
+        return Err(Error::InvalidInput(
+            "Qwen3.5 KV page size must be greater than zero".to_string(),
+        ));
+    }
+    Ok(seq_len.div_ceil(page_size))
+}
+
 fn qwen35_dense_decode_max_pages() -> usize {
     if let Ok(raw) = std::env::var("IZWI_QWEN35_DENSE_DECODE_MAX_PAGES") {
         if let Ok(parsed) = raw.trim().parse::<usize>() {
@@ -1802,7 +1884,7 @@ fn recurrent_gated_delta(
 mod tests {
     use super::{
         append_dense_kv_cache_h, apply_rotary_emb, build_mrope, qwen35_dense_decode_max_pages,
-        repeat_head_states, repeat_head_states_seq,
+        qwen35_page_count_for_tokens, repeat_head_states, repeat_head_states_seq,
     };
     use candle_core::{DType, Device, Tensor};
     use candle_nn::rotary_emb;
@@ -1964,5 +2046,14 @@ mod tests {
         assert_eq!(cache.dims(), &[1, 2, 2, 2]);
         let flat = cache.flatten_all().unwrap().to_vec1::<f32>().unwrap();
         assert_eq!(flat, vec![1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn qwen35_page_count_uses_ceil_division() {
+        assert_eq!(qwen35_page_count_for_tokens(0, 64).unwrap(), 0);
+        assert_eq!(qwen35_page_count_for_tokens(1, 64).unwrap(), 1);
+        assert_eq!(qwen35_page_count_for_tokens(64, 64).unwrap(), 1);
+        assert_eq!(qwen35_page_count_for_tokens(65, 64).unwrap(), 2);
+        assert!(qwen35_page_count_for_tokens(10, 0).is_err());
     }
 }
