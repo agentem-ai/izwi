@@ -100,22 +100,52 @@ pub fn try_fused_self_attention(
     }
 
     if q.device().is_metal() {
-        let sdpa_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            candle_nn::ops::sdpa(q, k, v, mask, causal, scale, 1.0)
-        }));
-        match sdpa_result {
-            Ok(Ok(out)) => {
-                record_fused_attention_success();
-                return Ok(Some(out));
+        // Conservative Metal gate: avoid dispatching known high-risk SDPA shapes and
+        // fall back to unfused attention directly.
+        //
+        // This prevents runtime kernel-launch failures from poisoning shared Metal locks
+        // in long-lived server processes.
+        if should_try_metal_sdpa(q, mask)? {
+            let sdpa_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                candle_nn::ops::sdpa(q, k, v, mask, causal, scale, 1.0)
+            }));
+            match sdpa_result {
+                Ok(Ok(out)) => {
+                    record_fused_attention_success();
+                    return Ok(Some(out));
+                }
+                Ok(Err(_)) | Err(_) => {
+                    fallback_reason = AttentionFallbackReason::MetalSdpaRuntimeError;
+                }
             }
-            Ok(Err(_)) | Err(_) => {
-                fallback_reason = AttentionFallbackReason::MetalSdpaRuntimeError;
-            }
+        } else {
+            fallback_reason = AttentionFallbackReason::UnsupportedBackend;
         }
     }
 
     record_fused_attention_fallback(fallback_reason);
     Ok(None)
+}
+
+/// Conservative preflight for Metal SDPA.
+///
+/// We intentionally restrict fused SDPA to short query lengths to avoid known
+/// threadgroup-memory blowups on some Apple GPU families.
+fn should_try_metal_sdpa(q: &Tensor, mask: Option<&Tensor>) -> Result<bool> {
+    if mask.is_some() {
+        return Ok(false);
+    }
+
+    let head_dim = q.dim(3)?;
+    let supported_head_dim = matches!(head_dim, 32 | 64 | 72 | 80 | 96 | 128 | 256);
+    if !supported_head_dim {
+        return Ok(false);
+    }
+
+    let q_seq = q.dim(2)?;
+    // Safe-by-default policy: keep fused SDPA on decode-like shapes only.
+    // Longer prefill sequences use the unfused path for stability.
+    Ok(q_seq <= 8)
 }
 
 #[cfg(feature = "flash-attn")]
