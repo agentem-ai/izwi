@@ -1547,11 +1547,32 @@ fn qwen35_use_dense_decode_attention(device: &Device, page_count: usize) -> bool
     if !qwen35_env_bool("IZWI_QWEN35_DENSE_DECODE_ATTENTION", true) {
         return false;
     }
-    let max_pages = std::env::var("IZWI_QWEN35_DENSE_DECODE_MAX_PAGES")
+    let max_pages = qwen35_dense_decode_max_pages();
+    page_count <= max_pages.max(1)
+}
+
+fn qwen35_dense_decode_max_pages() -> usize {
+    if let Ok(raw) = std::env::var("IZWI_QWEN35_DENSE_DECODE_MAX_PAGES") {
+        if let Ok(parsed) = raw.trim().parse::<usize>() {
+            return parsed.max(1);
+        }
+    }
+
+    // Adaptive default:
+    // - dense decode stays active longer on compressed KV modes where memory pressure is lower.
+    // - callers can still force explicit behavior with IZWI_QWEN35_DENSE_DECODE_MAX_PAGES.
+    let base_pages = 12usize;
+    let adaptive_pages = match default_kv_quantization() {
+        KvCacheQuantization::None => base_pages,
+        KvCacheQuantization::Int8 => base_pages.saturating_mul(2),
+        KvCacheQuantization::Q4_0 => base_pages.saturating_mul(3),
+    };
+    let cap = std::env::var("IZWI_QWEN35_DENSE_DECODE_MAX_PAGES_CAP")
         .ok()
         .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(6);
-    page_count <= max_pages.max(1)
+        .unwrap_or(64)
+        .max(1);
+    adaptive_pages.min(cap).max(1)
 }
 
 fn recurrent_gated_delta_sequence(
@@ -1628,7 +1649,7 @@ fn recurrent_gated_delta(
 
 #[cfg(test)]
 mod tests {
-    use super::{repeat_head_states, repeat_head_states_seq};
+    use super::{qwen35_dense_decode_max_pages, repeat_head_states, repeat_head_states_seq};
     use candle_core::{Device, Tensor};
 
     #[test]
@@ -1676,5 +1697,32 @@ mod tests {
                 vec![5.0, 6.0, 7.0, 8.0, 5.0, 6.0, 7.0, 8.0]
             ]]
         );
+    }
+
+    #[test]
+    fn dense_decode_max_pages_adapts_to_kv_quantization() {
+        let _guard = crate::env_test_lock().lock().expect("env lock");
+
+        std::env::remove_var("IZWI_QWEN35_DENSE_DECODE_MAX_PAGES");
+        std::env::remove_var("IZWI_QWEN35_DENSE_DECODE_MAX_PAGES_CAP");
+
+        std::env::remove_var("IZWI_KV_CACHE_DTYPE");
+        assert_eq!(qwen35_dense_decode_max_pages(), 12);
+
+        std::env::set_var("IZWI_KV_CACHE_DTYPE", "int8");
+        assert_eq!(qwen35_dense_decode_max_pages(), 24);
+
+        std::env::set_var("IZWI_KV_CACHE_DTYPE", "q4_0");
+        assert_eq!(qwen35_dense_decode_max_pages(), 36);
+
+        std::env::set_var("IZWI_QWEN35_DENSE_DECODE_MAX_PAGES_CAP", "20");
+        assert_eq!(qwen35_dense_decode_max_pages(), 20);
+
+        std::env::set_var("IZWI_QWEN35_DENSE_DECODE_MAX_PAGES", "7");
+        assert_eq!(qwen35_dense_decode_max_pages(), 7);
+
+        std::env::remove_var("IZWI_QWEN35_DENSE_DECODE_MAX_PAGES");
+        std::env::remove_var("IZWI_QWEN35_DENSE_DECODE_MAX_PAGES_CAP");
+        std::env::remove_var("IZWI_KV_CACHE_DTYPE");
     }
 }
