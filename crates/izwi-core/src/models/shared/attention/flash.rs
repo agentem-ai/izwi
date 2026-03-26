@@ -62,11 +62,18 @@ pub fn try_fused_self_attention(
                         let q = q.transpose(1, 2)?.contiguous()?;
                         let k = k.transpose(1, 2)?.contiguous()?;
                         let v = v.transpose(1, 2)?.contiguous()?;
-                        if let Ok(out) = candle_flash_attn::flash_attn(&q, &k, &v, scale, causal) {
-                            record_fused_attention_success();
-                            return Ok(Some(out.transpose(1, 2)?));
+                        let flash_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                            || candle_flash_attn::flash_attn(&q, &k, &v, scale, causal),
+                        ));
+                        match flash_result {
+                            Ok(Ok(out)) => {
+                                record_fused_attention_success();
+                                return Ok(Some(out.transpose(1, 2)?));
+                            }
+                            Ok(Err(_)) | Err(_) => {
+                                fallback_reason = AttentionFallbackReason::FlashRuntimeError;
+                            }
                         }
-                        fallback_reason = AttentionFallbackReason::FlashRuntimeError;
                     } else {
                         fallback_reason = AttentionFallbackReason::FlashDTypeMismatch;
                     }
@@ -93,11 +100,18 @@ pub fn try_fused_self_attention(
     }
 
     if q.device().is_metal() {
-        if let Ok(out) = candle_nn::ops::sdpa(q, k, v, mask, causal, scale, 1.0) {
-            record_fused_attention_success();
-            return Ok(Some(out));
+        let sdpa_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            candle_nn::ops::sdpa(q, k, v, mask, causal, scale, 1.0)
+        }));
+        match sdpa_result {
+            Ok(Ok(out)) => {
+                record_fused_attention_success();
+                return Ok(Some(out));
+            }
+            Ok(Err(_)) | Err(_) => {
+                fallback_reason = AttentionFallbackReason::MetalSdpaRuntimeError;
+            }
         }
-        fallback_reason = AttentionFallbackReason::MetalSdpaRuntimeError;
     }
 
     record_fused_attention_fallback(fallback_reason);
