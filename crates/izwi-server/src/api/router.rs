@@ -55,7 +55,11 @@ pub fn create_router(state: AppState, serve_config: &ServeRuntimeConfig) -> Rout
         .merge(crate::api::admin::router())
         .fallback(api_not_found);
 
-    let app = Router::new().nest("/v1", v1_routes).with_state(state);
+    let app = Router::new()
+        .nest("/v1", v1_routes)
+        // Compatibility mount for tooling that queries /internal/* directly.
+        .nest("/internal", crate::api::internal::router())
+        .with_state(state);
 
     apply_runtime_contract(app, serve_config)
         .layer(trace_layer)
@@ -782,6 +786,23 @@ mod tests {
             StatusCode::NOT_FOUND,
         )
         .await;
+
+        drop(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn internal_metrics_route_is_available_for_bench_compat() {
+        let (app, temp_dir) = test_api_app("internal_metrics_route_compat", false);
+
+        assert_route_status(
+            app.clone(),
+            Method::GET,
+            "/internal/metrics",
+            None,
+            StatusCode::OK,
+        )
+        .await;
+        assert_route_status(app, Method::GET, "/v1/metrics", None, StatusCode::OK).await;
 
         drop(temp_dir);
     }

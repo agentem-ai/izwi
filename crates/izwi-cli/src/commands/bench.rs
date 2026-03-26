@@ -658,15 +658,20 @@ fn percentile(data: &[f64], p: f64) -> f64 {
 
 async fn fetch_runtime_metrics(server: &str) -> Option<RuntimeTelemetrySnapshot> {
     let client = http::client(Some(std::time::Duration::from_secs(3))).ok()?;
-    let response = client
-        .get(format!("{}/internal/metrics", server.trim_end_matches('/')))
-        .send()
-        .await
-        .ok()?;
-    if !response.status().is_success() {
-        return None;
+    let base = server.trim_end_matches('/');
+    for path in ["/internal/metrics", "/v1/metrics"] {
+        let response = match client.get(format!("{base}{path}")).send().await {
+            Ok(response) => response,
+            Err(_) => continue,
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        if let Ok(metrics) = response.json::<RuntimeTelemetrySnapshot>().await {
+            return Some(metrics);
+        }
     }
-    response.json::<RuntimeTelemetrySnapshot>().await.ok()
+    None
 }
 
 fn print_runtime_delta(
@@ -674,7 +679,9 @@ fn print_runtime_delta(
     after: Option<RuntimeTelemetrySnapshot>,
 ) {
     let (Some(before), Some(after)) = (before, after) else {
-        println!("\nRuntime telemetry delta: unavailable (/internal/metrics not reachable)");
+        println!(
+            "\nRuntime telemetry delta: unavailable (/internal/metrics or /v1/metrics not reachable)"
+        );
         return;
     };
 
