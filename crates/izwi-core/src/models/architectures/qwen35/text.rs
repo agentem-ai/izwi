@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use candle_core::{DType, Device, IndexOp, Module, Tensor, D};
-use candle_nn::{ops, Embedding};
+use candle_nn::{ops, rotary_emb, Embedding};
 use candle_transformers::models::with_tracing::QMatMul;
 use candle_transformers::quantized_nn::RmsNorm;
 
@@ -23,7 +23,7 @@ use crate::models::shared::attention::paged::{
 };
 use crate::models::shared::telemetry::{
     record_decode_attention_path, record_prefill_sequence_span, record_prefill_token_mode_step,
-    record_rope_manual, DecodeAttentionPath,
+    record_rope_kernel, record_rope_manual, DecodeAttentionPath,
 };
 use crate::models::shared::weights::gguf::GgufLoader;
 
@@ -795,15 +795,36 @@ impl Qwen35FullAttention {
         if self.rope_dim == 0 {
             return Ok((query_states.clone(), key_states.clone()));
         }
-        record_rope_manual();
-
         let (cos, sin) =
             self.cached_mrope(position_ids, query_states.device(), query_states.dtype())?;
 
-        let query_rot = query_states.narrow(3, 0, self.rope_dim)?;
-        let key_rot = key_states.narrow(3, 0, self.rope_dim)?;
-        let query_rot = apply_rotary_emb(&query_rot, &cos, &sin)?;
-        let key_rot = apply_rotary_emb(&key_rot, &cos, &sin)?;
+        let query_rot = query_states.narrow(3, 0, self.rope_dim)?.contiguous()?;
+        let key_rot = key_states.narrow(3, 0, self.rope_dim)?.contiguous()?;
+        let (query_rot, key_rot) = if qwen35_should_try_rope_kernel(
+            query_states.device(),
+            query_states.dtype(),
+            self.rope_dim,
+        ) {
+            match try_apply_rope_thd(&query_rot, &key_rot, &cos, &sin)? {
+                Some((query_rot, key_rot)) => {
+                    record_rope_kernel();
+                    (query_rot, key_rot)
+                }
+                None => {
+                    record_rope_manual();
+                    (
+                        apply_rotary_emb(&query_rot, &cos, &sin)?,
+                        apply_rotary_emb(&key_rot, &cos, &sin)?,
+                    )
+                }
+            }
+        } else {
+            record_rope_manual();
+            (
+                apply_rotary_emb(&query_rot, &cos, &sin)?,
+                apply_rotary_emb(&key_rot, &cos, &sin)?,
+            )
+        };
 
         if self.rope_dim == self.head_dim {
             return Ok((query_rot, key_rot));
@@ -835,34 +856,63 @@ impl Qwen35FullAttention {
             return Ok((query_states.clone(), key_states.clone()));
         }
 
-        let mut query_tokens = Vec::with_capacity(seq_len);
-        let mut key_tokens = Vec::with_capacity(seq_len);
-        for (idx, &position_id) in position_ids.iter().enumerate() {
-            record_rope_manual();
-            let query_token = query_states.narrow(1, idx, 1)?;
-            let key_token = key_states.narrow(1, idx, 1)?;
+        let mut cos_tokens = Vec::with_capacity(seq_len);
+        let mut sin_tokens = Vec::with_capacity(seq_len);
+        for &position_id in position_ids {
             let (cos, sin) =
                 self.cached_mrope(position_id, query_states.device(), query_states.dtype())?;
-            let query_rot = query_token.narrow(3, 0, self.rope_dim)?;
-            let key_rot = key_token.narrow(3, 0, self.rope_dim)?;
-            let query_rot = apply_rotary_emb(&query_rot, &cos, &sin)?;
-            let key_rot = apply_rotary_emb(&key_rot, &cos, &sin)?;
+            cos_tokens.push(cos);
+            sin_tokens.push(sin);
+        }
+        let cos_refs: Vec<&Tensor> = cos_tokens.iter().collect();
+        let sin_refs: Vec<&Tensor> = sin_tokens.iter().collect();
+        let cos = Tensor::cat(&cos_refs, 1)?.contiguous()?;
+        let sin = Tensor::cat(&sin_refs, 1)?.contiguous()?;
 
-            if self.rope_dim == self.head_dim {
-                query_tokens.push(query_rot);
-                key_tokens.push(key_rot);
-            } else {
-                let query_pass =
-                    query_token.narrow(3, self.rope_dim, self.head_dim - self.rope_dim)?;
-                let key_pass = key_token.narrow(3, self.rope_dim, self.head_dim - self.rope_dim)?;
-                query_tokens.push(Tensor::cat(&[&query_rot, &query_pass], 3)?);
-                key_tokens.push(Tensor::cat(&[&key_rot, &key_pass], 3)?);
+        let query_rot = query_states.narrow(3, 0, self.rope_dim)?.contiguous()?;
+        let key_rot = key_states.narrow(3, 0, self.rope_dim)?.contiguous()?;
+        let (query_rot, key_rot) = if qwen35_should_try_rope_kernel(
+            query_states.device(),
+            query_states.dtype(),
+            self.rope_dim,
+        ) {
+            match try_apply_rope_thd(&query_rot, &key_rot, &cos, &sin)? {
+                Some((query_rot, key_rot)) => {
+                    for _ in 0..seq_len {
+                        record_rope_kernel();
+                    }
+                    (query_rot, key_rot)
+                }
+                None => {
+                    for _ in 0..seq_len {
+                        record_rope_manual();
+                    }
+                    (
+                        apply_rotary_emb(&query_rot, &cos, &sin)?,
+                        apply_rotary_emb(&key_rot, &cos, &sin)?,
+                    )
+                }
             }
+        } else {
+            for _ in 0..seq_len {
+                record_rope_manual();
+            }
+            (
+                apply_rotary_emb(&query_rot, &cos, &sin)?,
+                apply_rotary_emb(&key_rot, &cos, &sin)?,
+            )
+        };
+
+        if self.rope_dim == self.head_dim {
+            return Ok((query_rot, key_rot));
         }
 
-        let query_refs: Vec<&Tensor> = query_tokens.iter().collect();
-        let key_refs: Vec<&Tensor> = key_tokens.iter().collect();
-        Ok((Tensor::cat(&query_refs, 1)?, Tensor::cat(&key_refs, 1)?))
+        let query_pass = query_states.narrow(3, self.rope_dim, self.head_dim - self.rope_dim)?;
+        let key_pass = key_states.narrow(3, self.rope_dim, self.head_dim - self.rope_dim)?;
+        Ok((
+            Tensor::cat(&[&query_rot, &query_pass], 3)?,
+            Tensor::cat(&[&key_rot, &key_pass], 3)?,
+        ))
     }
 
     fn cached_mrope(
@@ -1383,10 +1433,7 @@ fn build_mrope(
         }
     }
 
-    let mut emb = Vec::with_capacity(rope_dim);
-    emb.extend_from_slice(&interleaved);
-    emb.extend_from_slice(&interleaved);
-    let emb = Tensor::from_vec(emb, (1, 1, 1, rope_dim), device)?.to_dtype(dtype)?;
+    let emb = Tensor::from_vec(interleaved, (1, 1, half_dim), device)?.to_dtype(dtype)?;
     Ok((emb.cos()?, emb.sin()?))
 }
 
@@ -1394,10 +1441,33 @@ fn apply_rotary_emb(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     let half_dim = x.dim(3)? / 2;
     let x1 = x.narrow(3, 0, half_dim)?;
     let x2 = x.narrow(3, half_dim, half_dim)?;
-    let rotated = Tensor::cat(&[&x2.neg()?, &x1], 3)?;
-    x.broadcast_mul(cos)?
-        .broadcast_add(&rotated.broadcast_mul(sin)?)
-        .map_err(Error::from)
+    let cos = cos.unsqueeze(2)?;
+    let sin = sin.unsqueeze(2)?;
+    let out_first = x1
+        .broadcast_mul(&cos)?
+        .broadcast_sub(&x2.broadcast_mul(&sin)?)?;
+    let out_second = x1
+        .broadcast_mul(&sin)?
+        .broadcast_add(&x2.broadcast_mul(&cos)?)?;
+    Tensor::cat(&[&out_first, &out_second], 3).map_err(Error::from)
+}
+
+fn try_apply_rope_thd(
+    query_rot: &Tensor,
+    key_rot: &Tensor,
+    cos: &Tensor,
+    sin: &Tensor,
+) -> Result<Option<(Tensor, Tensor)>> {
+    let kernel_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let query_rot = rotary_emb::rope_thd(query_rot, cos, sin)?;
+        let key_rot = rotary_emb::rope_thd(key_rot, cos, sin)?;
+        candle_core::Result::<(Tensor, Tensor)>::Ok((query_rot, key_rot))
+    }));
+
+    match kernel_result {
+        Ok(Ok((query_rot, key_rot))) => Ok(Some((query_rot, key_rot))),
+        Ok(Err(_)) | Err(_) => Ok(None),
+    }
 }
 
 fn build_rope_inv_freqs(rope_dim: usize, rope_theta: f64) -> Result<Vec<f32>> {
@@ -1500,6 +1570,19 @@ fn qwen35_env_bool(name: &str, default: bool) -> bool {
 
 fn qwen35_use_tiled_recurrence() -> bool {
     qwen35_env_bool("IZWI_QWEN35_TILED_RECURRENCE", true)
+}
+
+fn qwen35_should_try_rope_kernel(device: &Device, dtype: DType, rope_dim: usize) -> bool {
+    if rope_dim == 0 || rope_dim % 2 != 0 {
+        return false;
+    }
+    if !device.is_metal() {
+        return false;
+    }
+    if !qwen35_env_bool("IZWI_QWEN35_ROPE_KERNEL", true) {
+        return false;
+    }
+    matches!(dtype, DType::F16 | DType::BF16 | DType::F32)
 }
 
 fn qwen35_tiled_recurrence_tile_size(seq_len: usize) -> usize {
@@ -1649,8 +1732,12 @@ fn recurrent_gated_delta(
 
 #[cfg(test)]
 mod tests {
-    use super::{qwen35_dense_decode_max_pages, repeat_head_states, repeat_head_states_seq};
-    use candle_core::{Device, Tensor};
+    use super::{
+        apply_rotary_emb, build_mrope, qwen35_dense_decode_max_pages, repeat_head_states,
+        repeat_head_states_seq,
+    };
+    use candle_core::{DType, Device, Tensor};
+    use candle_nn::rotary_emb;
 
     #[test]
     fn repeat_head_states_uses_tiled_order() {
@@ -1724,5 +1811,74 @@ mod tests {
         std::env::remove_var("IZWI_QWEN35_DENSE_DECODE_MAX_PAGES");
         std::env::remove_var("IZWI_QWEN35_DENSE_DECODE_MAX_PAGES_CAP");
         std::env::remove_var("IZWI_KV_CACHE_DTYPE");
+    }
+
+    #[test]
+    fn build_mrope_uses_half_dim_layout_and_sections() {
+        let (cos, sin) = build_mrope(
+            12,
+            [3, 5, 7],
+            &[2, 2, 2],
+            &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            &Device::Cpu,
+            DType::F32,
+        )
+        .expect("mrope should build");
+
+        assert_eq!(cos.dims(), &[1, 1, 6]);
+        assert_eq!(sin.dims(), &[1, 1, 6]);
+
+        let cos_vals = cos.to_vec3::<f32>().expect("cos values");
+        let sin_vals = sin.to_vec3::<f32>().expect("sin values");
+        let expected = [3.0f32, 5.0, 7.0, 3.0, 5.0, 7.0];
+        for (idx, expected_theta) in expected.iter().enumerate() {
+            assert!((cos_vals[0][0][idx] - expected_theta.cos()).abs() < 1e-5);
+            assert!((sin_vals[0][0][idx] - expected_theta.sin()).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn rotary_emb_manual_matches_rope_thd() {
+        let x = Tensor::from_vec(
+            (0..(1 * 3 * 2 * 8))
+                .map(|v| v as f32 / 10.0)
+                .collect::<Vec<_>>(),
+            (1, 3, 2, 8),
+            &Device::Cpu,
+        )
+        .expect("x");
+        let theta = [
+            0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2,
+        ];
+        let cos = Tensor::from_vec(
+            theta.iter().map(|v| v.cos()).collect::<Vec<_>>(),
+            (1, 3, 4),
+            &Device::Cpu,
+        )
+        .expect("cos");
+        let sin = Tensor::from_vec(
+            theta.iter().map(|v| v.sin()).collect::<Vec<_>>(),
+            (1, 3, 4),
+            &Device::Cpu,
+        )
+        .expect("sin");
+
+        let manual = apply_rotary_emb(&x, &cos, &sin).expect("manual");
+        let kernel = rotary_emb::rope_thd(&x, &cos, &sin).expect("kernel");
+
+        let manual_vals = manual
+            .flatten_all()
+            .expect("flatten")
+            .to_vec1::<f32>()
+            .expect("manual vals");
+        let kernel_vals = kernel
+            .flatten_all()
+            .expect("flatten")
+            .to_vec1::<f32>()
+            .expect("kernel vals");
+        assert_eq!(manual_vals.len(), kernel_vals.len());
+        for (manual, kernel) in manual_vals.iter().zip(kernel_vals.iter()) {
+            assert!((manual - kernel).abs() < 1e-5);
+        }
     }
 }
