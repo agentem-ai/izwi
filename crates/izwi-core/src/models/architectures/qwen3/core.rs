@@ -146,7 +146,7 @@ struct Qwen3Attention {
     head_dim: usize,
     use_mrope: bool,
     mrope_section: Option<Vec<usize>>,
-    rope_theta: f64,
+    rope_inv_freqs: Vec<f32>,
     rope_kernel_enabled: bool,
 }
 
@@ -198,7 +198,7 @@ impl Qwen3Attention {
             head_dim,
             use_mrope,
             mrope_section,
-            rope_theta: cfg.rope_theta,
+            rope_inv_freqs: build_rope_inv_freqs(head_dim, cfg.rope_theta),
             rope_kernel_enabled: qwen3_rope_kernel_enabled(vb.device()),
         })
     }
@@ -222,15 +222,23 @@ impl Qwen3Attention {
         }
     }
 
-    fn apply_rope(
+    fn apply_rope_pair(
         &self,
-        x: Tensor,
+        q: Tensor,
+        k: Tensor,
         start_pos: usize,
         position_ids: Option<&Tensor>,
-    ) -> Result<Tensor> {
-        let seq_len = x.dim(1)?;
-        let half_dim = self.head_dim / 2;
-        let x = x.contiguous()?;
+    ) -> Result<(Tensor, Tensor)> {
+        let seq_len = q.dim(1)?;
+        if k.dim(1)? != seq_len {
+            return Err(Error::InferenceError(format!(
+                "Qwen3 RoPE sequence mismatch: q_seq={}, k_seq={}",
+                seq_len,
+                k.dim(1)?
+            )));
+        }
+        let q = q.contiguous()?;
+        let k = k.contiguous()?;
 
         let (cos_half, sin_half) = if self.use_mrope {
             let position_ids = if let Some(position_ids) = position_ids {
@@ -243,53 +251,43 @@ impl Qwen3Attention {
                         data.push(base + idx as i64);
                     }
                 }
-                Tensor::from_vec(data, (3, seq_len), x.device())?
+                Tensor::from_vec(data, (3, seq_len), q.device())?
             };
-            build_mrope_cache(
+            build_mrope_cache_with_inv_freqs(
                 seq_len,
                 self.head_dim,
-                self.rope_theta,
-                x.device(),
-                x.dtype(),
+                q.device(),
+                q.dtype(),
                 &position_ids,
                 self.mrope_section.as_deref().unwrap_or(&[]),
+                &self.rope_inv_freqs,
             )?
         } else {
-            build_rope_cache(
+            build_rope_cache_with_inv_freqs(
                 seq_len,
-                self.head_dim,
                 start_pos,
-                self.rope_theta,
-                x.device(),
-                x.dtype(),
+                q.device(),
+                q.dtype(),
+                &self.rope_inv_freqs,
             )?
         };
 
-        if self.should_try_rope_kernel(x.dtype()) {
+        if self.should_try_rope_kernel(q.dtype()) {
             let cos = cos_half.unsqueeze(0)?.contiguous()?;
             let sin = sin_half.unsqueeze(0)?.contiguous()?;
-            if let Some(kernel_out) = try_apply_rope_thd(&x, &cos, &sin)? {
+            if let Some((q_out, k_out)) = try_apply_rope_pair_thd(&q, &k, &cos, &sin)? {
                 record_rope_kernel();
-                return Ok(kernel_out);
+                record_rope_kernel();
+                return Ok((q_out, k_out));
             }
         }
         record_rope_manual();
+        record_rope_manual();
 
-        // Qwen RoPE uses rotate_half(x) over [first_half, second_half], not pairwise rotation.
-        let cos = Tensor::cat(&[cos_half.clone(), cos_half], 1)?; // [seq, head_dim]
-        let sin = Tensor::cat(&[sin_half.clone(), sin_half], 1)?; // [seq, head_dim]
-        let cos = cos.unsqueeze(0)?.unsqueeze(2)?; // [1, seq, 1, head_dim]
-        let sin = sin.unsqueeze(0)?.unsqueeze(2)?;
-
-        let x1 = x.narrow(3, 0, half_dim)?;
-        let x2 = x.narrow(3, half_dim, half_dim)?;
-        let minus_one = Tensor::from_vec(vec![-1.0f32], (1,), x.device())?.to_dtype(x.dtype())?;
-        let neg_x2 = x2.broadcast_mul(&minus_one)?;
-        let rotated = Tensor::cat(&[neg_x2, x1], 3)?;
-
-        let out = x.broadcast_mul(&cos)?;
-        out.broadcast_add(&rotated.broadcast_mul(&sin)?)
-            .map_err(Error::from)
+        Ok((
+            apply_rotary_emb(&q, &cos_half, &sin_half)?,
+            apply_rotary_emb(&k, &cos_half, &sin_half)?,
+        ))
     }
 
     fn should_try_rope_kernel(&self, dtype: DType) -> bool {
@@ -330,8 +328,7 @@ impl Qwen3Attention {
         q = self.apply_qk_norm(q, &self.q_norm, self.num_heads, seq_len)?;
         k = self.apply_qk_norm(k, &self.k_norm, self.num_kv_heads, seq_len)?;
 
-        q = self.apply_rope(q, start_pos, position_ids)?;
-        k = self.apply_rope(k, start_pos, position_ids)?;
+        (q, k) = self.apply_rope_pair(q, k, start_pos, position_ids)?;
 
         let (k, v) = if let Some(cache) = cache {
             cache.append(layer_idx, k.clone(), v.clone())?;
@@ -659,57 +656,55 @@ pub fn repeat_kv(x: &Tensor, num_heads: usize, num_kv_heads: usize) -> Result<Te
     }
 }
 
-pub fn build_rope_cache(
-    seq_len: usize,
-    head_dim: usize,
-    start_pos: usize,
-    rope_theta: f64,
-    device: &Device,
-    dtype: DType,
-) -> Result<(Tensor, Tensor)> {
+fn build_rope_inv_freqs(head_dim: usize, rope_theta: f64) -> Vec<f32> {
     let half_dim = head_dim / 2;
     let mut inv_freq = Vec::with_capacity(half_dim);
     for i in 0..half_dim {
         let power = (2.0 * i as f64) / head_dim as f64;
         inv_freq.push((1.0 / rope_theta.powf(power)) as f32);
     }
+    inv_freq
+}
 
+fn build_rope_cache_with_inv_freqs(
+    seq_len: usize,
+    start_pos: usize,
+    device: &Device,
+    dtype: DType,
+    inv_freqs: &[f32],
+) -> Result<(Tensor, Tensor)> {
+    let half_dim = inv_freqs.len();
     let mut angles = Vec::with_capacity(seq_len * half_dim);
     for pos in start_pos..start_pos + seq_len {
-        for &inv in inv_freq.iter() {
+        for &inv in inv_freqs {
             angles.push(pos as f32 * inv);
         }
     }
 
     let angles = Tensor::from_vec(angles, (seq_len, half_dim), device)?;
-    let cos = angles.cos()?.to_dtype(dtype)?;
-    let sin = angles.sin()?.to_dtype(dtype)?;
-    Ok((cos, sin))
+    Ok((
+        angles.cos()?.to_dtype(dtype)?,
+        angles.sin()?.to_dtype(dtype)?,
+    ))
 }
 
-pub fn build_mrope_cache(
+fn build_mrope_cache_with_inv_freqs(
     seq_len: usize,
     head_dim: usize,
-    rope_theta: f64,
     device: &Device,
     dtype: DType,
     position_ids: &Tensor,
     mrope_section: &[usize],
+    inv_freqs: &[f32],
 ) -> Result<(Tensor, Tensor)> {
     let half_dim = head_dim / 2;
     if mrope_section.len() < 3 {
-        return build_rope_cache(seq_len, head_dim, 0, rope_theta, device, dtype);
+        return build_rope_cache_with_inv_freqs(seq_len, 0, device, dtype, inv_freqs);
     }
 
     let positions = position_ids.to_vec2::<i64>()?;
     if positions.len() != 3 || positions.iter().any(|axis| axis.len() < seq_len) {
-        return build_rope_cache(seq_len, head_dim, 0, rope_theta, device, dtype);
-    }
-
-    let mut inv_freq = Vec::with_capacity(half_dim);
-    for i in 0..half_dim {
-        let power = (2.0 * i as f64) / head_dim as f64;
-        inv_freq.push((1.0 / rope_theta.powf(power)) as f32);
+        return build_rope_cache_with_inv_freqs(seq_len, 0, device, dtype, inv_freqs);
     }
 
     // Match Qwen3 Omni's interleaved MRoPE layout:
@@ -723,7 +718,7 @@ pub fn build_mrope_cache(
         let p0 = positions[0][t] as f32;
         let p1 = positions[1][t] as f32;
         let p2 = positions[2][t] as f32;
-        for (dim, &inv) in inv_freq.iter().enumerate() {
+        for (dim, &inv) in inv_freqs.iter().enumerate() {
             let pos = if dim % 3 == 1 && dim < h_limit {
                 p1
             } else if dim % 3 == 2 && dim < w_limit {
@@ -737,9 +732,43 @@ pub fn build_mrope_cache(
         }
     }
 
-    let cos = Tensor::from_vec(cos_data, (seq_len, half_dim), device)?.to_dtype(dtype)?;
-    let sin = Tensor::from_vec(sin_data, (seq_len, half_dim), device)?.to_dtype(dtype)?;
-    Ok((cos, sin))
+    Ok((
+        Tensor::from_vec(cos_data, (seq_len, half_dim), device)?.to_dtype(dtype)?,
+        Tensor::from_vec(sin_data, (seq_len, half_dim), device)?.to_dtype(dtype)?,
+    ))
+}
+
+pub fn build_rope_cache(
+    seq_len: usize,
+    head_dim: usize,
+    start_pos: usize,
+    rope_theta: f64,
+    device: &Device,
+    dtype: DType,
+) -> Result<(Tensor, Tensor)> {
+    let inv_freqs = build_rope_inv_freqs(head_dim, rope_theta);
+    build_rope_cache_with_inv_freqs(seq_len, start_pos, device, dtype, &inv_freqs)
+}
+
+pub fn build_mrope_cache(
+    seq_len: usize,
+    head_dim: usize,
+    rope_theta: f64,
+    device: &Device,
+    dtype: DType,
+    position_ids: &Tensor,
+    mrope_section: &[usize],
+) -> Result<(Tensor, Tensor)> {
+    let inv_freqs = build_rope_inv_freqs(head_dim, rope_theta);
+    build_mrope_cache_with_inv_freqs(
+        seq_len,
+        head_dim,
+        device,
+        dtype,
+        position_ids,
+        mrope_section,
+        &inv_freqs,
+    )
 }
 
 pub fn causal_mask(
@@ -763,12 +792,38 @@ pub fn causal_mask(
         .map_err(Error::from)
 }
 
-fn try_apply_rope_thd(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Option<Tensor>> {
+fn apply_rotary_emb(x: &Tensor, cos_half: &Tensor, sin_half: &Tensor) -> Result<Tensor> {
+    let half_dim = x.dim(3)? / 2;
+    let x1 = x.narrow(3, 0, half_dim)?;
+    let x2 = x.narrow(3, half_dim, half_dim)?;
+    let cos = Tensor::cat(&[cos_half.clone(), cos_half.clone()], 1)?
+        .unsqueeze(0)?
+        .unsqueeze(2)?;
+    let sin = Tensor::cat(&[sin_half.clone(), sin_half.clone()], 1)?
+        .unsqueeze(0)?
+        .unsqueeze(2)?;
+    let out_first = x1
+        .broadcast_mul(&cos)?
+        .broadcast_sub(&x2.broadcast_mul(&sin)?)?;
+    let out_second = x1
+        .broadcast_mul(&sin)?
+        .broadcast_add(&x2.broadcast_mul(&cos)?)?;
+    Tensor::cat(&[&out_first, &out_second], 3).map_err(Error::from)
+}
+
+fn try_apply_rope_pair_thd(
+    q: &Tensor,
+    k: &Tensor,
+    cos: &Tensor,
+    sin: &Tensor,
+) -> Result<Option<(Tensor, Tensor)>> {
     let kernel_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rotary_emb::rope_thd(x, cos, sin)
+        let q_out = rotary_emb::rope_thd(q, cos, sin)?;
+        let k_out = rotary_emb::rope_thd(k, cos, sin)?;
+        candle_core::Result::<(Tensor, Tensor)>::Ok((q_out, k_out))
     }));
     match kernel_result {
-        Ok(Ok(out)) => Ok(Some(out)),
+        Ok(Ok((q_out, k_out))) => Ok(Some((q_out, k_out))),
         Ok(Err(_)) | Err(_) => Ok(None),
     }
 }
