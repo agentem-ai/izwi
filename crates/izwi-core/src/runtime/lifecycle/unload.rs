@@ -13,6 +13,7 @@ impl RuntimeService {
         match variant.family() {
             ModelFamily::ParakeetAsr
             | ModelFamily::WhisperAsr
+            | ModelFamily::Qwen3Asr
             | ModelFamily::Qwen3ForcedAligner => {
                 self.model_registry.unload_asr(variant).await;
             }
