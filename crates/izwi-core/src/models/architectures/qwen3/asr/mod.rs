@@ -548,20 +548,9 @@ impl Qwen3AsrModel {
         let delta = self.decode_incremental_delta(state)?;
 
         let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
-        if self.text_model.uses_mrope() {
-            let next_embeds = self.text_model.embeddings(&next_tensor)?;
-            let position_ids = self.build_position_ids(1, state.pos, None)?;
-            state.embeds = self.text_model.forward_with_embeds(
-                &next_embeds,
-                state.pos,
-                Some(&mut state.cache),
-                Some(&position_ids),
-            )?;
-        } else {
-            state.embeds =
-                self.text_model
-                    .forward(&next_tensor, state.pos, Some(&mut state.cache))?;
-        }
+        state.embeds = self
+            .text_model
+            .forward(&next_tensor, state.pos, Some(&mut state.cache))?;
         state.pos += 1;
 
         if state.generated_ids.len() >= state.max_new_tokens {
@@ -661,20 +650,9 @@ impl Qwen3AsrModel {
             generated.push(next);
 
             let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
-            if self.text_model.uses_mrope() {
-                let next_embeds = self.text_model.embeddings(&next_tensor)?;
-                let position_ids = self.build_position_ids(1, pos, None)?;
-                embeds = self.text_model.forward_with_embeds(
-                    &next_embeds,
-                    pos,
-                    Some(&mut cache),
-                    Some(&position_ids),
-                )?;
-            } else {
-                embeds = self
-                    .text_model
-                    .forward(&next_tensor, pos, Some(&mut cache))?;
-            }
+            embeds = self
+                .text_model
+                .forward(&next_tensor, pos, Some(&mut cache))?;
             pos += 1;
         }
 
