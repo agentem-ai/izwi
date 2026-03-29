@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
@@ -19,13 +20,17 @@ use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::transcription_store::{
-    NewTranscriptionRecord, StoredTranscriptionAudio, TranscriptionRecord,
-    TranscriptionRecordSummary, TranscriptionSegmentRecord, TranscriptionSummaryStatus,
-    TranscriptionWordRecord,
+    NewTranscriptionRecord, StoredTranscriptionAudio, TranscriptionRecord, TranscriptionRecordSummary,
+    TranscriptionSegmentRecord, TranscriptionStore, TranscriptionSummaryStatus,
+    TranscriptionWordRecord, UpdateTranscriptionSummary,
 };
+use izwi_core::{parse_chat_model_variant, ChatMessage, ChatRole, GenerationParams, RuntimeService};
 
 const HISTORY_LIST_LIMIT: usize = 200;
 const DEFAULT_TRANSCRIPTION_ALIGNER_MODEL: &str = "Qwen3-ForcedAligner-0.6B";
+const DEFAULT_TRANSCRIPTION_SUMMARY_MODEL: &str = "Qwen3.5-4B";
+const DEFAULT_TRANSCRIPTION_SUMMARY_MAX_TOKENS: usize = 384;
+const TRANSCRIPTION_SUMMARY_SYSTEM_PROMPT: &str = "You summarize transcripts for fast review. Return only the final summary text. Do not output markdown, bullet markers, XML tags, code fences, or <think> content. Keep the summary concise while covering key topics, decisions, action items, and unresolved questions when present.";
 const MAX_SEGMENT_WORDS: usize = 18;
 const MAX_SEGMENT_DURATION_SECS: f32 = 9.0;
 const MIN_SENTENCE_BREAK_WORDS: usize = 5;
@@ -203,6 +208,7 @@ pub async fn create_record(
     } else {
         None
     };
+    let (summary_status, summary_model_id) = initial_summary_state(artifacts.text.as_str());
 
     let record = state
         .transcription_store
@@ -221,14 +227,22 @@ pub async fn create_record(
             transcription: artifacts.text,
             segments: artifacts.segments,
             words: artifacts.words,
-            summary_status: TranscriptionSummaryStatus::NotRequested,
-            summary_model_id: None,
+            summary_status,
+            summary_model_id,
             summary_text: None,
             summary_error: None,
             summary_updated_at: None,
         })
         .await
         .map_err(map_store_error)?;
+
+    maybe_spawn_summary_generation(
+        state.runtime.clone(),
+        state.transcription_store.clone(),
+        state.request_semaphore.clone(),
+        &record,
+        Some(ctx.correlation_id),
+    );
 
     Ok(Json(record).into_response())
 }
@@ -256,7 +270,7 @@ async fn create_record_stream(
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<String>();
 
     tokio::spawn(async move {
-        let _permit = match semaphore.acquire_owned().await {
+        let _permit = match semaphore.clone().acquire_owned().await {
             Ok(permit) => permit,
             Err(_) => {
                 let _ = event_tx.send(
@@ -281,7 +295,7 @@ async fn create_record_stream(
 
         let generation_result = tokio::time::timeout(timeout, async {
             generate_transcription_artifacts(
-                runtime,
+                runtime.clone(),
                 audio_bytes.as_slice(),
                 model_id.as_deref(),
                 aligner_model_id.as_deref(),
@@ -310,6 +324,8 @@ async fn create_record_stream(
                 } else {
                     None
                 };
+                let (summary_status, summary_model_id) =
+                    initial_summary_state(artifacts.text.as_str());
 
                 match transcription_store
                     .create_record(NewTranscriptionRecord {
@@ -325,8 +341,8 @@ async fn create_record_stream(
                         transcription: artifacts.text,
                         segments: artifacts.segments,
                         words: artifacts.words,
-                        summary_status: TranscriptionSummaryStatus::NotRequested,
-                        summary_model_id: None,
+                        summary_status,
+                        summary_model_id,
                         summary_text: None,
                         summary_error: None,
                         summary_updated_at: None,
@@ -334,6 +350,13 @@ async fn create_record_stream(
                     .await
                 {
                     Ok(record) => {
+                        maybe_spawn_summary_generation(
+                            runtime.clone(),
+                            transcription_store.clone(),
+                            semaphore.clone(),
+                            &record,
+                            Some(correlation_id.clone()),
+                        );
                         let _ = event_tx.send(
                             serde_json::to_string(&StreamFinalEvent {
                                 event: "final",
@@ -720,6 +743,180 @@ fn should_break_segment(
             && previous_token.ends_with(['.', '!', '?']))
 }
 
+fn initial_summary_state(transcription: &str) -> (TranscriptionSummaryStatus, Option<String>) {
+    if transcription.trim().is_empty() {
+        (TranscriptionSummaryStatus::NotRequested, None)
+    } else {
+        (
+            TranscriptionSummaryStatus::Pending,
+            Some(DEFAULT_TRANSCRIPTION_SUMMARY_MODEL.to_string()),
+        )
+    }
+}
+
+fn maybe_spawn_summary_generation(
+    runtime: Arc<RuntimeService>,
+    transcription_store: Arc<TranscriptionStore>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    record: &TranscriptionRecord,
+    correlation_id: Option<String>,
+) {
+    if record.summary_status != TranscriptionSummaryStatus::Pending {
+        return;
+    }
+
+    spawn_summary_generation_task(
+        runtime,
+        transcription_store,
+        semaphore,
+        record.id.clone(),
+        record.transcription.clone(),
+        correlation_id,
+    );
+}
+
+fn spawn_summary_generation_task(
+    runtime: Arc<RuntimeService>,
+    transcription_store: Arc<TranscriptionStore>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    record_id: String,
+    transcription: String,
+    correlation_id: Option<String>,
+) {
+    tokio::spawn(async move {
+        let _permit = match semaphore.acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => return,
+        };
+
+        let summary_result = generate_transcription_summary(
+            runtime,
+            transcription.as_str(),
+            correlation_id.as_deref(),
+        )
+        .await;
+
+        let summary_update = match summary_result {
+            Ok(summary_text) => UpdateTranscriptionSummary {
+                status: TranscriptionSummaryStatus::Ready,
+                model_id: Some(DEFAULT_TRANSCRIPTION_SUMMARY_MODEL.to_string()),
+                text: Some(summary_text),
+                error: None,
+                updated_at: None,
+            },
+            Err(err) => UpdateTranscriptionSummary {
+                status: TranscriptionSummaryStatus::Failed,
+                model_id: Some(DEFAULT_TRANSCRIPTION_SUMMARY_MODEL.to_string()),
+                text: None,
+                error: Some(truncate_summary_error(err.as_str())),
+                updated_at: None,
+            },
+        };
+
+        if let Err(err) = transcription_store
+            .update_summary(record_id.clone(), summary_update)
+            .await
+        {
+            tracing::warn!(
+                "transcription summary persist failed: record_id={} error={}",
+                record_id,
+                err
+            );
+        }
+    });
+}
+
+async fn generate_transcription_summary(
+    runtime: Arc<RuntimeService>,
+    transcription: &str,
+    correlation_id: Option<&str>,
+) -> Result<String, String> {
+    let variant = parse_chat_model_variant(Some(DEFAULT_TRANSCRIPTION_SUMMARY_MODEL))
+        .map_err(|err| format!("Invalid summary model '{DEFAULT_TRANSCRIPTION_SUMMARY_MODEL}': {err}"))?;
+    let mut params = GenerationParams::default();
+    params.max_tokens = DEFAULT_TRANSCRIPTION_SUMMARY_MAX_TOKENS;
+    params.temperature = 0.2;
+    params.top_p = 0.9;
+
+    let generation = runtime
+        .chat_generate_with_generation_params_and_correlation(
+            variant,
+            vec![
+                ChatMessage {
+                    role: ChatRole::System,
+                    content: TRANSCRIPTION_SUMMARY_SYSTEM_PROMPT.to_string(),
+                },
+                ChatMessage {
+                    role: ChatRole::User,
+                    content: format!("Summarize the following transcript.\n\nTranscript:\n{}", transcription),
+                },
+            ],
+            params,
+            correlation_id,
+        )
+        .await
+        .map_err(|err| format!("Summary generation failed: {err}"))?;
+
+    sanitize_summary_output(generation.text.as_str())
+        .ok_or_else(|| "Summary generation returned empty text".to_string())
+}
+
+fn sanitize_summary_output(raw: &str) -> Option<String> {
+    let without_think = strip_think_sections(raw);
+    let without_fence_markers = strip_code_fence_markers(without_think.as_str());
+    let normalized = without_fence_markers
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn strip_think_sections(input: &str) -> String {
+    let mut out = if let Some((_, tail)) = input.rsplit_once("</think>") {
+        tail.to_string()
+    } else {
+        input.to_string()
+    };
+    let open_tag = "<think>";
+    let close_tag = "</think>";
+
+    loop {
+        let Some(start) = out.find(open_tag) else {
+            break;
+        };
+
+        if let Some(end_rel) = out[start + open_tag.len()..].find(close_tag) {
+            let end = start + open_tag.len() + end_rel;
+            let mut next = String::with_capacity(out.len());
+            next.push_str(&out[..start]);
+            next.push_str(&out[end + close_tag.len()..]);
+            out = next;
+        } else {
+            out.truncate(start);
+            break;
+        }
+    }
+
+    out.replace(open_tag, " ").replace(close_tag, " ")
+}
+
+fn strip_code_fence_markers(input: &str) -> String {
+    input
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("```"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn truncate_summary_error(raw: &str) -> String {
+    const MAX_ERROR_CHARS: usize = 320;
+    raw.chars().take(MAX_ERROR_CHARS).collect::<String>()
+}
+
 fn audio_response(audio: StoredTranscriptionAudio) -> Response {
     let mut response = Response::builder()
         .status(StatusCode::OK)
@@ -759,7 +956,8 @@ fn map_store_error(err: anyhow::Error) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        alignments_to_word_records, build_segment_records, parse_bool, TranscriptionWordRecord,
+        alignments_to_word_records, build_segment_records, initial_summary_state, parse_bool,
+        sanitize_summary_output, TranscriptionSummaryStatus, TranscriptionWordRecord,
     };
 
     #[test]
@@ -815,5 +1013,31 @@ mod tests {
         assert!(parse_bool("YES"));
         assert!(parse_bool("1"));
         assert!(!parse_bool("false"));
+    }
+
+    #[test]
+    fn defaults_summary_state_to_pending_for_non_empty_transcriptions() {
+        let (status, model_id) = initial_summary_state("hello world");
+        assert_eq!(status, TranscriptionSummaryStatus::Pending);
+        assert_eq!(model_id.as_deref(), Some("Qwen3.5-4B"));
+
+        let (status, model_id) = initial_summary_state("   ");
+        assert_eq!(status, TranscriptionSummaryStatus::NotRequested);
+        assert_eq!(model_id, None);
+    }
+
+    #[test]
+    fn sanitizes_summary_output_for_display_and_storage() {
+        let raw = "<think>reasoning</think>\n```text\nThis is the summary.\n```\n";
+        assert_eq!(
+            sanitize_summary_output(raw).as_deref(),
+            Some("This is the summary.")
+        );
+
+        let close_only = "planning first</think>\nFinal summary";
+        assert_eq!(
+            sanitize_summary_output(close_only).as_deref(),
+            Some("Final summary")
+        );
     }
 }
