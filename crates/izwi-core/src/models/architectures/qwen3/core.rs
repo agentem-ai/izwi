@@ -13,9 +13,7 @@ use crate::kernels::metal::try_fused_silu_mul;
 use crate::models::shared::attention::batched::{
     batched_scaled_dot_product_attention, BatchedAttentionConfig, BatchedAttentionInput,
 };
-use crate::models::shared::attention::flash::{
-    flash_attention_requested, try_fused_self_attention,
-};
+use crate::models::shared::attention::flash::try_fused_self_attention;
 use crate::models::shared::attention::paged::{
     append_to_pages, default_kv_page_size, default_kv_quantization, materialize_pages,
     paged_decode_attention, KvCacheQuantization, KvPage,
@@ -404,7 +402,7 @@ impl Qwen3Attention {
                 return self.o_proj.forward(&out).map_err(Error::from);
             }
         }
-        if flash_attention_requested() && start_pos == 0 && total_len == seq_len {
+        if start_pos == 0 && total_len == seq_len {
             if let Some(fused_out) =
                 try_fused_self_attention(&q, &k, &v, None, self.head_dim, true)?
             {
