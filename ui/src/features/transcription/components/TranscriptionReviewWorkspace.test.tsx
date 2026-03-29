@@ -34,6 +34,16 @@ const record = {
   ],
 };
 
+const recordWithSummary = {
+  ...record,
+  summary_status: "ready" as const,
+  summary_model_id: "Qwen3.5-4B",
+  summary_text:
+    "Aaron is worried about review load and is trying to keep up with assignments.",
+  summary_error: null,
+  summary_updated_at: 1_711_728_000_000,
+};
+
 describe("TranscriptionReviewWorkspace", () => {
   beforeEach(() => {
     vi.spyOn(window.HTMLMediaElement.prototype, "pause").mockImplementation(
@@ -86,6 +96,29 @@ describe("TranscriptionReviewWorkspace", () => {
     fireEvent.timeUpdate(audio!);
 
     expect(secondRow).toHaveAttribute("data-active", "true");
+  });
+
+  it("renders the summary section above transcript content", () => {
+    render(
+      <TranscriptionReviewWorkspace
+        record={recordWithSummary}
+        showPlayback={false}
+      />,
+    );
+
+    const summaryHeading = screen.getByRole("heading", { name: "Summary" });
+    const transcriptHeading = screen.getByRole("heading", { name: "Transcript" });
+
+    expect(
+      summaryHeading.compareDocumentPosition(transcriptHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Aaron is worried about review load and is trying to keep up with assignments.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: "Summary" })).toHaveLength(1);
   });
 
   it("can render transcript cards without playback controls", () => {

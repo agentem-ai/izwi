@@ -315,6 +315,38 @@ export function TranscriptionReviewWorkspace({
 
       <div className={contentClassName}>
         <div className="space-y-4">
+          <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3.5 py-3.5">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-[13px] font-semibold tracking-wide text-[var(--text-primary)]">
+                Summary
+              </h3>
+              <StatusBadge tone={summaryStatusTone(summaryStatus)}>
+                {summaryStatusLabel(summaryStatus)}
+              </StatusBadge>
+            </div>
+            {summaryText ? (
+              <p className="mt-2 text-[13px] leading-relaxed text-[var(--text-secondary)]">
+                {summaryText}
+              </p>
+            ) : summaryStatus === "pending" ? (
+              <p className="mt-2 text-[12px] text-[var(--text-muted)]">
+                Generating summary...
+              </p>
+            ) : summaryStatus === "failed" ? (
+              <p className="mt-2 text-[12px] text-[var(--danger-text)]">
+                {summaryError || "Summary generation failed."}
+              </p>
+            ) : (
+              <p className="mt-2 text-[12px] text-[var(--text-muted)]">
+                No summary available yet.
+              </p>
+            )}
+            <div className="mt-2 text-[11px] text-[var(--text-muted)]">
+              {record.summary_model_id || "Qwen3.5-4B"}
+              {summaryUpdatedLabel ? ` • Updated ${summaryUpdatedLabel}` : ""}
+            </div>
+          </div>
+
           <div>
             <h3 className="mb-3 text-[13px] font-semibold tracking-wide text-[var(--text-primary)]">
               Transcript
@@ -455,38 +487,6 @@ export function TranscriptionReviewWorkspace({
                     {record.audio_filename}
                   </div>
                 ) : null}
-              </div>
-
-              <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
-                  Summary
-                </div>
-                <div className="mt-1">
-                  <StatusBadge tone={summaryStatusTone(summaryStatus)}>
-                    {summaryStatusLabel(summaryStatus)}
-                  </StatusBadge>
-                </div>
-                {summaryText ? (
-                  <p className="mt-2 text-[12px] leading-relaxed text-[var(--text-secondary)]">
-                    {summaryText}
-                  </p>
-                ) : summaryStatus === "pending" ? (
-                  <p className="mt-2 text-[11px] text-[var(--text-muted)]">
-                    Generating summary...
-                  </p>
-                ) : summaryStatus === "failed" ? (
-                  <p className="mt-2 text-[11px] text-[var(--danger-text)]">
-                    {summaryError || "Summary generation failed."}
-                  </p>
-                ) : (
-                  <p className="mt-2 text-[11px] text-[var(--text-muted)]">
-                    No summary available yet.
-                  </p>
-                )}
-                <div className="mt-2 text-[11px] text-[var(--text-muted)]">
-                  {record.summary_model_id || "Qwen3.5-4B"}
-                  {summaryUpdatedLabel ? ` • Updated ${summaryUpdatedLabel}` : ""}
-                </div>
               </div>
             </div>
           </div>
