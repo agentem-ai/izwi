@@ -16,10 +16,12 @@ use tracing::{debug, info, warn};
 use crate::audio::{MelConfig, MelSpectrogram};
 use crate::backends::{backend_kind_for_device, DeviceKind, DeviceProfile};
 use crate::error::{Error, Result};
+use crate::kernels::buffer_pool::maybe_init_global_buffer_pool;
 use crate::model::ModelVariant;
 use crate::models::architectures::qwen3::core::{
     Qwen3Cache, Qwen3Config, Qwen3Model, RopeScalingConfig,
 };
+use crate::models::shared::memory::metal::metal_pool_for_device;
 use crate::models::shared::weights::gguf::{var_builder_from_gguf, GgufLoader};
 
 use audio::AudioTower;
@@ -217,6 +219,11 @@ impl Qwen3AsrModel {
                 _ => DType::F32,
             }
         };
+
+        // Pre-initialize shared scratch pools up front to keep first-use
+        // allocation costs out of ASR prefill/decode hot loops.
+        let _ = maybe_init_global_buffer_pool(&device.device);
+        let _ = metal_pool_for_device(&device.device);
 
         let (vb_text, vb_audio) = if let Some(gguf_path) = gguf_path.as_ref() {
             let vb_text = var_builder_from_gguf(gguf_path, text_dtype, &device.device)?;
