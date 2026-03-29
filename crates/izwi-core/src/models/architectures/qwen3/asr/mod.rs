@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::{fs, io::Read};
 
 use candle_core::quantized::gguf_file::Value as GgufValue;
-use candle_core::{DType, IndexOp, Tensor};
+use candle_core::{DType, IndexOp, Tensor, D};
 use candle_nn::VarBuilder;
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -1912,17 +1912,32 @@ fn resample(audio: &[f32], src_rate: u32, dst_rate: u32) -> Result<Vec<f32>> {
 }
 
 fn argmax(logits: &Tensor) -> Result<u32> {
-    let logits = logits.to_dtype(DType::F32)?;
-    let values = logits.to_vec1::<f32>()?;
-    let mut max_idx = 0usize;
-    let mut max_val = f32::NEG_INFINITY;
-    for (idx, &val) in values.iter().enumerate() {
-        if val > max_val {
-            max_val = val;
-            max_idx = idx;
+    let logits = match logits.rank() {
+        1 => logits.clone(),
+        2 => {
+            let (batch, _vocab) = logits.dims2()?;
+            if batch != 1 {
+                return Err(Error::InferenceError(format!(
+                    "Unexpected batched logits for argmax: expected batch=1, got {batch}"
+                )));
+            }
+            logits.i(0)?
         }
-    }
-    Ok(max_idx as u32)
+        rank => {
+            return Err(Error::InferenceError(format!(
+                "Unexpected logits rank for argmax: {rank}"
+            )))
+        }
+    };
+    let idx = logits.argmax(D::Minus1)?;
+    let idx = if idx.rank() == 0 {
+        idx
+    } else {
+        idx.squeeze(0)?
+    };
+    idx.to_dtype(DType::U32)?
+        .to_scalar::<u32>()
+        .map_err(Error::from)
 }
 
 fn text_delta(previous: &str, current: &str) -> String {
@@ -2130,6 +2145,22 @@ mod tests {
             qwen_asr_gguf_filename(ModelVariant::WhisperLargeV3Turbo),
             None
         );
+    }
+
+    #[test]
+    fn argmax_selects_max_from_rank1_logits() {
+        let device = candle_core::Device::Cpu;
+        let logits = Tensor::from_vec(vec![0.1f32, 3.2, -1.0, 2.7], 4, &device).expect("logits");
+        let idx = argmax(&logits).expect("argmax");
+        assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn argmax_rejects_rank2_batched_logits() {
+        let device = candle_core::Device::Cpu;
+        let logits = Tensor::from_vec(vec![0.1f32; 8], (2, 4), &device).expect("logits");
+        let err = argmax(&logits).expect_err("argmax should reject batched rank2");
+        assert!(format!("{err}").contains("Unexpected batched logits for argmax"));
     }
 
     #[test]
