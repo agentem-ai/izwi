@@ -3,6 +3,7 @@
 use candle_core::{IndexOp, Module, Tensor, D};
 use candle_nn::ops;
 use candle_nn::{layer_norm, Conv2d, Conv2dConfig, LayerNorm, Linear, VarBuilder};
+use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
 use crate::models::architectures::qwen3::asr::config::AudioConfig;
@@ -171,6 +172,105 @@ fn attention_no_mask(
         .map_err(Error::from)
 }
 
+fn attention_no_mask_batched(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    num_heads: usize,
+    head_dim: usize,
+) -> Result<Tensor> {
+    let scale = 1.0f32 / (head_dim as f32).sqrt();
+    if let Ok(out) = ops::sdpa(q, k, v, None, false, scale, 1.0) {
+        return Ok(out);
+    }
+
+    let bsz = q.dim(0)?;
+    let seq_len = q.dim(2)?;
+    let q = q.reshape((bsz * num_heads, seq_len, head_dim))?;
+    let k = k.reshape((bsz * num_heads, seq_len, head_dim))?;
+    let v = v.reshape((bsz * num_heads, seq_len, head_dim))?;
+
+    let mut attn = q.matmul(&k.transpose(1, 2)?)?;
+    attn = (attn / (head_dim as f64).sqrt())?;
+    let attn = ops::softmax(&attn, D::Minus1)?;
+    let out = attn.matmul(&v)?;
+    out.reshape((bsz, num_heads, seq_len, head_dim))
+        .map_err(Error::from)
+}
+
+fn run_chunked_attention_grouped_by_span(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    spans: &[(usize, usize)],
+    num_heads: usize,
+    head_dim: usize,
+) -> Result<Vec<Tensor>> {
+    let mut groups: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
+    for (idx, (start, end)) in spans.iter().copied().enumerate() {
+        let span = end - start;
+        groups.entry(span).or_default().push((idx, start));
+    }
+
+    let mut outputs: Vec<Option<Tensor>> = vec![None; spans.len()];
+    for (span, items) in groups {
+        let mut q_chunks = Vec::with_capacity(items.len());
+        let mut k_chunks = Vec::with_capacity(items.len());
+        let mut v_chunks = Vec::with_capacity(items.len());
+        for (_, start) in &items {
+            q_chunks.push(q.narrow(2, *start, span)?.contiguous()?);
+            k_chunks.push(k.narrow(2, *start, span)?.contiguous()?);
+            v_chunks.push(v.narrow(2, *start, span)?.contiguous()?);
+        }
+
+        let q_batch = if q_chunks.len() == 1 {
+            q_chunks[0].clone()
+        } else {
+            let refs: Vec<&Tensor> = q_chunks.iter().collect();
+            Tensor::cat(&refs, 0)?
+        };
+        let k_batch = if k_chunks.len() == 1 {
+            k_chunks[0].clone()
+        } else {
+            let refs: Vec<&Tensor> = k_chunks.iter().collect();
+            Tensor::cat(&refs, 0)?
+        };
+        let v_batch = if v_chunks.len() == 1 {
+            v_chunks[0].clone()
+        } else {
+            let refs: Vec<&Tensor> = v_chunks.iter().collect();
+            Tensor::cat(&refs, 0)?
+        };
+
+        let out_batch = if let Some(fused) =
+            try_fused_self_attention(&q_batch, &k_batch, &v_batch, None, head_dim, false)?
+        {
+            for _ in &items {
+                record_chunk_attention_fused_span();
+            }
+            fused
+        } else {
+            for _ in &items {
+                record_chunk_attention_unfused_span();
+            }
+            attention_no_mask_batched(&q_batch, &k_batch, &v_batch, num_heads, head_dim)?
+        };
+
+        for (batch_idx, (span_idx, _)) in items.iter().enumerate() {
+            outputs[*span_idx] = Some(out_batch.narrow(0, batch_idx, 1)?);
+        }
+    }
+
+    outputs
+        .into_iter()
+        .map(|out| {
+            out.ok_or_else(|| {
+                Error::InferenceError("Missing grouped chunk-attention output".to_string())
+            })
+        })
+        .collect()
+}
+
 struct AudioAttention {
     q_proj: Linear,
     k_proj: Linear,
@@ -220,29 +320,14 @@ impl AudioAttention {
         // a full block mask and unlocks mask-free fused kernels for each span.
         if let Some(spans) = chunk_spans_from_cu_seqlens(seq_len, cu_seqlens) {
             record_chunk_attention_sequence(spans.len(), seq_len);
-            let mut outputs = Vec::with_capacity(spans.len());
-            for (start, end) in spans {
-                let span = end - start;
-                let q_chunk = q.narrow(2, start, span)?.contiguous()?;
-                let k_chunk = k.narrow(2, start, span)?.contiguous()?;
-                let v_chunk = v.narrow(2, start, span)?.contiguous()?;
-
-                let out = if let Some(fused) = try_fused_self_attention(
-                    &q_chunk,
-                    &k_chunk,
-                    &v_chunk,
-                    None,
-                    self.head_dim,
-                    false,
-                )? {
-                    record_chunk_attention_fused_span();
-                    fused
-                } else {
-                    record_chunk_attention_unfused_span();
-                    attention_no_mask(&q_chunk, &k_chunk, &v_chunk, self.num_heads, self.head_dim)?
-                };
-                outputs.push(out);
-            }
+            let outputs = run_chunked_attention_grouped_by_span(
+                &q,
+                &k,
+                &v,
+                &spans,
+                self.num_heads,
+                self.head_dim,
+            )?;
 
             let refs: Vec<&Tensor> = outputs.iter().collect();
             let out = Tensor::cat(&refs, 2)?.transpose(1, 2)?.reshape((
@@ -566,7 +651,7 @@ fn gelu(x: &Tensor) -> Result<Tensor> {
 mod tests {
     use super::{
         attention_no_mask, attention_unfused_with_mask, chunk_spans_from_cu_seqlens,
-        create_chunked_attention_mask,
+        create_chunked_attention_mask, run_chunked_attention_grouped_by_span,
     };
     use candle_core::{DType, Device, Tensor};
 
@@ -651,6 +736,78 @@ mod tests {
             .expect("chunked vals");
         assert_eq!(masked_vals.len(), chunked_vals.len());
         for (lhs, rhs) in masked_vals.iter().zip(chunked_vals.iter()) {
+            assert!((lhs - rhs).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn grouped_chunk_attention_matches_per_span_attention() {
+        let device = Device::Cpu;
+        let num_heads = 2usize;
+        let seq_len = 8usize;
+        let head_dim = 4usize;
+
+        let q = Tensor::from_vec(
+            (0..(num_heads * seq_len * head_dim))
+                .map(|v| (v as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            (1, num_heads, seq_len, head_dim),
+            &device,
+        )
+        .expect("q");
+        let k = Tensor::from_vec(
+            (0..(num_heads * seq_len * head_dim))
+                .map(|v| (v as f32) * 0.013 + 0.2)
+                .collect::<Vec<_>>(),
+            (1, num_heads, seq_len, head_dim),
+            &device,
+        )
+        .expect("k");
+        let v = Tensor::from_vec(
+            (0..(num_heads * seq_len * head_dim))
+                .map(|v| (v as f32) * 0.017 - 0.1)
+                .collect::<Vec<_>>(),
+            (1, num_heads, seq_len, head_dim),
+            &device,
+        )
+        .expect("v");
+        let spans = vec![(0usize, 2usize), (2, 5), (5, 8)];
+
+        let grouped =
+            run_chunked_attention_grouped_by_span(&q, &k, &v, &spans, num_heads, head_dim)
+                .expect("grouped");
+        let grouped_refs: Vec<&Tensor> = grouped.iter().collect();
+        let grouped = Tensor::cat(&grouped_refs, 2).expect("grouped cat");
+
+        let mut per_span = Vec::with_capacity(spans.len());
+        for (start, end) in spans {
+            let span = end - start;
+            per_span.push(
+                attention_no_mask(
+                    &q.narrow(2, start, span).expect("q span"),
+                    &k.narrow(2, start, span).expect("k span"),
+                    &v.narrow(2, start, span).expect("v span"),
+                    num_heads,
+                    head_dim,
+                )
+                .expect("per-span"),
+            );
+        }
+        let per_span_refs: Vec<&Tensor> = per_span.iter().collect();
+        let per_span = Tensor::cat(&per_span_refs, 2).expect("per-span cat");
+
+        let grouped_vals = grouped
+            .flatten_all()
+            .expect("flatten grouped")
+            .to_vec1::<f32>()
+            .expect("grouped vals");
+        let per_span_vals = per_span
+            .flatten_all()
+            .expect("flatten per-span")
+            .to_vec1::<f32>()
+            .expect("per-span vals");
+        assert_eq!(grouped_vals.len(), per_span_vals.len());
+        for (lhs, rhs) in grouped_vals.iter().zip(per_span_vals.iter()) {
             assert!((lhs - rhs).abs() < 1e-5);
         }
     }
