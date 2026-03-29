@@ -457,6 +457,14 @@ mod tests {
             StatusCode::NOT_FOUND,
         )
         .await;
+        assert_route_status(
+            app.clone(),
+            Method::POST,
+            "/v1/transcriptions/missing/summary/regenerate",
+            Some("{}"),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
 
         assert_route_status(
             app.clone(),

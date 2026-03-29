@@ -78,6 +78,7 @@ const audioMethodNames = [
   "getTranscriptionRecord",
   "createTranscriptionRecord",
   "createTranscriptionRecordStream",
+  "regenerateTranscriptionSummary",
   "transcriptionRecordAudioUrl",
   "deleteTranscriptionRecord",
   "asrStatus",

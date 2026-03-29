@@ -20,11 +20,13 @@ use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::transcription_store::{
-    NewTranscriptionRecord, StoredTranscriptionAudio, TranscriptionRecord, TranscriptionRecordSummary,
-    TranscriptionSegmentRecord, TranscriptionStore, TranscriptionSummaryStatus,
-    TranscriptionWordRecord, UpdateTranscriptionSummary,
+    NewTranscriptionRecord, StoredTranscriptionAudio, TranscriptionRecord,
+    TranscriptionRecordSummary, TranscriptionSegmentRecord, TranscriptionStore,
+    TranscriptionSummaryStatus, TranscriptionWordRecord, UpdateTranscriptionSummary,
 };
-use izwi_core::{parse_chat_model_variant, ChatMessage, ChatRole, GenerationParams, RuntimeService};
+use izwi_core::{
+    parse_chat_model_variant, ChatMessage, ChatRole, GenerationParams, RuntimeService,
+};
 
 const HISTORY_LIST_LIMIT: usize = 200;
 const DEFAULT_TRANSCRIPTION_ALIGNER_MODEL: &str = "Qwen3-ForcedAligner-0.6B";
@@ -174,6 +176,38 @@ pub async fn delete_record(
         id: record_id,
         deleted: true,
     }))
+}
+
+pub async fn regenerate_summary(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(record_id): Path<String>,
+) -> Result<Json<TranscriptionRecord>, ApiError> {
+    let record = state
+        .transcription_store
+        .update_summary(
+            record_id,
+            UpdateTranscriptionSummary {
+                status: TranscriptionSummaryStatus::Pending,
+                model_id: Some(DEFAULT_TRANSCRIPTION_SUMMARY_MODEL.to_string()),
+                text: None,
+                error: None,
+                updated_at: None,
+            },
+        )
+        .await
+        .map_err(map_store_error)?
+        .ok_or_else(|| ApiError::not_found("Transcription record not found"))?;
+
+    maybe_spawn_summary_generation(
+        state.runtime.clone(),
+        state.transcription_store.clone(),
+        state.request_semaphore.clone(),
+        &record,
+        Some(ctx.correlation_id),
+    );
+
+    Ok(Json(record))
 }
 
 pub async fn create_record(
@@ -789,12 +823,16 @@ fn spawn_summary_generation_task(
             Err(_) => return,
         };
 
-        let summary_result = generate_transcription_summary(
-            runtime,
-            transcription.as_str(),
-            correlation_id.as_deref(),
-        )
-        .await;
+        let summary_result = if transcription.trim().is_empty() {
+            Err("Summary generation failed: transcription is empty".to_string())
+        } else {
+            generate_transcription_summary(
+                runtime,
+                transcription.as_str(),
+                correlation_id.as_deref(),
+            )
+            .await
+        };
 
         let summary_update = match summary_result {
             Ok(summary_text) => UpdateTranscriptionSummary {
@@ -831,8 +869,10 @@ async fn generate_transcription_summary(
     transcription: &str,
     correlation_id: Option<&str>,
 ) -> Result<String, String> {
-    let variant = parse_chat_model_variant(Some(DEFAULT_TRANSCRIPTION_SUMMARY_MODEL))
-        .map_err(|err| format!("Invalid summary model '{DEFAULT_TRANSCRIPTION_SUMMARY_MODEL}': {err}"))?;
+    let variant =
+        parse_chat_model_variant(Some(DEFAULT_TRANSCRIPTION_SUMMARY_MODEL)).map_err(|err| {
+            format!("Invalid summary model '{DEFAULT_TRANSCRIPTION_SUMMARY_MODEL}': {err}")
+        })?;
     let mut params = GenerationParams::default();
     params.max_tokens = DEFAULT_TRANSCRIPTION_SUMMARY_MAX_TOKENS;
     params.temperature = 0.2;
@@ -848,7 +888,10 @@ async fn generate_transcription_summary(
                 },
                 ChatMessage {
                     role: ChatRole::User,
-                    content: format!("Summarize the following transcript.\n\nTranscript:\n{}", transcription),
+                    content: format!(
+                        "Summarize the following transcript.\n\nTranscript:\n{}",
+                        transcription
+                    ),
                 },
             ],
             params,

@@ -169,6 +169,46 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     );
   });
 
+  it("posts transcription summary regenerations to the canonical summary route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "txr-1",
+          created_at: 1,
+          model_id: "Parakeet-TDT-0.6B-v3",
+          aligner_model_id: null,
+          language: "English",
+          duration_secs: 4,
+          processing_time_ms: 120,
+          rtf: 0.5,
+          audio_mime_type: "audio/wav",
+          audio_filename: "clip.wav",
+          transcription: "Hello there.",
+          segments: [],
+          words: [],
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        },
+      ),
+    );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AudioApiClient(new ApiHttpClient("http://localhost/v1"));
+    await client.regenerateTranscriptionSummary("txr-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost/v1/transcriptions/txr-1/summary/regenerate",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+  });
+
   it("posts text-to-speech history to the canonical generation route", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
