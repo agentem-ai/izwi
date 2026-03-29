@@ -1685,6 +1685,17 @@ export class AudioApiClient {
     return this.http.url(`${this.transcriptionRecordPath(recordId)}/audio`);
   }
 
+  async regenerateTranscriptionSummary(
+    recordId: string,
+  ): Promise<TranscriptionRecord> {
+    return this.http.request(
+      `${this.transcriptionRecordPath(recordId)}/summary/regenerate`,
+      {
+        method: "POST",
+      },
+    );
+  }
+
   async deleteTranscriptionRecord(
     recordId: string,
   ): Promise<{ id: string; deleted: boolean }> {

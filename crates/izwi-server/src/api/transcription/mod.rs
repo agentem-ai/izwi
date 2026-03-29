@@ -3,7 +3,11 @@
 mod handlers;
 mod realtime;
 
-use axum::{extract::DefaultBodyLimit, routing::get, Router};
+use axum::{
+    extract::DefaultBodyLimit,
+    routing::{get, post},
+    Router,
+};
 
 use crate::state::AppState;
 
@@ -12,6 +16,7 @@ pub fn router() -> Router<AppState> {
     const CANONICAL_COLLECTION: &str = "/transcriptions";
     const CANONICAL_MEMBER: &str = "/transcriptions/:record_id";
     const CANONICAL_AUDIO: &str = "/transcriptions/:record_id/audio";
+    const CANONICAL_SUMMARY_REGENERATE: &str = "/transcriptions/:record_id/summary/regenerate";
 
     Router::new()
         .route(
@@ -26,4 +31,8 @@ pub fn router() -> Router<AppState> {
             get(handlers::get_record).delete(handlers::delete_record),
         )
         .route(CANONICAL_AUDIO, get(handlers::get_record_audio))
+        .route(
+            CANONICAL_SUMMARY_REGENERATE,
+            post(handlers::regenerate_summary),
+        )
 }
