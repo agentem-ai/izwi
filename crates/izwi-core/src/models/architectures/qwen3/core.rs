@@ -312,11 +312,8 @@ impl Qwen3Attention {
         q = self.apply_rope(q, start_pos, position_ids)?;
         k = self.apply_rope(k, start_pos, position_ids)?;
 
-        let k = repeat_kv(&k, self.num_heads, self.num_kv_heads)?;
-        let v = repeat_kv(&v, self.num_heads, self.num_kv_heads)?;
-
         let (k, v) = if let Some(cache) = cache {
-            cache.append(layer_idx, k, v)?;
+            cache.append(layer_idx, k.clone(), v.clone())?;
 
             // Decode path hot loop: for single-token decode, avoid rematerializing full KV.
             if seq_len == 1 && start_pos > 0 {
@@ -338,6 +335,8 @@ impl Qwen3Attention {
         } else {
             (k, v)
         };
+        let k = repeat_kv(&k, self.num_heads, self.num_kv_heads)?;
+        let v = repeat_kv(&v, self.num_heads, self.num_kv_heads)?;
 
         if use_batched {
             let q = q.reshape((bsz, seq_len, self.num_heads * self.head_dim))?;
@@ -606,9 +605,33 @@ pub fn repeat_kv(x: &Tensor, num_heads: usize, num_kv_heads: usize) -> Result<Te
         )));
     }
     let repeats = num_heads / num_kv_heads;
-    let x = x.transpose(1, 2)?;
-    let out = candle_repeat_kv(x, repeats)?;
-    out.transpose(1, 2).map_err(Error::from)
+    let seq_len = x.dim(1)?;
+    let x = x.transpose(1, 2)?; // [b, kv, seq, d]
+    let repeated = candle_repeat_kv(x, repeats)?;
+    match repeated.rank() {
+        4 => repeated.transpose(1, 2).map_err(Error::from),
+        5 => {
+            let (b, _kv_or_rep0, a2, a3, d) = repeated.dims5()?;
+            let repeated = if a2 == seq_len && a3 == repeats {
+                repeated
+            } else if a3 == seq_len && a2 == repeats {
+                repeated.transpose(2, 3)?
+            } else {
+                return Err(Error::InferenceError(format!(
+                    "Unexpected repeat_kv rank-5 shape: {:?}, seq_len={seq_len}, repeats={repeats}",
+                    repeated.dims()
+                )));
+            };
+            let repeated = repeated.transpose(1, 2)?; // [b, seq, kv, repeats, d]
+            repeated
+                .reshape((b, seq_len, num_heads, d))
+                .map_err(Error::from)
+        }
+        rank => Err(Error::InferenceError(format!(
+            "Unexpected repeat_kv rank {rank}: {:?}",
+            repeated.dims()
+        ))),
+    }
 }
 
 pub fn build_rope_cache(
@@ -713,4 +736,18 @@ pub fn causal_mask(
     Tensor::from_vec(data, (1, seq_len, total_len), device)?
         .to_dtype(dtype)
         .map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeat_kv_returns_rank4_heads_last() {
+        let device = Device::Cpu;
+        let input = Tensor::zeros((1, 63, 16, 128), DType::F32, &device).expect("tensor");
+        let out = repeat_kv(&input, 32, 16).expect("repeat_kv");
+        assert_eq!(out.rank(), 4);
+        assert_eq!(out.dims4().expect("dims4"), (1, 63, 32, 128));
+    }
 }
