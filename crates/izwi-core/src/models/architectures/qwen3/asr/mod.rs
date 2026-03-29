@@ -63,6 +63,9 @@ pub struct AsrDecodeState {
     pos: usize,
     language: Option<String>,
     generated_ids: Vec<u32>,
+    visible_generated_ids: Vec<u32>,
+    decoded_visible_tokens: usize,
+    tokens_since_resync: usize,
     assembled: String,
     stop_tokens: Vec<u32>,
     max_new_tokens: usize,
@@ -84,6 +87,7 @@ pub struct AsrTranscriptionOutput {
 }
 
 const DEFAULT_TRANSCRIBE_MAX_NEW_TOKENS: usize = 512;
+const ASR_INCREMENTAL_DECODE_RESYNC_TOKENS: usize = 32;
 
 impl Qwen3AsrModel {
     pub fn load(model_dir: &Path, variant: ModelVariant, device: DeviceProfile) -> Result<Self> {
@@ -414,6 +418,9 @@ impl Qwen3AsrModel {
             pos,
             language: language.map(ToString::to_string),
             generated_ids: Vec::new(),
+            visible_generated_ids: Vec::new(),
+            decoded_visible_tokens: 0,
+            tokens_since_resync: 0,
             assembled: String::new(),
             stop_tokens: collect_stop_token_ids(&self.specials),
             max_new_tokens: max_new_tokens.max(1),
@@ -426,9 +433,45 @@ impl Qwen3AsrModel {
         text
     }
 
+    fn refresh_full_decoded_text(&self, state: &mut AsrDecodeState) -> Result<()> {
+        state.assembled = self.decode_generated_untrimmed(&state.generated_ids)?;
+        state.visible_generated_ids = state
+            .generated_ids
+            .iter()
+            .copied()
+            .filter(|id| !is_special_generation_token(&self.specials, *id))
+            .collect();
+        state.decoded_visible_tokens = state.visible_generated_ids.len();
+        state.tokens_since_resync = 0;
+        Ok(())
+    }
+
+    fn decode_incremental_delta(&self, state: &mut AsrDecodeState) -> Result<String> {
+        if state.visible_generated_ids.len() <= state.decoded_visible_tokens {
+            return Ok(String::new());
+        }
+
+        let new_ids = &state.visible_generated_ids[state.decoded_visible_tokens..];
+        let mut delta = self.tokenizer.decode_text(new_ids)?;
+        state.decoded_visible_tokens = state.visible_generated_ids.len();
+        state.tokens_since_resync = state.tokens_since_resync.saturating_add(new_ids.len());
+
+        if state.tokens_since_resync >= ASR_INCREMENTAL_DECODE_RESYNC_TOKENS {
+            let full = self.tokenizer.decode_text(&state.visible_generated_ids)?;
+            delta = text_delta(&state.assembled, &full);
+            state.assembled = full;
+            state.tokens_since_resync = 0;
+            return Ok(delta);
+        }
+
+        state.assembled.push_str(&delta);
+        Ok(delta)
+    }
+
     pub fn decode_step(&self, state: &mut AsrDecodeState) -> Result<AsrDecodeStep> {
         if state.finished || state.generated_ids.len() >= state.max_new_tokens {
             state.finished = true;
+            self.refresh_full_decoded_text(state)?;
             return Ok(AsrDecodeStep {
                 delta: String::new(),
                 text: self.finalized_text(state),
@@ -441,6 +484,7 @@ impl Qwen3AsrModel {
         let next = argmax(&logits)?;
         if state.stop_tokens.contains(&next) {
             state.finished = true;
+            self.refresh_full_decoded_text(state)?;
             return Ok(AsrDecodeStep {
                 delta: String::new(),
                 text: self.finalized_text(state),
@@ -450,9 +494,10 @@ impl Qwen3AsrModel {
         }
 
         state.generated_ids.push(next);
-        let decoded = self.decode_generated_untrimmed(&state.generated_ids)?;
-        let delta = text_delta(&state.assembled, &decoded);
-        state.assembled = decoded;
+        if !is_special_generation_token(&self.specials, next) {
+            state.visible_generated_ids.push(next);
+        }
+        let delta = self.decode_incremental_delta(state)?;
 
         let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
         if self.text_model.uses_mrope() {
@@ -473,6 +518,7 @@ impl Qwen3AsrModel {
 
         if state.generated_ids.len() >= state.max_new_tokens {
             state.finished = true;
+            self.refresh_full_decoded_text(state)?;
         }
 
         Ok(AsrDecodeStep {
