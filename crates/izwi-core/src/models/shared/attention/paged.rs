@@ -438,12 +438,13 @@ pub fn paged_decode_attention(
     record_decode_attention_path(DecodeAttentionPath::Paged);
 
     let scale = (head_dim as f64).sqrt();
-    let scale_t = Tensor::from_vec(vec![scale as f32], (1,), q.device())?.to_dtype(q.dtype())?;
-    let q_heads = q.transpose(1, 2)?.contiguous()?;
+    let batch_size = q.dim(0)?;
+    let q_heads = q.transpose(1, 2)?.contiguous()?; // [bs, h, 1, d]
+    let q_flat = q_heads.reshape((batch_size * num_heads, 1, head_dim))?; // [bs*h, 1, d]
 
-    let mut running_max: Option<Tensor> = None; // [bs, h, 1, 1]
-    let mut running_sum: Option<Tensor> = None; // [bs, h, 1, 1]
-    let mut running_out: Option<Tensor> = None; // [bs, h, 1, d]
+    let mut running_max: Option<Tensor> = None; // [bs*h, 1, 1]
+    let mut running_sum: Option<Tensor> = None; // [bs*h, 1, 1]
+    let mut running_out: Option<Tensor> = None; // [bs*h, 1, d]
 
     for (k_page, v_page) in k_pages.iter().zip(v_pages.iter()) {
         let k_page = k_page.to_dense()?;
@@ -453,18 +454,30 @@ pub fn paged_decode_attention(
             continue;
         }
 
-        let k_heads = repeat_kv(&k_page, num_heads, num_kv_heads)?
-            .transpose(1, 2)?
-            .contiguous()?;
-        let v_heads = repeat_kv(&v_page, num_heads, num_kv_heads)?
-            .transpose(1, 2)?
-            .contiguous()?;
-        let mut scores = q_heads.matmul(&k_heads.transpose(2, 3)?)?;
-        scores = scores.broadcast_div(&scale_t)?;
+        let (k_heads, v_heads) = if num_heads == num_kv_heads {
+            (
+                k_page.transpose(1, 2)?.contiguous()?,
+                v_page.transpose(1, 2)?.contiguous()?,
+            )
+        } else {
+            (
+                repeat_kv(&k_page, num_heads, num_kv_heads)?
+                    .transpose(1, 2)?
+                    .contiguous()?,
+                repeat_kv(&v_page, num_heads, num_kv_heads)?
+                    .transpose(1, 2)?
+                    .contiguous()?,
+            )
+        };
+        let k_flat = k_heads.reshape((batch_size * num_heads, page_len, head_dim))?;
+        let v_flat = v_heads.reshape((batch_size * num_heads, page_len, head_dim))?;
+
+        let mut scores = q_flat.matmul(&k_flat.transpose(1, 2)?)?;
+        scores = (scores / scale)?;
         let page_max = scores.max_keepdim(D::Minus1)?;
         let exp_scores = scores.broadcast_sub(&page_max)?.exp()?;
         let page_sum = exp_scores.sum_keepdim(D::Minus1)?;
-        let page_out = exp_scores.matmul(&v_heads)?;
+        let page_out = exp_scores.matmul(&v_flat)?;
 
         match (&running_max, &running_sum, &running_out) {
             (None, None, None) => {
@@ -504,7 +517,9 @@ pub fn paged_decode_attention(
     })?;
 
     let out = running_out.broadcast_div(&running_sum)?;
-    out.transpose(1, 2).map_err(Error::from)
+    out.reshape((batch_size, num_heads, 1, head_dim))?
+        .transpose(1, 2)
+        .map_err(Error::from)
 }
 
 #[cfg(test)]
