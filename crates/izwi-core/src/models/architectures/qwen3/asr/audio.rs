@@ -6,9 +6,7 @@ use candle_nn::{layer_norm, Conv2d, Conv2dConfig, LayerNorm, Linear, VarBuilder}
 
 use crate::error::{Error, Result};
 use crate::models::architectures::qwen3::asr::config::AudioConfig;
-use crate::models::shared::attention::flash::{
-    flash_attention_requested, try_fused_self_attention,
-};
+use crate::models::shared::attention::flash::try_fused_self_attention;
 use crate::models::shared::weights::mlx;
 
 /// Compute output length after feature extraction/downsampling.
@@ -93,6 +91,82 @@ fn create_chunked_attention_mask(
         .map_err(|e| crate::error::Error::InferenceError(e.to_string()))
 }
 
+fn chunk_spans_from_cu_seqlens(seq_len: usize, cu_seqlens: &[i64]) -> Option<Vec<(usize, usize)>> {
+    if seq_len == 0 {
+        return Some(Vec::new());
+    }
+    if cu_seqlens.len() < 2 || *cu_seqlens.first()? != 0 {
+        return None;
+    }
+
+    let mut spans = Vec::with_capacity(cu_seqlens.len() - 1);
+    let mut prev = 0usize;
+    for &raw_end in cu_seqlens.iter().skip(1) {
+        let end = usize::try_from(raw_end).ok()?;
+        if end > seq_len || end < prev {
+            return None;
+        }
+        if end > prev {
+            spans.push((prev, end));
+        }
+        prev = end;
+    }
+
+    if prev != seq_len || spans.is_empty() {
+        return None;
+    }
+
+    Some(spans)
+}
+
+fn attention_unfused_with_mask(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    mask: &Tensor,
+    num_heads: usize,
+    head_dim: usize,
+) -> Result<Tensor> {
+    let seq_len = q.dim(2)?;
+    let q = q.reshape((num_heads, seq_len, head_dim))?;
+    let k = k.reshape((num_heads, seq_len, head_dim))?;
+    let v = v.reshape((num_heads, seq_len, head_dim))?;
+
+    let mut attn = q.matmul(&k.transpose(1, 2)?)?;
+    attn = (attn / (head_dim as f64).sqrt())?;
+    attn = attn.broadcast_add(&mask.unsqueeze(0)?)?;
+
+    let attn = ops::softmax(&attn, D::Minus1)?;
+    let out = attn.matmul(&v)?;
+    out.reshape((1, num_heads, seq_len, head_dim))
+        .map_err(Error::from)
+}
+
+fn attention_no_mask(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    num_heads: usize,
+    head_dim: usize,
+) -> Result<Tensor> {
+    let scale = 1.0f32 / (head_dim as f32).sqrt();
+    if let Ok(out) = ops::sdpa(q, k, v, None, false, scale, 1.0) {
+        return Ok(out);
+    }
+
+    let seq_len = q.dim(2)?;
+    let q = q.reshape((num_heads, seq_len, head_dim))?;
+    let k = k.reshape((num_heads, seq_len, head_dim))?;
+    let v = v.reshape((num_heads, seq_len, head_dim))?;
+
+    let mut attn = q.matmul(&k.transpose(1, 2)?)?;
+    attn = (attn / (head_dim as f64).sqrt())?;
+    let attn = ops::softmax(&attn, D::Minus1)?;
+    let out = attn.matmul(&v)?;
+    out.reshape((1, num_heads, seq_len, head_dim))
+        .map_err(Error::from)
+}
+
 struct AudioAttention {
     q_proj: Linear,
     k_proj: Linear,
@@ -138,43 +212,48 @@ impl AudioAttention {
             .reshape((1, seq_len, self.num_heads, self.head_dim))?
             .transpose(1, 2)?;
 
-        let mask = create_chunked_attention_mask(seq_len, cu_seqlens, x.device(), q.dtype())?;
-        if flash_attention_requested() {
-            let sdpa_mask =
-                mask.unsqueeze(0)?
-                    .unsqueeze(0)?
-                    .expand((1, self.num_heads, seq_len, seq_len))?;
-            if let Some(fused_out) =
-                try_fused_self_attention(&q, &k, &v, Some(&sdpa_mask), self.head_dim, false)?
-            {
-                let out = fused_out.transpose(1, 2)?.reshape((
-                    1,
-                    seq_len,
-                    self.num_heads * self.head_dim,
-                ))?;
-                return self.out_proj.forward(&out).map_err(Error::from);
+        // Fast path: execute attention independently per chunk. This avoids building
+        // a full block mask and unlocks mask-free fused kernels for each span.
+        if let Some(spans) = chunk_spans_from_cu_seqlens(seq_len, cu_seqlens) {
+            let mut outputs = Vec::with_capacity(spans.len());
+            for (start, end) in spans {
+                let span = end - start;
+                let q_chunk = q.narrow(2, start, span)?.contiguous()?;
+                let k_chunk = k.narrow(2, start, span)?.contiguous()?;
+                let v_chunk = v.narrow(2, start, span)?.contiguous()?;
+
+                let out = if let Some(fused) = try_fused_self_attention(
+                    &q_chunk,
+                    &k_chunk,
+                    &v_chunk,
+                    None,
+                    self.head_dim,
+                    false,
+                )? {
+                    fused
+                } else {
+                    attention_no_mask(
+                        &q_chunk,
+                        &k_chunk,
+                        &v_chunk,
+                        self.num_heads,
+                        self.head_dim,
+                    )?
+                };
+                outputs.push(out);
             }
+
+            let refs: Vec<&Tensor> = outputs.iter().collect();
+            let out = Tensor::cat(&refs, 2)?
+                .transpose(1, 2)?
+                .reshape((1, seq_len, self.num_heads * self.head_dim))?;
+            return self.out_proj.forward(&out).map_err(Error::from);
         }
 
-        let q = q.reshape((self.num_heads, seq_len, self.head_dim))?;
-        let k = k.reshape((self.num_heads, seq_len, self.head_dim))?;
-        let v = v.reshape((self.num_heads, seq_len, self.head_dim))?;
-
-        let scale = (self.head_dim as f64).powf(-0.5);
-        let mut attn = q.matmul(&k.transpose(1, 2)?)?;
-        attn = attn.broadcast_mul(
-            &Tensor::from_vec(vec![scale as f32], (1, 1, 1), attn.device())?
-                .to_dtype(attn.dtype())?,
-        )?;
-
-        // Apply chunked attention mask
-        attn = attn.broadcast_add(&mask.unsqueeze(0)?)?;
-
-        let attn = ops::softmax(&attn, D::Minus1)?;
-        let out = attn.matmul(&v)?;
-
-        let out = out
-            .reshape((1, self.num_heads, seq_len, self.head_dim))?
+        // Fallback: retain original masked full-sequence behavior if chunk metadata
+        // is malformed or incomplete.
+        let mask = create_chunked_attention_mask(seq_len, cu_seqlens, x.device(), q.dtype())?;
+        let out = attention_unfused_with_mask(&q, &k, &v, &mask, self.num_heads, self.head_dim)?
             .transpose(1, 2)?
             .reshape((1, seq_len, self.num_heads * self.head_dim))?;
         self.out_proj.forward(&out).map_err(Error::from)
@@ -490,4 +569,99 @@ fn gelu(x: &Tensor) -> Result<Tensor> {
     let out = x.broadcast_mul(&one.broadcast_add(&tanh)?)?;
     let out = out.broadcast_mul(&half)?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        attention_no_mask, attention_unfused_with_mask, chunk_spans_from_cu_seqlens,
+        create_chunked_attention_mask,
+    };
+    use candle_core::{DType, Device, Tensor};
+
+    #[test]
+    fn chunk_spans_parse_valid_cu_seqlens() {
+        let spans = chunk_spans_from_cu_seqlens(11, &[0, 3, 7, 11]).expect("spans");
+        assert_eq!(spans, vec![(0, 3), (3, 7), (7, 11)]);
+    }
+
+    #[test]
+    fn chunk_spans_reject_malformed_cu_seqlens() {
+        assert!(chunk_spans_from_cu_seqlens(8, &[1, 8]).is_none());
+        assert!(chunk_spans_from_cu_seqlens(8, &[0, 4, 3, 8]).is_none());
+        assert!(chunk_spans_from_cu_seqlens(8, &[0, 4, 7]).is_none());
+    }
+
+    #[test]
+    fn chunkwise_attention_matches_block_mask_attention() {
+        let device = Device::Cpu;
+        let num_heads = 2usize;
+        let seq_len = 5usize;
+        let head_dim = 4usize;
+        let dtype = DType::F32;
+
+        let q = Tensor::from_vec(
+            (0..(num_heads * seq_len * head_dim))
+                .map(|v| (v as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            (1, num_heads, seq_len, head_dim),
+            &device,
+        )
+        .expect("q");
+        let k = Tensor::from_vec(
+            (0..(num_heads * seq_len * head_dim))
+                .map(|v| (v as f32) * 0.013 + 0.2)
+                .collect::<Vec<_>>(),
+            (1, num_heads, seq_len, head_dim),
+            &device,
+        )
+        .expect("k");
+        let v = Tensor::from_vec(
+            (0..(num_heads * seq_len * head_dim))
+                .map(|v| (v as f32) * 0.017 - 0.1)
+                .collect::<Vec<_>>(),
+            (1, num_heads, seq_len, head_dim),
+            &device,
+        )
+        .expect("v");
+        let cu = vec![0i64, 2, 5];
+
+        let mask =
+            create_chunked_attention_mask(seq_len, &cu, &device, dtype).expect("chunk mask");
+        let masked = attention_unfused_with_mask(&q, &k, &v, &mask, num_heads, head_dim)
+            .expect("masked attention");
+
+        let spans = chunk_spans_from_cu_seqlens(seq_len, &cu).expect("spans");
+        let mut outputs = Vec::with_capacity(spans.len());
+        for (start, end) in spans {
+            let span = end - start;
+            outputs.push(
+                attention_no_mask(
+                    &q.narrow(2, start, span).expect("q span"),
+                    &k.narrow(2, start, span).expect("k span"),
+                    &v.narrow(2, start, span).expect("v span"),
+                    num_heads,
+                    head_dim,
+                )
+                .expect("chunk attention"),
+            );
+        }
+        let refs: Vec<&Tensor> = outputs.iter().collect();
+        let chunked = Tensor::cat(&refs, 2).expect("cat");
+
+        let masked_vals = masked
+            .flatten_all()
+            .expect("flatten masked")
+            .to_vec1::<f32>()
+            .expect("masked vals");
+        let chunked_vals = chunked
+            .flatten_all()
+            .expect("flatten chunked")
+            .to_vec1::<f32>()
+            .expect("chunked vals");
+        assert_eq!(masked_vals.len(), chunked_vals.len());
+        for (lhs, rhs) in masked_vals.iter().zip(chunked_vals.iter()) {
+            assert!((lhs - rhs).abs() < 1e-5);
+        }
+    }
 }
