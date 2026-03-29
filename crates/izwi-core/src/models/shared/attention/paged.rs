@@ -405,38 +405,33 @@ pub fn repeat_kv(x: &Tensor, num_heads: usize, num_kv_heads: usize) -> Result<Te
     Ok(x)
 }
 
-/// Compute exact single-token attention over paged K/V without materializing full K/V.
-///
-/// `q` is `[batch, 1, heads, head_dim]` and page tensors are `[batch, page_seq, kv_heads, head_dim]`.
-/// Returns `[batch, 1, heads, head_dim]`.
-pub fn paged_decode_attention(
+fn parse_env_positive_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn paged_decode_page_group_size(device: &candle_core::Device, page_count: usize) -> usize {
+    if let Some(override_pages) = parse_env_positive_usize("IZWI_PAGED_DECODE_GROUP_PAGES") {
+        return override_pages.max(1);
+    }
+    if !device.is_metal() || page_count < 8 {
+        return 1;
+    }
+    4
+}
+
+fn paged_decode_attention_with_group_size(
     q: &Tensor,
     k_pages: &[KvPage],
     v_pages: &[KvPage],
     num_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
+    page_group_size: usize,
 ) -> Result<Tensor> {
-    if k_pages.is_empty() || v_pages.is_empty() || k_pages.len() != v_pages.len() {
-        return Err(Error::InferenceError(
-            "Paged decode attention received invalid KV pages".to_string(),
-        ));
-    }
-    let q_len = q.dim(1)?;
-    if q_len != 1 {
-        return Err(Error::InvalidInput(format!(
-            "Paged decode attention expects q_len=1, got {}",
-            q_len
-        )));
-    }
-    if num_kv_heads == 0 || num_heads == 0 || !num_heads.is_multiple_of(num_kv_heads) {
-        return Err(Error::InvalidInput(format!(
-            "Paged decode attention received invalid head layout: num_heads={}, num_kv_heads={}",
-            num_heads, num_kv_heads
-        )));
-    }
-    record_decode_attention_path(DecodeAttentionPath::Paged);
-
+    let page_group_size = page_group_size.max(1);
     let scale = (head_dim as f64).sqrt();
     let batch_size = q.dim(0)?;
     let q_heads = q.transpose(1, 2)?.contiguous()?; // [bs, h, 1, d]
@@ -446,9 +441,10 @@ pub fn paged_decode_attention(
     let mut running_sum: Option<Tensor> = None; // [bs*h, 1, 1]
     let mut running_out: Option<Tensor> = None; // [bs*h, 1, d]
 
-    for (k_page, v_page) in k_pages.iter().zip(v_pages.iter()) {
-        let k_page = k_page.to_dense()?;
-        let v_page = v_page.to_dense()?;
+    for page_start in (0..k_pages.len()).step_by(page_group_size) {
+        let page_end = (page_start + page_group_size).min(k_pages.len());
+        let k_page = materialize_pages(&k_pages[page_start..page_end])?;
+        let v_page = materialize_pages(&v_pages[page_start..page_end])?;
         let page_len = k_page.dim(1)?;
         if page_len == 0 {
             continue;
@@ -520,6 +516,49 @@ pub fn paged_decode_attention(
     out.reshape((batch_size, num_heads, 1, head_dim))?
         .transpose(1, 2)
         .map_err(Error::from)
+}
+
+/// Compute exact single-token attention over paged K/V without materializing full K/V.
+///
+/// `q` is `[batch, 1, heads, head_dim]` and page tensors are `[batch, page_seq, kv_heads, head_dim]`.
+/// Returns `[batch, 1, heads, head_dim]`.
+pub fn paged_decode_attention(
+    q: &Tensor,
+    k_pages: &[KvPage],
+    v_pages: &[KvPage],
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+) -> Result<Tensor> {
+    if k_pages.is_empty() || v_pages.is_empty() || k_pages.len() != v_pages.len() {
+        return Err(Error::InferenceError(
+            "Paged decode attention received invalid KV pages".to_string(),
+        ));
+    }
+    let q_len = q.dim(1)?;
+    if q_len != 1 {
+        return Err(Error::InvalidInput(format!(
+            "Paged decode attention expects q_len=1, got {}",
+            q_len
+        )));
+    }
+    if num_kv_heads == 0 || num_heads == 0 || !num_heads.is_multiple_of(num_kv_heads) {
+        return Err(Error::InvalidInput(format!(
+            "Paged decode attention received invalid head layout: num_heads={}, num_kv_heads={}",
+            num_heads, num_kv_heads
+        )));
+    }
+    record_decode_attention_path(DecodeAttentionPath::Paged);
+    let page_group_size = paged_decode_page_group_size(q.device(), k_pages.len());
+    paged_decode_attention_with_group_size(
+        q,
+        k_pages,
+        v_pages,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        page_group_size,
+    )
 }
 
 #[cfg(test)]
@@ -728,6 +767,61 @@ mod tests {
 
         let diff = max_abs_diff(&paged, &dense);
         assert!(diff < 0.12, "max abs diff was {}", diff);
+    }
+
+    #[test]
+    fn test_grouped_paged_decode_matches_single_page_loop() {
+        let device = Device::Cpu;
+        let bsz = 1usize;
+        let num_heads = 8usize;
+        let num_kv_heads = 2usize;
+        let head_dim = 8usize;
+        let total_len = 23usize;
+
+        let q = Tensor::randn(0.0f32, 1.0f32, (bsz, 1, num_heads, head_dim), &device).unwrap();
+        let k_full = Tensor::randn(
+            0.0f32,
+            1.0f32,
+            (bsz, total_len, num_kv_heads, head_dim),
+            &device,
+        )
+        .unwrap();
+        let v_full = Tensor::randn(
+            0.0f32,
+            1.0f32,
+            (bsz, total_len, num_kv_heads, head_dim),
+            &device,
+        )
+        .unwrap();
+
+        let mut k_pages = Vec::new();
+        let mut v_pages = Vec::new();
+        append_to_pages(3, &mut k_pages, &k_full, KvCacheQuantization::None).unwrap();
+        append_to_pages(3, &mut v_pages, &v_full, KvCacheQuantization::None).unwrap();
+
+        let single = paged_decode_attention_with_group_size(
+            &q,
+            &k_pages,
+            &v_pages,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            1,
+        )
+        .unwrap();
+        let grouped = paged_decode_attention_with_group_size(
+            &q,
+            &k_pages,
+            &v_pages,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            4,
+        )
+        .unwrap();
+
+        let diff = max_abs_diff(&single, &grouped);
+        assert!(diff < 1e-4, "max abs diff was {}", diff);
     }
 
     #[test]
