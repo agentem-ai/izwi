@@ -436,6 +436,9 @@ export interface TranscriptionRecordSummary {
   audio_filename: string | null;
   transcription_preview: string;
   transcription_chars: number;
+  summary_status?: TranscriptionSummaryStatus;
+  summary_preview?: string | null;
+  summary_chars?: number;
 }
 
 export interface TranscriptionSegment {
@@ -452,6 +455,12 @@ export interface TranscriptionWord {
   end: number;
 }
 
+export type TranscriptionSummaryStatus =
+  | "not_requested"
+  | "pending"
+  | "ready"
+  | "failed";
+
 export interface TranscriptionRecord {
   id: string;
   created_at: number;
@@ -466,6 +475,11 @@ export interface TranscriptionRecord {
   transcription: string;
   segments: TranscriptionSegment[];
   words: TranscriptionWord[];
+  summary_status?: TranscriptionSummaryStatus;
+  summary_model_id?: string | null;
+  summary_text?: string | null;
+  summary_error?: string | null;
+  summary_updated_at?: number | null;
 }
 
 export interface TranscriptionRecordCreateRequest {

@@ -1,6 +1,7 @@
 import type {
   TranscriptionRecord,
   TranscriptionRecordSummary,
+  TranscriptionSummaryStatus,
 } from "@/api";
 
 export interface ModelOption {
@@ -249,9 +250,79 @@ function buildTranscriptPreview(text: string, maxChars = 160): string {
   return `${normalized.slice(0, maxChars)}...`;
 }
 
+function buildSummaryPreview(
+  summaryText: string | null | undefined,
+  maxChars = 200,
+): string | null {
+  if (!summaryText) {
+    return null;
+  }
+  const normalized = normalizeTranscript(summaryText);
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxChars)}...`;
+}
+
+export function normalizeSummaryStatus(
+  status: string | null | undefined,
+  summaryText?: string | null,
+  summaryError?: string | null,
+): TranscriptionSummaryStatus {
+  if (status === "not_requested" || status === "pending" || status === "ready" || status === "failed") {
+    return status;
+  }
+  if ((summaryText ?? "").trim().length > 0) {
+    return "ready";
+  }
+  if ((summaryError ?? "").trim().length > 0) {
+    return "failed";
+  }
+  return "not_requested";
+}
+
+export function summaryStatusLabel(status: TranscriptionSummaryStatus): string {
+  switch (status) {
+    case "pending":
+      return "Summary pending";
+    case "ready":
+      return "Summary ready";
+    case "failed":
+      return "Summary failed";
+    case "not_requested":
+    default:
+      return "Summary not requested";
+  }
+}
+
+export function summaryStatusTone(
+  status: TranscriptionSummaryStatus,
+): "neutral" | "warning" | "success" | "danger" {
+  switch (status) {
+    case "pending":
+      return "warning";
+    case "ready":
+      return "success";
+    case "failed":
+      return "danger";
+    case "not_requested":
+    default:
+      return "neutral";
+  }
+}
+
 export function summarizeRecord(
   record: TranscriptionRecord,
 ): TranscriptionRecordSummary {
+  const summaryStatus = normalizeSummaryStatus(
+    record.summary_status,
+    record.summary_text,
+    record.summary_error,
+  );
+  const summaryPreview = buildSummaryPreview(record.summary_text);
   return {
     id: record.id,
     created_at: record.created_at,
@@ -264,6 +335,9 @@ export function summarizeRecord(
     audio_filename: record.audio_filename,
     transcription_preview: buildTranscriptPreview(record.transcription),
     transcription_chars: Array.from(record.transcription).length,
+    summary_status: summaryStatus,
+    summary_preview: summaryPreview,
+    summary_chars: Array.from(record.summary_text ?? "").length,
   };
 }
 

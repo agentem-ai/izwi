@@ -41,6 +41,9 @@ import {
   formatAudioDuration,
   formatCreatedAt,
   isTranscriptionRealtimeServerEvent,
+  normalizeSummaryStatus,
+  summaryStatusLabel,
+  summaryStatusTone,
   summarizeRecord,
   transcodeToWav,
 } from "@/features/transcription/playground/support";
@@ -117,6 +120,12 @@ export function TranscriptionPlayground({
   const [deleteRecordError, setDeleteRecordError] = useState<string | null>(
     null,
   );
+  const [summaryRefreshPendingId, setSummaryRefreshPendingId] = useState<
+    string | null
+  >(null);
+  const [summaryRefreshError, setSummaryRefreshError] = useState<string | null>(
+    null,
+  );
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -170,6 +179,19 @@ export function TranscriptionPlayground({
     [],
   );
 
+  const applyRecordUpdate = useCallback(
+    (record: TranscriptionRecord) => {
+      mergeHistorySummary(summarizeRecord(record));
+      setCurrentOutputRecord((previous) =>
+        previous?.id === record.id ? record : previous,
+      );
+      setSelectedHistoryRecord((previous) =>
+        previous?.id === record.id ? record : previous,
+      );
+    },
+    [mergeHistorySummary],
+  );
+
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
     setHistoryError(null);
@@ -218,8 +240,7 @@ export function TranscriptionPlayground({
         if (cancelled) {
           return;
         }
-        setSelectedHistoryRecord(record);
-        mergeHistorySummary(summarizeRecord(record));
+        applyRecordUpdate(record);
       })
       .catch((err) => {
         if (cancelled) {
@@ -240,7 +261,107 @@ export function TranscriptionPlayground({
     return () => {
       cancelled = true;
     };
-  }, [mergeHistorySummary, selectedHistoryRecord, selectedHistoryRecordId]);
+  }, [applyRecordUpdate, selectedHistoryRecord, selectedHistoryRecordId]);
+
+  const pendingSummaryRecordIds = useMemo(() => {
+    const ids = new Set<string>();
+
+    if (
+      currentOutputRecord &&
+      normalizeSummaryStatus(
+        currentOutputRecord.summary_status,
+        currentOutputRecord.summary_text,
+        currentOutputRecord.summary_error,
+      ) === "pending"
+    ) {
+      ids.add(currentOutputRecord.id);
+    }
+
+    if (
+      selectedHistoryRecord &&
+      normalizeSummaryStatus(
+        selectedHistoryRecord.summary_status,
+        selectedHistoryRecord.summary_text,
+        selectedHistoryRecord.summary_error,
+      ) === "pending"
+    ) {
+      ids.add(selectedHistoryRecord.id);
+    }
+
+    historyRecords.forEach((record) => {
+      if (
+        normalizeSummaryStatus(record.summary_status, record.summary_preview, null) ===
+        "pending"
+      ) {
+        ids.add(record.id);
+      }
+    });
+
+    return Array.from(ids).sort();
+  }, [currentOutputRecord, historyRecords, selectedHistoryRecord]);
+
+  useEffect(() => {
+    if (pendingSummaryRecordIds.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    const pollPendingSummaries = async () => {
+      const results = await Promise.allSettled(
+        pendingSummaryRecordIds.map((recordId) =>
+          api.getTranscriptionRecord(recordId),
+        ),
+      );
+      if (cancelled) {
+        return;
+      }
+      results.forEach((result) => {
+        if (
+          result.status === "fulfilled" &&
+          result.value &&
+          typeof result.value === "object" &&
+          "id" in result.value
+        ) {
+          applyRecordUpdate(result.value as TranscriptionRecord);
+        }
+      });
+    };
+
+    void pollPendingSummaries();
+    const intervalId = window.setInterval(() => {
+      void pollPendingSummaries();
+    }, 2500);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [applyRecordUpdate, pendingSummaryRecordIds]);
+
+  const handleRegenerateSummary = useCallback(
+    async (recordId: string) => {
+      if (!recordId || summaryRefreshPendingId === recordId) {
+        return;
+      }
+
+      setSummaryRefreshPendingId(recordId);
+      setSummaryRefreshError(null);
+
+      try {
+        const record = await api.regenerateTranscriptionSummary(recordId);
+        applyRecordUpdate(record);
+      } catch (err) {
+        setSummaryRefreshError(
+          err instanceof Error
+            ? err.message
+            : "Failed to regenerate transcription summary.",
+        );
+      } finally {
+        setSummaryRefreshPendingId(null);
+      }
+    },
+    [applyRecordUpdate, summaryRefreshPendingId],
+  );
 
   const closeHistoryModal = useCallback(() => {
     setIsHistoryModalOpen(false);
@@ -832,6 +953,8 @@ export function TranscriptionPlayground({
     setProcessingStats(null);
     setIsStreaming(false);
     setIsProcessing(false);
+    setSummaryRefreshError(null);
+    setSummaryRefreshPendingId(null);
   };
 
   const workspaceShortcuts = useMemo(
@@ -947,6 +1070,11 @@ export function TranscriptionPlayground({
       | "transcription"
       | "segments"
       | "words"
+      | "summary_status"
+      | "summary_model_id"
+      | "summary_text"
+      | "summary_error"
+      | "summary_updated_at"
     > | null
   >(() => {
     if (currentOutputRecord) {
@@ -966,6 +1094,11 @@ export function TranscriptionPlayground({
       transcription,
       segments: [],
       words: [],
+      summary_status: "not_requested",
+      summary_model_id: null,
+      summary_text: null,
+      summary_error: null,
+      summary_updated_at: null,
     };
   }, [
     currentOutputRecord,
@@ -986,6 +1119,17 @@ export function TranscriptionPlayground({
   const canResetSession = isTranscriptSessionActive && !isRecording;
   const isInactiveSessionLayout = !isTranscriptSessionActive;
   const activeTranscriptLanguage = detectedLanguage ?? outputRecord?.language;
+  const activeOutputSummaryStatus = useMemo(
+    () =>
+      normalizeSummaryStatus(
+        outputRecord?.summary_status,
+        outputRecord?.summary_text,
+        outputRecord?.summary_error,
+      ),
+    [outputRecord?.summary_error, outputRecord?.summary_status, outputRecord?.summary_text],
+  );
+  const canRegenerateOutputSummary =
+    !!currentOutputRecord && !isStreaming && !isProcessing;
   const renderErrorAlert = (className?: string) =>
     error ? (
       <motion.div
@@ -999,6 +1143,21 @@ export function TranscriptionPlayground({
       >
         <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
         {error}
+      </motion.div>
+    ) : null;
+  const renderSummaryErrorAlert = (className?: string) =>
+    summaryRefreshError ? (
+      <motion.div
+        initial={{ opacity: 0, height: 0, y: 10 }}
+        animate={{ opacity: 1, height: "auto", y: 0 }}
+        exit={{ opacity: 0, height: 0, y: 10 }}
+        className={cn(
+          "p-3.5 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)] text-sm font-medium flex items-start gap-3",
+          className,
+        )}
+      >
+        <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+        {summaryRefreshError}
       </motion.div>
     ) : null;
   const selectedHistorySummary = useMemo(
@@ -1027,6 +1186,19 @@ export function TranscriptionPlayground({
             (activeHistoryRecord.words ?? []).length > 0),
       ),
     [activeHistoryRecord],
+  );
+  const activeHistorySummaryStatus = useMemo(
+    () =>
+      normalizeSummaryStatus(
+        activeHistoryRecord?.summary_status,
+        activeHistoryRecord?.summary_text,
+        activeHistoryRecord?.summary_error,
+      ),
+    [
+      activeHistoryRecord?.summary_error,
+      activeHistoryRecord?.summary_status,
+      activeHistoryRecord?.summary_text,
+    ],
   );
   const deleteTargetRecord = useMemo(() => {
     if (!deleteTargetRecordId) {
@@ -1101,6 +1273,7 @@ export function TranscriptionPlayground({
 
   useEffect(() => {
     setHistoryTranscriptCopied(false);
+    setSummaryRefreshError(null);
   }, [selectedHistoryRecordId]);
 
   const handleOpenModels = () => {
@@ -1146,6 +1319,11 @@ export function TranscriptionPlayground({
               <div className="flex flex-col gap-2.5">
                 {historyRecords.map((record) => {
                   const isActive = record.id === selectedHistoryRecordId;
+                  const summaryStatus = normalizeSummaryStatus(
+                    record.summary_status,
+                    record.summary_preview,
+                    null,
+                  );
                   return (
                     <div
                       key={record.id}
@@ -1201,9 +1379,17 @@ export function TranscriptionPlayground({
                       </div>
                       <div className="mt-1 mb-1.5 flex items-center justify-between text-[10px] font-medium uppercase tracking-wide opacity-60">
                         <span>{formatCreatedAt(record.created_at)}</span>
-                        {record.duration_secs && (
-                          <span>{formatAudioDuration(record.duration_secs)}</span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {record.duration_secs ? (
+                            <span>{formatAudioDuration(record.duration_secs)}</span>
+                          ) : null}
+                          <StatusBadge
+                            tone={summaryStatusTone(summaryStatus)}
+                            className="px-2 py-0.5 text-[8px] tracking-[0.12em]"
+                          >
+                            {summaryStatusLabel(summaryStatus)}
+                          </StatusBadge>
+                        </div>
                       </div>
                       <p
                         className="app-sidebar-row-preview text-[13px] leading-snug"
@@ -1216,6 +1402,19 @@ export function TranscriptionPlayground({
                       >
                         {record.transcription_preview}
                       </p>
+                      {record.summary_preview ? (
+                        <p
+                          className="mt-1 text-[11px] leading-snug text-[var(--text-muted)]"
+                          style={{
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                            overflow: "hidden",
+                          }}
+                        >
+                          Summary: {record.summary_preview}
+                        </p>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -1517,6 +1716,30 @@ export function TranscriptionPlayground({
               {activeTranscriptLanguage ? (
                 <StatusBadge>{activeTranscriptLanguage}</StatusBadge>
               ) : null}
+              <StatusBadge tone={summaryStatusTone(activeOutputSummaryStatus)}>
+                {summaryStatusLabel(activeOutputSummaryStatus)}
+              </StatusBadge>
+              <Button
+                onClick={() => {
+                  if (currentOutputRecord) {
+                    void handleRegenerateSummary(currentOutputRecord.id);
+                  }
+                }}
+                variant="outline"
+                size="icon"
+                className="h-9 w-9 bg-[var(--bg-surface-1)] border-[var(--border-muted)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface-2)] hover:text-[var(--text-primary)]"
+                disabled={
+                  !canRegenerateOutputSummary ||
+                  summaryRefreshPendingId === currentOutputRecord?.id
+                }
+                title="Regenerate summary"
+              >
+                {summaryRefreshPendingId === currentOutputRecord?.id ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <RotateCcw className="w-4 h-4" />
+                )}
+              </Button>
               <Button
                 onClick={handleCopy}
                 variant="outline"
@@ -1605,7 +1828,12 @@ export function TranscriptionPlayground({
             ) : null}
           </div>
 
-          <AnimatePresence>{renderErrorAlert("m-4")}</AnimatePresence>
+          <AnimatePresence>
+            <>
+              {renderErrorAlert("mx-4 mt-4")}
+              {renderSummaryErrorAlert("mx-4 mb-4")}
+            </>
+          </AnimatePresence>
         </div>
       ) : null}
 
@@ -1673,6 +1901,9 @@ export function TranscriptionPlayground({
                             ? "Timed transcript"
                             : "Plain transcript"}
                         </span>
+                        <StatusBadge tone={summaryStatusTone(activeHistorySummaryStatus)}>
+                          {summaryStatusLabel(activeHistorySummaryStatus)}
+                        </StatusBadge>
                         <span className="inline-flex max-w-[220px] items-center truncate rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[10px] font-medium tracking-[0.02em] text-[var(--text-secondary)]">
                           {activeHistoryRecord.model_id || "Unknown model"}
                         </span>
@@ -1738,6 +1969,24 @@ export function TranscriptionPlayground({
                   <div className="p-3 sm:p-4 space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
+                        <Button
+                          onClick={() =>
+                            void handleRegenerateSummary(activeHistoryRecord.id)
+                          }
+                          variant="outline"
+                          size="sm"
+                          className="h-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-[12px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-2)]"
+                          disabled={
+                            summaryRefreshPendingId === activeHistoryRecord.id
+                          }
+                        >
+                          {summaryRefreshPendingId === activeHistoryRecord.id ? (
+                            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <RotateCcw className="mr-1.5 w-3.5 h-3.5" />
+                          )}
+                          Regenerate summary
+                        </Button>
                         <button
                           onClick={() => void handleCopyHistoryTranscript()}
                           className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-[12px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-2)] hover:text-[var(--text-primary)] disabled:opacity-45"
@@ -1771,6 +2020,11 @@ export function TranscriptionPlayground({
                         Playback, transcript review, and export for this saved transcription.
                       </p>
                     </div>
+                    {summaryRefreshError ? (
+                      <div className="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
+                        {summaryRefreshError}
+                      </div>
+                    ) : null}
 
                     <TranscriptionReviewWorkspace
                       record={activeHistoryRecord}

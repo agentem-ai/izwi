@@ -3,7 +3,13 @@ import { Loader2, Pause, Play, SkipBack, SkipForward } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { StatusBadge } from "@/components/ui/status-badge";
 import type { TranscriptionRecord } from "@/api";
+import {
+  normalizeSummaryStatus,
+  summaryStatusLabel,
+  summaryStatusTone,
+} from "@/features/transcription/playground/support";
 import {
   transcriptionEntriesFromRecord,
   transcriptionHasTimestamps,
@@ -21,6 +27,11 @@ interface TranscriptionReviewWorkspaceProps {
     | "transcription"
     | "segments"
     | "words"
+    | "summary_status"
+    | "summary_model_id"
+    | "summary_text"
+    | "summary_error"
+    | "summary_updated_at"
   > | null;
   audioUrl?: string | null;
   loading?: boolean;
@@ -100,6 +111,34 @@ export function TranscriptionReviewWorkspace({
     [record],
   );
   const wordCount = useMemo(() => transcriptionWordCount(record), [record]);
+  const summaryStatus = useMemo(
+    () =>
+      normalizeSummaryStatus(
+        record?.summary_status,
+        record?.summary_text,
+        record?.summary_error,
+      ),
+    [record?.summary_error, record?.summary_status, record?.summary_text],
+  );
+  const summaryText = useMemo(
+    () => record?.summary_text?.trim() || null,
+    [record?.summary_text],
+  );
+  const summaryError = useMemo(
+    () => record?.summary_error?.trim() || null,
+    [record?.summary_error],
+  );
+  const summaryUpdatedLabel = useMemo(() => {
+    if (!record?.summary_updated_at) {
+      return null;
+    }
+    return new Date(record.summary_updated_at).toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }, [record?.summary_updated_at]);
 
   const viewerDuration = useMemo(() => {
     const transcriptDuration = transcriptEntries.reduce(
@@ -416,6 +455,38 @@ export function TranscriptionReviewWorkspace({
                     {record.audio_filename}
                   </div>
                 ) : null}
+              </div>
+
+              <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+                  Summary
+                </div>
+                <div className="mt-1">
+                  <StatusBadge tone={summaryStatusTone(summaryStatus)}>
+                    {summaryStatusLabel(summaryStatus)}
+                  </StatusBadge>
+                </div>
+                {summaryText ? (
+                  <p className="mt-2 text-[12px] leading-relaxed text-[var(--text-secondary)]">
+                    {summaryText}
+                  </p>
+                ) : summaryStatus === "pending" ? (
+                  <p className="mt-2 text-[11px] text-[var(--text-muted)]">
+                    Generating summary...
+                  </p>
+                ) : summaryStatus === "failed" ? (
+                  <p className="mt-2 text-[11px] text-[var(--danger-text)]">
+                    {summaryError || "Summary generation failed."}
+                  </p>
+                ) : (
+                  <p className="mt-2 text-[11px] text-[var(--text-muted)]">
+                    No summary available yet.
+                  </p>
+                )}
+                <div className="mt-2 text-[11px] text-[var(--text-muted)]">
+                  {record.summary_model_id || "Qwen3.5-4B"}
+                  {summaryUpdatedLabel ? ` • Updated ${summaryUpdatedLabel}` : ""}
+                </div>
               </div>
             </div>
           </div>
