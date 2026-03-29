@@ -796,12 +796,8 @@ fn apply_rotary_emb(x: &Tensor, cos_half: &Tensor, sin_half: &Tensor) -> Result<
     let half_dim = x.dim(3)? / 2;
     let x1 = x.narrow(3, 0, half_dim)?;
     let x2 = x.narrow(3, half_dim, half_dim)?;
-    let cos = Tensor::cat(&[cos_half.clone(), cos_half.clone()], 1)?
-        .unsqueeze(0)?
-        .unsqueeze(2)?;
-    let sin = Tensor::cat(&[sin_half.clone(), sin_half.clone()], 1)?
-        .unsqueeze(0)?
-        .unsqueeze(2)?;
+    let cos = cos_half.unsqueeze(0)?.unsqueeze(2)?;
+    let sin = sin_half.unsqueeze(0)?.unsqueeze(2)?;
     let out_first = x1
         .broadcast_mul(&cos)?
         .broadcast_sub(&x2.broadcast_mul(&sin)?)?;
@@ -920,5 +916,25 @@ mod tests {
         for (lhs, rhs) in kernel_vals.iter().zip(manual_vals.iter()) {
             assert!((lhs - rhs).abs() < 1e-5);
         }
+    }
+
+    #[test]
+    fn qwen3_apply_rotary_emb_accepts_half_dim_cos_sin() {
+        let device = Device::Cpu;
+        let seq_len = 3usize;
+        let head_dim = 8usize;
+        let x = Tensor::from_vec(
+            (0..(seq_len * 2 * head_dim))
+                .map(|v| (v as f32) * 0.03 - 0.2)
+                .collect::<Vec<_>>(),
+            (1, seq_len, 2, head_dim),
+            &device,
+        )
+        .expect("x");
+        let (cos_half, sin_half) =
+            build_rope_cache(seq_len, head_dim, 0, 10000.0, &device, DType::F32).expect("cache");
+
+        let rotated = apply_rotary_emb(&x, &cos_half, &sin_half).expect("rotary");
+        assert_eq!(rotated.dims4().expect("dims4"), (1, seq_len, 2, head_dim));
     }
 }

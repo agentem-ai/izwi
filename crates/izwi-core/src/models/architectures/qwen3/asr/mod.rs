@@ -2291,4 +2291,57 @@ mod tests {
             "forced aligner should return timestamps"
         );
     }
+
+    #[test]
+    #[ignore = "requires local Qwen3-ASR-0.6B-GGUF assets and fox.wav fixture"]
+    fn qwen3_asr_local_fox_transcription_smoke_if_available() {
+        let models_root = std::env::var("IZWI_MODELS_DIR")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                dirs::data_local_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("izwi")
+                    .join("models")
+            });
+        let model_dir = models_root.join("Qwen3-ASR-0.6B-GGUF");
+        let gguf_path = model_dir.join("qwen3_asr_0.6b_q8_0.gguf");
+        if !gguf_path.exists() {
+            eprintln!(
+                "Skipping local ASR smoke test, model not found at {}",
+                gguf_path.display()
+            );
+            return;
+        }
+
+        let fox_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fox.wav");
+        if !fox_path.exists() {
+            eprintln!(
+                "Skipping local ASR smoke test, fixture not found at {}",
+                fox_path.display()
+            );
+            return;
+        }
+
+        let wav_bytes = std::fs::read(&fox_path).expect("read fox.wav");
+        let (samples, sample_rate) =
+            crate::runtime::audio_io::decode_wav_bytes(&wav_bytes).expect("decode fox.wav");
+
+        let device = DeviceSelector::detect_with_preference(Some("cpu")).expect("cpu device");
+        let model = Qwen3AsrModel::load(&model_dir, ModelVariant::Qwen3Asr06BGguf, device)
+            .expect("qwen3 asr model should load");
+        let raw = model
+            .transcribe(&samples, sample_rate, None)
+            .expect("transcription should run");
+        let (_, text) = parse_asr_output(&raw, None);
+        assert!(
+            !text.trim().is_empty(),
+            "local ASR output should not be empty"
+        );
+        assert!(
+            text.to_ascii_lowercase().contains("quick brown fox"),
+            "unexpected local ASR transcript: {text}"
+        );
+    }
 }
