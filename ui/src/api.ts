@@ -62,6 +62,7 @@ export type {
   StudioProjectVoiceMode,
   TranscriptionRecord,
   TranscriptionRecordCreateRequest,
+  TranscriptionSummaryStatus,
   TranscriptionSegment,
   TranscriptionRecordStreamCallbacks,
   TranscriptionRecordSummary,

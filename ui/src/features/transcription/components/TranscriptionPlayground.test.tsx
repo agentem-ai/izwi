@@ -10,6 +10,7 @@ const apiMocks = vi.hoisted(() => ({
   transcriptionRecordAudioUrl: vi.fn(),
   createTranscriptionRecord: vi.fn(),
   createTranscriptionRecordStream: vi.fn(),
+  regenerateTranscriptionSummary: vi.fn(),
 }));
 
 vi.mock("@/api", () => ({
@@ -20,6 +21,7 @@ vi.mock("@/api", () => ({
     transcriptionRecordAudioUrl: apiMocks.transcriptionRecordAudioUrl,
     createTranscriptionRecord: apiMocks.createTranscriptionRecord,
     createTranscriptionRecordStream: apiMocks.createTranscriptionRecordStream,
+    regenerateTranscriptionSummary: apiMocks.regenerateTranscriptionSummary,
   },
 }));
 
@@ -31,6 +33,7 @@ describe("TranscriptionPlayground history", () => {
     apiMocks.transcriptionRecordAudioUrl.mockReset();
     apiMocks.createTranscriptionRecord.mockReset();
     apiMocks.createTranscriptionRecordStream.mockReset();
+    apiMocks.regenerateTranscriptionSummary.mockReset();
 
     apiMocks.transcriptionRecordAudioUrl.mockReturnValue(
       "/audio/transcription.wav",
@@ -38,6 +41,26 @@ describe("TranscriptionPlayground history", () => {
     apiMocks.createTranscriptionRecordStream.mockReturnValue(
       new AbortController(),
     );
+    apiMocks.regenerateTranscriptionSummary.mockResolvedValue({
+      id: "summary-regenerated",
+      created_at: 1,
+      model_id: "Parakeet-TDT-0.6B-v3",
+      aligner_model_id: null,
+      language: "English",
+      duration_secs: 3,
+      processing_time_ms: 100,
+      rtf: 0.3,
+      audio_mime_type: "audio/wav",
+      audio_filename: "clip.wav",
+      transcription: "summary",
+      segments: [],
+      words: [],
+      summary_status: "pending",
+      summary_model_id: "Qwen3.5-4B",
+      summary_text: null,
+      summary_error: null,
+      summary_updated_at: 1,
+    });
 
     Object.defineProperty(URL, "createObjectURL", {
       writable: true,
@@ -409,7 +432,11 @@ describe("TranscriptionPlayground history", () => {
     fireEvent.click(screen.getByRole("button", { name: /History/i }));
     fireEvent.click(await screen.findByText("Testing saved transcription history."));
 
-    expect(await screen.findByText("Timed transcript")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("transcription-history-modal-body"),
+      ).toBeInTheDocument(),
+    );
     expect(
       screen.getByRole("heading", { name: "clip.wav" }),
     ).toBeInTheDocument();
@@ -453,6 +480,99 @@ describe("TranscriptionPlayground history", () => {
 
     expect(onTimestampAlignerRequired).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/Load the timestamp aligner model/i)).toBeInTheDocument();
+  });
+
+  it("regenerates summary from the active output view", async () => {
+    apiMocks.listTranscriptionRecords.mockResolvedValue([]);
+    apiMocks.createTranscriptionRecord.mockResolvedValue({
+      id: "transcription-1",
+      created_at: 1,
+      model_id: "Parakeet-TDT-0.6B-v3",
+      aligner_model_id: "Qwen3-ForcedAligner-0.6B",
+      language: "English",
+      duration_secs: 3.2,
+      processing_time_ms: 160,
+      rtf: 0.4,
+      audio_mime_type: "audio/wav",
+      audio_filename: "clip.wav",
+      transcription: "Testing saved transcription history.",
+      segments: [],
+      words: [],
+      summary_status: "ready",
+      summary_model_id: "Qwen3.5-4B",
+      summary_text: "Initial summary",
+      summary_error: null,
+      summary_updated_at: 1,
+    });
+    apiMocks.regenerateTranscriptionSummary.mockResolvedValue({
+      id: "transcription-1",
+      created_at: 1,
+      model_id: "Parakeet-TDT-0.6B-v3",
+      aligner_model_id: "Qwen3-ForcedAligner-0.6B",
+      language: "English",
+      duration_secs: 3.2,
+      processing_time_ms: 160,
+      rtf: 0.4,
+      audio_mime_type: "audio/wav",
+      audio_filename: "clip.wav",
+      transcription: "Testing saved transcription history.",
+      segments: [],
+      words: [],
+      summary_status: "pending",
+      summary_model_id: "Qwen3.5-4B",
+      summary_text: null,
+      summary_error: null,
+      summary_updated_at: 2,
+    });
+
+    const { container } = render(
+      <TranscriptionPlayground
+        selectedModel="Parakeet-TDT-0.6B-v3"
+        selectedModelReady={true}
+        modelOptions={[
+          {
+            value: "Parakeet-TDT-0.6B-v3",
+            label: "Qwen3 ASR 0.6B",
+            statusLabel: "Ready",
+            isReady: true,
+          },
+        ]}
+        onSelectModel={vi.fn()}
+        onOpenModelManager={vi.fn()}
+        onModelRequired={vi.fn()}
+        timestampAlignerModelId="Qwen3-ForcedAligner-0.6B"
+        timestampAlignerReady={true}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByLabelText(/Stream/i));
+
+    const fileInput = container.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement | null;
+    expect(fileInput).not.toBeNull();
+
+    fireEvent.change(fileInput!, {
+      target: {
+        files: [new File(["audio"], "clip.wav", { type: "audio/wav" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(apiMocks.createTranscriptionRecord).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByTitle("Regenerate summary"));
+
+    await waitFor(() =>
+      expect(apiMocks.regenerateTranscriptionSummary).toHaveBeenCalledWith(
+        "transcription-1",
+      ),
+    );
   });
 
   it("keeps streaming and timestamps mutually exclusive", async () => {

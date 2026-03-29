@@ -4,6 +4,8 @@ import {
   encodeTranscriptionRealtimePcm16Frame,
   formatAudioDuration,
   formatClockTime,
+  normalizeSummaryStatus,
+  summaryStatusLabel,
   summarizeRecord,
 } from "./support";
 
@@ -43,14 +45,28 @@ describe("transcription playground support", () => {
         rtf: 0.2,
         audio_mime_type: "audio/wav",
         audio_filename: "clip.wav",
-        transcription: " Hello   world ",
-        segments: [],
-        words: [],
-      }),
+      transcription: " Hello   world ",
+      segments: [],
+      words: [],
+      summary_status: "ready",
+      summary_model_id: "Qwen3.5-4B",
+      summary_text: " Brief summary ",
+      summary_error: null,
+      summary_updated_at: 123,
+    }),
     ).toMatchObject({
       transcription_preview: "Hello world",
       transcription_chars: 15,
+      summary_status: "ready",
+      summary_preview: "Brief summary",
+      summary_chars: 15,
     });
+  });
+
+  it("normalizes summary status and labels", () => {
+    expect(normalizeSummaryStatus(undefined, "summary", null)).toBe("ready");
+    expect(normalizeSummaryStatus(undefined, null, "error")).toBe("failed");
+    expect(summaryStatusLabel("pending")).toBe("Summary pending");
   });
 
   it("formats durations consistently", () => {
