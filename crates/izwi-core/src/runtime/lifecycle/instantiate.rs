@@ -33,6 +33,7 @@ impl RuntimeService {
         let payload = match family {
             ModelFamily::ParakeetAsr
             | ModelFamily::WhisperAsr
+            | ModelFamily::Qwen3Asr
             | ModelFamily::Qwen3ForcedAligner => {
                 self.model_registry.load_asr(variant, &model_path).await?;
                 InstantiatedPayload::None

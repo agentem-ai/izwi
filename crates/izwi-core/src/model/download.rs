@@ -36,6 +36,14 @@ fn qwen_chat_gguf_filename(variant: ModelVariant) -> Option<&'static str> {
     }
 }
 
+fn qwen_asr_gguf_filename(variant: ModelVariant) -> Option<&'static str> {
+    match variant {
+        ModelVariant::Qwen3Asr06BGguf => Some("qwen3_asr_0.6b_q8_0.gguf"),
+        ModelVariant::Qwen3Asr17BGguf => Some("qwen3_asr_1.7b_q8_0.gguf"),
+        _ => None,
+    }
+}
+
 fn qwen35_chat_gguf_filename(variant: ModelVariant) -> Option<&'static str> {
     match variant {
         ModelVariant::Qwen3508BGguf => Some("Qwen3.5-0.8B-Q4_K_M.gguf"),
@@ -465,6 +473,11 @@ impl ModelDownloader {
                     && path.join("preprocessor_config.json").exists()
                     && path.join("tokenizer.json").exists()
                     && path.join("model.safetensors").exists()
+            }
+            ModelFamily::Qwen3Asr => {
+                let gguf_file =
+                    qwen_asr_gguf_filename(variant).expect("checked by qwen3-asr family");
+                path.join(gguf_file).exists()
             }
             ModelFamily::SortformerDiarization => path
                 .join("diar_streaming_sortformer_4spk-v2.1.nemo")
@@ -992,6 +1005,9 @@ impl ModelDownloader {
                 "added_tokens.json".to_string(),
                 "model.safetensors".to_string(),
             ],
+            ModelFamily::Qwen3Asr => vec![qwen_asr_gguf_filename(variant)
+                .expect("checked by qwen3-asr family")
+                .to_string()],
             ModelFamily::SortformerDiarization => vec![
                 "diar_streaming_sortformer_4spk-v2.1.nemo".to_string(),
                 "README.md".to_string(),
@@ -1386,6 +1402,7 @@ impl ModelDownloader {
         } else if file == "vocoder-LFM2.5-Audio-1.5B-Q4_0.gguf" {
             150_000_000
         } else if file.ends_with(".gguf") {
+            let lower = file.to_ascii_lowercase();
             if file.contains("Qwen3-0.6B") {
                 1_100_000_000
             } else if file.contains("Qwen3-1.7B") {
@@ -1410,6 +1427,10 @@ impl ModelDownloader {
                 730_895_360
             } else if file.contains("LFM2.5-Audio-1.5B") {
                 740_000_000
+            } else if lower.contains("qwen3_asr_0.6b") {
+                1_012_824_608
+            } else if lower.contains("qwen3_asr_1.7b") {
+                2_512_740_320
             } else {
                 1_000_000_000
             }
@@ -1612,6 +1633,26 @@ mod tests {
         std::fs::create_dir_all(&model_dir).expect("model dir");
         std::fs::write(model_dir.join("Qwen3.5-4B-Q4_K_M.gguf"), [0u8]).expect("gguf");
         std::fs::write(model_dir.join("mmproj-F16.gguf"), [0u8]).expect("mmproj");
+        assert!(downloader.is_downloaded(variant));
+        std::fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn qwen3_asr_gguf_model_files_only_include_single_checkpoint() {
+        let (downloader, temp_dir) = test_downloader();
+        let files = downloader.get_model_files(ModelVariant::Qwen3Asr06BGguf);
+        assert_eq!(files, vec!["qwen3_asr_0.6b_q8_0.gguf".to_string()]);
+        std::fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn qwen3_asr_gguf_is_downloaded_when_checkpoint_exists() {
+        let (downloader, temp_dir) = test_downloader();
+        let variant = ModelVariant::Qwen3Asr17BGguf;
+        let model_dir = downloader.model_path(variant);
+        std::fs::create_dir_all(&model_dir).expect("model dir");
+        assert!(!downloader.is_downloaded(variant));
+        std::fs::write(model_dir.join("qwen3_asr_1.7b_q8_0.gguf"), [0u8]).expect("gguf");
         assert!(downloader.is_downloaded(variant));
         std::fs::remove_dir_all(temp_dir).ok();
     }

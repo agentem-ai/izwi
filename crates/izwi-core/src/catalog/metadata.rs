@@ -91,6 +91,22 @@ pub enum ModelVariant {
         alias = "openai/whisper-large-v3-turbo"
     )]
     WhisperLargeV3Turbo,
+    /// Qwen3 ASR 0.6B model (GGUF Q8_0)
+    #[serde(
+        rename = "Qwen3-ASR-0.6B-GGUF",
+        alias = "Qwen3-ASR-0.6B",
+        alias = "qwen3-asr-0.6b",
+        alias = "qwen3_asr_0.6b_q8_0.gguf"
+    )]
+    Qwen3Asr06BGguf,
+    /// Qwen3 ASR 1.7B model (GGUF Q8_0)
+    #[serde(
+        rename = "Qwen3-ASR-1.7B-GGUF",
+        alias = "Qwen3-ASR-1.7B",
+        alias = "qwen3-asr-1.7b",
+        alias = "qwen3_asr_1.7b_q8_0.gguf"
+    )]
+    Qwen3Asr17BGguf,
     /// Streaming Sortformer 4-speaker diarization model (.nemo)
     #[serde(rename = "diar_streaming_sortformer_4spk-v2.1")]
     DiarStreamingSortformer4SpkV21,
@@ -220,6 +236,7 @@ impl ModelVariant {
             Self::Kokoro82M => "hexgrad/Kokoro-82M",
             Self::ParakeetTdt06BV3 => "nvidia/parakeet-tdt-0.6b-v3",
             Self::WhisperLargeV3Turbo => "openai/whisper-large-v3-turbo",
+            Self::Qwen3Asr06BGguf | Self::Qwen3Asr17BGguf => "Alkd/qwen3-asr-gguf",
             Self::DiarStreamingSortformer4SpkV21 => "nvidia/diar_streaming_sortformer_4spk-v2.1",
             Self::Qwen306B => "Qwen/Qwen3-0.6B",
             Self::Qwen306B4Bit => "mlx-community/Qwen3-0.6B-4bit",
@@ -268,6 +285,8 @@ impl ModelVariant {
             Self::Kokoro82M => "Kokoro 82M",
             Self::ParakeetTdt06BV3 => "Parakeet TDT 0.6B v3",
             Self::WhisperLargeV3Turbo => "Whisper Large v3 Turbo",
+            Self::Qwen3Asr06BGguf => "Qwen3 ASR 0.6B GGUF",
+            Self::Qwen3Asr17BGguf => "Qwen3 ASR 1.7B GGUF",
             Self::DiarStreamingSortformer4SpkV21 => "Streaming Sortformer 4spk v2.1",
             Self::Qwen306B => "Qwen3 0.6B",
             Self::Qwen306B4Bit => "Qwen3 0.6B 4-bit",
@@ -316,6 +335,8 @@ impl ModelVariant {
             Self::Kokoro82M => "Kokoro-82M",
             Self::ParakeetTdt06BV3 => "Parakeet-TDT-0.6B-v3",
             Self::WhisperLargeV3Turbo => "Whisper-Large-v3-Turbo",
+            Self::Qwen3Asr06BGguf => "Qwen3-ASR-0.6B-GGUF",
+            Self::Qwen3Asr17BGguf => "Qwen3-ASR-1.7B-GGUF",
             Self::DiarStreamingSortformer4SpkV21 => "diar_streaming_sortformer_4spk-v2.1",
             Self::Qwen306B => "Qwen3-0.6B",
             Self::Qwen306B4Bit => "Qwen3-0.6B-4bit",
@@ -364,6 +385,8 @@ impl ModelVariant {
             Self::Kokoro82M => 363_323_757,             // ~346 MB (HF tree total, Apr 2025)
             Self::ParakeetTdt06BV3 => 10_036_761_167,   // ~9.35 GB
             Self::WhisperLargeV3Turbo => 1_617_824_864, // ~1.51 GB (HF x-linked-size)
+            Self::Qwen3Asr06BGguf => 1_012_824_608,     // HF x-linked-size, Mar 2026
+            Self::Qwen3Asr17BGguf => 2_512_740_320,     // HF x-linked-size, Mar 2026
             Self::DiarStreamingSortformer4SpkV21 => 510_000_000, // ~0.47 GB (est)
             Self::Qwen306B => 1_520_000_000,            // ~1.42 GB (est)
             Self::Qwen306B4Bit => 900_000_000,          // ~0.84 GB (est)
@@ -411,6 +434,8 @@ impl ModelVariant {
             Self::Kokoro82M => 2.0,
             Self::ParakeetTdt06BV3 => 12.0,
             Self::WhisperLargeV3Turbo => 4.0,
+            Self::Qwen3Asr06BGguf => 4.0,
+            Self::Qwen3Asr17BGguf => 8.0,
             Self::DiarStreamingSortformer4SpkV21 => 3.0,
             Self::Qwen306B => 3.0,
             Self::Qwen306B4Bit => 2.0,
@@ -447,7 +472,9 @@ impl ModelVariant {
     pub fn is_asr(&self) -> bool {
         matches!(
             self.family(),
-            crate::catalog::ModelFamily::ParakeetAsr | crate::catalog::ModelFamily::WhisperAsr
+            crate::catalog::ModelFamily::ParakeetAsr
+                | crate::catalog::ModelFamily::WhisperAsr
+                | crate::catalog::ModelFamily::Qwen3Asr
         )
     }
 
@@ -637,6 +664,8 @@ impl ModelVariant {
                 | Self::Lfm25Audio15BGguf
                 | Self::Qwen306B4Bit
                 | Self::Qwen317B4Bit
+                | Self::Qwen3Asr06BGguf
+                | Self::Qwen3Asr17BGguf
                 | Self::Qwen306BGguf
                 | Self::Qwen317BGguf
                 | Self::Qwen34BGguf
@@ -666,6 +695,8 @@ impl ModelVariant {
                 | Self::Lfm2512BInstructGguf
                 | Self::Lfm2512BThinkingGguf
                 | Self::Lfm25Audio15BGguf
+                | Self::Qwen3Asr06BGguf
+                | Self::Qwen3Asr17BGguf
         )
     }
 
@@ -679,6 +710,11 @@ impl ModelVariant {
                 | Self::Qwen38BGguf
                 | Self::Qwen314BGguf
         )
+    }
+
+    /// Whether this is a Qwen3 ASR GGUF variant.
+    pub fn is_qwen_asr_gguf(&self) -> bool {
+        matches!(self, Self::Qwen3Asr06BGguf | Self::Qwen3Asr17BGguf)
     }
 
     /// Whether this is a Qwen3.5 chat GGUF variant.
@@ -714,6 +750,8 @@ impl ModelVariant {
             | Self::Qwen317BGguf
             | Self::Qwen34BGguf
             | Self::Qwen38BGguf
+            | Self::Qwen3Asr06BGguf
+            | Self::Qwen3Asr17BGguf
             | Self::Qwen3508BGguf
             | Self::Qwen352BGguf
             | Self::Qwen354BGguf
@@ -765,6 +803,8 @@ impl ModelVariant {
             Self::Kokoro82M,
             Self::ParakeetTdt06BV3,
             Self::WhisperLargeV3Turbo,
+            Self::Qwen3Asr06BGguf,
+            Self::Qwen3Asr17BGguf,
             Self::DiarStreamingSortformer4SpkV21,
             Self::Qwen306B,
             Self::Qwen306B4Bit,
@@ -1041,7 +1081,10 @@ mod tests {
 
     #[test]
     fn non_speech_variants_do_not_expose_speech_capabilities() {
-        assert_eq!(ModelVariant::WhisperLargeV3Turbo.speech_capabilities(), None);
+        assert_eq!(
+            ModelVariant::WhisperLargeV3Turbo.speech_capabilities(),
+            None
+        );
         assert_eq!(ModelVariant::Qwen38BGguf.speech_capabilities(), None);
     }
 }
