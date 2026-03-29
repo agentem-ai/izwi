@@ -4,7 +4,7 @@
 //! (used for audio-conditioned ASR).
 
 use candle_core::{DType, Device, Module, Tensor, D};
-use candle_nn::{ops, Embedding, Linear, RmsNorm, VarBuilder};
+use candle_nn::{ops, rotary_emb, Embedding, Linear, RmsNorm, VarBuilder};
 use candle_transformers::utils::repeat_kv as candle_repeat_kv;
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +20,7 @@ use crate::models::shared::attention::paged::{
     append_to_pages, default_kv_page_size, default_kv_quantization, materialize_pages,
     paged_decode_attention, KvCacheQuantization, KvPage,
 };
+use crate::models::shared::telemetry::{record_rope_kernel, record_rope_manual};
 use crate::models::shared::weights::mlx;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -148,6 +149,7 @@ struct Qwen3Attention {
     use_mrope: bool,
     mrope_section: Option<Vec<usize>>,
     rope_theta: f64,
+    rope_kernel_enabled: bool,
 }
 
 impl Qwen3Attention {
@@ -199,6 +201,7 @@ impl Qwen3Attention {
             use_mrope,
             mrope_section,
             rope_theta: cfg.rope_theta,
+            rope_kernel_enabled: qwen3_rope_kernel_enabled(vb.device()),
         })
     }
 
@@ -227,12 +230,11 @@ impl Qwen3Attention {
         start_pos: usize,
         position_ids: Option<&Tensor>,
     ) -> Result<Tensor> {
-        let _bsz = x.dim(0)?;
         let seq_len = x.dim(1)?;
-        let _heads = x.dim(2)?;
         let half_dim = self.head_dim / 2;
+        let x = x.contiguous()?;
 
-        let (cos, sin) = if self.use_mrope {
+        let (cos_half, sin_half) = if self.use_mrope {
             let position_ids = if let Some(position_ids) = position_ids {
                 position_ids.clone()
             } else {
@@ -265,9 +267,19 @@ impl Qwen3Attention {
             )?
         };
 
+        if self.should_try_rope_kernel(x.dtype()) {
+            let cos = cos_half.unsqueeze(0)?.contiguous()?;
+            let sin = sin_half.unsqueeze(0)?.contiguous()?;
+            if let Some(kernel_out) = try_apply_rope_thd(&x, &cos, &sin)? {
+                record_rope_kernel();
+                return Ok(kernel_out);
+            }
+        }
+        record_rope_manual();
+
         // Qwen RoPE uses rotate_half(x) over [first_half, second_half], not pairwise rotation.
-        let cos = Tensor::cat(&[cos.clone(), cos], 1)?; // [seq, head_dim]
-        let sin = Tensor::cat(&[sin.clone(), sin], 1)?; // [seq, head_dim]
+        let cos = Tensor::cat(&[cos_half.clone(), cos_half], 1)?; // [seq, head_dim]
+        let sin = Tensor::cat(&[sin_half.clone(), sin_half], 1)?; // [seq, head_dim]
         let cos = cos.unsqueeze(0)?.unsqueeze(2)?; // [1, seq, 1, head_dim]
         let sin = sin.unsqueeze(0)?.unsqueeze(2)?;
 
@@ -280,6 +292,16 @@ impl Qwen3Attention {
         let out = x.broadcast_mul(&cos)?;
         out.broadcast_add(&rotated.broadcast_mul(&sin)?)
             .map_err(Error::from)
+    }
+
+    fn should_try_rope_kernel(&self, dtype: DType) -> bool {
+        if !self.rope_kernel_enabled {
+            return false;
+        }
+        if self.head_dim == 0 || self.head_dim % 2 != 0 {
+            return false;
+        }
+        matches!(dtype, DType::F16 | DType::BF16 | DType::F32)
     }
 
     fn forward(
@@ -743,9 +765,36 @@ pub fn causal_mask(
         .map_err(Error::from)
 }
 
+fn try_apply_rope_thd(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Option<Tensor>> {
+    let kernel_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rotary_emb::rope_thd(x, cos, sin)
+    }));
+    match kernel_result {
+        Ok(Ok(out)) => Ok(Some(out)),
+        Ok(Err(_)) | Err(_) => Ok(None),
+    }
+}
+
+fn qwen3_env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default)
+}
+
+fn qwen3_rope_kernel_enabled(device: &Device) -> bool {
+    device.is_metal() && qwen3_env_bool("IZWI_QWEN3_ROPE_KERNEL", true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candle_nn::rotary_emb;
 
     #[test]
     fn repeat_kv_returns_rank4_heads_last() {
@@ -754,5 +803,69 @@ mod tests {
         let out = repeat_kv(&input, 32, 16).expect("repeat_kv");
         assert_eq!(out.rank(), 4);
         assert_eq!(out.dims4().expect("dims4"), (1, 63, 32, 128));
+    }
+
+    #[test]
+    fn qwen3_manual_rotary_matches_rope_thd() {
+        let device = Device::Cpu;
+        let seq_len = 4usize;
+        let head_dim = 8usize;
+        let x = Tensor::from_vec(
+            (0..(seq_len * 2 * head_dim))
+                .map(|v| (v as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            (1, seq_len, 2, head_dim),
+            &device,
+        )
+        .expect("x");
+
+        let (cos_half, sin_half) =
+            build_rope_cache(seq_len, head_dim, 0, 10000.0, &device, DType::F32).expect("cache");
+        let kernel = rotary_emb::rope_thd(
+            &x,
+            &cos_half.unsqueeze(0).expect("cos"),
+            &sin_half.unsqueeze(0).expect("sin"),
+        )
+        .expect("kernel");
+
+        let half_dim = head_dim / 2;
+        let cos = Tensor::cat(&[cos_half.clone(), cos_half], 1)
+            .expect("cat cos")
+            .unsqueeze(0)
+            .expect("unsqueeze cos")
+            .unsqueeze(2)
+            .expect("unsqueeze cos head");
+        let sin = Tensor::cat(&[sin_half.clone(), sin_half], 1)
+            .expect("cat sin")
+            .unsqueeze(0)
+            .expect("unsqueeze sin")
+            .unsqueeze(2)
+            .expect("unsqueeze sin head");
+
+        let x1 = x.narrow(3, 0, half_dim).expect("x1");
+        let x2 = x.narrow(3, half_dim, half_dim).expect("x2");
+        let minus_one = Tensor::from_vec(vec![-1.0f32], (1,), &device).expect("minus one");
+        let neg_x2 = x2.broadcast_mul(&minus_one).expect("neg");
+        let rotated = Tensor::cat(&[neg_x2, x1], 3).expect("rotated");
+        let manual = x
+            .broadcast_mul(&cos)
+            .expect("mul")
+            .broadcast_add(&rotated.broadcast_mul(&sin).expect("rot mul"))
+            .expect("add");
+
+        let kernel_vals = kernel
+            .flatten_all()
+            .expect("flatten kernel")
+            .to_vec1::<f32>()
+            .expect("kernel vals");
+        let manual_vals = manual
+            .flatten_all()
+            .expect("flatten manual")
+            .to_vec1::<f32>()
+            .expect("manual vals");
+        assert_eq!(kernel_vals.len(), manual_vals.len());
+        for (lhs, rhs) in kernel_vals.iter().zip(manual_vals.iter()) {
+            assert!((lhs - rhs).abs() < 1e-5);
+        }
     }
 }

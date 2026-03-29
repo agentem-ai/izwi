@@ -559,20 +559,7 @@ impl AudioTower {
 }
 
 fn gelu(x: &Tensor) -> Result<Tensor> {
-    let coeff = 0.044715f32;
-    let sqrt_2_over_pi = (2.0f32 / std::f32::consts::PI).sqrt();
-    let dtype = x.dtype();
-    let x3 = x.powf(3.0)?;
-    let coeff_t = Tensor::from_vec(vec![coeff], (1,), x.device())?.to_dtype(dtype)?;
-    let x3 = x3.broadcast_mul(&coeff_t)?;
-    let sqrt_t = Tensor::from_vec(vec![sqrt_2_over_pi], (1,), x.device())?.to_dtype(dtype)?;
-    let inner = (x + x3)?.broadcast_mul(&sqrt_t)?;
-    let tanh = inner.tanh()?;
-    let one = Tensor::from_vec(vec![1.0f32], (1,), x.device())?.to_dtype(dtype)?;
-    let half = Tensor::from_vec(vec![0.5f32], (1,), x.device())?.to_dtype(dtype)?;
-    let out = x.broadcast_mul(&one.broadcast_add(&tanh)?)?;
-    let out = out.broadcast_mul(&half)?;
-    Ok(out)
+    x.gelu().map_err(Error::from)
 }
 
 #[cfg(test)]
