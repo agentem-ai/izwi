@@ -9,6 +9,7 @@ use candle_transformers::utils::repeat_kv as candle_repeat_kv;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::kernels::metal::try_fused_silu_mul;
 use crate::models::shared::attention::batched::{
     batched_scaled_dot_product_attention, BatchedAttentionConfig, BatchedAttentionInput,
 };
@@ -445,8 +446,12 @@ impl Qwen3Mlp {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let gate = self.gate_proj.forward(x)?;
         let up = self.up_proj.forward(x)?;
-        let act = ops::silu(&gate)?;
-        let hidden = act.broadcast_mul(&up)?;
+        let hidden = if let Some(fused) = try_fused_silu_mul(&gate, &up) {
+            fused
+        } else {
+            let act = ops::silu(&gate)?;
+            act.broadcast_mul(&up)?
+        };
         let out = self.down_proj.forward(&hidden)?;
         Ok(out)
     }
