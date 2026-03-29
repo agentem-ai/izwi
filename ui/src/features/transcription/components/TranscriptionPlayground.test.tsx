@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TranscriptionPlayground } from "./TranscriptionPlayground";
@@ -439,6 +439,11 @@ describe("TranscriptionPlayground history", () => {
     );
     expect(
       screen.getByRole("heading", { name: "clip.wav" }),
+    ).toBeInTheDocument();
+    expect(
+      await within(
+        screen.getByTestId("transcription-history-modal-body"),
+      ).findByText("Testing saved transcription history."),
     ).toBeInTheDocument();
     expect(
       screen.getByTestId("transcription-history-modal-body"),
