@@ -21,6 +21,7 @@ use crate::model::ModelVariant;
 use crate::models::architectures::qwen3::core::{
     Qwen3Cache, Qwen3Config, Qwen3Model, RopeScalingConfig,
 };
+use crate::models::shared::attention::paged::default_kv_page_size;
 use crate::models::shared::memory::metal::metal_pool_for_device;
 use crate::models::shared::weights::gguf::{var_builder_from_gguf, GgufLoader};
 
@@ -88,6 +89,48 @@ pub struct AsrTranscriptionOutput {
 
 const DEFAULT_TRANSCRIBE_MAX_NEW_TOKENS: usize = 512;
 const ASR_INCREMENTAL_DECODE_RESYNC_TOKENS: usize = 32;
+
+fn parse_env_positive_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn qwen3_asr_kv_page_size(device: &candle_core::Device, prompt_tokens: usize) -> usize {
+    let default_page_size = default_kv_page_size().max(1);
+    let global_override = std::env::var_os("IZWI_KV_PAGE_SIZE").is_some();
+    let asr_override = parse_env_positive_usize("IZWI_QWEN3_ASR_KV_PAGE_SIZE");
+    qwen3_asr_kv_page_size_policy(
+        default_page_size,
+        device.is_metal(),
+        prompt_tokens,
+        global_override,
+        asr_override,
+    )
+}
+
+fn qwen3_asr_kv_page_size_policy(
+    default_page_size: usize,
+    is_metal: bool,
+    prompt_tokens: usize,
+    global_override: bool,
+    asr_override: Option<usize>,
+) -> usize {
+    if let Some(override_page_size) = asr_override {
+        return override_page_size.max(1);
+    }
+    if global_override || !is_metal {
+        return default_page_size.max(1);
+    }
+
+    // Long ASR prompts are heavily page-bound in decode; larger pages reduce
+    // per-token page-loop/kernel-launch overhead on Metal.
+    if prompt_tokens >= 4096 {
+        return default_page_size.max(128);
+    }
+    default_page_size.max(1)
+}
 
 impl Qwen3AsrModel {
     pub fn load(model_dir: &Path, variant: ModelVariant, device: DeviceProfile) -> Result<Self> {
@@ -278,6 +321,11 @@ impl Qwen3AsrModel {
         })
     }
 
+    fn build_decode_cache(&self, prompt_tokens: usize) -> Qwen3Cache {
+        let page_size = qwen3_asr_kv_page_size(&self.device.device, prompt_tokens);
+        Qwen3Cache::with_page_size(self.text_model.num_layers(), page_size)
+    }
+
     pub fn transcribe(
         &self,
         audio: &[f32],
@@ -402,7 +450,7 @@ impl Qwen3AsrModel {
             &self.device.device,
         )?;
 
-        let mut cache = Qwen3Cache::new(self.text_model.num_layers());
+        let mut cache = self.build_decode_cache(prompt.ids.len());
         let embeds = self.forward_with_audio(
             &input_ids,
             &audio_embeds,
@@ -589,7 +637,7 @@ impl Qwen3AsrModel {
             &self.device.device,
         )?;
 
-        let mut cache = Qwen3Cache::new(self.text_model.num_layers());
+        let mut cache = self.build_decode_cache(prompt.ids.len());
         let mut embeds = self.forward_with_audio(
             &input_ids,
             &audio_embeds,
@@ -700,7 +748,7 @@ impl Qwen3AsrModel {
             &self.device.device,
         )?;
 
-        let mut cache = Qwen3Cache::new(self.text_model.num_layers());
+        let mut cache = self.build_decode_cache(prompt.ids.len());
         let logits = self.forward_with_audio(
             &input_ids,
             &audio_embeds,
@@ -1817,7 +1865,10 @@ fn split_language_prefixed_output(rest: &str) -> Option<(Option<String>, String)
             && lang.chars().all(|ch| ch.is_ascii_alphabetic() || ch == '-')
             && !has_lower_to_upper_transition(lang)
         {
-            return Some((Some(normalized_language_name(lang)), text.trim().to_string()));
+            return Some((
+                Some(normalized_language_name(lang)),
+                text.trim().to_string(),
+            ));
         }
     }
 
@@ -2068,10 +2119,8 @@ mod tests {
 
     #[test]
     fn parse_asr_output_respects_forced_language_and_strips_prefix() {
-        let (language, text) = parse_asr_output(
-            "language EnglishThe quick brown fox.",
-            Some("english"),
-        );
+        let (language, text) =
+            parse_asr_output("language EnglishThe quick brown fox.", Some("english"));
         assert_eq!(language.as_deref(), Some("English"));
         assert_eq!(text, "The quick brown fox.");
     }
@@ -2207,6 +2256,27 @@ mod tests {
         let logits = Tensor::from_vec(vec![0.1f32; 8], (2, 4), &device).expect("logits");
         let err = argmax(&logits).expect_err("argmax should reject batched rank2");
         assert!(format!("{err}").contains("Unexpected batched logits for argmax"));
+    }
+
+    #[test]
+    fn qwen3_asr_kv_page_size_policy_upsizes_long_metal_prompts() {
+        let size = qwen3_asr_kv_page_size_policy(64, true, 9306, false, None);
+        assert_eq!(size, 128);
+
+        let size = qwen3_asr_kv_page_size_policy(96, true, 9306, false, None);
+        assert_eq!(size, 128);
+    }
+
+    #[test]
+    fn qwen3_asr_kv_page_size_policy_respects_env_override_priority() {
+        let asr_override = qwen3_asr_kv_page_size_policy(64, true, 9306, false, Some(256));
+        assert_eq!(asr_override, 256);
+
+        let global_override = qwen3_asr_kv_page_size_policy(192, true, 9306, true, None);
+        assert_eq!(global_override, 192);
+
+        let non_metal = qwen3_asr_kv_page_size_policy(64, false, 9306, false, None);
+        assert_eq!(non_metal, 64);
     }
 
     #[test]
