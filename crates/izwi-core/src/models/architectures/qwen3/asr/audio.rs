@@ -7,6 +7,10 @@ use candle_nn::{layer_norm, Conv2d, Conv2dConfig, LayerNorm, Linear, VarBuilder}
 use crate::error::{Error, Result};
 use crate::models::architectures::qwen3::asr::config::AudioConfig;
 use crate::models::shared::attention::flash::try_fused_self_attention;
+use crate::models::shared::telemetry::{
+    record_chunk_attention_fused_span, record_chunk_attention_mask_fallback,
+    record_chunk_attention_sequence, record_chunk_attention_unfused_span,
+};
 use crate::models::shared::weights::mlx;
 
 /// Compute output length after feature extraction/downsampling.
@@ -215,6 +219,7 @@ impl AudioAttention {
         // Fast path: execute attention independently per chunk. This avoids building
         // a full block mask and unlocks mask-free fused kernels for each span.
         if let Some(spans) = chunk_spans_from_cu_seqlens(seq_len, cu_seqlens) {
+            record_chunk_attention_sequence(spans.len(), seq_len);
             let mut outputs = Vec::with_capacity(spans.len());
             for (start, end) in spans {
                 let span = end - start;
@@ -230,28 +235,27 @@ impl AudioAttention {
                     self.head_dim,
                     false,
                 )? {
+                    record_chunk_attention_fused_span();
                     fused
                 } else {
-                    attention_no_mask(
-                        &q_chunk,
-                        &k_chunk,
-                        &v_chunk,
-                        self.num_heads,
-                        self.head_dim,
-                    )?
+                    record_chunk_attention_unfused_span();
+                    attention_no_mask(&q_chunk, &k_chunk, &v_chunk, self.num_heads, self.head_dim)?
                 };
                 outputs.push(out);
             }
 
             let refs: Vec<&Tensor> = outputs.iter().collect();
-            let out = Tensor::cat(&refs, 2)?
-                .transpose(1, 2)?
-                .reshape((1, seq_len, self.num_heads * self.head_dim))?;
+            let out = Tensor::cat(&refs, 2)?.transpose(1, 2)?.reshape((
+                1,
+                seq_len,
+                self.num_heads * self.head_dim,
+            ))?;
             return self.out_proj.forward(&out).map_err(Error::from);
         }
 
         // Fallback: retain original masked full-sequence behavior if chunk metadata
         // is malformed or incomplete.
+        record_chunk_attention_mask_fallback();
         let mask = create_chunked_attention_mask(seq_len, cu_seqlens, x.device(), q.dtype())?;
         let out = attention_unfused_with_mask(&q, &k, &v, &mask, self.num_heads, self.head_dim)?
             .transpose(1, 2)?
@@ -626,8 +630,7 @@ mod tests {
         .expect("v");
         let cu = vec![0i64, 2, 5];
 
-        let mask =
-            create_chunked_attention_mask(seq_len, &cu, &device, dtype).expect("chunk mask");
+        let mask = create_chunked_attention_mask(seq_len, &cu, &device, dtype).expect("chunk mask");
         let masked = attention_unfused_with_mask(&q, &k, &v, &mask, num_heads, head_dim)
             .expect("masked attention");
 

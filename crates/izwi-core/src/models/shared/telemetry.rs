@@ -14,6 +14,12 @@ pub struct KernelPathTelemetrySnapshot {
     pub prefill_sequence_tokens_total: u64,
     pub decode_attention_dense_total: u64,
     pub decode_attention_paged_total: u64,
+    pub chunk_attention_sequence_calls_total: u64,
+    pub chunk_attention_spans_total: u64,
+    pub chunk_attention_tokens_total: u64,
+    pub chunk_attention_fused_spans_total: u64,
+    pub chunk_attention_unfused_spans_total: u64,
+    pub chunk_attention_mask_fallback_total: u64,
     pub rope_kernel_total: u64,
     pub rope_manual_total: u64,
     pub fused_attention_attempts_total: u64,
@@ -68,6 +74,12 @@ static PREFILL_SEQUENCE_TOKENS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 static DECODE_ATTENTION_DENSE_TOTAL: AtomicU64 = AtomicU64::new(0);
 static DECODE_ATTENTION_PAGED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static CHUNK_ATTENTION_SEQUENCE_CALLS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static CHUNK_ATTENTION_SPANS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static CHUNK_ATTENTION_TOKENS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static CHUNK_ATTENTION_FUSED_SPANS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static CHUNK_ATTENTION_UNFUSED_SPANS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static CHUNK_ATTENTION_MASK_FALLBACK_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 static ROPE_KERNEL_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ROPE_MANUAL_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -102,6 +114,24 @@ pub fn record_decode_attention_path(path: DecodeAttentionPath) {
             DECODE_ATTENTION_PAGED_TOTAL.fetch_add(1, Ordering::Relaxed);
         }
     }
+}
+
+pub fn record_chunk_attention_sequence(spans: usize, tokens: usize) {
+    CHUNK_ATTENTION_SEQUENCE_CALLS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    CHUNK_ATTENTION_SPANS_TOTAL.fetch_add(spans as u64, Ordering::Relaxed);
+    CHUNK_ATTENTION_TOKENS_TOTAL.fetch_add(tokens as u64, Ordering::Relaxed);
+}
+
+pub fn record_chunk_attention_fused_span() {
+    CHUNK_ATTENTION_FUSED_SPANS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_chunk_attention_unfused_span() {
+    CHUNK_ATTENTION_UNFUSED_SPANS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_chunk_attention_mask_fallback() {
+    CHUNK_ATTENTION_MASK_FALLBACK_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn record_rope_kernel() {
@@ -157,6 +187,16 @@ pub fn snapshot() -> KernelPathTelemetrySnapshot {
         prefill_sequence_tokens_total: PREFILL_SEQUENCE_TOKENS_TOTAL.load(Ordering::Relaxed),
         decode_attention_dense_total: DECODE_ATTENTION_DENSE_TOTAL.load(Ordering::Relaxed),
         decode_attention_paged_total: DECODE_ATTENTION_PAGED_TOTAL.load(Ordering::Relaxed),
+        chunk_attention_sequence_calls_total: CHUNK_ATTENTION_SEQUENCE_CALLS_TOTAL
+            .load(Ordering::Relaxed),
+        chunk_attention_spans_total: CHUNK_ATTENTION_SPANS_TOTAL.load(Ordering::Relaxed),
+        chunk_attention_tokens_total: CHUNK_ATTENTION_TOKENS_TOTAL.load(Ordering::Relaxed),
+        chunk_attention_fused_spans_total: CHUNK_ATTENTION_FUSED_SPANS_TOTAL
+            .load(Ordering::Relaxed),
+        chunk_attention_unfused_spans_total: CHUNK_ATTENTION_UNFUSED_SPANS_TOTAL
+            .load(Ordering::Relaxed),
+        chunk_attention_mask_fallback_total: CHUNK_ATTENTION_MASK_FALLBACK_TOTAL
+            .load(Ordering::Relaxed),
         rope_kernel_total: ROPE_KERNEL_TOTAL.load(Ordering::Relaxed),
         rope_manual_total: ROPE_MANUAL_TOTAL.load(Ordering::Relaxed),
         fused_attention_attempts_total: FUSED_ATTENTION_ATTEMPTS_TOTAL.load(Ordering::Relaxed),
@@ -200,6 +240,12 @@ pub fn prometheus() -> String {
 # TYPE izwi_kernel_prefill_sequence_tokens_total counter\nizwi_kernel_prefill_sequence_tokens_total {}\n\
 # TYPE izwi_kernel_decode_attention_dense_total counter\nizwi_kernel_decode_attention_dense_total {}\n\
 # TYPE izwi_kernel_decode_attention_paged_total counter\nizwi_kernel_decode_attention_paged_total {}\n\
+# TYPE izwi_kernel_chunk_attention_sequence_calls_total counter\nizwi_kernel_chunk_attention_sequence_calls_total {}\n\
+# TYPE izwi_kernel_chunk_attention_spans_total counter\nizwi_kernel_chunk_attention_spans_total {}\n\
+# TYPE izwi_kernel_chunk_attention_tokens_total counter\nizwi_kernel_chunk_attention_tokens_total {}\n\
+# TYPE izwi_kernel_chunk_attention_fused_spans_total counter\nizwi_kernel_chunk_attention_fused_spans_total {}\n\
+# TYPE izwi_kernel_chunk_attention_unfused_spans_total counter\nizwi_kernel_chunk_attention_unfused_spans_total {}\n\
+# TYPE izwi_kernel_chunk_attention_mask_fallback_total counter\nizwi_kernel_chunk_attention_mask_fallback_total {}\n\
 # TYPE izwi_kernel_rope_kernel_total counter\nizwi_kernel_rope_kernel_total {}\n\
 # TYPE izwi_kernel_rope_manual_total counter\nizwi_kernel_rope_manual_total {}\n\
 # TYPE izwi_kernel_fused_attention_attempts_total counter\nizwi_kernel_fused_attention_attempts_total {}\n\
@@ -210,6 +256,12 @@ pub fn prometheus() -> String {
         metrics.prefill_sequence_tokens_total,
         metrics.decode_attention_dense_total,
         metrics.decode_attention_paged_total,
+        metrics.chunk_attention_sequence_calls_total,
+        metrics.chunk_attention_spans_total,
+        metrics.chunk_attention_tokens_total,
+        metrics.chunk_attention_fused_spans_total,
+        metrics.chunk_attention_unfused_spans_total,
+        metrics.chunk_attention_mask_fallback_total,
         metrics.rope_kernel_total,
         metrics.rope_manual_total,
         metrics.fused_attention_attempts_total,
@@ -266,6 +318,12 @@ pub fn reset_for_tests() {
         &PREFILL_SEQUENCE_TOKENS_TOTAL,
         &DECODE_ATTENTION_DENSE_TOTAL,
         &DECODE_ATTENTION_PAGED_TOTAL,
+        &CHUNK_ATTENTION_SEQUENCE_CALLS_TOTAL,
+        &CHUNK_ATTENTION_SPANS_TOTAL,
+        &CHUNK_ATTENTION_TOKENS_TOTAL,
+        &CHUNK_ATTENTION_FUSED_SPANS_TOTAL,
+        &CHUNK_ATTENTION_UNFUSED_SPANS_TOTAL,
+        &CHUNK_ATTENTION_MASK_FALLBACK_TOTAL,
         &ROPE_KERNEL_TOTAL,
         &ROPE_MANUAL_TOTAL,
         &FUSED_ATTENTION_ATTEMPTS_TOTAL,
