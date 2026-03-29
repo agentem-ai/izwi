@@ -44,6 +44,18 @@ struct KernelPathTelemetrySnapshot {
     prefill_sequence_tokens_total: u64,
     decode_attention_dense_total: u64,
     decode_attention_paged_total: u64,
+    #[serde(default)]
+    chunk_attention_sequence_calls_total: u64,
+    #[serde(default)]
+    chunk_attention_spans_total: u64,
+    #[serde(default)]
+    chunk_attention_tokens_total: u64,
+    #[serde(default)]
+    chunk_attention_fused_spans_total: u64,
+    #[serde(default)]
+    chunk_attention_unfused_spans_total: u64,
+    #[serde(default)]
+    chunk_attention_mask_fallback_total: u64,
     rope_kernel_total: u64,
     rope_manual_total: u64,
     fused_attention_attempts_total: u64,
@@ -758,6 +770,24 @@ fn print_runtime_delta(
     let paged_decode_delta = kernel_after
         .decode_attention_paged_total
         .saturating_sub(kernel_before.decode_attention_paged_total);
+    let chunk_sequence_delta = kernel_after
+        .chunk_attention_sequence_calls_total
+        .saturating_sub(kernel_before.chunk_attention_sequence_calls_total);
+    let chunk_spans_delta = kernel_after
+        .chunk_attention_spans_total
+        .saturating_sub(kernel_before.chunk_attention_spans_total);
+    let chunk_tokens_delta = kernel_after
+        .chunk_attention_tokens_total
+        .saturating_sub(kernel_before.chunk_attention_tokens_total);
+    let chunk_fused_delta = kernel_after
+        .chunk_attention_fused_spans_total
+        .saturating_sub(kernel_before.chunk_attention_fused_spans_total);
+    let chunk_unfused_delta = kernel_after
+        .chunk_attention_unfused_spans_total
+        .saturating_sub(kernel_before.chunk_attention_unfused_spans_total);
+    let chunk_fallback_delta = kernel_after
+        .chunk_attention_mask_fallback_total
+        .saturating_sub(kernel_before.chunk_attention_mask_fallback_total);
     let rope_kernel_delta = kernel_after
         .rope_kernel_total
         .saturating_sub(kernel_before.rope_kernel_total);
@@ -781,6 +811,14 @@ fn print_runtime_delta(
     println!(
         "  Decode path counts (dense/paged): {} / {}",
         dense_decode_delta, paged_decode_delta
+    );
+    println!(
+        "  Chunk attention (calls/spans/tokens): {} / {} / {}",
+        chunk_sequence_delta, chunk_spans_delta, chunk_tokens_delta
+    );
+    println!(
+        "  Chunk attention (fused/unfused/fallback): {} / {} / {}",
+        chunk_fused_delta, chunk_unfused_delta, chunk_fallback_delta
     );
     if decode_total > 0 {
         println!(
