@@ -20,7 +20,8 @@ use crate::error::ApiError;
 use crate::state::AppState;
 use crate::transcription_store::{
     NewTranscriptionRecord, StoredTranscriptionAudio, TranscriptionRecord,
-    TranscriptionRecordSummary, TranscriptionSegmentRecord, TranscriptionWordRecord,
+    TranscriptionRecordSummary, TranscriptionSegmentRecord, TranscriptionSummaryStatus,
+    TranscriptionWordRecord,
 };
 
 const HISTORY_LIST_LIMIT: usize = 200;
@@ -220,6 +221,11 @@ pub async fn create_record(
             transcription: artifacts.text,
             segments: artifacts.segments,
             words: artifacts.words,
+            summary_status: TranscriptionSummaryStatus::NotRequested,
+            summary_model_id: None,
+            summary_text: None,
+            summary_error: None,
+            summary_updated_at: None,
         })
         .await
         .map_err(map_store_error)?;
@@ -319,6 +325,11 @@ async fn create_record_stream(
                         transcription: artifacts.text,
                         segments: artifacts.segments,
                         words: artifacts.words,
+                        summary_status: TranscriptionSummaryStatus::NotRequested,
+                        summary_model_id: None,
+                        summary_text: None,
+                        summary_error: None,
+                        summary_updated_at: None,
                     })
                     .await
                 {

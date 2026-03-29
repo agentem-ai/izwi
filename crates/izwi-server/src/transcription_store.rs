@@ -11,6 +11,32 @@ use crate::storage_layout::{self, MediaGroup};
 
 const DEFAULT_LIST_LIMIT: usize = 200;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptionSummaryStatus {
+    NotRequested,
+    Pending,
+    Ready,
+    Failed,
+}
+
+impl Default for TranscriptionSummaryStatus {
+    fn default() -> Self {
+        Self::NotRequested
+    }
+}
+
+impl TranscriptionSummaryStatus {
+    fn as_db_value(self) -> &'static str {
+        match self {
+            Self::NotRequested => "not_requested",
+            Self::Pending => "pending",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptionWordRecord {
     pub word: String,
@@ -40,6 +66,9 @@ pub struct TranscriptionRecordSummary {
     pub audio_filename: Option<String>,
     pub transcription_preview: String,
     pub transcription_chars: usize,
+    pub summary_status: TranscriptionSummaryStatus,
+    pub summary_preview: Option<String>,
+    pub summary_chars: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,6 +86,11 @@ pub struct TranscriptionRecord {
     pub transcription: String,
     pub segments: Vec<TranscriptionSegmentRecord>,
     pub words: Vec<TranscriptionWordRecord>,
+    pub summary_status: TranscriptionSummaryStatus,
+    pub summary_model_id: Option<String>,
+    pub summary_text: Option<String>,
+    pub summary_error: Option<String>,
+    pub summary_updated_at: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +114,20 @@ pub struct NewTranscriptionRecord {
     pub transcription: String,
     pub segments: Vec<TranscriptionSegmentRecord>,
     pub words: Vec<TranscriptionWordRecord>,
+    pub summary_status: TranscriptionSummaryStatus,
+    pub summary_model_id: Option<String>,
+    pub summary_text: Option<String>,
+    pub summary_error: Option<String>,
+    pub summary_updated_at: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateTranscriptionSummary {
+    pub status: TranscriptionSummaryStatus,
+    pub model_id: Option<String>,
+    pub text: Option<String>,
+    pub error: Option<String>,
+    pub updated_at: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -123,7 +171,12 @@ impl TranscriptionStore {
                 audio_storage_path TEXT NOT NULL,
                 transcription TEXT NOT NULL,
                 segments_json TEXT NOT NULL DEFAULT '[]',
-                words_json TEXT NOT NULL DEFAULT '[]'
+                words_json TEXT NOT NULL DEFAULT '[]',
+                summary_status TEXT NOT NULL DEFAULT 'not_requested',
+                summary_model_id TEXT NULL,
+                summary_text TEXT NULL,
+                summary_error TEXT NULL,
+                summary_updated_at INTEGER NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_transcription_records_created_at
@@ -134,6 +187,11 @@ impl TranscriptionStore {
         ensure_transcription_records_aligner_model_id_column(&conn)?;
         ensure_transcription_records_segments_json_column(&conn)?;
         ensure_transcription_records_words_json_column(&conn)?;
+        ensure_transcription_records_summary_status_column(&conn)?;
+        ensure_transcription_records_summary_model_id_column(&conn)?;
+        ensure_transcription_records_summary_text_column(&conn)?;
+        ensure_transcription_records_summary_error_column(&conn)?;
+        ensure_transcription_records_summary_updated_at_column(&conn)?;
 
         Ok(Self {
             db_path,
@@ -161,7 +219,9 @@ impl TranscriptionStore {
                     rtf,
                     audio_mime_type,
                     audio_filename,
-                    transcription
+                    transcription,
+                    summary_status,
+                    summary_text
                 FROM transcription_records
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?1
@@ -170,6 +230,9 @@ impl TranscriptionStore {
 
             let rows = stmt.query_map(params![list_limit], |row| {
                 let transcription: String = row.get(9)?;
+                let summary_status =
+                    parse_summary_status(row.get::<_, Option<String>>(10)?);
+                let summary_text: Option<String> = row.get(11)?;
                 Ok(TranscriptionRecordSummary {
                     id: row.get(0)?,
                     created_at: i64_to_u64(row.get(1)?),
@@ -182,6 +245,9 @@ impl TranscriptionStore {
                     audio_filename: row.get(8)?,
                     transcription_preview: transcription_preview(&transcription),
                     transcription_chars: transcription.chars().count(),
+                    summary_status,
+                    summary_preview: summary_preview(summary_text.as_deref()),
+                    summary_chars: summary_text.as_ref().map(|text| text.chars().count()).unwrap_or(0),
                 })
             })?;
 
@@ -272,6 +338,22 @@ impl TranscriptionStore {
             let transcription = sanitize_required_text(record.transcription.as_str(), 100_000);
             let segments = sanitize_segments(record.segments);
             let words = sanitize_words(record.words);
+            let summary_model_id = sanitize_optional_text(record.summary_model_id.as_deref(), 160);
+            let summary_text = sanitize_optional_text(record.summary_text.as_deref(), 20_000);
+            let summary_error = sanitize_optional_text(record.summary_error.as_deref(), 1_000);
+            let summary_status = normalize_summary_status(
+                record.summary_status,
+                summary_text.as_deref(),
+                summary_error.as_deref(),
+            );
+            let summary_updated_at = normalize_optional_timestamp_i64(record.summary_updated_at)
+                .or_else(|| {
+                    if summary_status == TranscriptionSummaryStatus::NotRequested {
+                        None
+                    } else {
+                        Some(now)
+                    }
+                });
 
             if record.audio_bytes.is_empty() {
                 return Err(anyhow!("Audio payload cannot be empty"));
@@ -307,9 +389,14 @@ impl TranscriptionStore {
                     audio_storage_path,
                     transcription,
                     segments_json,
-                    words_json
+                    words_json,
+                    summary_status,
+                    summary_model_id,
+                    summary_text,
+                    summary_error,
+                    summary_updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
                 "#,
                 params![
                     &record_id,
@@ -326,6 +413,11 @@ impl TranscriptionStore {
                     transcription,
                     segments_json,
                     words_json,
+                    summary_status.as_db_value(),
+                    summary_model_id,
+                    summary_text,
+                    summary_error,
+                    summary_updated_at,
                 ],
             ) {
                 let _ = storage_layout::delete_media_file(
@@ -338,6 +430,62 @@ impl TranscriptionStore {
             let created = fetch_record_without_audio(&conn, &record_id)?
                 .ok_or_else(|| anyhow!("Failed to fetch created transcription record"))?;
             Ok(created)
+        })
+        .await
+    }
+
+    pub async fn update_summary(
+        &self,
+        record_id: String,
+        update: UpdateTranscriptionSummary,
+    ) -> anyhow::Result<Option<TranscriptionRecord>> {
+        self.run_blocking(move |db_path| {
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
+            let now = now_unix_millis_i64();
+
+            let summary_model_id = sanitize_optional_text(update.model_id.as_deref(), 160);
+            let summary_text = sanitize_optional_text(update.text.as_deref(), 20_000);
+            let summary_error = sanitize_optional_text(update.error.as_deref(), 1_000);
+            let summary_status = normalize_summary_status(
+                update.status,
+                summary_text.as_deref(),
+                summary_error.as_deref(),
+            );
+            let summary_updated_at = normalize_optional_timestamp_i64(update.updated_at)
+                .or_else(|| {
+                    if summary_status == TranscriptionSummaryStatus::NotRequested {
+                        None
+                    } else {
+                        Some(now)
+                    }
+                });
+
+            let changed = conn.execute(
+                r#"
+                UPDATE transcription_records
+                SET
+                    summary_status = ?2,
+                    summary_model_id = ?3,
+                    summary_text = ?4,
+                    summary_error = ?5,
+                    summary_updated_at = ?6
+                WHERE id = ?1
+                "#,
+                params![
+                    record_id,
+                    summary_status.as_db_value(),
+                    summary_model_id,
+                    summary_text,
+                    summary_error,
+                    summary_updated_at,
+                ],
+            )?;
+
+            if changed == 0 {
+                return Ok(None);
+            }
+
+            fetch_record_without_audio(&conn, &record_id)
         })
         .await
     }
@@ -401,7 +549,12 @@ fn fetch_record_without_audio(
                 audio_filename,
                 transcription,
                 segments_json,
-                words_json
+                words_json,
+                summary_status,
+                summary_model_id,
+                summary_text,
+                summary_error,
+                summary_updated_at
             FROM transcription_records
             WHERE id = ?1
             "#,
@@ -427,7 +580,48 @@ fn map_transcription_record(row: &Row<'_>) -> rusqlite::Result<TranscriptionReco
         transcription: row.get(10)?,
         segments: parse_json_vec(row.get(11)?),
         words: parse_json_vec(row.get(12)?),
+        summary_status: parse_summary_status(row.get(13)?),
+        summary_model_id: row.get(14)?,
+        summary_text: row.get(15)?,
+        summary_error: row.get(16)?,
+        summary_updated_at: row.get::<_, Option<i64>>(17)?.map(i64_to_u64),
     })
+}
+
+fn parse_summary_status(raw: Option<String>) -> TranscriptionSummaryStatus {
+    match raw
+        .unwrap_or_else(|| "not_requested".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "pending" => TranscriptionSummaryStatus::Pending,
+        "ready" => TranscriptionSummaryStatus::Ready,
+        "failed" => TranscriptionSummaryStatus::Failed,
+        _ => TranscriptionSummaryStatus::NotRequested,
+    }
+}
+
+fn normalize_summary_status(
+    requested: TranscriptionSummaryStatus,
+    summary_text: Option<&str>,
+    summary_error: Option<&str>,
+) -> TranscriptionSummaryStatus {
+    if summary_text.is_some() {
+        return TranscriptionSummaryStatus::Ready;
+    }
+    if summary_error.is_some() {
+        return TranscriptionSummaryStatus::Failed;
+    }
+    match requested {
+        TranscriptionSummaryStatus::Ready => TranscriptionSummaryStatus::NotRequested,
+        TranscriptionSummaryStatus::Failed => TranscriptionSummaryStatus::NotRequested,
+        other => other,
+    }
+}
+
+fn normalize_optional_timestamp_i64(value: Option<u64>) -> Option<i64> {
+    value.and_then(|raw| i64::try_from(raw).ok())
 }
 
 fn transcription_preview(content: &str) -> String {
@@ -436,6 +630,20 @@ fn transcription_preview(content: &str) -> String {
         return "No transcript".to_string();
     }
     truncate_string(&normalized, 160)
+}
+
+fn summary_preview(content: Option<&str>) -> Option<String> {
+    let value = content.unwrap_or("").trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(truncate_string(&normalized, 200))
+    }
 }
 
 fn sanitize_required_text(raw: &str, max_chars: usize) -> String {
@@ -547,6 +755,71 @@ fn ensure_transcription_records_words_json_column(conn: &Connection) -> anyhow::
         [],
     )
     .context("Failed adding transcription_records.words_json column")?;
+    Ok(())
+}
+
+fn ensure_transcription_records_summary_status_column(conn: &Connection) -> anyhow::Result<()> {
+    if transcription_records_has_column(conn, "summary_status")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE transcription_records ADD COLUMN summary_status TEXT NOT NULL DEFAULT 'not_requested'",
+        [],
+    )
+    .context("Failed adding transcription_records.summary_status column")?;
+    Ok(())
+}
+
+fn ensure_transcription_records_summary_model_id_column(conn: &Connection) -> anyhow::Result<()> {
+    if transcription_records_has_column(conn, "summary_model_id")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE transcription_records ADD COLUMN summary_model_id TEXT NULL",
+        [],
+    )
+    .context("Failed adding transcription_records.summary_model_id column")?;
+    Ok(())
+}
+
+fn ensure_transcription_records_summary_text_column(conn: &Connection) -> anyhow::Result<()> {
+    if transcription_records_has_column(conn, "summary_text")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE transcription_records ADD COLUMN summary_text TEXT NULL",
+        [],
+    )
+    .context("Failed adding transcription_records.summary_text column")?;
+    Ok(())
+}
+
+fn ensure_transcription_records_summary_error_column(conn: &Connection) -> anyhow::Result<()> {
+    if transcription_records_has_column(conn, "summary_error")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE transcription_records ADD COLUMN summary_error TEXT NULL",
+        [],
+    )
+    .context("Failed adding transcription_records.summary_error column")?;
+    Ok(())
+}
+
+fn ensure_transcription_records_summary_updated_at_column(conn: &Connection) -> anyhow::Result<()> {
+    if transcription_records_has_column(conn, "summary_updated_at")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE transcription_records ADD COLUMN summary_updated_at INTEGER NULL",
+        [],
+    )
+    .context("Failed adding transcription_records.summary_updated_at column")?;
     Ok(())
 }
 
@@ -680,6 +953,11 @@ mod tests {
                     end: 2.4,
                 },
             ],
+            summary_status: TranscriptionSummaryStatus::Ready,
+            summary_model_id: Some("Qwen3.5-4B".to_string()),
+            summary_text: Some("A short summary of the transcript.".to_string()),
+            summary_error: None,
+            summary_updated_at: Some(1),
         }
     }
 
@@ -698,6 +976,12 @@ mod tests {
         );
         assert_eq!(created.words.len(), 4);
         assert_eq!(created.segments.len(), 2);
+        assert_eq!(created.summary_status, TranscriptionSummaryStatus::Ready);
+        assert_eq!(created.summary_model_id.as_deref(), Some("Qwen3.5-4B"));
+        assert_eq!(
+            created.summary_text.as_deref(),
+            Some("A short summary of the transcript.")
+        );
 
         let fetched = store
             .get_record(created.id.clone())
@@ -718,6 +1002,11 @@ mod tests {
         record.aligner_model_id = None;
         record.words = Vec::new();
         record.segments = Vec::new();
+        record.summary_status = TranscriptionSummaryStatus::NotRequested;
+        record.summary_model_id = None;
+        record.summary_text = None;
+        record.summary_error = None;
+        record.summary_updated_at = None;
 
         let created = store
             .create_record(record)
@@ -727,10 +1016,19 @@ mod tests {
         assert!(created.aligner_model_id.is_none());
         assert!(created.words.is_empty());
         assert!(created.segments.is_empty());
+        assert_eq!(
+            created.summary_status,
+            TranscriptionSummaryStatus::NotRequested
+        );
+        assert!(created.summary_text.is_none());
 
         let summaries = store.list_records(10).await.expect("list should succeed");
         assert_eq!(summaries.len(), 1);
         assert!(summaries[0].transcription_preview.contains("Hello there."));
+        assert_eq!(
+            summaries[0].summary_status,
+            TranscriptionSummaryStatus::NotRequested
+        );
 
         std::fs::remove_dir_all(root).expect("test temp dir should be removable");
     }
