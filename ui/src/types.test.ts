@@ -19,6 +19,15 @@ describe("VIEW_CONFIGS.chat.modelFilter", () => {
 });
 
 describe("speech route model filters", () => {
+  it("includes qwen3 asr gguf variants on transcription routes", () => {
+    expect(VIEW_CONFIGS.transcription.modelFilter("Qwen3-ASR-0.6B-GGUF")).toBe(
+      true,
+    );
+    expect(VIEW_CONFIGS.transcription.modelFilter("Qwen3-ASR-1.7B-GGUF")).toBe(
+      true,
+    );
+  });
+
   it("includes lfm25 audio on transcription routes", () => {
     expect(VIEW_CONFIGS.transcription.modelFilter("LFM2.5-Audio-1.5B-GGUF")).toBe(
       true,

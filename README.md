@@ -112,7 +112,7 @@ IZWI_ASR_CHUNK_OVERLAP_SECS=3
 | Category | Models |
 |----------|--------|
 | **TTS** | Qwen3-TTS 12Hz (0.6B Base/CustomVoice, 1.7B Base/CustomVoice/VoiceDesign), Kokoro-82M |
-| **ASR** | Parakeet-TDT-0.6B-v3, Whisper-Large-v3-Turbo |
+| **ASR** | Qwen3-ASR GGUF (0.6B, 1.7B), Parakeet-TDT-0.6B-v3, Whisper-Large-v3-Turbo |
 | **Diarization** | Sortformer 4-speaker |
 | **Chat** | Qwen3 GGUF (0.6B, 1.7B, 4B, 8B), Qwen3.5 GGUF (0.8B, 2B, 4B, 9B), LFM2.5 (1.2B Instruct/Thinking GGUF), Gemma 3 (1B) |
 | **Audio** | LFM2.5-Audio-1.5B-GGUF |
