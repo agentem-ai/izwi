@@ -280,8 +280,8 @@ export function TranscriptionReviewWorkspace({
     ? "relative flex min-h-0 flex-col"
     : "flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)]";
   const contentClassName = stickyPlaybackFooter
-    ? "grid gap-6 pb-20 xl:grid-cols-[minmax(0,1fr),248px]"
-    : "grid flex-1 min-h-0 gap-6 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 xl:grid-cols-[minmax(0,1fr),248px]";
+    ? "grid gap-5 pb-20 xl:grid-cols-[minmax(0,1fr),220px]"
+    : "grid flex-1 min-h-0 gap-5 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 xl:grid-cols-[minmax(0,1fr),220px]";
   const playbackClassName = stickyPlaybackFooter
     ? "sticky bottom-0 -mx-4 -mb-4 mt-auto border-t border-[var(--border-muted)] bg-[var(--bg-surface-0)]/95 px-4 py-3 backdrop-blur sm:-mx-5 sm:-mb-5 sm:px-5 sm:py-3"
     : "border-t border-[var(--border-muted)] bg-[var(--bg-surface-0)]/95 px-4 py-3 backdrop-blur sm:px-5";
@@ -325,7 +325,7 @@ export function TranscriptionReviewWorkspace({
               </StatusBadge>
             </div>
             {summaryText ? (
-              <p className="mt-2 text-[13px] leading-relaxed text-[var(--text-secondary)]">
+              <p className="mt-2 text-[15px] leading-7 text-[var(--text-secondary)]">
                 {summaryText}
               </p>
             ) : summaryStatus === "pending" ? (
@@ -348,9 +348,6 @@ export function TranscriptionReviewWorkspace({
           </div>
 
           <div>
-            <h3 className="mb-3 text-[13px] font-semibold tracking-wide text-[var(--text-primary)]">
-              Transcript
-            </h3>
             <div className="space-y-2.5">
               {transcriptEntries.map((entry, index) => {
                 const active = index === activeEntryIndex;
@@ -437,53 +434,53 @@ export function TranscriptionReviewWorkspace({
           </div>
         </div>
 
-        <div className="space-y-5">
+        <div className="space-y-3">
           <div>
-            <h3 className="mb-3 text-[13px] font-semibold tracking-wide text-[var(--text-primary)]">
+            <h3 className="mb-2 text-[12px] font-semibold tracking-wide text-[var(--text-primary)]">
               Overview
             </h3>
-            <div className="space-y-2.5">
-              <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+            <div className="space-y-2">
+              <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-2.5 py-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
                   Duration
                 </div>
-                <div className="mt-1 text-base font-semibold text-[var(--text-primary)]">
+                <div className="mt-0.5 text-[17px] font-semibold leading-tight text-[var(--text-primary)]">
                   {formatDurationLabel(record.duration_secs)}
                 </div>
               </div>
 
-              <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+              <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-2.5 py-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
                   Words
                 </div>
-                <div className="mt-1 text-base font-semibold text-[var(--text-primary)]">
+                <div className="mt-0.5 text-[17px] font-semibold leading-tight text-[var(--text-primary)]">
                   {wordCount}
                 </div>
               </div>
 
-              <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+              <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-2.5 py-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
                   Timestamps
                 </div>
-                <div className="mt-1 text-base font-semibold text-[var(--text-primary)]">
+                <div className="mt-0.5 text-[17px] font-semibold leading-tight text-[var(--text-primary)]">
                   {timestamped ? "Enabled" : "Disabled"}
                 </div>
-                <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+                <div className="mt-0.5 text-[10px] leading-4 text-[var(--text-muted)]">
                   {timestamped
                     ? record.aligner_model_id || "Forced aligner"
                     : "Plain transcript only"}
                 </div>
               </div>
 
-              <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+              <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-2.5 py-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
                   Language
                 </div>
-                <div className="mt-1 text-base font-semibold text-[var(--text-primary)]">
+                <div className="mt-0.5 text-[17px] font-semibold leading-tight text-[var(--text-primary)]">
                   {record.language || "Unknown"}
                 </div>
                 {record.audio_filename ? (
-                  <div className="mt-1 truncate text-[11px] text-[var(--text-muted)]">
+                  <div className="mt-0.5 truncate text-[10px] leading-4 text-[var(--text-muted)]">
                     {record.audio_filename}
                   </div>
                 ) : null}

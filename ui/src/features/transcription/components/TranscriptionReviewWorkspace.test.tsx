@@ -107,10 +107,10 @@ describe("TranscriptionReviewWorkspace", () => {
     );
 
     const summaryHeading = screen.getByRole("heading", { name: "Summary" });
-    const transcriptHeading = screen.getByRole("heading", { name: "Transcript" });
+    const transcriptBodyText = screen.getByText("Hello there.");
 
     expect(
-      summaryHeading.compareDocumentPosition(transcriptHeading) &
+      summaryHeading.compareDocumentPosition(transcriptBodyText) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
@@ -118,6 +118,9 @@ describe("TranscriptionReviewWorkspace", () => {
         "Aaron is worried about review load and is trying to keep up with assignments.",
       ),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Transcript" }),
+    ).not.toBeInTheDocument();
     expect(screen.getAllByRole("heading", { name: "Summary" })).toHaveLength(1);
   });
 
