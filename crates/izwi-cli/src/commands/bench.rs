@@ -61,6 +61,18 @@ struct KernelPathTelemetrySnapshot {
     fused_attention_attempts_total: u64,
     fused_attention_success_total: u64,
     fused_attention_fallback_total: u64,
+    #[serde(default)]
+    fused_attention_masked_attempts_total: u64,
+    #[serde(default)]
+    fused_attention_masked_success_total: u64,
+    #[serde(default)]
+    fused_attention_masked_fallback_total: u64,
+    #[serde(default)]
+    fused_attention_fallback_metal_sdpa_mask_policy_disabled_total: u64,
+    #[serde(default)]
+    fused_attention_fallback_metal_sdpa_mask_shape_unsupported_total: u64,
+    #[serde(default)]
+    fused_attention_fallback_metal_sdpa_mask_dtype_unsupported_total: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -803,6 +815,24 @@ fn print_runtime_delta(
     let fused_fallback_delta = kernel_after
         .fused_attention_fallback_total
         .saturating_sub(kernel_before.fused_attention_fallback_total);
+    let fused_masked_attempts_delta = kernel_after
+        .fused_attention_masked_attempts_total
+        .saturating_sub(kernel_before.fused_attention_masked_attempts_total);
+    let fused_masked_success_delta = kernel_after
+        .fused_attention_masked_success_total
+        .saturating_sub(kernel_before.fused_attention_masked_success_total);
+    let fused_masked_fallback_delta = kernel_after
+        .fused_attention_masked_fallback_total
+        .saturating_sub(kernel_before.fused_attention_masked_fallback_total);
+    let fused_mask_policy_disabled_delta = kernel_after
+        .fused_attention_fallback_metal_sdpa_mask_policy_disabled_total
+        .saturating_sub(kernel_before.fused_attention_fallback_metal_sdpa_mask_policy_disabled_total);
+    let fused_mask_shape_unsupported_delta = kernel_after
+        .fused_attention_fallback_metal_sdpa_mask_shape_unsupported_total
+        .saturating_sub(kernel_before.fused_attention_fallback_metal_sdpa_mask_shape_unsupported_total);
+    let fused_mask_dtype_unsupported_delta = kernel_after
+        .fused_attention_fallback_metal_sdpa_mask_dtype_unsupported_total
+        .saturating_sub(kernel_before.fused_attention_fallback_metal_sdpa_mask_dtype_unsupported_total);
     let decode_total = dense_decode_delta + paged_decode_delta;
     println!(
         "  Prefill path counts (token-mode/sequence-spans/sequence-tokens): {} / {} / {}",
@@ -834,6 +864,16 @@ fn print_runtime_delta(
     println!(
         "  Fused attention (attempt/success/fallback): {} / {} / {}",
         fused_attempts_delta, fused_success_delta, fused_fallback_delta
+    );
+    println!(
+        "  Fused masked attention (attempt/success/fallback): {} / {} / {}",
+        fused_masked_attempts_delta, fused_masked_success_delta, fused_masked_fallback_delta
+    );
+    println!(
+        "  Masked fused fallback reasons (policy/shape/dtype): {} / {} / {}",
+        fused_mask_policy_disabled_delta,
+        fused_mask_shape_unsupported_delta,
+        fused_mask_dtype_unsupported_delta
     );
 }
 
