@@ -311,6 +311,24 @@ export const MODEL_DETAILS: Record<string, ModelDetail> = {
     ],
     size: "1.5 GB",
   },
+  "Qwen3-ASR-0.6B-GGUF": {
+    shortName: "Qwen3-ASR 0.6B",
+    fullName: "Qwen3-ASR 0.6B (GGUF Q8_0)",
+    description:
+      "Compact Qwen3-ASR speech recognition model with native GGUF loading",
+    category: "asr",
+    capabilities: ["Transcription", "GGUF", "Q8_0"],
+    size: "1.0 GB",
+  },
+  "Qwen3-ASR-1.7B-GGUF": {
+    shortName: "Qwen3-ASR 1.7B",
+    fullName: "Qwen3-ASR 1.7B (GGUF Q8_0)",
+    description:
+      "Higher-accuracy Qwen3-ASR speech recognition model in GGUF format",
+    category: "asr",
+    capabilities: ["Transcription", "GGUF", "Q8_0"],
+    size: "2.5 GB",
+  },
   "Qwen3-ForcedAligner-0.6B": {
     shortName: "ForcedAligner 0.6B",
     fullName: "Qwen3-ForcedAligner 0.6B",

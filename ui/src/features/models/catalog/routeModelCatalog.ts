@@ -30,6 +30,8 @@ export const VOICE_DESIGN_PREFERRED_MODELS = [
 ] as const;
 
 export const TRANSCRIPTION_PREFERRED_MODELS = [
+  "Qwen3-ASR-0.6B-GGUF",
+  "Qwen3-ASR-1.7B-GGUF",
   "Parakeet-TDT-0.6B-v3",
   "Whisper-Large-v3-Turbo",
 ] as const;

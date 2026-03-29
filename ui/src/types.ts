@@ -30,6 +30,18 @@ export function isLfm25AudioVariant(variant: string): boolean {
   );
 }
 
+export function isQwenAsrVariant(variant: string): boolean {
+  const normalized = variant.trim().toLowerCase();
+  return (
+    normalized === "qwen3-asr-0.6b-gguf" ||
+    normalized === "qwen3-asr-1.7b-gguf" ||
+    normalized === "qwen3-asr-0.6b" ||
+    normalized === "qwen3-asr-1.7b" ||
+    normalized === "qwen3_asr_0.6b_q8_0.gguf" ||
+    normalized === "qwen3_asr_1.7b_q8_0.gguf"
+  );
+}
+
 export function getSpeakerProfilesForVariant(variant: string | null): SpeakerProfile[] {
   if (!variant) {
     return QWEN_SPEAKERS;
@@ -80,16 +92,17 @@ export const VIEW_CONFIGS: Record<ViewMode, ViewConfig> = {
     id: "transcription",
     label: "Transcription",
     description:
-      "Speech-to-text with Whisper, Parakeet-TDT, Voxtral, and LFM2.5 Audio models",
+      "Speech-to-text with Qwen3-ASR, Whisper, Parakeet-TDT, Voxtral, and LFM2.5 Audio models",
     icon: "FileText",
     modelFilter: (variant) =>
+      isQwenAsrVariant(variant) ||
       variant.includes("Whisper-Large-v3-Turbo") ||
       variant.includes("Parakeet-TDT") ||
       variant.includes("Voxtral") ||
       isLfm25AudioVariant(variant),
     emptyStateTitle: "No ASR Model Loaded",
     emptyStateDescription:
-      "Download and load a Whisper, Parakeet-TDT, Voxtral, or LFM2.5 Audio model for speech transcription",
+      "Download and load a Qwen3-ASR, Whisper, Parakeet-TDT, Voxtral, or LFM2.5 Audio model for speech transcription",
   },
   chat: {
     id: "chat",
