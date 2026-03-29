@@ -4,18 +4,23 @@ mod audio;
 mod config;
 mod tokenizer;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fs, io::Read};
 
+use candle_core::quantized::gguf_file::Value as GgufValue;
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use serde::Deserialize;
 use tracing::{debug, info, warn};
 
 use crate::audio::{MelConfig, MelSpectrogram};
-use crate::backends::{DeviceKind, DeviceProfile};
+use crate::backends::{backend_kind_for_device, DeviceKind, DeviceProfile};
 use crate::error::{Error, Result};
-use crate::models::architectures::qwen3::core::{Qwen3Cache, Qwen3Model};
+use crate::model::ModelVariant;
+use crate::models::architectures::qwen3::core::{
+    Qwen3Cache, Qwen3Config, Qwen3Model, RopeScalingConfig,
+};
+use crate::models::shared::weights::gguf::{var_builder_from_gguf, GgufLoader};
 
 use audio::AudioTower;
 use config::Qwen3AsrConfig;
@@ -78,10 +83,23 @@ pub struct AsrTranscriptionOutput {
 const DEFAULT_TRANSCRIBE_MAX_NEW_TOKENS: usize = 512;
 
 impl Qwen3AsrModel {
-    pub fn load(model_dir: &Path, device: DeviceProfile) -> Result<Self> {
-        let config_path = model_dir.join("config.json");
-        let config_str = fs::read_to_string(config_path)?;
-        let config: Qwen3AsrConfig = serde_json::from_str(&config_str)?;
+    pub fn load(model_dir: &Path, variant: ModelVariant, device: DeviceProfile) -> Result<Self> {
+        let gguf_path = resolve_qwen_asr_gguf_path(model_dir, variant);
+        let gguf_loader = if let Some(path) = gguf_path.as_ref() {
+            Some(GgufLoader::from_path_with_backend(
+                path,
+                backend_kind_for_device(&device.device),
+            )?)
+        } else {
+            None
+        };
+        let config = if let Some(loader) = gguf_loader.as_ref() {
+            parse_qwen3_asr_config_from_gguf(loader)?
+        } else {
+            let config_path = model_dir.join("config.json");
+            let config_str = fs::read_to_string(config_path)?;
+            serde_json::from_str(&config_str)?
+        };
         let timestamp_token_id = config.timestamp_token_id;
         let timestamp_segment_time_ms = config.timestamp_segment_time.map(|v| v as u32);
         let is_forced_aligner = config
@@ -93,10 +111,15 @@ impl Qwen3AsrModel {
             || config.thinker_config.classify_num.is_some();
 
         let mut text_cfg = config.thinker_config.text_config.clone();
-        let inferred_lm_head_size =
+        let inferred_lm_head_size = if let Some(gguf_path) = gguf_path.as_ref() {
+            infer_lm_head_size_from_gguf(gguf_path, Some("thinker.lm_head.weight"))?.or(
+                infer_lm_head_size_from_gguf(gguf_path, Some("lm_head.weight"))?,
+            )
+        } else {
             infer_lm_head_size_from_checkpoint(model_dir, Some("thinker.lm_head.weight"))?.or(
                 infer_lm_head_size_from_checkpoint(model_dir, Some("lm_head.weight"))?,
-            );
+            )
+        };
         if let Some(inferred_lm_head_size) = inferred_lm_head_size {
             if inferred_lm_head_size != text_cfg.vocab_size {
                 debug!(
@@ -111,10 +134,16 @@ impl Qwen3AsrModel {
             }
         }
 
-        let tokenizer = AsrTokenizer::load(model_dir, text_cfg.vocab_size)?;
+        let tokenizer = if let Some(loader) = gguf_loader.as_ref() {
+            AsrTokenizer::load_from_gguf(model_dir, loader, text_cfg.vocab_size)?
+        } else {
+            AsrTokenizer::load(model_dir, text_cfg.vocab_size)?
+        };
         let specials = tokenizer.specials().clone();
 
-        let preprocessor: PreprocessorConfig = {
+        let preprocessor: PreprocessorConfig = if let Some(loader) = gguf_loader.as_ref() {
+            preprocessor_config_from_gguf(loader)?
+        } else {
             let path = model_dir.join("preprocessor_config.json");
             let data = fs::read_to_string(path)?;
             serde_json::from_str(&data)?
@@ -122,9 +151,9 @@ impl Qwen3AsrModel {
 
         let mel_cfg = MelConfig {
             sample_rate: 16_000,
-            n_fft: preprocessor.n_fft,
-            hop_length: preprocessor.hop_length,
-            n_mels: preprocessor.feature_size,
+            n_fft: preprocessor.n_fft.max(1),
+            hop_length: preprocessor.hop_length.max(1),
+            n_mels: preprocessor.feature_size.max(1),
             f_min: 0.0,
             f_max: 8_000.0,
             normalize: true,
@@ -135,15 +164,12 @@ impl Qwen3AsrModel {
         // badly when forced through fp32 dequant paths. Audio conditioning is
         // especially sensitive to precision, so keep the audio tower in F32
         // by default and select the text dtype with backend-aware rules.
-        let is_quantized = config.quantization.is_some() || config.quantization_config.is_some();
-        if is_quantized {
+        let is_gguf = gguf_loader.is_some();
+        let is_quantized =
+            is_gguf || config.quantization.is_some() || config.quantization_config.is_some();
+        if !is_gguf && is_quantized {
             validate_quantization_config(&config)?;
         }
-        let audio_dtype_override = std::env::var("IZWI_QWEN_ASR_AUDIO_DTYPE").ok();
-        let audio_dtype = match audio_dtype_override.as_deref().map(str::trim) {
-            Some(raw) if !raw.is_empty() => device.select_dtype(Some(raw)),
-            _ => DType::F32,
-        };
         let text_dtype_override = std::env::var("IZWI_QWEN_ASR_TEXT_DTYPE")
             .ok()
             .or_else(|| std::env::var("IZWI_QWEN_DTYPE").ok())
@@ -156,17 +182,7 @@ impl Qwen3AsrModel {
         } else if is_quantized {
             let requested =
                 parse_asr_dtype(config.thinker_config.dtype.as_deref()).unwrap_or(DType::BF16);
-            let selected = match device.kind {
-                DeviceKind::Metal => DType::F16,
-                DeviceKind::Cpu => DType::F32,
-                DeviceKind::Cuda => {
-                    if requested == DType::BF16 && !device.capabilities.supports_bf16 {
-                        DType::F16
-                    } else {
-                        requested
-                    }
-                }
-            };
+            let selected = select_quantized_text_dtype(&device, requested);
             debug!(
                 "Qwen speech-family quantized dtype selection: requested={:?}, selected={:?} on {:?}",
                 requested, selected, device.kind
@@ -179,73 +195,38 @@ impl Qwen3AsrModel {
         } else {
             device.select_dtype(None)
         };
-
-        // Check for sharded weights (1.7B model) vs single file (0.6B model)
-        let index_path = model_dir.join("model.safetensors.index.json");
-        let vb_text = if index_path.exists() {
-            // Load sharded weights
-            let index_data = fs::read_to_string(&index_path)?;
-            let index: serde_json::Value = serde_json::from_str(&index_data)?;
-
-            // Collect unique shard files from the index
-            let weight_map = index
-                .get("weight_map")
-                .and_then(|m| m.as_object())
-                .ok_or_else(|| {
-                    Error::InvalidInput("Invalid model.safetensors.index.json format".to_string())
-                })?;
-
-            let mut shard_files: Vec<String> = weight_map
-                .values()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect();
-            shard_files.sort();
-            shard_files.dedup();
-
-            let shard_paths: Vec<std::path::PathBuf> =
-                shard_files.iter().map(|f| model_dir.join(f)).collect();
-
-            info!(
-                "Loading sharded ASR model with {} shard files",
-                shard_paths.len()
-            );
-            unsafe {
-                VarBuilder::from_mmaped_safetensors(&shard_paths, text_dtype, &device.device)?
+        let audio_dtype_override = std::env::var("IZWI_QWEN_ASR_AUDIO_DTYPE").ok();
+        let audio_dtype = if is_gguf {
+            match audio_dtype_override.as_deref().map(str::trim) {
+                Some(raw) if !raw.is_empty() => {
+                    let requested = device.select_dtype(Some(raw));
+                    if requested != text_dtype {
+                        warn!(
+                            "Qwen ASR GGUF requested audio dtype {:?} differs from text dtype {:?}; loading a second GGUF VarBuilder",
+                            requested, text_dtype
+                        );
+                    }
+                    requested
+                }
+                _ => text_dtype,
             }
         } else {
-            // Load single file
-            let weights_path = model_dir.join("model.safetensors");
-            unsafe {
-                VarBuilder::from_mmaped_safetensors(&[weights_path], text_dtype, &device.device)?
+            match audio_dtype_override.as_deref().map(str::trim) {
+                Some(raw) if !raw.is_empty() => device.select_dtype(Some(raw)),
+                _ => DType::F32,
             }
         };
-        let vb_audio = if index_path.exists() {
-            let index_data = fs::read_to_string(&index_path)?;
-            let index: serde_json::Value = serde_json::from_str(&index_data)?;
-            let weight_map = index
-                .get("weight_map")
-                .and_then(|m| m.as_object())
-                .ok_or_else(|| {
-                    Error::InvalidInput("Invalid model.safetensors.index.json format".to_string())
-                })?;
 
-            let mut shard_files: Vec<String> = weight_map
-                .values()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect();
-            shard_files.sort();
-            shard_files.dedup();
-
-            let shard_paths: Vec<std::path::PathBuf> =
-                shard_files.iter().map(|f| model_dir.join(f)).collect();
-            unsafe {
-                VarBuilder::from_mmaped_safetensors(&shard_paths, audio_dtype, &device.device)?
+        let (vb_text, vb_audio) = if let Some(gguf_path) = gguf_path.as_ref() {
+            let vb_text = var_builder_from_gguf(gguf_path, text_dtype, &device.device)?;
+            if audio_dtype == text_dtype {
+                (vb_text.clone(), vb_text)
+            } else {
+                let vb_audio = var_builder_from_gguf(gguf_path, audio_dtype, &device.device)?;
+                (vb_text, vb_audio)
             }
         } else {
-            let weights_path = model_dir.join("model.safetensors");
-            unsafe {
-                VarBuilder::from_mmaped_safetensors(&[weights_path], audio_dtype, &device.device)?
-            }
+            load_safetensors_var_builders(model_dir, &device, text_dtype, audio_dtype)?
         };
 
         let has_thinker_prefix = vb_text.contains_tensor("thinker.audio_tower.conv2d1.weight");
@@ -1152,6 +1133,290 @@ fn alignment_distribution_is_degenerate(
         || span <= (audio_duration_ms / 20).max(1)
 }
 
+fn resolve_qwen_asr_gguf_path(model_dir: &Path, variant: ModelVariant) -> Option<PathBuf> {
+    if let Some(filename) = qwen_asr_gguf_filename(variant) {
+        let candidate = model_dir.join(filename);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    for candidate in [
+        model_dir.join("qwen3_asr_0.6b_q8_0.gguf"),
+        model_dir.join("qwen3_asr_1.7b_q8_0.gguf"),
+    ] {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn qwen_asr_gguf_filename(variant: ModelVariant) -> Option<&'static str> {
+    match variant {
+        ModelVariant::Qwen3Asr06BGguf => Some("qwen3_asr_0.6b_q8_0.gguf"),
+        ModelVariant::Qwen3Asr17BGguf => Some("qwen3_asr_1.7b_q8_0.gguf"),
+        _ => None,
+    }
+}
+
+fn parse_qwen3_asr_config_from_gguf(loader: &GgufLoader) -> Result<Qwen3AsrConfig> {
+    let rope_theta = required_f64_metadata(loader, "qwen3_asr.text.rope_theta")?;
+    let mrope_section = required_usize_array_metadata(loader, "qwen3_asr.text.mrope_section")?;
+
+    let text_config = Qwen3Config {
+        hidden_size: required_usize_metadata(loader, "qwen3_asr.text.hidden_size")?,
+        intermediate_size: required_usize_metadata(loader, "qwen3_asr.text.intermediate_size")?,
+        num_attention_heads: required_usize_metadata(loader, "qwen3_asr.text.num_attention_heads")?,
+        num_hidden_layers: required_usize_metadata(loader, "qwen3_asr.text.num_hidden_layers")?,
+        num_key_value_heads: required_usize_metadata(loader, "qwen3_asr.text.num_key_value_heads")?,
+        head_dim: Some(required_usize_metadata(loader, "qwen3_asr.text.head_dim")?),
+        rms_norm_eps: required_f64_metadata(loader, "qwen3_asr.text.rms_norm_eps")?,
+        rope_theta,
+        vocab_size: required_usize_metadata(loader, "qwen3_asr.text.vocab_size")?,
+        lm_head_size: None,
+        rope_scaling: Some(RopeScalingConfig {
+            rope_type: Some("mrope".to_string()),
+            rope_theta: Some(rope_theta),
+            mrope_interleaved: Some(true),
+            interleaved: Some(true),
+            mrope_section: Some(mrope_section),
+        }),
+    };
+
+    let audio_config = config::AudioConfig {
+        d_model: required_usize_metadata(loader, "qwen3_asr.audio.d_model")?,
+        encoder_attention_heads: required_usize_metadata(
+            loader,
+            "qwen3_asr.audio.encoder_attention_heads",
+        )?,
+        encoder_ffn_dim: required_usize_metadata(loader, "qwen3_asr.audio.encoder_ffn_dim")?,
+        encoder_layers: required_usize_metadata(loader, "qwen3_asr.audio.encoder_layers")?,
+        num_mel_bins: required_usize_metadata(loader, "qwen3_asr.audio.num_mel_bins")?,
+        downsample_hidden_size: infer_downsample_hidden_size(loader)?,
+        output_dim: required_usize_metadata(loader, "qwen3_asr.audio.output_dim")?,
+        conv_chunksize: optional_usize_metadata(loader, "qwen3_asr.audio.conv_chunksize"),
+        n_window: optional_usize_metadata(loader, "qwen3_asr.audio.n_window"),
+        n_window_infer: optional_usize_metadata(loader, "qwen3_asr.audio.n_window_infer"),
+    };
+
+    Ok(Qwen3AsrConfig {
+        model_type: loader.get_metadata_string("general.architecture"),
+        quantization: None,
+        quantization_config: None,
+        thinker_config: config::ThinkerConfig {
+            model_type: loader.get_metadata_string("general.architecture"),
+            classify_num: None,
+            audio_config,
+            text_config,
+            audio_start_token_id: optional_u32_metadata(loader, "qwen3_asr.audio_start_token_id"),
+            audio_end_token_id: optional_u32_metadata(loader, "qwen3_asr.audio_end_token_id"),
+            audio_token_id: optional_u32_metadata(loader, "qwen3_asr.audio_token_id"),
+            dtype: Some("bf16".to_string()),
+        },
+        support_languages: Vec::new(),
+        timestamp_token_id: None,
+        timestamp_segment_time: None,
+    })
+}
+
+fn preprocessor_config_from_gguf(loader: &GgufLoader) -> Result<PreprocessorConfig> {
+    let feature_size = required_usize_metadata(loader, "qwen3_asr.audio.num_mel_bins")?;
+    let n_fft = optional_usize_metadata(loader, "qwen3_asr.audio.n_fft").unwrap_or(400);
+    let hop_length = optional_usize_metadata(loader, "qwen3_asr.audio.hop_length").unwrap_or(160);
+    let nb_max_frames = optional_usize_metadata(loader, "qwen3_asr.audio.max_source_positions")
+        .map(|value| value.saturating_mul(8))
+        .unwrap_or(0);
+    let n_samples = if nb_max_frames > 0 {
+        nb_max_frames.saturating_mul(hop_length)
+    } else {
+        0
+    };
+
+    Ok(PreprocessorConfig {
+        feature_size,
+        n_fft,
+        hop_length,
+        n_samples,
+        nb_max_frames,
+    })
+}
+
+fn infer_downsample_hidden_size(loader: &GgufLoader) -> Result<usize> {
+    for tensor_name in [
+        "thinker.audio_tower.conv2d1.weight",
+        "audio_tower.conv2d1.weight",
+    ] {
+        if let Some(shape) = loader.tensor_shape(tensor_name) {
+            if let Some(channels) = shape.first().copied() {
+                return Ok(channels);
+            }
+        }
+    }
+
+    Err(Error::ModelLoadError(
+        "Unable to infer qwen3_asr.audio.downsample_hidden_size from GGUF tensors".to_string(),
+    ))
+}
+
+fn load_safetensors_var_builders(
+    model_dir: &Path,
+    device: &DeviceProfile,
+    text_dtype: DType,
+    audio_dtype: DType,
+) -> Result<(VarBuilder<'static>, VarBuilder<'static>)> {
+    let shard_paths = resolve_safetensors_shards(model_dir)?;
+    let vb_text =
+        unsafe { VarBuilder::from_mmaped_safetensors(&shard_paths, text_dtype, &device.device)? };
+    let vb_audio =
+        unsafe { VarBuilder::from_mmaped_safetensors(&shard_paths, audio_dtype, &device.device)? };
+    Ok((vb_text, vb_audio))
+}
+
+fn resolve_safetensors_shards(model_dir: &Path) -> Result<Vec<PathBuf>> {
+    let index_path = model_dir.join("model.safetensors.index.json");
+    if index_path.exists() {
+        let index_data = fs::read_to_string(&index_path)?;
+        let index: serde_json::Value = serde_json::from_str(&index_data)?;
+        let weight_map = index
+            .get("weight_map")
+            .and_then(|m| m.as_object())
+            .ok_or_else(|| {
+                Error::InvalidInput("Invalid model.safetensors.index.json format".to_string())
+            })?;
+
+        let mut shard_files: Vec<String> = weight_map
+            .values()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        shard_files.sort();
+        shard_files.dedup();
+        let shard_paths: Vec<PathBuf> = shard_files.iter().map(|f| model_dir.join(f)).collect();
+        info!(
+            "Loading sharded ASR model with {} shard files",
+            shard_paths.len()
+        );
+        return Ok(shard_paths);
+    }
+
+    let weights_path = model_dir.join("model.safetensors");
+    if !weights_path.exists() {
+        return Err(Error::ModelNotFound(format!(
+            "Missing ASR checkpoint file: {}",
+            weights_path.display()
+        )));
+    }
+    Ok(vec![weights_path])
+}
+
+fn select_quantized_text_dtype(device: &DeviceProfile, requested: DType) -> DType {
+    match device.kind {
+        DeviceKind::Metal => DType::F16,
+        DeviceKind::Cpu => DType::F32,
+        DeviceKind::Cuda => {
+            if requested == DType::BF16 && !device.capabilities.supports_bf16 {
+                DType::F16
+            } else {
+                requested
+            }
+        }
+    }
+}
+
+fn infer_lm_head_size_from_gguf(
+    gguf_path: &Path,
+    tensor_name: Option<&str>,
+) -> Result<Option<usize>> {
+    let tensor_name = tensor_name.unwrap_or("lm_head.weight");
+    let loader = GgufLoader::from_path(gguf_path)?;
+    Ok(loader
+        .tensor_shape(tensor_name)
+        .and_then(|shape| shape.first().copied()))
+}
+
+fn required_usize_metadata(loader: &GgufLoader, key: &str) -> Result<usize> {
+    loader
+        .metadata_value(key)
+        .and_then(gguf_to_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| Error::ModelLoadError(format!("Missing or invalid GGUF metadata: {key}")))
+}
+
+fn optional_usize_metadata(loader: &GgufLoader, key: &str) -> Option<usize> {
+    loader
+        .metadata_value(key)
+        .and_then(gguf_to_u64)
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn optional_u32_metadata(loader: &GgufLoader, key: &str) -> Option<u32> {
+    loader
+        .metadata_value(key)
+        .and_then(gguf_to_u64)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn required_f64_metadata(loader: &GgufLoader, key: &str) -> Result<f64> {
+    loader
+        .metadata_value(key)
+        .and_then(gguf_to_f64)
+        .ok_or_else(|| Error::ModelLoadError(format!("Missing or invalid GGUF metadata: {key}")))
+}
+
+fn required_usize_array_metadata(loader: &GgufLoader, key: &str) -> Result<Vec<usize>> {
+    let value = loader
+        .metadata_value(key)
+        .ok_or_else(|| Error::ModelLoadError(format!("Missing or invalid GGUF metadata: {key}")))?;
+    let GgufValue::Array(values) = value else {
+        return Err(Error::ModelLoadError(format!(
+            "Expected GGUF metadata array for {key}"
+        )));
+    };
+
+    let mut out = Vec::with_capacity(values.len());
+    for value in values {
+        let raw = gguf_to_u64(value).ok_or_else(|| {
+            Error::ModelLoadError(format!("Expected integer metadata values for {key}"))
+        })?;
+        let parsed = usize::try_from(raw).map_err(|_| {
+            Error::ModelLoadError(format!("GGUF metadata value out of range for {key}: {raw}"))
+        })?;
+        out.push(parsed);
+    }
+    Ok(out)
+}
+
+fn gguf_to_u64(value: &GgufValue) -> Option<u64> {
+    match value {
+        GgufValue::U64(v) => Some(*v),
+        GgufValue::I64(v) => Some(*v as u64),
+        GgufValue::U32(v) => Some(*v as u64),
+        GgufValue::I32(v) => Some(*v as u64),
+        GgufValue::U16(v) => Some(*v as u64),
+        GgufValue::I16(v) => Some(*v as u64),
+        GgufValue::U8(v) => Some(*v as u64),
+        GgufValue::I8(v) => Some(*v as u64),
+        _ => None,
+    }
+}
+
+fn gguf_to_f64(value: &GgufValue) -> Option<f64> {
+    match value {
+        GgufValue::F64(v) => Some(*v),
+        GgufValue::F32(v) => Some(*v as f64),
+        GgufValue::U64(v) => Some(*v as f64),
+        GgufValue::I64(v) => Some(*v as f64),
+        GgufValue::U32(v) => Some(*v as f64),
+        GgufValue::I32(v) => Some(*v as f64),
+        GgufValue::U16(v) => Some(*v as f64),
+        GgufValue::I16(v) => Some(*v as f64),
+        GgufValue::U8(v) => Some(*v as f64),
+        GgufValue::I8(v) => Some(*v as f64),
+        _ => None,
+    }
+}
+
 const MAX_SAFE_TENSORS_HEADER_SIZE: usize = 100_000_000;
 
 fn infer_lm_head_size_from_checkpoint(
@@ -1750,6 +2015,22 @@ mod tests {
     }
 
     #[test]
+    fn qwen_asr_gguf_filename_matches_new_variants() {
+        assert_eq!(
+            qwen_asr_gguf_filename(ModelVariant::Qwen3Asr06BGguf),
+            Some("qwen3_asr_0.6b_q8_0.gguf")
+        );
+        assert_eq!(
+            qwen_asr_gguf_filename(ModelVariant::Qwen3Asr17BGguf),
+            Some("qwen3_asr_1.7b_q8_0.gguf")
+        );
+        assert_eq!(
+            qwen_asr_gguf_filename(ModelVariant::WhisperLargeV3Turbo),
+            None
+        );
+    }
+
+    #[test]
     #[ignore = "requires local Qwen3-ForcedAligner checkpoint"]
     fn forced_aligner_local_checkpoint_loads_and_aligns() {
         let models_root = std::env::var("IZWI_MODELS_DIR")
@@ -1772,7 +2053,8 @@ mod tests {
         }
 
         let device = DeviceSelector::detect_with_preference(Some("cpu")).expect("cpu device");
-        let model = Qwen3AsrModel::load(&model_dir, device).expect("forced aligner should load");
+        let model = Qwen3AsrModel::load(&model_dir, ModelVariant::Qwen3ForcedAligner06B, device)
+            .expect("forced aligner should load");
         let audio = vec![0f32; 16_000];
         let alignment = model
             .force_align(&audio, 16_000, "hello world", None)

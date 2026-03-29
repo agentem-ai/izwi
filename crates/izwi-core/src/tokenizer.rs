@@ -85,6 +85,13 @@ impl Tokenizer {
         Self::new_with_tokenizer(inner)
     }
 
+    pub fn from_hf_json_bytes(bytes: &[u8]) -> Result<Self> {
+        let inner =
+            HfTokenizer::from_bytes(bytes).map_err(|e| Error::TokenizationError(e.to_string()))?;
+        debug!("Loaded tokenizer from in-memory HuggingFace tokenizer JSON");
+        Self::new_with_tokenizer(inner)
+    }
+
     fn from_vocab_merges(
         model_dir: &Path,
         vocab_path: &Path,
