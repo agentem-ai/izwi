@@ -12,7 +12,9 @@ use candle_core::{DType, Tensor};
 use crate::error::Result;
 use crate::models::shared::telemetry::{
     record_fused_attention_attempt, record_fused_attention_fallback,
-    record_fused_attention_success, AttentionFallbackReason,
+    record_fused_attention_masked_attempt, record_fused_attention_masked_fallback,
+    record_fused_attention_masked_success, record_fused_attention_success,
+    AttentionFallbackReason,
 };
 
 /// Runtime opt-in for fused attention paths.
@@ -50,7 +52,11 @@ pub fn try_fused_self_attention(
     causal: bool,
 ) -> Result<Option<Tensor>> {
     let scale = 1.0f32 / (head_dim as f32).sqrt();
+    let masked = mask.is_some();
     record_fused_attention_attempt();
+    if masked {
+        record_fused_attention_masked_attempt();
+    }
     let mut fallback_reason = AttentionFallbackReason::UnsupportedBackend;
 
     #[cfg(feature = "flash-attn")]
@@ -69,6 +75,9 @@ pub fn try_fused_self_attention(
                         match flash_result {
                             Ok(Ok(out)) => {
                                 record_fused_attention_success();
+                                if masked {
+                                    record_fused_attention_masked_success();
+                                }
                                 return Ok(Some(out.transpose(1, 2)?));
                             }
                             Ok(Err(_)) | Err(_) => {
@@ -101,36 +110,40 @@ pub fn try_fused_self_attention(
     }
 
     if q.device().is_metal() {
-        // Conservative Metal gate: avoid dispatching known high-risk SDPA shapes and
-        // fall back to unfused attention directly.
-        //
-        // This prevents runtime kernel-launch failures from poisoning shared Metal locks
-        // in long-lived server processes.
-        if should_try_metal_sdpa(q, k, v, mask)? {
-            let q_seq = q.dim(2)?;
-            let use_f16_cast = should_use_metal_sdpa_f16_cast(q.dtype(), q_seq);
-            let sdpa_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if use_f16_cast {
-                    run_metal_sdpa_with_f16_inputs(q, k, v, mask, causal, scale)
-                } else {
-                    candle_nn::ops::sdpa(q, k, v, mask, causal, scale, 1.0)
-                }
-            }));
-            match sdpa_result {
-                Ok(Ok(out)) => {
-                    record_fused_attention_success();
-                    return Ok(Some(out));
-                }
-                Ok(Err(_)) | Err(_) => {
-                    fallback_reason = AttentionFallbackReason::MetalSdpaRuntimeError;
+        match should_try_metal_sdpa(q, k, v, mask)? {
+            MetalSdpaDecision::Try => {
+                let q_seq = q.dim(2)?;
+                let use_f16_cast = mask.is_none() && should_use_metal_sdpa_f16_cast(q.dtype(), q_seq);
+                let sdpa_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if use_f16_cast {
+                        run_metal_sdpa_with_f16_inputs(q, k, v, mask, causal, scale)
+                    } else {
+                        candle_nn::ops::sdpa(q, k, v, mask, causal, scale, 1.0)
+                    }
+                }));
+                match sdpa_result {
+                    Ok(Ok(out)) => {
+                        record_fused_attention_success();
+                        if masked {
+                            record_fused_attention_masked_success();
+                        }
+                        return Ok(Some(out));
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        fallback_reason = AttentionFallbackReason::MetalSdpaRuntimeError;
+                    }
                 }
             }
-        } else {
-            fallback_reason = AttentionFallbackReason::UnsupportedBackend;
+            MetalSdpaDecision::Skip(reason) => {
+                fallback_reason = reason;
+            }
         }
     }
 
     record_fused_attention_fallback(fallback_reason);
+    if masked {
+        record_fused_attention_masked_fallback();
+    }
     Ok(None)
 }
 
@@ -138,14 +151,19 @@ pub fn try_fused_self_attention(
 ///
 /// This gate mirrors Candle's shape support checks, while keeping F32 full-SDPA
 /// behind a guarded cast route to avoid known threadgroup-memory failures.
+enum MetalSdpaDecision {
+    Try,
+    Skip(AttentionFallbackReason),
+}
+
 fn should_try_metal_sdpa(
     q: &Tensor,
     k: &Tensor,
     v: &Tensor,
     mask: Option<&Tensor>,
-) -> Result<bool> {
-    if mask.is_some() {
-        return Ok(false);
+) -> Result<MetalSdpaDecision> {
+    if let Some(mask) = mask {
+        return should_try_metal_sdpa_masked(q, k, v, mask);
     }
 
     let q_heads = q.dim(1)?;
@@ -157,24 +175,78 @@ fn should_try_metal_sdpa(
     let k_head = k.dim(3)?;
 
     if q.dtype() != k.dtype() || k.dtype() != v.dtype() {
-        return Ok(false);
+        return Ok(MetalSdpaDecision::Skip(
+            AttentionFallbackReason::UnsupportedBackend,
+        ));
     }
     let dtype_supported = matches!(q.dtype(), DType::F16 | DType::BF16 | DType::F32);
     if !dtype_supported {
-        return Ok(false);
+        return Ok(MetalSdpaDecision::Skip(
+            AttentionFallbackReason::UnsupportedBackend,
+        ));
     }
 
     if !metal_sdpa_shape_supported(q_heads, kv_heads, v_heads, q_seq, k_seq, q_head, k_head) {
-        return Ok(false);
+        return Ok(MetalSdpaDecision::Skip(
+            AttentionFallbackReason::UnsupportedBackend,
+        ));
     }
 
     // F32 + full-SDPA prefill has triggered oversized threadgroup plans on some
     // Apple GPUs. We only enable this shape when the guarded F16-cast route is on.
     if q_seq > 8 && q.dtype() == DType::F32 && !metal_sdpa_f32_prefill_cast_enabled() {
-        return Ok(false);
+        return Ok(MetalSdpaDecision::Skip(
+            AttentionFallbackReason::UnsupportedBackend,
+        ));
     }
 
-    Ok(true)
+    Ok(MetalSdpaDecision::Try)
+}
+
+fn should_try_metal_sdpa_masked(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    mask: &Tensor,
+) -> Result<MetalSdpaDecision> {
+    if !metal_sdpa_masked_enabled() {
+        return Ok(MetalSdpaDecision::Skip(
+            AttentionFallbackReason::MetalSdpaMaskPolicyDisabled,
+        ));
+    }
+
+    let q_batch = q.dim(0)?;
+    let q_heads = q.dim(1)?;
+    let kv_heads = k.dim(1)?;
+    let v_heads = v.dim(1)?;
+    let q_seq = q.dim(2)?;
+    let k_seq = k.dim(2)?;
+    let q_head = q.dim(3)?;
+    let k_head = k.dim(3)?;
+
+    if q.dtype() != k.dtype() || k.dtype() != v.dtype() {
+        return Ok(MetalSdpaDecision::Skip(
+            AttentionFallbackReason::MetalSdpaMaskDTypeUnsupported,
+        ));
+    }
+    let dtype_supported = matches!(q.dtype(), DType::F16 | DType::BF16);
+    if !dtype_supported {
+        return Ok(MetalSdpaDecision::Skip(
+            AttentionFallbackReason::MetalSdpaMaskDTypeUnsupported,
+        ));
+    }
+    if !metal_sdpa_shape_supported(q_heads, kv_heads, v_heads, q_seq, k_seq, q_head, k_head) {
+        return Ok(MetalSdpaDecision::Skip(
+            AttentionFallbackReason::MetalSdpaMaskShapeUnsupported,
+        ));
+    }
+    if !metal_sdpa_mask_shape_supported(mask, q_batch, q_heads, q_seq, k_seq)? {
+        return Ok(MetalSdpaDecision::Skip(
+            AttentionFallbackReason::MetalSdpaMaskShapeUnsupported,
+        ));
+    }
+
+    Ok(MetalSdpaDecision::Try)
 }
 
 fn metal_sdpa_shape_supported(
@@ -210,6 +282,29 @@ fn metal_sdpa_shape_supported(
     true
 }
 
+fn metal_sdpa_mask_shape_supported(
+    mask: &Tensor,
+    q_batch: usize,
+    q_heads: usize,
+    q_seq: usize,
+    k_seq: usize,
+) -> Result<bool> {
+    if mask.rank() != 4 {
+        return Ok(false);
+    }
+    let (mask_batch, mask_heads, mask_q, mask_k) = mask.dims4()?;
+    if mask_q != q_seq || mask_k != k_seq {
+        return Ok(false);
+    }
+    if !(mask_batch == 1 || mask_batch == q_batch) {
+        return Ok(false);
+    }
+    if !(mask_heads == 1 || mask_heads == q_heads) {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 fn run_metal_sdpa_with_f16_inputs(
     q: &Tensor,
     k: &Tensor,
@@ -233,6 +328,10 @@ fn metal_sdpa_f32_prefill_cast_enabled() -> bool {
     env_bool("IZWI_METAL_SDPA_F32_PREFILL_F16", true)
 }
 
+fn metal_sdpa_masked_enabled() -> bool {
+    env_bool("IZWI_METAL_SDPA_MASKED", false)
+}
+
 fn env_bool(name: &str, default: bool) -> bool {
     std::env::var(name)
         .ok()
@@ -253,8 +352,11 @@ fn dtype_supported_for_flash(dtype: candle_core::DType) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{metal_sdpa_shape_supported, should_use_metal_sdpa_f16_cast};
+    use super::{
+        metal_sdpa_mask_shape_supported, metal_sdpa_shape_supported, should_use_metal_sdpa_f16_cast,
+    };
     use candle_core::DType;
+    use candle_core::{Device, Tensor};
 
     #[test]
     fn metal_sdpa_shape_gate_accepts_supported_shapes() {
@@ -283,5 +385,33 @@ mod tests {
         assert!(!should_use_metal_sdpa_f16_cast(DType::F32, 23));
 
         std::env::remove_var("IZWI_METAL_SDPA_F32_PREFILL_F16");
+    }
+
+    #[test]
+    fn metal_sdpa_mask_shape_gate_accepts_supported_broadcast_masks() {
+        let device = Device::Cpu;
+        let mask = Tensor::zeros((1, 1, 32, 32), DType::F32, &device).expect("mask");
+        assert!(
+            metal_sdpa_mask_shape_supported(&mask, 1, 8, 32, 32).expect("shape check")
+        );
+
+        let per_head = Tensor::zeros((1, 8, 32, 64), DType::F32, &device).expect("mask");
+        assert!(
+            metal_sdpa_mask_shape_supported(&per_head, 1, 8, 32, 64).expect("shape check")
+        );
+    }
+
+    #[test]
+    fn metal_sdpa_mask_shape_gate_rejects_invalid_masks() {
+        let device = Device::Cpu;
+        let bad_rank = Tensor::zeros((32, 32), DType::F32, &device).expect("mask");
+        assert!(
+            !metal_sdpa_mask_shape_supported(&bad_rank, 1, 8, 32, 32).expect("shape check")
+        );
+
+        let bad_dims = Tensor::zeros((2, 8, 32, 32), DType::F32, &device).expect("mask");
+        assert!(
+            !metal_sdpa_mask_shape_supported(&bad_dims, 1, 8, 32, 32).expect("shape check")
+        );
     }
 }

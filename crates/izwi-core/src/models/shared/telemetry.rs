@@ -25,6 +25,9 @@ pub struct KernelPathTelemetrySnapshot {
     pub fused_attention_attempts_total: u64,
     pub fused_attention_success_total: u64,
     pub fused_attention_fallback_total: u64,
+    pub fused_attention_masked_attempts_total: u64,
+    pub fused_attention_masked_success_total: u64,
+    pub fused_attention_masked_fallback_total: u64,
     pub fused_attention_fallback_flash_not_requested_total: u64,
     pub fused_attention_fallback_flash_not_compiled_total: u64,
     pub fused_attention_fallback_flash_mask_unsupported_total: u64,
@@ -32,6 +35,9 @@ pub struct KernelPathTelemetrySnapshot {
     pub fused_attention_fallback_flash_dtype_mismatch_total: u64,
     pub fused_attention_fallback_flash_runtime_error_total: u64,
     pub fused_attention_fallback_metal_sdpa_runtime_error_total: u64,
+    pub fused_attention_fallback_metal_sdpa_mask_policy_disabled_total: u64,
+    pub fused_attention_fallback_metal_sdpa_mask_shape_unsupported_total: u64,
+    pub fused_attention_fallback_metal_sdpa_mask_dtype_unsupported_total: u64,
     pub fused_attention_fallback_unsupported_backend_total: u64,
 }
 
@@ -50,6 +56,9 @@ pub enum AttentionFallbackReason {
     FlashDTypeMismatch,
     FlashRuntimeError,
     MetalSdpaRuntimeError,
+    MetalSdpaMaskPolicyDisabled,
+    MetalSdpaMaskShapeUnsupported,
+    MetalSdpaMaskDTypeUnsupported,
     UnsupportedBackend,
 }
 
@@ -63,6 +72,9 @@ impl AttentionFallbackReason {
             Self::FlashDTypeMismatch => "flash_dtype_mismatch",
             Self::FlashRuntimeError => "flash_runtime_error",
             Self::MetalSdpaRuntimeError => "metal_sdpa_runtime_error",
+            Self::MetalSdpaMaskPolicyDisabled => "metal_sdpa_mask_policy_disabled",
+            Self::MetalSdpaMaskShapeUnsupported => "metal_sdpa_mask_shape_unsupported",
+            Self::MetalSdpaMaskDTypeUnsupported => "metal_sdpa_mask_dtype_unsupported",
             Self::UnsupportedBackend => "unsupported_backend",
         }
     }
@@ -87,6 +99,9 @@ static ROPE_MANUAL_TOTAL: AtomicU64 = AtomicU64::new(0);
 static FUSED_ATTENTION_ATTEMPTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static FUSED_ATTENTION_SUCCESS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static FUSED_ATTENTION_FALLBACK_TOTAL: AtomicU64 = AtomicU64::new(0);
+static FUSED_ATTENTION_MASKED_ATTEMPTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static FUSED_ATTENTION_MASKED_SUCCESS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static FUSED_ATTENTION_MASKED_FALLBACK_TOTAL: AtomicU64 = AtomicU64::new(0);
 static FUSED_ATTN_FALLBACK_FLASH_NOT_REQUESTED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static FUSED_ATTN_FALLBACK_FLASH_NOT_COMPILED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static FUSED_ATTN_FALLBACK_FLASH_MASK_UNSUPPORTED_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -94,6 +109,11 @@ static FUSED_ATTN_FALLBACK_FLASH_DTYPE_UNSUPPORTED_TOTAL: AtomicU64 = AtomicU64:
 static FUSED_ATTN_FALLBACK_FLASH_DTYPE_MISMATCH_TOTAL: AtomicU64 = AtomicU64::new(0);
 static FUSED_ATTN_FALLBACK_FLASH_RUNTIME_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 static FUSED_ATTN_FALLBACK_METAL_SDPA_RUNTIME_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
+static FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_POLICY_DISABLED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_SHAPE_UNSUPPORTED_TOTAL: AtomicU64 =
+    AtomicU64::new(0);
+static FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_DTYPE_UNSUPPORTED_TOTAL: AtomicU64 =
+    AtomicU64::new(0);
 static FUSED_ATTN_FALLBACK_UNSUPPORTED_BACKEND_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 pub fn record_prefill_token_mode_step() {
@@ -150,6 +170,18 @@ pub fn record_fused_attention_success() {
     FUSED_ATTENTION_SUCCESS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
+pub fn record_fused_attention_masked_attempt() {
+    FUSED_ATTENTION_MASKED_ATTEMPTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_fused_attention_masked_success() {
+    FUSED_ATTENTION_MASKED_SUCCESS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_fused_attention_masked_fallback() {
+    FUSED_ATTENTION_MASKED_FALLBACK_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
 pub fn record_fused_attention_fallback(reason: AttentionFallbackReason) {
     FUSED_ATTENTION_FALLBACK_TOTAL.fetch_add(1, Ordering::Relaxed);
     match reason {
@@ -173,6 +205,18 @@ pub fn record_fused_attention_fallback(reason: AttentionFallbackReason) {
         }
         AttentionFallbackReason::MetalSdpaRuntimeError => {
             FUSED_ATTN_FALLBACK_METAL_SDPA_RUNTIME_ERROR_TOTAL.fetch_add(1, Ordering::Relaxed);
+        }
+        AttentionFallbackReason::MetalSdpaMaskPolicyDisabled => {
+            FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_POLICY_DISABLED_TOTAL
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        AttentionFallbackReason::MetalSdpaMaskShapeUnsupported => {
+            FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_SHAPE_UNSUPPORTED_TOTAL
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        AttentionFallbackReason::MetalSdpaMaskDTypeUnsupported => {
+            FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_DTYPE_UNSUPPORTED_TOTAL
+                .fetch_add(1, Ordering::Relaxed);
         }
         AttentionFallbackReason::UnsupportedBackend => {
             FUSED_ATTN_FALLBACK_UNSUPPORTED_BACKEND_TOTAL.fetch_add(1, Ordering::Relaxed);
@@ -202,6 +246,12 @@ pub fn snapshot() -> KernelPathTelemetrySnapshot {
         fused_attention_attempts_total: FUSED_ATTENTION_ATTEMPTS_TOTAL.load(Ordering::Relaxed),
         fused_attention_success_total: FUSED_ATTENTION_SUCCESS_TOTAL.load(Ordering::Relaxed),
         fused_attention_fallback_total: FUSED_ATTENTION_FALLBACK_TOTAL.load(Ordering::Relaxed),
+        fused_attention_masked_attempts_total: FUSED_ATTENTION_MASKED_ATTEMPTS_TOTAL
+            .load(Ordering::Relaxed),
+        fused_attention_masked_success_total: FUSED_ATTENTION_MASKED_SUCCESS_TOTAL
+            .load(Ordering::Relaxed),
+        fused_attention_masked_fallback_total: FUSED_ATTENTION_MASKED_FALLBACK_TOTAL
+            .load(Ordering::Relaxed),
         fused_attention_fallback_flash_not_requested_total:
             FUSED_ATTN_FALLBACK_FLASH_NOT_REQUESTED_TOTAL.load(Ordering::Relaxed),
         fused_attention_fallback_flash_not_compiled_total:
@@ -216,6 +266,12 @@ pub fn snapshot() -> KernelPathTelemetrySnapshot {
             FUSED_ATTN_FALLBACK_FLASH_RUNTIME_ERROR_TOTAL.load(Ordering::Relaxed),
         fused_attention_fallback_metal_sdpa_runtime_error_total:
             FUSED_ATTN_FALLBACK_METAL_SDPA_RUNTIME_ERROR_TOTAL.load(Ordering::Relaxed),
+        fused_attention_fallback_metal_sdpa_mask_policy_disabled_total:
+            FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_POLICY_DISABLED_TOTAL.load(Ordering::Relaxed),
+        fused_attention_fallback_metal_sdpa_mask_shape_unsupported_total:
+            FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_SHAPE_UNSUPPORTED_TOTAL.load(Ordering::Relaxed),
+        fused_attention_fallback_metal_sdpa_mask_dtype_unsupported_total:
+            FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_DTYPE_UNSUPPORTED_TOTAL.load(Ordering::Relaxed),
         fused_attention_fallback_unsupported_backend_total:
             FUSED_ATTN_FALLBACK_UNSUPPORTED_BACKEND_TOTAL.load(Ordering::Relaxed),
     }
@@ -231,6 +287,9 @@ pub fn prometheus() -> String {
         AttentionFallbackReason::FlashDTypeMismatch,
         AttentionFallbackReason::FlashRuntimeError,
         AttentionFallbackReason::MetalSdpaRuntimeError,
+        AttentionFallbackReason::MetalSdpaMaskPolicyDisabled,
+        AttentionFallbackReason::MetalSdpaMaskShapeUnsupported,
+        AttentionFallbackReason::MetalSdpaMaskDTypeUnsupported,
         AttentionFallbackReason::UnsupportedBackend,
     ];
 
@@ -250,7 +309,10 @@ pub fn prometheus() -> String {
 # TYPE izwi_kernel_rope_manual_total counter\nizwi_kernel_rope_manual_total {}\n\
 # TYPE izwi_kernel_fused_attention_attempts_total counter\nizwi_kernel_fused_attention_attempts_total {}\n\
 # TYPE izwi_kernel_fused_attention_success_total counter\nizwi_kernel_fused_attention_success_total {}\n\
-# TYPE izwi_kernel_fused_attention_fallback_total counter\nizwi_kernel_fused_attention_fallback_total {}\n",
+# TYPE izwi_kernel_fused_attention_fallback_total counter\nizwi_kernel_fused_attention_fallback_total {}\n\
+# TYPE izwi_kernel_fused_attention_masked_attempts_total counter\nizwi_kernel_fused_attention_masked_attempts_total {}\n\
+# TYPE izwi_kernel_fused_attention_masked_success_total counter\nizwi_kernel_fused_attention_masked_success_total {}\n\
+# TYPE izwi_kernel_fused_attention_masked_fallback_total counter\nizwi_kernel_fused_attention_masked_fallback_total {}\n",
         metrics.prefill_token_mode_steps_total,
         metrics.prefill_sequence_spans_total,
         metrics.prefill_sequence_tokens_total,
@@ -267,6 +329,9 @@ pub fn prometheus() -> String {
         metrics.fused_attention_attempts_total,
         metrics.fused_attention_success_total,
         metrics.fused_attention_fallback_total,
+        metrics.fused_attention_masked_attempts_total,
+        metrics.fused_attention_masked_success_total,
+        metrics.fused_attention_masked_fallback_total,
     );
 
     output.push_str("# TYPE izwi_kernel_fused_attention_fallback_reason_total counter\n");
@@ -304,6 +369,15 @@ fn fallback_total_for_reason(reason: AttentionFallbackReason) -> u64 {
         AttentionFallbackReason::MetalSdpaRuntimeError => {
             FUSED_ATTN_FALLBACK_METAL_SDPA_RUNTIME_ERROR_TOTAL.load(Ordering::Relaxed)
         }
+        AttentionFallbackReason::MetalSdpaMaskPolicyDisabled => {
+            FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_POLICY_DISABLED_TOTAL.load(Ordering::Relaxed)
+        }
+        AttentionFallbackReason::MetalSdpaMaskShapeUnsupported => {
+            FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_SHAPE_UNSUPPORTED_TOTAL.load(Ordering::Relaxed)
+        }
+        AttentionFallbackReason::MetalSdpaMaskDTypeUnsupported => {
+            FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_DTYPE_UNSUPPORTED_TOTAL.load(Ordering::Relaxed)
+        }
         AttentionFallbackReason::UnsupportedBackend => {
             FUSED_ATTN_FALLBACK_UNSUPPORTED_BACKEND_TOTAL.load(Ordering::Relaxed)
         }
@@ -329,6 +403,9 @@ pub fn reset_for_tests() {
         &FUSED_ATTENTION_ATTEMPTS_TOTAL,
         &FUSED_ATTENTION_SUCCESS_TOTAL,
         &FUSED_ATTENTION_FALLBACK_TOTAL,
+        &FUSED_ATTENTION_MASKED_ATTEMPTS_TOTAL,
+        &FUSED_ATTENTION_MASKED_SUCCESS_TOTAL,
+        &FUSED_ATTENTION_MASKED_FALLBACK_TOTAL,
         &FUSED_ATTN_FALLBACK_FLASH_NOT_REQUESTED_TOTAL,
         &FUSED_ATTN_FALLBACK_FLASH_NOT_COMPILED_TOTAL,
         &FUSED_ATTN_FALLBACK_FLASH_MASK_UNSUPPORTED_TOTAL,
@@ -336,6 +413,9 @@ pub fn reset_for_tests() {
         &FUSED_ATTN_FALLBACK_FLASH_DTYPE_MISMATCH_TOTAL,
         &FUSED_ATTN_FALLBACK_FLASH_RUNTIME_ERROR_TOTAL,
         &FUSED_ATTN_FALLBACK_METAL_SDPA_RUNTIME_ERROR_TOTAL,
+        &FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_POLICY_DISABLED_TOTAL,
+        &FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_SHAPE_UNSUPPORTED_TOTAL,
+        &FUSED_ATTN_FALLBACK_METAL_SDPA_MASK_DTYPE_UNSUPPORTED_TOTAL,
         &FUSED_ATTN_FALLBACK_UNSUPPORTED_BACKEND_TOTAL,
     ] {
         counter.store(0, Ordering::Relaxed);
