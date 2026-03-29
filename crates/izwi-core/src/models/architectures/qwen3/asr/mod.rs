@@ -59,6 +59,7 @@ pub struct AsrDecodeState {
     cache: Qwen3Cache,
     embeds: Tensor,
     pos: usize,
+    language: Option<String>,
     generated_ids: Vec<u32>,
     assembled: String,
     stop_tokens: Vec<u32>,
@@ -383,9 +384,7 @@ impl Qwen3AsrModel {
         }
         let audio_len = audio_embeds.dim(1)?;
 
-        let effective_language =
-            forced_language_name(language).unwrap_or_else(|| "English".to_string());
-        let prompt = self.build_prompt(audio_len, Some(effective_language.as_str()))?;
+        let prompt = self.build_prompt(audio_len, language)?;
         let input_ids = Tensor::from_vec(
             prompt.ids.clone(),
             (1, prompt.ids.len()),
@@ -406,6 +405,7 @@ impl Qwen3AsrModel {
             cache,
             embeds,
             pos,
+            language: language.map(ToString::to_string),
             generated_ids: Vec::new(),
             assembled: String::new(),
             stop_tokens: collect_stop_token_ids(&self.specials),
@@ -414,12 +414,17 @@ impl Qwen3AsrModel {
         })
     }
 
+    fn finalized_text(&self, state: &AsrDecodeState) -> String {
+        let (_, text) = parse_asr_output(&state.assembled, state.language.as_deref());
+        text
+    }
+
     pub fn decode_step(&self, state: &mut AsrDecodeState) -> Result<AsrDecodeStep> {
         if state.finished || state.generated_ids.len() >= state.max_new_tokens {
             state.finished = true;
             return Ok(AsrDecodeStep {
                 delta: String::new(),
-                text: state.assembled.trim().to_string(),
+                text: self.finalized_text(state),
                 tokens_generated: state.generated_ids.len(),
                 finished: true,
             });
@@ -431,7 +436,7 @@ impl Qwen3AsrModel {
             state.finished = true;
             return Ok(AsrDecodeStep {
                 delta: String::new(),
-                text: state.assembled.trim().to_string(),
+                text: self.finalized_text(state),
                 tokens_generated: state.generated_ids.len(),
                 finished: true,
             });
@@ -465,7 +470,11 @@ impl Qwen3AsrModel {
 
         Ok(AsrDecodeStep {
             delta,
-            text: state.assembled.trim().to_string(),
+            text: if state.finished {
+                self.finalized_text(state)
+            } else {
+                state.assembled.trim().to_string()
+            },
             tokens_generated: state.generated_ids.len(),
             finished: state.finished,
         })
@@ -817,11 +826,6 @@ impl Qwen3AsrModel {
         if let Some(lang) = forced_language {
             ids.extend(self.tokenizer.encode_text("language ")?);
             ids.extend(self.tokenizer.encode_text(&lang)?);
-            if let Some(asr_text) = self.specials.asr_text {
-                ids.push(asr_text);
-            } else {
-                ids.extend(self.tokenizer.encode_text("<asr_text>")?);
-            }
         }
 
         Ok(PromptTokens {
@@ -1696,41 +1700,108 @@ fn parse_asr_output(raw: &str, user_language: Option<&str>) -> (Option<String>, 
     }
 
     if let Some(language) = forced_language_name(user_language) {
+        if let Some(rest) = trimmed.strip_prefix("language ") {
+            if let Some((_, text)) = split_language_prefixed_output(rest) {
+                return (Some(language), text);
+            }
+        }
         return (Some(language), trimmed.to_string());
     }
 
     let asr_text_token = "<asr_text>";
-    let Some((meta_part, text_part)) = trimmed.split_once(asr_text_token) else {
-        return (None, trimmed.to_string());
-    };
-
-    let meta_trimmed = meta_part.trim();
-    let text_trimmed = text_part.trim();
-    if meta_trimmed.to_ascii_lowercase().contains("language none") {
-        return if text_trimmed.is_empty() {
-            (None, String::new())
-        } else {
-            (None, text_trimmed.to_string())
-        };
-    }
-
-    for line in meta_trimmed.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+    if let Some((meta_part, text_part)) = trimmed.split_once(asr_text_token) {
+        let meta_trimmed = meta_part.trim();
+        let text_trimmed = text_part.trim();
+        if meta_trimmed.to_ascii_lowercase().contains("language none") {
+            return if text_trimmed.is_empty() {
+                (None, String::new())
+            } else {
+                (None, text_trimmed.to_string())
+            };
         }
-        if let Some(value) = line.strip_prefix("language ") {
-            let value = value.trim();
-            if !value.is_empty() {
-                return (
-                    Some(normalized_language_name(value)),
-                    text_trimmed.to_string(),
-                );
+
+        for line in meta_trimmed.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(value) = line.strip_prefix("language ") {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return (
+                        Some(normalized_language_name(value)),
+                        text_trimmed.to_string(),
+                    );
+                }
             }
         }
+
+        return (None, text_trimmed.to_string());
     }
 
-    (None, text_trimmed.to_string())
+    if let Some(rest) = trimmed.strip_prefix("language ") {
+        if let Some((language, text)) = split_language_prefixed_output(rest) {
+            return (language, text);
+        }
+    }
+
+    (None, trimmed.to_string())
+}
+
+fn split_language_prefixed_output(rest: &str) -> Option<(Option<String>, String)> {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    if rest.eq_ignore_ascii_case("none") {
+        return Some((None, String::new()));
+    }
+
+    // Preferred split: explicit whitespace between language and transcript.
+    if let Some((lang, text)) = rest.split_once(char::is_whitespace) {
+        let lang = lang.trim();
+        if !lang.is_empty()
+            && lang.chars().all(|ch| ch.is_ascii_alphabetic() || ch == '-')
+            && !has_lower_to_upper_transition(lang)
+        {
+            return Some((Some(normalized_language_name(lang)), text.trim().to_string()));
+        }
+    }
+
+    // Fallback for GGUF decode where `<asr_text>` is not in tokenizer vocab and
+    // the language token glues directly to text, e.g. "EnglishThe quick ...".
+    let mut chars = rest.char_indices().peekable();
+    let mut split_idx = None;
+    let mut prev_is_lower = false;
+    while let Some((idx, ch)) = chars.next() {
+        if idx == 0 {
+            prev_is_lower = ch.is_ascii_lowercase();
+            continue;
+        }
+        if prev_is_lower && ch.is_ascii_uppercase() {
+            split_idx = Some(idx);
+            break;
+        }
+        prev_is_lower = ch.is_ascii_lowercase();
+    }
+    let split_idx = split_idx?;
+    let lang = rest[..split_idx].trim();
+    if lang.is_empty() || !lang.chars().all(|ch| ch.is_ascii_alphabetic() || ch == '-') {
+        return None;
+    }
+    let text = rest[split_idx..].trim().to_string();
+    Some((Some(normalized_language_name(lang)), text))
+}
+
+fn has_lower_to_upper_transition(value: &str) -> bool {
+    let mut prev_is_lower = false;
+    for ch in value.chars() {
+        if prev_is_lower && ch.is_ascii_uppercase() {
+            return true;
+        }
+        prev_is_lower = ch.is_ascii_lowercase();
+    }
+    false
 }
 
 fn build_mrope_positions(
@@ -1928,10 +1999,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_asr_output_respects_forced_language_and_strips_prefix() {
+        let (language, text) = parse_asr_output(
+            "language EnglishThe quick brown fox.",
+            Some("english"),
+        );
+        assert_eq!(language.as_deref(), Some("English"));
+        assert_eq!(text, "The quick brown fox.");
+    }
+
+    #[test]
     fn parse_asr_output_handles_empty_audio_marker() {
         let (language, text) = parse_asr_output("language None<asr_text>", None);
         assert_eq!(language, None);
         assert!(text.is_empty());
+    }
+
+    #[test]
+    fn parse_asr_output_handles_markerless_language_prefix_with_space() {
+        let (language, text) = parse_asr_output("language English The quick brown fox.", None);
+        assert_eq!(language.as_deref(), Some("English"));
+        assert_eq!(text, "The quick brown fox.");
+    }
+
+    #[test]
+    fn parse_asr_output_handles_markerless_language_prefix_without_space() {
+        let (language, text) = parse_asr_output("language EnglishThe quick brown fox.", None);
+        assert_eq!(language.as_deref(), Some("English"));
+        assert_eq!(text, "The quick brown fox.");
     }
 
     #[test]
