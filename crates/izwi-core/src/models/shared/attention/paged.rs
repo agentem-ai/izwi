@@ -413,13 +413,28 @@ fn parse_env_positive_usize(name: &str) -> Option<usize> {
 }
 
 fn paged_decode_page_group_size(device: &candle_core::Device, page_count: usize) -> usize {
-    if let Some(override_pages) = parse_env_positive_usize("IZWI_PAGED_DECODE_GROUP_PAGES") {
+    let override_pages = parse_env_positive_usize("IZWI_PAGED_DECODE_GROUP_PAGES");
+    paged_decode_page_group_size_policy(device.is_metal(), page_count, override_pages)
+}
+
+fn paged_decode_page_group_size_policy(
+    is_metal: bool,
+    page_count: usize,
+    override_pages: Option<usize>,
+) -> usize {
+    if let Some(override_pages) = override_pages {
         return override_pages.max(1);
     }
-    if !device.is_metal() || page_count < 8 {
+    if !is_metal || page_count < 8 {
         return 1;
     }
-    4
+    if page_count >= 64 {
+        return 8;
+    }
+    if page_count >= 24 {
+        return 4;
+    }
+    2
 }
 
 fn paged_decode_attention_with_group_size(
@@ -822,6 +837,23 @@ mod tests {
 
         let diff = max_abs_diff(&single, &grouped);
         assert!(diff < 1e-4, "max abs diff was {}", diff);
+    }
+
+    #[test]
+    fn test_paged_decode_page_group_policy_scales_on_metal() {
+        assert_eq!(paged_decode_page_group_size_policy(true, 1, None), 1);
+        assert_eq!(paged_decode_page_group_size_policy(true, 7, None), 1);
+        assert_eq!(paged_decode_page_group_size_policy(true, 8, None), 2);
+        assert_eq!(paged_decode_page_group_size_policy(true, 23, None), 2);
+        assert_eq!(paged_decode_page_group_size_policy(true, 24, None), 4);
+        assert_eq!(paged_decode_page_group_size_policy(true, 63, None), 4);
+        assert_eq!(paged_decode_page_group_size_policy(true, 64, None), 8);
+    }
+
+    #[test]
+    fn test_paged_decode_page_group_policy_respects_overrides() {
+        assert_eq!(paged_decode_page_group_size_policy(false, 128, None), 1);
+        assert_eq!(paged_decode_page_group_size_policy(true, 128, Some(3)), 3);
     }
 
     #[test]
