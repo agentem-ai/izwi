@@ -176,19 +176,35 @@ impl AsrTokenizer {
         }
 
         let id_for = |token: &str| token_to_id.get(token).copied();
-        let im_start = id_for("<|im_start|>")
-            .ok_or_else(|| Error::TokenizationError("Missing <|im_start|> token id".to_string()))?;
+        let im_start = id_for("<|im_start|>").ok_or_else(|| {
+            Error::TokenizationError("Missing <|im_start|> token id".to_string())
+        })?;
         let im_end = id_for("<|im_end|>")
             .ok_or_else(|| Error::TokenizationError("Missing <|im_end|> token id".to_string()))?;
-        let audio_start = id_for("<|audio_start|>").ok_or_else(|| {
-            Error::TokenizationError("Missing <|audio_start|> token id".to_string())
-        })?;
-        let audio_end = id_for("<|audio_end|>").ok_or_else(|| {
-            Error::TokenizationError("Missing <|audio_end|> token id".to_string())
-        })?;
-        let audio_token = id_for("<|audio_pad|>").ok_or_else(|| {
-            Error::TokenizationError("Missing <|audio_pad|> token id".to_string())
-        })?;
+        let audio_start = id_for("<|audio_start|>")
+            .or_else(|| metadata_token_id(loader, "qwen3_asr.audio_start_token_id"))
+            .ok_or_else(|| {
+                Error::TokenizationError(
+                    "Missing <|audio_start|> token id (and qwen3_asr.audio_start_token_id metadata)"
+                        .to_string(),
+                )
+            })?;
+        let audio_end = id_for("<|audio_end|>")
+            .or_else(|| metadata_token_id(loader, "qwen3_asr.audio_end_token_id"))
+            .ok_or_else(|| {
+                Error::TokenizationError(
+                    "Missing <|audio_end|> token id (and qwen3_asr.audio_end_token_id metadata)"
+                        .to_string(),
+                )
+            })?;
+        let audio_token = id_for("<|audio_pad|>")
+            .or_else(|| metadata_token_id(loader, "qwen3_asr.audio_token_id"))
+            .ok_or_else(|| {
+                Error::TokenizationError(
+                    "Missing <|audio_pad|> token id (and qwen3_asr.audio_token_id metadata)"
+                        .to_string(),
+                )
+            })?;
         let timestamp = id_for("<timestamp>");
         let asr_text = id_for("<asr_text>");
         let fim_prefix = id_for("<|fim_prefix|>");
@@ -346,6 +362,12 @@ fn value_to_u32(value: &Value) -> Option<u32> {
     }
 }
 
+fn metadata_token_id(loader: &GgufLoader, key: &str) -> Option<u32> {
+    loader
+        .get_metadata_u64(key)
+        .and_then(|raw| u32::try_from(raw).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +413,12 @@ mod tests {
     fn parse_timestamp_token_index_parses_timestamp_ids() {
         assert_eq!(parse_timestamp_token_index("<|timestamp_42|>"), Some(42));
         assert_eq!(parse_timestamp_token_index("<|im_end|>"), None);
+    }
+
+    #[test]
+    fn value_to_u32_supports_numbers_and_strings() {
+        assert_eq!(value_to_u32(&serde_json::json!(42)), Some(42));
+        assert_eq!(value_to_u32(&serde_json::json!("99")), Some(99));
+        assert_eq!(value_to_u32(&serde_json::json!(null)), None);
     }
 }
