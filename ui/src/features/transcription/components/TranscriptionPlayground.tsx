@@ -185,11 +185,17 @@ export function TranscriptionPlayground({
       setCurrentOutputRecord((previous) =>
         previous?.id === record.id ? record : previous,
       );
-      setSelectedHistoryRecord((previous) =>
-        previous?.id === record.id ? record : previous,
-      );
+      setSelectedHistoryRecord((previous) => {
+        if (previous?.id === record.id) {
+          return record;
+        }
+        if (selectedHistoryRecordId === record.id) {
+          return record;
+        }
+        return previous;
+      });
     },
-    [mergeHistorySummary],
+    [mergeHistorySummary, selectedHistoryRecordId],
   );
 
   const loadHistory = useCallback(async () => {
@@ -223,10 +229,12 @@ export function TranscriptionPlayground({
     if (!selectedHistoryRecordId) {
       setSelectedHistoryRecord(null);
       setSelectedHistoryError(null);
+      setSelectedHistoryLoading(false);
       return;
     }
 
     if (selectedHistoryRecord?.id === selectedHistoryRecordId) {
+      setSelectedHistoryLoading(false);
       return;
     }
 
@@ -234,10 +242,12 @@ export function TranscriptionPlayground({
     setSelectedHistoryLoading(true);
     setSelectedHistoryError(null);
 
-    api
-      .getTranscriptionRecord(selectedHistoryRecordId)
+    Promise.resolve(api.getTranscriptionRecord(selectedHistoryRecordId))
       .then((record) => {
         if (cancelled) {
+          return;
+        }
+        if (!record) {
           return;
         }
         applyRecordUpdate(record);
