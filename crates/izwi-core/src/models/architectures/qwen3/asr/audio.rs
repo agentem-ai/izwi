@@ -220,6 +220,40 @@ impl AudioAttention {
         // a full block mask and unlocks mask-free fused kernels for each span.
         if let Some(spans) = chunk_spans_from_cu_seqlens(seq_len, cu_seqlens) {
             record_chunk_attention_sequence(spans.len(), seq_len);
+            if spans.len() == 1 {
+                let (start, end) = spans[0];
+                let span = end - start;
+                let (q_chunk, k_chunk, v_chunk) = if start == 0 && span == seq_len {
+                    (q.contiguous()?, k.contiguous()?, v.contiguous()?)
+                } else {
+                    (
+                        q.narrow(2, start, span)?.contiguous()?,
+                        k.narrow(2, start, span)?.contiguous()?,
+                        v.narrow(2, start, span)?.contiguous()?,
+                    )
+                };
+
+                let out = if let Some(fused) = try_fused_self_attention(
+                    &q_chunk,
+                    &k_chunk,
+                    &v_chunk,
+                    None,
+                    self.head_dim,
+                    false,
+                )? {
+                    record_chunk_attention_fused_span();
+                    fused
+                } else {
+                    record_chunk_attention_unfused_span();
+                    attention_no_mask(&q_chunk, &k_chunk, &v_chunk, self.num_heads, self.head_dim)?
+                };
+
+                let out =
+                    out.transpose(1, 2)?
+                        .reshape((1, seq_len, self.num_heads * self.head_dim))?;
+                return self.out_proj.forward(&out).map_err(Error::from);
+            }
+
             let mut outputs = Vec::with_capacity(spans.len());
             for (start, end) in spans {
                 let span = end - start;
