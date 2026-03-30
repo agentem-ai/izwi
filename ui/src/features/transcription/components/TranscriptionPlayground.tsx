@@ -1800,6 +1800,8 @@ export function TranscriptionPlayground({
                     <TranscriptionReviewWorkspace
                       record={outputRecord}
                       audioUrl={audioUrl}
+                      autoScrollActiveEntry={true}
+                      stickyPlaybackFooter={true}
                       emptyTitle="Ready to transcribe"
                       emptyMessage="Record audio from your microphone or upload an audio file to start transcription. The transcript will appear here."
                     />
