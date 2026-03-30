@@ -53,6 +53,7 @@ export type {
   StudioProjectRenderJobUpdateRequest,
   StudioProjectSegmentRecord,
   StudioProjectSegmentBulkDeleteRequest,
+  StudioProjectSegmentCreateRequest,
   StudioProjectSegmentReorderRequest,
   StudioProjectSegmentSplitRequest,
   StudioProjectSegmentUpdateRequest,

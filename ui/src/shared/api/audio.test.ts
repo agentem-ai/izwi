@@ -434,6 +434,42 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     );
   });
 
+  it("posts Studio project segment inserts to the canonical segment collection", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "ttsp-1",
+          segments: [],
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        },
+      ),
+    );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AudioApiClient(new ApiHttpClient("http://localhost/v1"));
+    await client.createStudioProjectSegment("ttsp-1", {
+      text: "A brand new segment.",
+      after_segment_id: "ttss-1",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost/v1/studio/projects/ttsp-1/segments",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          text: "A brand new segment.",
+          after_segment_id: "ttss-1",
+        }),
+      }),
+    );
+  });
+
   it("deletes Studio project segments through the canonical segment route", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

@@ -303,6 +303,11 @@ export interface StudioProjectSegmentUpdateRequest {
   saved_voice_id?: string;
 }
 
+export interface StudioProjectSegmentCreateRequest {
+  text: string;
+  after_segment_id?: string;
+}
+
 export interface StudioProjectSegmentSplitRequest {
   before_text: string;
   after_text: string;
@@ -892,6 +897,10 @@ export class AudioApiClient {
     return `${this.studioProjectPath(projectId)}/segments/${encodeURIComponent(segmentId)}`;
   }
 
+  private studioProjectSegmentsPath(projectId: string): string {
+    return `${this.studioProjectPath(projectId)}/segments`;
+  }
+
   private studioProjectSegmentsReorderPath(projectId: string): string {
     return `${this.studioProjectPath(projectId)}/segments/reorder`;
   }
@@ -1357,6 +1366,19 @@ export class AudioApiClient {
         voice_mode: request.voice_mode,
         speaker: request.speaker,
         saved_voice_id: request.saved_voice_id,
+      }),
+    });
+  }
+
+  async createStudioProjectSegment(
+    projectId: string,
+    request: StudioProjectSegmentCreateRequest,
+  ): Promise<StudioProjectRecord> {
+    return this.http.request(this.studioProjectSegmentsPath(projectId), {
+      method: "POST",
+      body: JSON.stringify({
+        text: request.text,
+        after_segment_id: request.after_segment_id,
       }),
     });
   }

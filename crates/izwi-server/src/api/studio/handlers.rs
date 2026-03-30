@@ -96,6 +96,13 @@ pub struct UpdateStudioProjectSegmentRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct CreateStudioProjectSegmentRequest {
+    pub text: String,
+    #[serde(default)]
+    pub after_segment_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SplitStudioProjectSegmentRequest {
     pub before_text: String,
     pub after_text: String,
@@ -342,7 +349,9 @@ pub async fn delete_studio_project_pronunciation(
         .await
         .map_err(map_store_error)?;
     if !deleted {
-        return Err(ApiError::not_found("Studio project pronunciation not found"));
+        return Err(ApiError::not_found(
+            "Studio project pronunciation not found",
+        ));
     }
     Ok(Json(DeleteStudioProjectPronunciationResponse {
         id: pronunciation_id,
@@ -487,8 +496,7 @@ pub async fn create_studio_project(
         ));
     }
     let project_speaker = voice_mode_speaker(voice_mode, req.speaker.clone());
-    let project_saved_voice_id =
-        voice_mode_saved_voice_id(voice_mode, req.saved_voice_id.clone());
+    let project_saved_voice_id = voice_mode_saved_voice_id(voice_mode, req.saved_voice_id.clone());
 
     let project = state
         .studio_store
@@ -721,8 +729,45 @@ pub async fn update_studio_project_segment(
             .map_err(map_store_error)?;
     }
 
-    let project = updated_project
-        .ok_or_else(|| ApiError::not_found("Studio project segment not found"))?;
+    let project =
+        updated_project.ok_or_else(|| ApiError::not_found("Studio project segment not found"))?;
+    Ok(Json(project))
+}
+
+pub async fn create_studio_project_segment(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(req): Json<CreateStudioProjectSegmentRequest>,
+) -> Result<Json<StudioProjectRecord>, ApiError> {
+    let text = required_trimmed(Some(req.text.as_str()), "text")?;
+    let after_segment_id = normalize_optional_trimmed(req.after_segment_id);
+
+    let existing = state
+        .studio_store
+        .get_project(project_id.clone())
+        .await
+        .map_err(map_store_error)?
+        .ok_or_else(|| ApiError::not_found("Studio project not found"))?;
+
+    if let Some(anchor_id) = after_segment_id.as_deref() {
+        let anchor_exists = existing
+            .segments
+            .iter()
+            .any(|segment| segment.id == anchor_id);
+        if !anchor_exists {
+            return Err(ApiError::bad_request(
+                "after_segment_id must reference a segment in this project.",
+            ));
+        }
+    }
+
+    let project = state
+        .studio_store
+        .insert_segment(project_id, after_segment_id, text)
+        .await
+        .map_err(map_store_error)?
+        .ok_or_else(|| ApiError::not_found("Studio project not found"))?;
+
     Ok(Json(project))
 }
 
@@ -1116,7 +1161,10 @@ fn has_non_empty_text(raw: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
-fn voice_mode_speaker(voice_mode: StudioProjectVoiceMode, speaker: Option<String>) -> Option<String> {
+fn voice_mode_speaker(
+    voice_mode: StudioProjectVoiceMode,
+    speaker: Option<String>,
+) -> Option<String> {
     match voice_mode {
         StudioProjectVoiceMode::BuiltIn => speaker,
         StudioProjectVoiceMode::Saved => None,
