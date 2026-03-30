@@ -467,6 +467,10 @@ export function DiarizationHistoryPanel({
 
     return Array.from(ids).sort();
   }, [activeHistoryRecord, historyRecords]);
+  const pendingSummaryRecordIdsKey = useMemo(
+    () => pendingSummaryRecordIds.join("|"),
+    [pendingSummaryRecordIds],
+  );
   const deleteTargetRecord = useMemo(() => {
     if (!deleteTargetRecordId) {
       return null;
@@ -547,35 +551,45 @@ export function DiarizationHistoryPanel({
   }, [normalizedActiveTranscript]);
 
   useEffect(() => {
-    if (pendingSummaryRecordIds.length === 0) {
+    if (!pendingSummaryRecordIdsKey) {
       return;
     }
 
+    const recordIds = pendingSummaryRecordIdsKey.split("|");
     let cancelled = false;
+    let pollingInFlight = false;
     const pollPendingSummaries = async () => {
-      const results = await Promise.allSettled(
-        pendingSummaryRecordIds.map((recordId) =>
-          api.getDiarizationRecord(recordId),
-        ),
-      );
-      if (cancelled) {
+      if (cancelled || pollingInFlight) {
         return;
       }
-
-      results.forEach((result) => {
-        if (
-          result.status === "fulfilled" &&
-          result.value &&
-          typeof result.value === "object" &&
-          "id" in result.value
-        ) {
-          const record = result.value as DiarizationRecord;
-          if (selectedHistoryRecordId === record.id) {
-            setSelectedHistoryRecord(record);
-          }
-          mergeHistorySummary(summarizeRecord(record));
+      pollingInFlight = true;
+      try {
+        const results = await Promise.allSettled(
+          recordIds.map((recordId) =>
+            api.getDiarizationRecord(recordId),
+          ),
+        );
+        if (cancelled) {
+          return;
         }
-      });
+
+        results.forEach((result) => {
+          if (
+            result.status === "fulfilled" &&
+            result.value &&
+            typeof result.value === "object" &&
+            "id" in result.value
+          ) {
+            const record = result.value as DiarizationRecord;
+            if (selectedHistoryRecordId === record.id) {
+              setSelectedHistoryRecord(record);
+            }
+            mergeHistorySummary(summarizeRecord(record));
+          }
+        });
+      } finally {
+        pollingInFlight = false;
+      }
     };
 
     void pollPendingSummaries();
@@ -587,7 +601,7 @@ export function DiarizationHistoryPanel({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [mergeHistorySummary, pendingSummaryRecordIds, selectedHistoryRecordId]);
+  }, [mergeHistorySummary, pendingSummaryRecordIdsKey, selectedHistoryRecordId]);
 
   const handleSaveSpeakerCorrections = useCallback(
     async (speakerNameOverrides: Record<string, string>) => {

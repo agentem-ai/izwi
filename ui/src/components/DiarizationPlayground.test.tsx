@@ -461,6 +461,87 @@ describe("DiarizationPlayground speaker corrections", () => {
     );
   });
 
+  it("avoids rapid summary polling loops while a summary stays pending", async () => {
+    const pendingRecord = {
+      id: "diar-pending-summary",
+      created_at: 1,
+      model_id: "diar_streaming_sortformer_4spk-v2.1",
+      asr_model_id: "Parakeet-TDT-0.6B-v3",
+      aligner_model_id: "Qwen3-ForcedAligner-0.6B",
+      llm_model_id: "Qwen3-1.7B-GGUF",
+      min_speakers: 1,
+      max_speakers: 4,
+      min_speech_duration_ms: 240,
+      min_silence_duration_ms: 200,
+      enable_llm_refinement: true,
+      speaker_count: 1,
+      corrected_speaker_count: 1,
+      alignment_coverage: 1,
+      unattributed_words: 0,
+      llm_refined: false,
+      asr_text: "Hello there.",
+      transcript: "",
+      raw_transcript: "",
+      summary_status: "pending" as const,
+      summary_model_id: "Qwen3.5-4B",
+      summary_text: null,
+      summary_error: null,
+      summary_updated_at: 1,
+      speaker_name_overrides: {},
+      utterances: [
+        {
+          speaker: "SPEAKER_00",
+          start: 0,
+          end: 1,
+          text: "Hello there.",
+          word_start: 0,
+          word_end: 1,
+        },
+      ],
+      words: [],
+      segments: [],
+      duration_secs: 6,
+      processing_time_ms: 120,
+      rtf: 0.5,
+      audio_mime_type: "audio/wav",
+      audio_filename: "meeting.wav",
+    };
+
+    apiMocks.createDiarizationRecord.mockResolvedValue(pendingRecord);
+    apiMocks.getDiarizationRecord.mockResolvedValue({
+      ...pendingRecord,
+      summary_updated_at: 2,
+    });
+
+    const { container } = render(
+      <DiarizationPlayground
+        selectedModel="diar_streaming_sortformer_4spk-v2.1"
+        selectedModelReady
+        onModelRequired={vi.fn()}
+        pipelineAsrModelId="Parakeet-TDT-0.6B-v3"
+        pipelineAlignerModelId="Qwen3-ForcedAligner-0.6B"
+        pipelineModelsReady
+      />,
+    );
+
+    const fileInput = container.querySelector<HTMLInputElement>(
+      'input[type="file"]',
+    );
+    fireEvent.change(fileInput!, {
+      target: {
+        files: [new File(["sample"], "meeting.wav", { type: "audio/wav" })],
+      },
+    });
+
+    await screen.findByText("Hello there.");
+    await waitFor(() =>
+      expect(apiMocks.getDiarizationRecord).toHaveBeenCalledTimes(2),
+    );
+
+    await new Promise((resolve) => window.setTimeout(resolve, 150));
+    expect(apiMocks.getDiarizationRecord).toHaveBeenCalledTimes(2);
+  });
+
   it("restores the richer empty state when diarization returns no transcript entries", async () => {
     apiMocks.createDiarizationRecord.mockResolvedValue({
       id: "diar-empty",

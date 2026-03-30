@@ -717,16 +717,22 @@ export function DiarizationPlayground({
       latestRecord?.summary_text,
     ],
   );
+  const latestRecordId = latestRecord?.id ?? null;
 
   useEffect(() => {
-    if (!latestRecord || latestRecordSummaryStatus !== "pending") {
+    if (!latestRecordId || latestRecordSummaryStatus !== "pending") {
       return;
     }
 
     let cancelled = false;
+    let pollingInFlight = false;
     const pollPendingSummary = async () => {
+      if (cancelled || pollingInFlight) {
+        return;
+      }
+      pollingInFlight = true;
       try {
-        const refreshed = await api.getDiarizationRecord(latestRecord.id);
+        const refreshed = await api.getDiarizationRecord(latestRecordId);
         if (cancelled) {
           return;
         }
@@ -736,6 +742,8 @@ export function DiarizationPlayground({
         if (!cancelled) {
           // Keep polling while pending; transient read failures should not break the session.
         }
+      } finally {
+        pollingInFlight = false;
       }
     };
 
@@ -748,7 +756,7 @@ export function DiarizationPlayground({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [latestRecord, latestRecordSummaryStatus]);
+  }, [latestRecordId, latestRecordSummaryStatus]);
 
   useEffect(() => {
     return () => {
