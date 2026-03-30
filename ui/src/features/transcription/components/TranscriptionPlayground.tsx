@@ -344,32 +344,46 @@ export function TranscriptionPlayground({
 
     return Array.from(ids).sort();
   }, [currentOutputRecord, historyRecords, selectedHistoryRecord]);
+  const pendingSummaryRecordIdsKey = useMemo(
+    () => pendingSummaryRecordIds.join("|"),
+    [pendingSummaryRecordIds],
+  );
 
   useEffect(() => {
-    if (pendingSummaryRecordIds.length === 0) {
+    if (!pendingSummaryRecordIdsKey) {
       return;
     }
 
+    const recordIds = pendingSummaryRecordIdsKey.split("|");
     let cancelled = false;
+    let pollingInFlight = false;
     const pollPendingSummaries = async () => {
-      const results = await Promise.allSettled(
-        pendingSummaryRecordIds.map((recordId) =>
-          api.getTranscriptionRecord(recordId),
-        ),
-      );
-      if (cancelled) {
+      if (cancelled || pollingInFlight) {
         return;
       }
-      results.forEach((result) => {
-        if (
-          result.status === "fulfilled" &&
-          result.value &&
-          typeof result.value === "object" &&
-          "id" in result.value
-        ) {
-          applyRecordUpdate(result.value as TranscriptionRecord);
+      pollingInFlight = true;
+      try {
+        const results = await Promise.allSettled(
+          recordIds.map((recordId) =>
+            api.getTranscriptionRecord(recordId),
+          ),
+        );
+        if (cancelled) {
+          return;
         }
-      });
+        results.forEach((result) => {
+          if (
+            result.status === "fulfilled" &&
+            result.value &&
+            typeof result.value === "object" &&
+            "id" in result.value
+          ) {
+            applyRecordUpdate(result.value as TranscriptionRecord);
+          }
+        });
+      } finally {
+        pollingInFlight = false;
+      }
     };
 
     void pollPendingSummaries();
@@ -381,7 +395,7 @@ export function TranscriptionPlayground({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [applyRecordUpdate, pendingSummaryRecordIds]);
+  }, [applyRecordUpdate, pendingSummaryRecordIdsKey]);
 
   const handleRegenerateSummary = useCallback(
     async (recordId: string) => {
