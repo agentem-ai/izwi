@@ -76,10 +76,6 @@ function isPipelineAlignerVariant(variant: string): boolean {
 }
 
 function isPipelineLlmVariant(variant: string): boolean {
-  return variant === "Qwen3-1.7B-GGUF";
-}
-
-function isPipelineSummaryVariant(variant: string): boolean {
   return variant === "Qwen3.5-4B";
 }
 
@@ -138,14 +134,6 @@ export function DiarizationPage({
     [models],
   );
 
-  const summaryPipelineModels = useMemo(
-    () =>
-      models
-        .filter((model) => isPipelineSummaryVariant(model.variant))
-        .sort((a, b) => a.variant.localeCompare(b.variant)),
-    [models],
-  );
-
   const pipelineModelGroups = useMemo<DiarizationModelGroup[]>(
     () => [
       {
@@ -168,15 +156,10 @@ export function DiarizationPage({
       },
       {
         key: "llm",
-        title: "Transcript Refiner",
-        description: "LLM used to polish final diarized transcript output.",
+        title: "Refiner + Summary",
+        description:
+          "LLM used for transcript refinement and diarization summaries.",
         models: llmPipelineModels,
-      },
-      {
-        key: "summary",
-        title: "Summary",
-        description: "LLM used to generate AI summaries for diarization history.",
-        models: summaryPipelineModels,
       },
     ],
     [
@@ -184,7 +167,6 @@ export function DiarizationPage({
       alignerPipelineModels,
       diarizationModels,
       llmPipelineModels,
-      summaryPipelineModels,
     ],
   );
 
@@ -196,8 +178,7 @@ export function DiarizationPage({
   const preferredDiarizationModelOrder = ["diar_streaming_sortformer_4spk-v2.1"];
   const preferredAsrModelOrder = ["Parakeet-TDT-0.6B-v3"];
   const preferredAlignerModelOrder = ["Qwen3-ForcedAligner-0.6B"];
-  const preferredLlmModelOrder = ["Qwen3-1.7B-GGUF"];
-  const preferredSummaryModelOrder = ["Qwen3.5-4B"];
+  const preferredLlmModelOrder = ["Qwen3.5-4B"];
 
   const resolvedSelectedModel =
     selectedModel &&
@@ -223,10 +204,7 @@ export function DiarizationPage({
     llmPipelineModels,
     preferredLlmModelOrder,
   );
-  const resolvedSummaryModel = resolvePreferredVariant(
-    summaryPipelineModels,
-    preferredSummaryModelOrder,
-  );
+  const resolvedSummaryModel = resolvedLlmModel;
 
   const asrModelReady =
     resolvedAsrModel != null &&
@@ -249,17 +227,12 @@ export function DiarizationPage({
       return null;
     }
     return (
-      summaryPipelineModels.find(
+      llmPipelineModels.find(
         (model) => model.variant === resolvedSummaryModel,
       )?.status ?? null
     );
-  }, [resolvedSummaryModel, summaryPipelineModels]);
-  const summaryModelReady =
-    resolvedSummaryModel != null &&
-    summaryPipelineModels.some(
-      (model) =>
-        model.variant === resolvedSummaryModel && model.status === "ready",
-    );
+  }, [llmPipelineModels, resolvedSummaryModel]);
+  const summaryModelReady = llmModelReady;
   const summaryModelRequirementMessage = useMemo(() => {
     const modelName = resolvedSummaryModel || "Qwen3.5-4B";
     switch (summaryModelStatus) {
@@ -284,14 +257,12 @@ export function DiarizationPage({
         resolvedAsrModel,
         resolvedAlignerModel,
         resolvedLlmModel,
-        resolvedSummaryModel,
       ].filter((variant): variant is string => !!variant),
     [
       resolvedAlignerModel,
       resolvedAsrModel,
       resolvedLlmModel,
       resolvedSelectedModel,
-      resolvedSummaryModel,
     ],
   );
 
@@ -470,7 +441,7 @@ export function DiarizationPage({
         isOpen={isModelModalOpen}
         onClose={closeModelModal}
         title="Diarization Models"
-        description="Manage pipeline models and summary generation models for /v1/diarizations."
+        description="Manage diarization pipeline models for /v1/diarizations."
         models={pipelineModels}
         sections={pipelineModelGroups}
         loading={loading}
