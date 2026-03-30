@@ -5,7 +5,7 @@ Studio is Izwi's long-form text-to-speech workspace for single-device, solo prod
 ## What You Can Do
 
 - Create reusable narration projects from pasted text, local files, or URL imports.
-- Split, merge, reorder, edit, and bulk-manage script segments.
+- Add, split, merge, reorder, edit, and bulk-manage script segments.
 - Assign shared project settings (model, voice, speed, folder) for consistent output.
 - Queue background renders with retry/cancel and automatic resume after reload.
 - Apply pronunciation replacement rules before segment synthesis.
