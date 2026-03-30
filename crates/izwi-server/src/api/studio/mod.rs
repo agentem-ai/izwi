@@ -41,7 +41,8 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/studio/projects/:project_id/snapshots",
-            get(handlers::list_studio_project_snapshots).post(handlers::create_studio_project_snapshot),
+            get(handlers::list_studio_project_snapshots)
+                .post(handlers::create_studio_project_snapshot),
         )
         .route(
             "/studio/projects/:project_id/snapshots/:snapshot_id/restore",
@@ -61,6 +62,10 @@ pub fn router() -> Router<AppState> {
             get(handlers::get_studio_project_segment)
                 .patch(handlers::update_studio_project_segment)
                 .delete(handlers::delete_studio_project_segment),
+        )
+        .route(
+            "/studio/projects/:project_id/segments",
+            axum::routing::post(handlers::create_studio_project_segment),
         )
         .route(
             "/studio/projects/:project_id/segments/:segment_id/split",

@@ -285,7 +285,10 @@ impl StudioProjectStore {
             .context("Failed to prepare Studio project storage layout")?;
 
         let conn = storage_layout::open_sqlite_connection(&db_path).with_context(|| {
-            format!("Failed to open Studio project database: {}", db_path.display())
+            format!(
+                "Failed to open Studio project database: {}",
+                db_path.display()
+            )
         })?;
 
         conn.execute_batch(
@@ -748,6 +751,200 @@ impl StudioProjectStore {
         .await
     }
 
+    pub async fn insert_segment(
+        &self,
+        project_id: String,
+        after_segment_id: Option<String>,
+        text: String,
+    ) -> anyhow::Result<Option<StudioProjectRecord>> {
+        self.run_blocking(move |db_path| {
+            let mut conn = storage_layout::open_sqlite_connection(&db_path)?;
+            let tx = conn.transaction()?;
+            let now = now_unix_millis_i64();
+
+            let project_state = tx
+                .query_row(
+                    r#"
+                    SELECT
+                        model_id,
+                        voice_mode,
+                        speaker,
+                        saved_voice_id
+                    FROM studio_projects
+                    WHERE id = ?1
+                    "#,
+                    params![project_id.as_str()],
+                    |row| {
+                        let voice_mode_raw = row.get::<_, String>(1)?;
+                        let voice_mode =
+                            StudioProjectVoiceMode::from_db_value(voice_mode_raw.as_str())
+                                .unwrap_or(StudioProjectVoiceMode::BuiltIn);
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            voice_mode,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    },
+                )
+                .optional()?;
+
+            let Some((
+                project_model_id,
+                project_voice_mode,
+                project_speaker,
+                project_saved_voice_id,
+            )) = project_state
+            else {
+                tx.rollback()?;
+                return Ok(None);
+            };
+
+            let (
+                insert_position,
+                inherited_model_id,
+                inherited_voice_mode,
+                inherited_speaker,
+                inherited_saved_voice_id,
+            ) = if let Some(anchor_segment_id) = after_segment_id {
+                let anchor_state = tx
+                    .query_row(
+                        r#"
+                            SELECT
+                                position,
+                                model_id,
+                                voice_mode,
+                                speaker,
+                                saved_voice_id
+                            FROM studio_project_segments
+                            WHERE project_id = ?1 AND id = ?2
+                            "#,
+                        params![project_id.as_str(), anchor_segment_id.as_str()],
+                        |row| {
+                            let voice_mode_raw: Option<String> = row.get(2)?;
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                                voice_mode_raw
+                                    .as_deref()
+                                    .and_then(StudioProjectVoiceMode::from_db_value),
+                                row.get::<_, Option<String>>(3)?,
+                                row.get::<_, Option<String>>(4)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+
+                let Some((
+                    anchor_position,
+                    anchor_model_id,
+                    anchor_voice_mode,
+                    anchor_speaker,
+                    anchor_saved_voice_id,
+                )) = anchor_state
+                else {
+                    tx.rollback()?;
+                    return Ok(None);
+                };
+
+                let resolved_voice_mode = anchor_voice_mode.unwrap_or(project_voice_mode);
+                let resolved_speaker = match resolved_voice_mode {
+                    StudioProjectVoiceMode::BuiltIn => {
+                        anchor_speaker.or_else(|| project_speaker.clone())
+                    }
+                    StudioProjectVoiceMode::Saved => None,
+                };
+                let resolved_saved_voice_id = match resolved_voice_mode {
+                    StudioProjectVoiceMode::BuiltIn => None,
+                    StudioProjectVoiceMode::Saved => {
+                        anchor_saved_voice_id.or_else(|| project_saved_voice_id.clone())
+                    }
+                };
+
+                (
+                    anchor_position + 1,
+                    anchor_model_id.or_else(|| project_model_id.clone()),
+                    resolved_voice_mode,
+                    resolved_speaker,
+                    resolved_saved_voice_id,
+                )
+            } else {
+                let tail_position = tx
+                    .query_row(
+                        r#"
+                            SELECT MAX(position)
+                            FROM studio_project_segments
+                            WHERE project_id = ?1
+                            "#,
+                        params![project_id.as_str()],
+                        |row| row.get::<_, Option<i64>>(0),
+                    )?
+                    .map(|value| value + 1)
+                    .unwrap_or(0);
+                let resolved_speaker = match project_voice_mode {
+                    StudioProjectVoiceMode::BuiltIn => project_speaker.clone(),
+                    StudioProjectVoiceMode::Saved => None,
+                };
+                let resolved_saved_voice_id = match project_voice_mode {
+                    StudioProjectVoiceMode::BuiltIn => None,
+                    StudioProjectVoiceMode::Saved => project_saved_voice_id.clone(),
+                };
+
+                (
+                    tail_position,
+                    project_model_id,
+                    project_voice_mode,
+                    resolved_speaker,
+                    resolved_saved_voice_id,
+                )
+            };
+
+            tx.execute(
+                r#"
+                UPDATE studio_project_segments
+                SET position = position + 1
+                WHERE project_id = ?1 AND position >= ?2
+                "#,
+                params![project_id.as_str(), insert_position],
+            )?;
+
+            let new_segment_id = format!("ttss_{}", uuid::Uuid::new_v4().simple());
+            tx.execute(
+                r#"
+                INSERT INTO studio_project_segments (
+                    id,
+                    project_id,
+                    position,
+                    text,
+                    model_id,
+                    voice_mode,
+                    speaker,
+                    saved_voice_id,
+                    speech_record_id,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)
+                "#,
+                params![
+                    new_segment_id,
+                    project_id.as_str(),
+                    insert_position,
+                    text,
+                    inherited_model_id,
+                    inherited_voice_mode.as_db_value(),
+                    inherited_speaker,
+                    inherited_saved_voice_id,
+                    now
+                ],
+            )?;
+
+            sync_project_source_text(&tx, project_id.as_str())?;
+            touch_project(&tx, project_id.as_str(), now)?;
+            tx.commit()?;
+            fetch_project(&conn, &project_id)
+        })
+        .await
+    }
+
     pub async fn split_segment(
         &self,
         project_id: String,
@@ -1037,7 +1234,9 @@ impl StudioProjectStore {
                 anyhow::bail!("Reorder request must include every project segment exactly once.");
             }
 
-            let existing_set = existing_ids.iter().collect::<std::collections::HashSet<_>>();
+            let existing_set = existing_ids
+                .iter()
+                .collect::<std::collections::HashSet<_>>();
             let requested_set = ordered_segment_ids
                 .iter()
                 .collect::<std::collections::HashSet<_>>();
@@ -1140,7 +1339,11 @@ impl StudioProjectStore {
                     SET position = ?3
                     WHERE project_id = ?1 AND id = ?2
                     "#,
-                    params![project_id.as_str(), segment_id.as_str(), usize_to_i64(new_position)],
+                    params![
+                        project_id.as_str(),
+                        segment_id.as_str(),
+                        usize_to_i64(new_position)
+                    ],
                 )?;
                 new_position += 1;
             }
@@ -1866,7 +2069,10 @@ impl StudioProjectStore {
     }
 }
 
-fn fetch_project(conn: &Connection, project_id: &str) -> anyhow::Result<Option<StudioProjectRecord>> {
+fn fetch_project(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Option<StudioProjectRecord>> {
     let project = conn
         .query_row(
             r#"
@@ -2021,9 +2227,7 @@ fn ensure_sqlite_table_column(
         return Ok(());
     }
     conn.execute(
-        &format!(
-            "ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
-        ),
+        &format!("ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"),
         [],
     )?;
     Ok(())
@@ -2033,7 +2237,12 @@ fn ensure_studio_project_segment_settings_columns(conn: &Connection) -> anyhow::
     ensure_sqlite_table_column(conn, "studio_project_segments", "model_id", "TEXT NULL")?;
     ensure_sqlite_table_column(conn, "studio_project_segments", "voice_mode", "TEXT NULL")?;
     ensure_sqlite_table_column(conn, "studio_project_segments", "speaker", "TEXT NULL")?;
-    ensure_sqlite_table_column(conn, "studio_project_segments", "saved_voice_id", "TEXT NULL")?;
+    ensure_sqlite_table_column(
+        conn,
+        "studio_project_segments",
+        "saved_voice_id",
+        "TEXT NULL",
+    )?;
     Ok(())
 }
 
@@ -2213,8 +2422,8 @@ fn usize_to_i64(value: usize) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        NewStudioProjectRecord, NewStudioProjectSegment, StudioProjectStore, StudioProjectVoiceMode,
-        UpdateStudioProjectRecord,
+        NewStudioProjectRecord, NewStudioProjectSegment, StudioProjectStore,
+        StudioProjectVoiceMode, UpdateStudioProjectRecord,
     };
     use crate::storage_layout;
     use std::path::PathBuf;
@@ -2438,6 +2647,107 @@ mod tests {
         assert_eq!(deleted.segments[0].text, "Hello world.");
         assert_eq!(deleted.segments[1].text, "Closing line.");
         assert_eq!(deleted.source_text, "Hello world.\n\nClosing line.");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn insert_segment_places_block_after_anchor_and_inherits_render_settings() {
+        let root = test_env_root("studio-project-insert-segment");
+        let db_path = root.join("test.sqlite3");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&root).expect("root should be created");
+
+        let store =
+            StudioProjectStore::initialize_at(db_path, media_dir).expect("store should initialize");
+        let conn = storage_layout::open_sqlite_connection(&store.db_path)
+            .expect("speech schema connection should open");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS speech_history_records (
+                id TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL,
+                route_kind TEXT NOT NULL,
+                model_id TEXT NULL,
+                speaker TEXT NULL,
+                language TEXT NULL,
+                saved_voice_id TEXT NULL,
+                speed REAL NULL,
+                input_text TEXT NOT NULL,
+                voice_description TEXT NULL,
+                reference_text TEXT NULL,
+                generation_time_ms REAL NULL,
+                audio_duration_secs REAL NULL,
+                rtf REAL NULL,
+                tokens_generated INTEGER NULL,
+                audio_mime_type TEXT NOT NULL,
+                audio_filename TEXT NULL,
+                audio_storage_path TEXT NOT NULL
+            );
+            "#,
+        )
+        .expect("speech schema should initialize");
+
+        let created = store
+            .create_project(NewStudioProjectRecord {
+                name: "Narration project".to_string(),
+                source_filename: Some("script.txt".to_string()),
+                source_text: "Intro block.\n\nClosing block.".to_string(),
+                model_id: Some("Qwen3-TTS".to_string()),
+                voice_mode: StudioProjectVoiceMode::BuiltIn,
+                speaker: Some("Vivian".to_string()),
+                saved_voice_id: None,
+                speed: Some(1.0),
+                segments: vec![
+                    NewStudioProjectSegment {
+                        position: 0,
+                        text: "Intro block.".to_string(),
+                        model_id: Some("Qwen3-TTS".to_string()),
+                        voice_mode: Some(StudioProjectVoiceMode::BuiltIn),
+                        speaker: Some("Vivian".to_string()),
+                        saved_voice_id: None,
+                    },
+                    NewStudioProjectSegment {
+                        position: 1,
+                        text: "Closing block.".to_string(),
+                        model_id: Some("Qwen3-TTS".to_string()),
+                        voice_mode: Some(StudioProjectVoiceMode::BuiltIn),
+                        speaker: Some("Vivian".to_string()),
+                        saved_voice_id: None,
+                    },
+                ],
+            })
+            .await
+            .expect("project should be created");
+
+        let anchor_segment = created.segments[0].clone();
+        let inserted = store
+            .insert_segment(
+                created.id.clone(),
+                Some(anchor_segment.id.clone()),
+                "Middle block.".to_string(),
+            )
+            .await
+            .expect("insert should succeed")
+            .expect("project should exist");
+
+        assert_eq!(inserted.segments.len(), 3);
+        assert_eq!(inserted.segments[0].text, "Intro block.");
+        assert_eq!(inserted.segments[1].text, "Middle block.");
+        assert_eq!(inserted.segments[2].text, "Closing block.");
+        assert_eq!(inserted.segments[1].position, 1);
+        assert_eq!(inserted.segments[2].position, 2);
+        assert_eq!(inserted.segments[1].model_id.as_deref(), Some("Qwen3-TTS"));
+        assert_eq!(
+            inserted.segments[1].voice_mode,
+            Some(StudioProjectVoiceMode::BuiltIn)
+        );
+        assert_eq!(inserted.segments[1].speaker.as_deref(), Some("Vivian"));
+        assert_eq!(inserted.segments[1].saved_voice_id, None);
+        assert_eq!(
+            inserted.source_text,
+            "Intro block.\n\nMiddle block.\n\nClosing block."
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

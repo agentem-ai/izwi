@@ -53,6 +53,7 @@ const audioMethodNames = [
   "getStudioProject",
   "updateStudioProject",
   "updateStudioProjectSegment",
+  "createStudioProjectSegment",
   "splitStudioProjectSegment",
   "mergeStudioProjectSegmentWithNext",
   "reorderStudioProjectSegments",
