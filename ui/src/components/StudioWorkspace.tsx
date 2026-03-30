@@ -112,6 +112,7 @@ interface StudioRenderQueueItem {
 }
 
 const STUDIO_RENDER_QUEUE_STORAGE_KEY = "izwi.studio.render.queue.v1";
+const STUDIO_SEGMENT_ADD_END_TARGET = "__end__";
 
 const SAVED_VOICE_RENDERER_PREFERRED_MODELS = [
   ...VOICE_CLONING_PREFERRED_MODELS,
@@ -213,6 +214,10 @@ export function StudioWorkspace({
   const [renderingSegmentId, setRenderingSegmentId] = useState<string | null>(
     null,
   );
+  const [addingSegmentAfterSegmentId, setAddingSegmentAfterSegmentId] = useState<
+    string | null
+  >(null);
+  const [focusSegmentId, setFocusSegmentId] = useState<string | null>(null);
   const [renderQueue, setRenderQueue] = useState<StudioRenderQueueItem[]>([]);
   const [renderQueueReady, setRenderQueueReady] = useState(false);
   const [processingRenderQueue, setProcessingRenderQueue] = useState(false);
@@ -544,6 +549,8 @@ export function StudioWorkspace({
       setSegmentDrafts({});
       setSegmentSelections({});
       setSelectedSegmentIds([]);
+      setAddingSegmentAfterSegmentId(null);
+      setFocusSegmentId(null);
       setSegmentSettingsSegmentId(null);
       setSegmentSettingsModelId("");
       setSegmentSettingsVoiceMode("built_in");
@@ -1393,6 +1400,51 @@ export function StudioWorkspace({
       onError(message);
     } finally {
       setSavingSegmentId(null);
+    }
+  };
+
+  const handleAddSegment = async (
+    afterSegmentId: string | null,
+    text: string,
+  ): Promise<boolean> => {
+    if (!selectedProject) {
+      return false;
+    }
+
+    const targetKey = afterSegmentId ?? STUDIO_SEGMENT_ADD_END_TARGET;
+    const existingSegmentIds = new Set(selectedProject.segments.map((segment) => segment.id));
+    setAddingSegmentAfterSegmentId(targetKey);
+
+    try {
+      const project = await runProjectMutation(
+        () =>
+          api.createStudioProjectSegment(selectedProject.id, {
+            text,
+            after_segment_id: afterSegmentId ?? undefined,
+          }),
+        "Failed to add the segment.",
+      );
+      if (!project) {
+        return false;
+      }
+
+      setSelectedProject(project);
+      const insertedSegment = project.segments.find(
+        (segment) => !existingSegmentIds.has(segment.id),
+      );
+      if (insertedSegment) {
+        setFocusSegmentId(insertedSegment.id);
+      }
+      setWorkspaceStatus({
+        tone: "success",
+        message: insertedSegment
+          ? `Added segment ${insertedSegment.position + 1}.`
+          : "Added a new segment.",
+      });
+      await loadProjects();
+      return true;
+    } finally {
+      setAddingSegmentAfterSegmentId(null);
     }
   };
 
@@ -3031,6 +3083,8 @@ export function StudioWorkspace({
                 queuedSegmentIdSet={queuedSegmentIdSet}
                 savingSegmentId={savingSegmentId}
                 renderingSegmentId={renderingSegmentId}
+                addingSegmentAfterSegmentId={addingSegmentAfterSegmentId}
+                focusSegmentId={focusSegmentId}
                 onToggleSelectAll={() =>
                   setSelectedSegmentIds(
                     selectedSegmentCount === selectedProject.segments.length
@@ -3040,6 +3094,9 @@ export function StudioWorkspace({
                 }
                 onRenderSelected={() => void handleRenderSelectedSegments()}
                 onDeleteSelected={() => void handleBulkDeleteSegments()}
+                onAddSegment={(afterSegmentId, text) =>
+                  handleAddSegment(afterSegmentId, text)
+                }
                 onToggleSegmentSelection={(segmentId, checked) =>
                   setSelectedSegmentIds((current) => {
                     if (checked) {
@@ -3072,6 +3129,11 @@ export function StudioWorkspace({
                     ...current,
                     [segmentId]: cursor,
                   }))
+                }
+                onFocusSegmentHandled={(segmentId) =>
+                  setFocusSegmentId((current) =>
+                    current === segmentId ? null : current,
+                  )
                 }
                 audioUrlForRecordId={(recordId) => api.textToSpeechRecordAudioUrl(recordId)}
               />
