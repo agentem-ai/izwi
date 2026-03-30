@@ -583,6 +583,86 @@ describe("TranscriptionPlayground history", () => {
     );
   });
 
+  it("prompts to download and load the summary model before regenerating", async () => {
+    apiMocks.listTranscriptionRecords.mockResolvedValue([]);
+    apiMocks.createTranscriptionRecord.mockResolvedValue({
+      id: "transcription-1",
+      created_at: 1,
+      model_id: "Parakeet-TDT-0.6B-v3",
+      aligner_model_id: "Qwen3-ForcedAligner-0.6B",
+      language: "English",
+      duration_secs: 3.2,
+      processing_time_ms: 160,
+      rtf: 0.4,
+      audio_mime_type: "audio/wav",
+      audio_filename: "clip.wav",
+      transcription: "Testing saved transcription history.",
+      segments: [],
+      words: [],
+      summary_status: "not_requested",
+      summary_model_id: "Qwen3.5-4B",
+      summary_text: null,
+      summary_error: null,
+      summary_updated_at: 1,
+    });
+    const onSummaryModelRequired = vi.fn();
+
+    const { container } = render(
+      <TranscriptionPlayground
+        selectedModel="Parakeet-TDT-0.6B-v3"
+        selectedModelReady={true}
+        modelOptions={[
+          {
+            value: "Parakeet-TDT-0.6B-v3",
+            label: "Qwen3 ASR 0.6B",
+            statusLabel: "Ready",
+            isReady: true,
+          },
+        ]}
+        onSelectModel={vi.fn()}
+        onOpenModelManager={vi.fn()}
+        onModelRequired={vi.fn()}
+        timestampAlignerModelId="Qwen3-ForcedAligner-0.6B"
+        timestampAlignerReady={true}
+        summaryModelId="Qwen3.5-4B"
+        summaryModelReady={false}
+        summaryModelStatus="not_downloaded"
+        onSummaryModelRequired={onSummaryModelRequired}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByLabelText(/Stream/i));
+
+    const fileInput = container.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement | null;
+    expect(fileInput).not.toBeNull();
+
+    fireEvent.change(fileInput!, {
+      target: {
+        files: [new File(["audio"], "clip.wav", { type: "audio/wav" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(apiMocks.createTranscriptionRecord).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByTitle("Regenerate summary"));
+
+    expect(onSummaryModelRequired).toHaveBeenCalledTimes(1);
+    expect(apiMocks.regenerateTranscriptionSummary).not.toHaveBeenCalled();
+    expect(
+      screen.getAllByText(
+        /Download and load Qwen3\.5-4B in Transcription Models/i,
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
   it("keeps streaming and timestamps mutually exclusive", async () => {
     apiMocks.listTranscriptionRecords.mockResolvedValue([]);
 

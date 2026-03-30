@@ -78,6 +78,10 @@ export function TranscriptionPlayground({
   timestampAlignerModelId = null,
   timestampAlignerReady = false,
   onTimestampAlignerRequired,
+  summaryModelId = "Qwen3.5-4B",
+  summaryModelReady = true,
+  summaryModelStatus = null,
+  onSummaryModelRequired,
   historyActionContainer,
 }: TranscriptionPlaygroundProps) {
   const [transcription, setTranscription] = useState("");
@@ -164,6 +168,37 @@ export function TranscriptionPlayground({
     timestampAlignerModelId,
     timestampAlignerReady,
   ]);
+
+  const summaryModelGuidance = useMemo(() => {
+    if (summaryModelReady) {
+      return null;
+    }
+    const modelName = summaryModelId || "Qwen3.5-4B";
+    switch (summaryModelStatus) {
+      case "downloaded":
+        return `Load ${modelName} in Transcription Models to generate summaries.`;
+      case "downloading":
+        return `${modelName} is downloading. Wait for download to complete, then try again.`;
+      case "loading":
+        return `${modelName} is loading. Wait until it is ready, then try again.`;
+      case "not_downloaded":
+      case "error":
+      default:
+        return `Download and load ${modelName} in Transcription Models to generate summaries.`;
+    }
+  }, [summaryModelId, summaryModelReady, summaryModelStatus]);
+
+  const requireSummaryModel = useCallback(() => {
+    if (summaryModelReady) {
+      return true;
+    }
+    onSummaryModelRequired?.();
+    setSummaryRefreshError(
+      summaryModelGuidance ||
+        "Download and load Qwen3.5-4B in Transcription Models to generate summaries.",
+    );
+    return false;
+  }, [onSummaryModelRequired, summaryModelGuidance, summaryModelReady]);
 
   const mergeHistorySummary = useCallback(
     (summary: TranscriptionRecordSummary) => {
@@ -350,6 +385,9 @@ export function TranscriptionPlayground({
 
   const handleRegenerateSummary = useCallback(
     async (recordId: string) => {
+      if (!requireSummaryModel()) {
+        return;
+      }
       if (!recordId || summaryRefreshPendingId === recordId) {
         return;
       }
@@ -370,7 +408,7 @@ export function TranscriptionPlayground({
         setSummaryRefreshPendingId(null);
       }
     },
-    [applyRecordUpdate, summaryRefreshPendingId],
+    [applyRecordUpdate, requireSummaryModel, summaryRefreshPendingId],
   );
 
   const closeHistoryModal = useCallback(() => {
@@ -1802,6 +1840,7 @@ export function TranscriptionPlayground({
                       audioUrl={audioUrl}
                       autoScrollActiveEntry={true}
                       stickyPlaybackFooter={true}
+                      summaryModelGuidance={summaryModelGuidance}
                       emptyTitle="Ready to transcribe"
                       emptyMessage="Record audio from your microphone or upload an audio file to start transcription. The transcript will appear here."
                     />
@@ -2044,6 +2083,7 @@ export function TranscriptionPlayground({
                       loading={selectedHistoryLoading}
                       autoScrollActiveEntry={true}
                       stickyPlaybackFooter={true}
+                      summaryModelGuidance={summaryModelGuidance}
                       emptyTitle="No transcript available"
                       emptyMessage="No transcript text available for this record."
                     />

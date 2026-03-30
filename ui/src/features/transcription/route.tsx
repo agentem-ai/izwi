@@ -11,9 +11,14 @@ import { RouteModelModal } from "@/features/models/components/RouteModelModal";
 import { useRouteModelSelection } from "@/features/models/hooks/useRouteModelSelection";
 
 const TRANSCRIPTION_PREFERRED_ALIGNERS = ["Qwen3-ForcedAligner-0.6B"] as const;
+const TRANSCRIPTION_PREFERRED_SUMMARY_MODELS = ["Qwen3.5-4B"] as const;
 
 function isTranscriptionAlignerVariant(variant: string): boolean {
   return variant === "Qwen3-ForcedAligner-0.6B";
+}
+
+function isTranscriptionSummaryVariant(variant: string): boolean {
+  return variant === "Qwen3.5-4B";
 }
 
 interface TranscriptionPageProps {
@@ -62,6 +67,13 @@ export function TranscriptionPage({
         .sort((a, b) => a.variant.localeCompare(b.variant)),
     [models],
   );
+  const transcriptionSummaryModels = useMemo(
+    () =>
+      models
+        .filter((model) => isTranscriptionSummaryVariant(model.variant))
+        .sort((a, b) => a.variant.localeCompare(b.variant)),
+    [models],
+  );
   const {
     routeModels: transcriptionModels,
     resolvedSelectedModel,
@@ -102,6 +114,47 @@ export function TranscriptionPage({
       (model) =>
         model.variant === resolvedAlignerModel && model.status === "ready",
     );
+  const resolvedSummaryModel = useMemo(
+    () =>
+      resolvePreferredRouteModel({
+        models: transcriptionSummaryModels,
+        selectedModel: null,
+        preferredVariants: TRANSCRIPTION_PREFERRED_SUMMARY_MODELS,
+        preferAnyPreferredBeforeReadyAny: true,
+      }),
+    [transcriptionSummaryModels],
+  );
+  const summaryModelStatus = useMemo(() => {
+    if (!resolvedSummaryModel) {
+      return null;
+    }
+    return (
+      transcriptionSummaryModels.find(
+        (model) => model.variant === resolvedSummaryModel,
+      )?.status ?? null
+    );
+  }, [resolvedSummaryModel, transcriptionSummaryModels]);
+  const summaryModelReady =
+    resolvedSummaryModel != null &&
+    transcriptionSummaryModels.some(
+      (model) =>
+        model.variant === resolvedSummaryModel && model.status === "ready",
+    );
+  const summaryModelRequirementMessage = useMemo(() => {
+    const modelName = resolvedSummaryModel || "Qwen3.5-4B";
+    switch (summaryModelStatus) {
+      case "downloaded":
+        return `Load ${modelName} in Transcription Models to generate summaries.`;
+      case "downloading":
+        return `${modelName} is downloading. Wait for download to complete, then generate the summary.`;
+      case "loading":
+        return `${modelName} is loading. Wait for it to become ready, then generate the summary.`;
+      case "not_downloaded":
+      case "error":
+      default:
+        return `Download and load ${modelName} in Transcription Models to generate summaries.`;
+    }
+  }, [resolvedSummaryModel, summaryModelStatus]);
   const modelSections = useMemo(
     () => [
       {
@@ -117,8 +170,15 @@ export function TranscriptionPage({
           "Optional forced aligner models used when timestamped transcription is enabled.",
         models: transcriptionAlignerModels,
       },
+      {
+        key: "summary",
+        title: "Summary Models",
+        description:
+          "Model used to generate AI summaries for completed transcriptions.",
+        models: transcriptionSummaryModels,
+      },
     ],
-    [transcriptionAlignerModels, transcriptionModels],
+    [transcriptionAlignerModels, transcriptionModels, transcriptionSummaryModels],
   );
 
   return (
@@ -151,6 +211,13 @@ export function TranscriptionPage({
           openModelManager();
           onError("Load the timestamp aligner model to enable timestamps.");
         }}
+        summaryModelId={resolvedSummaryModel}
+        summaryModelReady={summaryModelReady}
+        summaryModelStatus={summaryModelStatus}
+        onSummaryModelRequired={() => {
+          openModelManager();
+          onError(summaryModelRequirementMessage);
+        }}
         historyActionContainer={historyActionContainer}
       />
 
@@ -158,8 +225,12 @@ export function TranscriptionPage({
         isOpen={isModelModalOpen}
         onClose={closeModelModal}
         title="Transcription Models"
-        description="Manage ASR models and the optional timestamp aligner for this route."
-        models={[...transcriptionModels, ...transcriptionAlignerModels]}
+        description="Manage ASR models, the optional timestamp aligner, and the summary model for this route."
+        models={[
+          ...transcriptionModels,
+          ...transcriptionAlignerModels,
+          ...transcriptionSummaryModels,
+        ]}
         loading={loading}
         selectedVariant={resolvedSelectedModel}
         intentVariant={intentVariant}

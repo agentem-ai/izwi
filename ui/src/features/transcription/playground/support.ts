@@ -1,4 +1,5 @@
 import type {
+  ModelInfo,
   TranscriptionRecord,
   TranscriptionRecordSummary,
   TranscriptionSummaryStatus,
@@ -21,6 +22,10 @@ export interface TranscriptionPlaygroundProps {
   timestampAlignerModelId?: string | null;
   timestampAlignerReady?: boolean;
   onTimestampAlignerRequired?: () => void;
+  summaryModelId?: string | null;
+  summaryModelReady?: boolean;
+  summaryModelStatus?: ModelInfo["status"] | null;
+  onSummaryModelRequired?: () => void;
   historyActionContainer?: HTMLElement | null;
 }
 

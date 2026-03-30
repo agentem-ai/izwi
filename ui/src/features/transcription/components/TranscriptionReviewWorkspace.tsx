@@ -40,6 +40,7 @@ interface TranscriptionReviewWorkspaceProps {
   showPlayback?: boolean;
   autoScrollActiveEntry?: boolean;
   stickyPlaybackFooter?: boolean;
+  summaryModelGuidance?: string | null;
 }
 
 const PLAYBACK_SPEEDS = [0.75, 1, 1.25, 1.5, 2];
@@ -92,6 +93,7 @@ export function TranscriptionReviewWorkspace({
   showPlayback = true,
   autoScrollActiveEntry = false,
   stickyPlaybackFooter = false,
+  summaryModelGuidance = null,
 }: TranscriptionReviewWorkspaceProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const transcriptEntryRefs = useRef(new Map<number, HTMLElement>());
@@ -127,6 +129,10 @@ export function TranscriptionReviewWorkspace({
   const summaryError = useMemo(
     () => record?.summary_error?.trim() || null,
     [record?.summary_error],
+  );
+  const normalizedSummaryGuidance = useMemo(
+    () => summaryModelGuidance?.trim() || null,
+    [summaryModelGuidance],
   );
   const summaryUpdatedLabel = useMemo(() => {
     if (!record?.summary_updated_at) {
@@ -341,6 +347,11 @@ export function TranscriptionReviewWorkspace({
                 No summary available yet.
               </p>
             )}
+            {normalizedSummaryGuidance && summaryStatus !== "ready" ? (
+              <p className="mt-2 text-[11px] leading-4 text-[var(--status-warning-text)]">
+                {normalizedSummaryGuidance}
+              </p>
+            ) : null}
             <div className="mt-2 text-[11px] text-[var(--text-muted)]">
               {record.summary_model_id || "Qwen3.5-4B"}
               {summaryUpdatedLabel ? ` • Updated ${summaryUpdatedLabel}` : ""}
