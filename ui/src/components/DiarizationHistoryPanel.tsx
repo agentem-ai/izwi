@@ -908,9 +908,6 @@ export function DiarizationHistoryPanel({
                         <StatusBadge tone={diarizationSummaryStatusTone(activeHistorySummaryStatus)}>
                           {diarizationSummaryStatusLabel(activeHistorySummaryStatus)}
                         </StatusBadge>
-                        <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[10px] font-medium tracking-[0.02em] text-[var(--text-secondary)] truncate max-w-[220px]">
-                          {activeHistoryRecord.model_id || "Unknown model"}
-                        </span>
                       </>
                     ) : null}
                   </div>
