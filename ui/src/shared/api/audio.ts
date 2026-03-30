@@ -579,7 +579,16 @@ export interface DiarizationRecordSummary {
   audio_filename: string | null;
   transcript_preview: string;
   transcript_chars: number;
+  summary_status?: DiarizationSummaryStatus;
+  summary_preview?: string | null;
+  summary_chars?: number;
 }
+
+export type DiarizationSummaryStatus =
+  | "not_requested"
+  | "pending"
+  | "ready"
+  | "failed";
 
 export interface DiarizationRecord {
   id: string;
@@ -604,6 +613,11 @@ export interface DiarizationRecord {
   asr_text: string;
   raw_transcript: string;
   transcript: string;
+  summary_status?: DiarizationSummaryStatus;
+  summary_model_id?: string | null;
+  summary_text?: string | null;
+  summary_error?: string | null;
+  summary_updated_at?: number | null;
   segments: DiarizationSegment[];
   words: DiarizationWord[];
   utterances: DiarizationUtterance[];
@@ -1838,6 +1852,17 @@ export class AudioApiClient {
 
   diarizationRecordAudioUrl(recordId: string): string {
     return this.http.url(`${this.diarizationRecordPath(recordId)}/audio`);
+  }
+
+  async regenerateDiarizationSummary(
+    recordId: string,
+  ): Promise<DiarizationRecord> {
+    return this.http.request(
+      `${this.diarizationRecordPath(recordId)}/summary/regenerate`,
+      {
+        method: "POST",
+      },
+    );
   }
 
   async deleteDiarizationRecord(

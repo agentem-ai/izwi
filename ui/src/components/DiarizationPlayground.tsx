@@ -21,10 +21,16 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { useWorkspaceShortcuts } from "@/hooks/useWorkspaceShortcuts";
 import {
   api,
+  type ModelInfo,
   type DiarizationRecord,
   type DiarizationRecordRerunRequest,
 } from "../api";
 import { formattedTranscriptFromResult } from "../utils/diarizationTranscript";
+import {
+  diarizationSummaryStatusLabel,
+  diarizationSummaryStatusTone,
+  normalizeDiarizationSummaryStatus,
+} from "../utils/diarizationSummary";
 import { DiarizationExportDialog } from "./DiarizationExportDialog";
 import { DiarizationHistoryPanel } from "./DiarizationHistoryPanel";
 import { DiarizationQualityPanel } from "./DiarizationQualityPanel";
@@ -80,6 +86,10 @@ interface DiarizationPlaygroundProps {
   pipelineLlmModelReady?: boolean;
   pipelineModelsReady?: boolean;
   onPipelineModelsRequired?: () => void;
+  summaryModelId?: string | null;
+  summaryModelReady?: boolean;
+  summaryModelStatus?: ModelInfo["status"] | null;
+  onSummaryModelRequired?: () => void;
   historyActionContainer?: HTMLElement | null;
 }
 
@@ -267,6 +277,10 @@ export function DiarizationPlayground({
   pipelineLlmModelId = null,
   pipelineModelsReady = true,
   onPipelineModelsRequired,
+  summaryModelId = "Qwen3.5-4B",
+  summaryModelReady = true,
+  summaryModelStatus = null,
+  onSummaryModelRequired,
   historyActionContainer = null,
 }: DiarizationPlaygroundProps) {
   const [speakerTranscript, setSpeakerTranscript] = useState("");
@@ -287,6 +301,12 @@ export function DiarizationPlayground({
   );
   const [rerunPending, setRerunPending] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
+  const [summaryRefreshPendingId, setSummaryRefreshPendingId] = useState<
+    string | null
+  >(null);
+  const [summaryRefreshError, setSummaryRefreshError] = useState<string | null>(
+    null,
+  );
   const [minSpeakers, setMinSpeakers] = useState("1");
   const [maxSpeakers, setMaxSpeakers] = useState("4");
   const [minSpeechMs, setMinSpeechMs] = useState("240");
@@ -323,6 +343,37 @@ export function DiarizationPlayground({
     pipelineAsrModelId,
     pipelineModelsReady,
   ]);
+
+  const summaryModelGuidance = useMemo(() => {
+    if (summaryModelReady) {
+      return null;
+    }
+    const modelName = summaryModelId || "Qwen3.5-4B";
+    switch (summaryModelStatus) {
+      case "downloaded":
+        return `Load ${modelName} in Diarization Models to generate summaries.`;
+      case "downloading":
+        return `${modelName} is downloading. Wait for download to complete, then try again.`;
+      case "loading":
+        return `${modelName} is loading. Wait until it is ready, then try again.`;
+      case "not_downloaded":
+      case "error":
+      default:
+        return `Download and load ${modelName} in Diarization Models to generate summaries.`;
+    }
+  }, [summaryModelId, summaryModelReady, summaryModelStatus]);
+
+  const requireSummaryModel = useCallback(() => {
+    if (summaryModelReady) {
+      return true;
+    }
+    onSummaryModelRequired?.();
+    setSummaryRefreshError(
+      summaryModelGuidance ||
+        "Download and load Qwen3.5-4B in Diarization Models to generate summaries.",
+    );
+    return false;
+  }, [onSummaryModelRequired, summaryModelGuidance, summaryModelReady]);
 
   const normalizeSidebarSettings = useCallback(() => {
     let nextMinSpeakers = clampIntegerDraft(minSpeakers, 1, 1, 4);
@@ -376,6 +427,8 @@ export function DiarizationPlayground({
       setError(null);
       setSpeakerUpdateError(null);
       setRerunError(null);
+      setSummaryRefreshError(null);
+      setSummaryRefreshPendingId(null);
       revokeObjectUrlIfNeeded(audioUrl);
       setAudioUrl(null);
       setLatestRecord(null);
@@ -445,10 +498,12 @@ export function DiarizationPlayground({
     setLatestRecord(null);
     setSpeakerTranscript("");
     setWorkspaceTab("transcript");
-    setSpeakerUpdateError(null);
-    setRerunError(null);
-    setCopied(false);
-    setError(null);
+      setSpeakerUpdateError(null);
+      setRerunError(null);
+      setSummaryRefreshError(null);
+      setSummaryRefreshPendingId(null);
+      setCopied(false);
+      setError(null);
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -537,6 +592,8 @@ export function DiarizationPlayground({
     setWorkspaceTab("transcript");
     setSpeakerUpdateError(null);
     setRerunError(null);
+    setSummaryRefreshError(null);
+    setSummaryRefreshPendingId(null);
     setError(null);
     setIsProcessing(false);
     setCopied(false);
@@ -587,6 +644,8 @@ export function DiarizationPlayground({
       setRerunPending(true);
       setRerunError(null);
       setSpeakerUpdateError(null);
+      setSummaryRefreshError(null);
+      setSummaryRefreshPendingId(null);
       setError(null);
 
       try {
@@ -619,6 +678,78 @@ export function DiarizationPlayground({
     ],
   );
 
+  const handleRegenerateSummary = useCallback(async () => {
+    if (!requireSummaryModel()) {
+      return;
+    }
+    if (!latestRecord || summaryRefreshPendingId === latestRecord.id) {
+      return;
+    }
+
+    setSummaryRefreshPendingId(latestRecord.id);
+    setSummaryRefreshError(null);
+
+    try {
+      const refreshed = await api.regenerateDiarizationSummary(latestRecord.id);
+      setLatestRecord(refreshed);
+      setSpeakerTranscript(formattedTranscriptFromResult(refreshed));
+    } catch (err) {
+      setSummaryRefreshError(
+        err instanceof Error
+          ? err.message
+          : "Failed to regenerate diarization summary.",
+      );
+    } finally {
+      setSummaryRefreshPendingId(null);
+    }
+  }, [latestRecord, requireSummaryModel, summaryRefreshPendingId]);
+
+  const latestRecordSummaryStatus = useMemo(
+    () =>
+      normalizeDiarizationSummaryStatus(
+        latestRecord?.summary_status,
+        latestRecord?.summary_text,
+        latestRecord?.summary_error,
+      ),
+    [
+      latestRecord?.summary_error,
+      latestRecord?.summary_status,
+      latestRecord?.summary_text,
+    ],
+  );
+
+  useEffect(() => {
+    if (!latestRecord || latestRecordSummaryStatus !== "pending") {
+      return;
+    }
+
+    let cancelled = false;
+    const pollPendingSummary = async () => {
+      try {
+        const refreshed = await api.getDiarizationRecord(latestRecord.id);
+        if (cancelled) {
+          return;
+        }
+        setLatestRecord(refreshed);
+        setSpeakerTranscript(formattedTranscriptFromResult(refreshed));
+      } catch {
+        if (!cancelled) {
+          // Keep polling while pending; transient read failures should not break the session.
+        }
+      }
+    };
+
+    void pollPendingSummary();
+    const intervalId = window.setInterval(() => {
+      void pollPendingSummary();
+    }, 2500);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [latestRecord, latestRecordSummaryStatus]);
+
   useEffect(() => {
     return () => {
       revokeObjectUrlIfNeeded(audioUrl);
@@ -643,6 +774,8 @@ export function DiarizationPlayground({
   );
   const activeSpeakerCount =
     latestRecord?.corrected_speaker_count ?? latestRecord?.speaker_count ?? null;
+  const canRegenerateOutputSummary =
+    !!latestRecord && !isProcessing && !isRecording && !rerunPending;
   const renderErrorAlert = (className?: string) =>
     error ? (
       <motion.div
@@ -656,6 +789,21 @@ export function DiarizationPlayground({
       >
         <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
         {error}
+      </motion.div>
+    ) : null;
+  const renderSummaryErrorAlert = (className?: string) =>
+    summaryRefreshError ? (
+      <motion.div
+        initial={{ opacity: 0, height: 0, y: 10 }}
+        animate={{ opacity: 1, height: "auto", y: 0 }}
+        exit={{ opacity: 0, height: 0, y: 10 }}
+        className={cn(
+          "p-3.5 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)] text-sm font-medium flex items-start gap-3",
+          className,
+        )}
+      >
+        <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+        {summaryRefreshError}
       </motion.div>
     ) : null;
 
@@ -984,6 +1132,26 @@ export function DiarizationPlayground({
               {!isRecording && activeSpeakerCount ? (
                 <StatusBadge>{activeSpeakerCount} speakers</StatusBadge>
               ) : null}
+              <StatusBadge tone={diarizationSummaryStatusTone(latestRecordSummaryStatus)}>
+                {diarizationSummaryStatusLabel(latestRecordSummaryStatus)}
+              </StatusBadge>
+              <Button
+                onClick={() => void handleRegenerateSummary()}
+                variant="outline"
+                size="icon"
+                className="h-9 w-9 bg-[var(--bg-surface-1)] border-[var(--border-muted)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface-2)] hover:text-[var(--text-primary)]"
+                disabled={
+                  !canRegenerateOutputSummary ||
+                  summaryRefreshPendingId === latestRecord?.id
+                }
+                title="Regenerate summary"
+              >
+                {summaryRefreshPendingId === latestRecord?.id ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <RotateCcw className="w-4 h-4" />
+                )}
+              </Button>
               <Button
                 onClick={handleCopy}
                 variant="outline"
@@ -1035,6 +1203,7 @@ export function DiarizationPlayground({
                     <DiarizationReviewWorkspace
                       record={latestRecord}
                       audioUrl={audioUrl}
+                      summaryModelGuidance={summaryModelGuidance}
                       emptyTitle="Ready to diarize"
                       emptyMessage="Record audio from your microphone or upload an audio file to start diarization. Your speaker-segmented transcript will appear here."
                     />
@@ -1071,6 +1240,7 @@ export function DiarizationPlayground({
                     <DiarizationReviewWorkspace
                       record={null}
                       audioUrl={null}
+                      summaryModelGuidance={summaryModelGuidance}
                       emptyTitle="Ready to diarize"
                       emptyMessage="Record audio from your microphone or upload an audio file to start diarization. Your speaker-segmented transcript will appear here."
                     />
@@ -1094,7 +1264,12 @@ export function DiarizationPlayground({
             ) : null}
           </div>
 
-          <AnimatePresence>{renderErrorAlert("m-4")}</AnimatePresence>
+          <AnimatePresence>
+            <>
+              {renderErrorAlert("mx-4 mt-4")}
+              {renderSummaryErrorAlert("mx-4 mb-4")}
+            </>
+          </AnimatePresence>
         </div>
       ) : null}
 
@@ -1109,6 +1284,10 @@ export function DiarizationPlayground({
 
       <DiarizationHistoryPanel
         latestRecord={latestRecord}
+        summaryModelReady={summaryModelReady}
+        summaryModelStatus={summaryModelStatus}
+        summaryModelId={summaryModelId}
+        onSummaryModelRequired={onSummaryModelRequired}
         historyActionContainer={historyActionContainer}
       />
     </div>

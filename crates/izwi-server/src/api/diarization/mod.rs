@@ -2,7 +2,11 @@
 
 pub mod handlers;
 
-use axum::{extract::DefaultBodyLimit, routing::get, Router};
+use axum::{
+    extract::DefaultBodyLimit,
+    routing::{get, post},
+    Router,
+};
 
 use crate::state::AppState;
 
@@ -12,6 +16,7 @@ pub fn router() -> Router<AppState> {
     const CANONICAL_MEMBER: &str = "/diarizations/:record_id";
     const CANONICAL_AUDIO: &str = "/diarizations/:record_id/audio";
     const CANONICAL_RERUNS: &str = "/diarizations/:record_id/reruns";
+    const CANONICAL_SUMMARY_REGENERATE: &str = "/diarizations/:record_id/summary/regenerate";
 
     Router::new()
         .route(
@@ -31,5 +36,9 @@ pub fn router() -> Router<AppState> {
         .route(
             CANONICAL_RERUNS,
             axum::routing::post(handlers::rerun_record),
+        )
+        .route(
+            CANONICAL_SUMMARY_REGENERATE,
+            post(handlers::regenerate_summary),
         )
 }

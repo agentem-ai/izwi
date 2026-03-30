@@ -10,11 +10,17 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { StatusBadge } from "@/components/ui/status-badge";
 import type { DiarizationRecord } from "../api";
 import {
   speakerSummariesFromRecord,
   transcriptEntriesFromRecord,
 } from "../utils/diarizationTranscript";
+import {
+  diarizationSummaryStatusLabel,
+  diarizationSummaryStatusTone,
+  normalizeDiarizationSummaryStatus,
+} from "../utils/diarizationSummary";
 
 interface DiarizationReviewWorkspaceProps {
   record: Pick<
@@ -30,12 +36,18 @@ interface DiarizationReviewWorkspaceProps {
     | "speaker_name_overrides"
     | "transcript"
     | "raw_transcript"
+    | "summary_status"
+    | "summary_model_id"
+    | "summary_text"
+    | "summary_error"
+    | "summary_updated_at"
   > | null;
   audioUrl?: string | null;
   loading?: boolean;
   emptyTitle?: string;
   emptyMessage?: string;
   autoScrollActiveEntry?: boolean;
+  summaryModelGuidance?: string | null;
 }
 
 type SpeakerAccent = {
@@ -94,6 +106,7 @@ export function DiarizationReviewWorkspace({
   emptyTitle = "Ready to diarize",
   emptyMessage = "No diarization transcript is available yet.",
   autoScrollActiveEntry = false,
+  summaryModelGuidance = null,
 }: DiarizationReviewWorkspaceProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const transcriptEntryRefs = useRef(new Map<number, HTMLButtonElement>());
@@ -112,6 +125,38 @@ export function DiarizationReviewWorkspace({
     () => (record ? speakerSummariesFromRecord(record) : []),
     [record],
   );
+  const summaryStatus = useMemo(
+    () =>
+      normalizeDiarizationSummaryStatus(
+        record?.summary_status,
+        record?.summary_text,
+        record?.summary_error,
+      ),
+    [record?.summary_error, record?.summary_status, record?.summary_text],
+  );
+  const summaryText = useMemo(
+    () => record?.summary_text?.trim() || null,
+    [record?.summary_text],
+  );
+  const summaryError = useMemo(
+    () => record?.summary_error?.trim() || null,
+    [record?.summary_error],
+  );
+  const normalizedSummaryGuidance = useMemo(
+    () => summaryModelGuidance?.trim() || null,
+    [summaryModelGuidance],
+  );
+  const summaryUpdatedLabel = useMemo(() => {
+    if (!record?.summary_updated_at) {
+      return null;
+    }
+    return new Date(record.summary_updated_at).toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }, [record?.summary_updated_at]);
 
   const viewerDuration = useMemo(() => {
     const transcriptDuration = transcriptEntries.reduce(
@@ -275,6 +320,42 @@ export function DiarizationReviewWorkspace({
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr),248px] pb-20">
         <div className="space-y-5">
+          <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3.5 py-3.5">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-[13px] font-semibold tracking-wide text-[var(--text-primary)]">
+                Summary
+              </h3>
+              <StatusBadge tone={diarizationSummaryStatusTone(summaryStatus)}>
+                {diarizationSummaryStatusLabel(summaryStatus)}
+              </StatusBadge>
+            </div>
+            {summaryText ? (
+              <p className="mt-2 text-[15px] leading-7 text-[var(--text-secondary)]">
+                {summaryText}
+              </p>
+            ) : summaryStatus === "pending" ? (
+              <p className="mt-2 text-[12px] text-[var(--text-muted)]">
+                Generating summary...
+              </p>
+            ) : summaryStatus === "failed" ? (
+              <p className="mt-2 text-[12px] text-[var(--danger-text)]">
+                {summaryError || "Summary generation failed."}
+              </p>
+            ) : (
+              <p className="mt-2 text-[12px] text-[var(--text-muted)]">
+                No summary available yet.
+              </p>
+            )}
+            {normalizedSummaryGuidance && summaryStatus !== "ready" ? (
+              <p className="mt-2 text-[11px] leading-4 text-[var(--status-warning-text)]">
+                {normalizedSummaryGuidance}
+              </p>
+            ) : null}
+            <div className="mt-2 text-[11px] text-[var(--text-muted)]">
+              {record.summary_model_id || "Qwen3.5-4B"}
+              {summaryUpdatedLabel ? ` • Updated ${summaryUpdatedLabel}` : ""}
+            </div>
+          </div>
           <div>
             <h3 className="mb-3 text-[13px] font-semibold tracking-wide text-[var(--text-primary)]">
               Transcript

@@ -26,6 +26,11 @@ const updatedRecord = {
   asr_text: "Hello there. Hi back.",
   raw_transcript: "",
   transcript: "",
+  summary_status: "ready",
+  summary_model_id: "Qwen3.5-4B",
+  summary_text: "Speaker 00 greets and Speaker 01 responds.",
+  summary_error: null,
+  summary_updated_at: 1,
   segments: [],
   words: [],
   utterances: [],
@@ -292,6 +297,28 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     expect(result).toEqual(updatedRecord);
     expect(fetchMock).toHaveBeenCalledWith(
       "http://localhost/v1/diarizations/diar-1/reruns",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("posts diarization summary regenerations to the canonical summary route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(updatedRecord), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }),
+    );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AudioApiClient(new ApiHttpClient("http://localhost/v1"));
+    const result = await client.regenerateDiarizationSummary("diar-1");
+
+    expect(result).toEqual(updatedRecord);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost/v1/diarizations/diar-1/summary/regenerate",
       expect.objectContaining({ method: "POST" }),
     );
   });

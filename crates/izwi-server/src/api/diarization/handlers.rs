@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{Multipart, Path, Request, State},
+    extract::{Extension, Multipart, Path, Request, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json, RequestExt,
@@ -8,18 +8,26 @@ use axum::{
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Instant;
 
+use crate::api::request_context::RequestContext;
 use crate::diarization_store::{
     DiarizationRecord, DiarizationRecordSummary, DiarizationSegmentRecord,
-    DiarizationUtteranceRecord, DiarizationWordRecord, NewDiarizationRecord,
-    StoredDiarizationAudio,
+    DiarizationSummaryStatus, DiarizationUtteranceRecord, DiarizationWordRecord,
+    DiarizationStore, NewDiarizationRecord, StoredDiarizationAudio, UpdateDiarizationSummary,
 };
 use crate::error::ApiError;
 use crate::state::AppState;
-use izwi_core::DiarizationConfig;
+use izwi_core::{
+    parse_chat_model_variant, ChatMessage, ChatRole, DiarizationConfig, GenerationParams,
+    RuntimeService,
+};
 
 const HISTORY_LIST_LIMIT: usize = 200;
+const DEFAULT_DIARIZATION_SUMMARY_MODEL: &str = "Qwen3.5-4B";
+const DEFAULT_DIARIZATION_SUMMARY_MAX_TOKENS: usize = 384;
+const DIARIZATION_SUMMARY_SYSTEM_PROMPT: &str = "You summarize diarized transcripts for fast review. Return only the final summary text. Do not output markdown, bullet markers, XML tags, code fences, or <think> content. Keep it concise while preserving major speaker contributions, decisions, action items, and unresolved questions.";
 
 #[derive(Debug, Serialize)]
 pub struct DiarizationRecordListResponse {
@@ -175,6 +183,7 @@ pub async fn update_record(
 
 pub async fn rerun_record(
     State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
     Path(record_id): Path<String>,
     Json(req): Json<RerunDiarizationRecordRequest>,
 ) -> Result<Json<DiarizationRecord>, ApiError> {
@@ -193,12 +202,20 @@ pub async fn rerun_record(
 
     let rerun_request = build_rerun_create_request(&source_record, source_audio, req);
     let record = execute_diarization_record(&state, rerun_request).await?;
+    maybe_spawn_summary_generation(
+        state.runtime.clone(),
+        state.diarization_store.clone(),
+        state.request_semaphore.clone(),
+        &record,
+        Some(ctx.correlation_id),
+    );
 
     Ok(Json(record))
 }
 
 pub async fn create_record(
     State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
     req: Request,
 ) -> Result<Response, ApiError> {
     let parsed = parse_create_request(req).await?;
@@ -210,8 +227,47 @@ pub async fn create_record(
     }
 
     let record = execute_diarization_record(&state, parsed).await?;
+    maybe_spawn_summary_generation(
+        state.runtime.clone(),
+        state.diarization_store.clone(),
+        state.request_semaphore.clone(),
+        &record,
+        Some(ctx.correlation_id),
+    );
 
     Ok(Json(record).into_response())
+}
+
+pub async fn regenerate_summary(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(record_id): Path<String>,
+) -> Result<Json<DiarizationRecord>, ApiError> {
+    let record = state
+        .diarization_store
+        .update_summary(
+            record_id,
+            UpdateDiarizationSummary {
+                status: DiarizationSummaryStatus::Pending,
+                model_id: Some(DEFAULT_DIARIZATION_SUMMARY_MODEL.to_string()),
+                text: None,
+                error: None,
+                updated_at: None,
+            },
+        )
+        .await
+        .map_err(map_store_error)?
+        .ok_or_else(|| ApiError::not_found("Diarization record not found"))?;
+
+    maybe_spawn_summary_generation(
+        state.runtime.clone(),
+        state.diarization_store.clone(),
+        state.request_semaphore.clone(),
+        &record,
+        Some(ctx.correlation_id),
+    );
+
+    Ok(Json(record))
 }
 
 async fn execute_diarization_record(
@@ -247,6 +303,7 @@ async fn execute_diarization_record(
     } else {
         None
     };
+    let (summary_status, summary_model_id) = initial_summary_state(output.transcript.as_str());
 
     state
         .diarization_store
@@ -270,6 +327,11 @@ async fn execute_diarization_record(
             asr_text: output.asr_text,
             raw_transcript: output.raw_transcript,
             transcript: output.transcript,
+            summary_status,
+            summary_model_id,
+            summary_text: None,
+            summary_error: None,
+            summary_updated_at: None,
             segments: output
                 .segments
                 .into_iter()
@@ -358,6 +420,184 @@ fn validate_speaker_bounds(
     }
 
     Ok(())
+}
+
+fn initial_summary_state(transcript: &str) -> (DiarizationSummaryStatus, Option<String>) {
+    if transcript.trim().is_empty() {
+        (DiarizationSummaryStatus::NotRequested, None)
+    } else {
+        (
+            DiarizationSummaryStatus::Pending,
+            Some(DEFAULT_DIARIZATION_SUMMARY_MODEL.to_string()),
+        )
+    }
+}
+
+fn maybe_spawn_summary_generation(
+    runtime: Arc<RuntimeService>,
+    diarization_store: Arc<DiarizationStore>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    record: &DiarizationRecord,
+    correlation_id: Option<String>,
+) {
+    if record.summary_status != DiarizationSummaryStatus::Pending {
+        return;
+    }
+
+    spawn_summary_generation_task(
+        runtime,
+        diarization_store,
+        semaphore,
+        record.id.clone(),
+        record.transcript.clone(),
+        correlation_id,
+    );
+}
+
+fn spawn_summary_generation_task(
+    runtime: Arc<RuntimeService>,
+    diarization_store: Arc<DiarizationStore>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    record_id: String,
+    transcript: String,
+    correlation_id: Option<String>,
+) {
+    tokio::spawn(async move {
+        let _permit = match semaphore.acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => return,
+        };
+
+        let summary_result = if transcript.trim().is_empty() {
+            Err("Summary generation failed: transcript is empty".to_string())
+        } else {
+            generate_diarization_summary(runtime, transcript.as_str(), correlation_id.as_deref())
+                .await
+        };
+
+        let summary_update = match summary_result {
+            Ok(summary_text) => UpdateDiarizationSummary {
+                status: DiarizationSummaryStatus::Ready,
+                model_id: Some(DEFAULT_DIARIZATION_SUMMARY_MODEL.to_string()),
+                text: Some(summary_text),
+                error: None,
+                updated_at: None,
+            },
+            Err(err) => UpdateDiarizationSummary {
+                status: DiarizationSummaryStatus::Failed,
+                model_id: Some(DEFAULT_DIARIZATION_SUMMARY_MODEL.to_string()),
+                text: None,
+                error: Some(truncate_summary_error(err.as_str())),
+                updated_at: None,
+            },
+        };
+
+        if let Err(err) = diarization_store
+            .update_summary(record_id.clone(), summary_update)
+            .await
+        {
+            tracing::warn!(
+                "diarization summary persist failed: record_id={} error={}",
+                record_id,
+                err
+            );
+        }
+    });
+}
+
+async fn generate_diarization_summary(
+    runtime: Arc<RuntimeService>,
+    transcript: &str,
+    correlation_id: Option<&str>,
+) -> Result<String, String> {
+    let variant = parse_chat_model_variant(Some(DEFAULT_DIARIZATION_SUMMARY_MODEL)).map_err(
+        |err| format!("Invalid summary model '{DEFAULT_DIARIZATION_SUMMARY_MODEL}': {err}"),
+    )?;
+    let mut params = GenerationParams::default();
+    params.max_tokens = DEFAULT_DIARIZATION_SUMMARY_MAX_TOKENS;
+    params.temperature = 0.2;
+    params.top_p = 0.9;
+
+    let generation = runtime
+        .chat_generate_with_generation_params_and_correlation(
+            variant,
+            vec![
+                ChatMessage {
+                    role: ChatRole::System,
+                    content: DIARIZATION_SUMMARY_SYSTEM_PROMPT.to_string(),
+                },
+                ChatMessage {
+                    role: ChatRole::User,
+                    content: format!(
+                        "Summarize the following diarized transcript.\n\nTranscript:\n{}",
+                        transcript
+                    ),
+                },
+            ],
+            params,
+            correlation_id,
+        )
+        .await
+        .map_err(|err| format!("Summary generation failed: {err}"))?;
+
+    sanitize_summary_output(generation.text.as_str())
+        .ok_or_else(|| "Summary generation returned empty text".to_string())
+}
+
+fn sanitize_summary_output(raw: &str) -> Option<String> {
+    let without_think = strip_think_sections(raw);
+    let without_fence_markers = strip_code_fence_markers(without_think.as_str());
+    let normalized = without_fence_markers
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn strip_think_sections(input: &str) -> String {
+    let mut out = if let Some((_, tail)) = input.rsplit_once("</think>") {
+        tail.to_string()
+    } else {
+        input.to_string()
+    };
+    let open_tag = "<think>";
+    let close_tag = "</think>";
+
+    loop {
+        let Some(start) = out.find(open_tag) else {
+            break;
+        };
+
+        if let Some(end_rel) = out[start + open_tag.len()..].find(close_tag) {
+            let end = start + open_tag.len() + end_rel;
+            let mut next = String::with_capacity(out.len());
+            next.push_str(&out[..start]);
+            next.push_str(&out[end + close_tag.len()..]);
+            out = next;
+        } else {
+            out.truncate(start);
+            break;
+        }
+    }
+
+    out.replace(open_tag, " ").replace(close_tag, " ")
+}
+
+fn strip_code_fence_markers(input: &str) -> String {
+    input
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("```"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn truncate_summary_error(raw: &str) -> String {
+    const MAX_ERROR_CHARS: usize = 320;
+    raw.chars().take(MAX_ERROR_CHARS).collect::<String>()
 }
 
 async fn parse_create_request(req: Request) -> Result<ParsedDiarizationCreateRequest, ApiError> {
@@ -632,6 +872,11 @@ mod tests {
             asr_text: "hello there".to_string(),
             raw_transcript: "SPEAKER_00: hello there".to_string(),
             transcript: "SPEAKER_00: hello there".to_string(),
+            summary_status: DiarizationSummaryStatus::Ready,
+            summary_model_id: Some("Qwen3.5-4B".to_string()),
+            summary_text: Some("Speaker 00 greets.".to_string()),
+            summary_error: None,
+            summary_updated_at: Some(1),
             segments: Vec::new(),
             words: Vec::new(),
             utterances: Vec::new(),
@@ -704,6 +949,23 @@ mod tests {
             err.message,
             "`min_speakers` cannot be greater than `max_speakers`."
         );
+    }
+
+    #[test]
+    fn defaults_summary_state_to_pending_for_non_empty_transcripts() {
+        let (status, model_id) = initial_summary_state("SPEAKER_00: hello");
+        assert_eq!(status, DiarizationSummaryStatus::Pending);
+        assert_eq!(model_id.as_deref(), Some("Qwen3.5-4B"));
+
+        let (status, model_id) = initial_summary_state("   ");
+        assert_eq!(status, DiarizationSummaryStatus::NotRequested);
+        assert_eq!(model_id, None);
+    }
+
+    #[test]
+    fn sanitizes_summary_output_for_display_and_storage() {
+        let raw = "<think>reasoning</think>\n```text\nSummary text.\n```\n";
+        assert_eq!(sanitize_summary_output(raw).as_deref(), Some("Summary text."));
     }
 }
 

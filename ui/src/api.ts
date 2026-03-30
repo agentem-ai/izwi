@@ -16,6 +16,7 @@ export type {
   DiarizationRecordCreateRequest,
   DiarizationRecordRerunRequest,
   DiarizationRecordSummary,
+  DiarizationSummaryStatus,
   DiarizationRecordUpdateRequest,
   DiarizationRequest,
   DiarizationResponse,
