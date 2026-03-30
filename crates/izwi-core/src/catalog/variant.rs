@@ -181,14 +181,14 @@ pub fn parse_chat_model_variant(
 }
 
 /// Resolve the LLM variant for diarization transcript refinement.
-/// Defaults to Qwen3-1.7B-GGUF and only accepts that variant.
+/// Defaults to Qwen3.5-4B while still accepting legacy Qwen3-1.7B-GGUF ids.
 pub fn resolve_diarization_llm_variant(
     input: Option<&str>,
 ) -> Result<ModelVariant, ParseModelVariantError> {
-    match input.unwrap_or("Qwen3-1.7B-GGUF") {
+    match input.unwrap_or("Qwen3.5-4B") {
         id => {
             let variant = parse_model_variant(id)?;
-            if variant == ModelVariant::Qwen317BGguf {
+            if variant == ModelVariant::Qwen354BGguf || variant == ModelVariant::Qwen317BGguf {
                 Ok(variant)
             } else {
                 Err(ParseModelVariantError::new(id))
@@ -754,13 +754,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_diarization_llm_defaults_to_qwen_17b_gguf() {
+    fn resolve_diarization_llm_defaults_to_qwen_35_4b_gguf() {
         let resolved = resolve_diarization_llm_variant(None).unwrap();
-        assert_eq!(resolved, ModelVariant::Qwen317BGguf);
+        assert_eq!(resolved, ModelVariant::Qwen354BGguf);
     }
 
     #[test]
-    fn resolve_diarization_llm_accepts_qwen_17b_gguf_repo_alias() {
+    fn resolve_diarization_llm_accepts_qwen_35_4b_repo_alias() {
+        let resolved = resolve_diarization_llm_variant(Some("unsloth/Qwen3.5-4B-GGUF")).unwrap();
+        assert_eq!(resolved, ModelVariant::Qwen354BGguf);
+    }
+
+    #[test]
+    fn resolve_diarization_llm_accepts_legacy_qwen_17b_gguf_repo_alias() {
         let resolved = resolve_diarization_llm_variant(Some("Qwen/Qwen3-1.7B-GGUF")).unwrap();
         assert_eq!(resolved, ModelVariant::Qwen317BGguf);
     }
