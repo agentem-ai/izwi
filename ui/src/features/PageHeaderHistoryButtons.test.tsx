@@ -139,4 +139,59 @@ describe("Page header history buttons", () => {
       within(slot).queryByRole("button", { name: /Project Library/i }),
     ).not.toBeInTheDocument();
   });
+
+  it("StudioPage does not refetch projects on model-status rerenders", async () => {
+    const studioModelLoading = {
+      variant: "Orpheus-3B-0.1-ft-Q8_0-GGUF",
+      status: "loading" as const,
+      local_path: "/models/orpheus.gguf",
+      size_bytes: 1024,
+      download_progress: null,
+      error_message: null,
+      speech_capabilities: {
+        supports_builtin_voices: true,
+        built_in_voice_count: 1,
+        supports_reference_voice: true,
+        supports_voice_description: true,
+        supports_streaming: false,
+        supports_speed_control: true,
+        supports_auto_long_form: false,
+      },
+    };
+    const studioModelReady = {
+      ...studioModelLoading,
+      status: "ready" as const,
+    };
+
+    const onSelect = vi.fn();
+    const props = {
+      ...baseProps,
+      onSelect,
+      models: [studioModelLoading],
+      selectedModel: studioModelLoading.variant,
+    };
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <StudioPage {...props} />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() =>
+      expect(apiMocks.listStudioProjects).toHaveBeenCalledTimes(1),
+    );
+
+    rerender(
+      <MemoryRouter>
+        <StudioPage
+          {...props}
+          models={[studioModelReady]}
+          selectedModel={studioModelReady.variant}
+        />
+      </MemoryRouter>,
+    );
+
+    await new Promise((resolve) => window.setTimeout(resolve, 150));
+    expect(apiMocks.listStudioProjects).toHaveBeenCalledTimes(1);
+  });
 });
