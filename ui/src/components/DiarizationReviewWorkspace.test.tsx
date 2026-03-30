@@ -27,6 +27,11 @@ const record = {
   asr_text: "Hello there. Follow up. Response.",
   raw_transcript: "",
   transcript: "",
+  summary_status: "ready" as const,
+  summary_model_id: "Qwen3.5-4B",
+  summary_text: "Alice greets, then continues the discussion before Bob responds.",
+  summary_error: null,
+  summary_updated_at: 1_711_728_000_000,
   segments: [],
   words: [],
   utterances: [
@@ -115,6 +120,27 @@ describe("DiarizationReviewWorkspace", () => {
     fireEvent.timeUpdate(audio!);
 
     expect(secondRow).toHaveAttribute("data-active", "true");
+  });
+
+  it("renders summary content above transcript entries", () => {
+    render(
+      <DiarizationReviewWorkspace
+        record={record}
+        audioUrl="/audio/meeting.wav"
+      />,
+    );
+
+    const summaryHeading = screen.getByRole("heading", { name: "Summary" });
+    const transcriptHeading = screen.getByRole("heading", { name: "Transcript" });
+    expect(
+      summaryHeading.compareDocumentPosition(transcriptHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Alice greets, then continues the discussion before Bob responds.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("auto-scrolls the active transcript entry into view during playback when enabled", () => {

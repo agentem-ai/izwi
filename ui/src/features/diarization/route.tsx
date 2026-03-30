@@ -79,6 +79,10 @@ function isPipelineLlmVariant(variant: string): boolean {
   return variant === "Qwen3-1.7B-GGUF";
 }
 
+function isPipelineSummaryVariant(variant: string): boolean {
+  return variant === "Qwen3.5-4B";
+}
+
 export function DiarizationPage({
   models,
   selectedModel,
@@ -134,6 +138,14 @@ export function DiarizationPage({
     [models],
   );
 
+  const summaryPipelineModels = useMemo(
+    () =>
+      models
+        .filter((model) => isPipelineSummaryVariant(model.variant))
+        .sort((a, b) => a.variant.localeCompare(b.variant)),
+    [models],
+  );
+
   const pipelineModelGroups = useMemo<DiarizationModelGroup[]>(
     () => [
       {
@@ -160,8 +172,20 @@ export function DiarizationPage({
         description: "LLM used to polish final diarized transcript output.",
         models: llmPipelineModels,
       },
+      {
+        key: "summary",
+        title: "Summary",
+        description: "LLM used to generate AI summaries for diarization history.",
+        models: summaryPipelineModels,
+      },
     ],
-    [asrPipelineModels, alignerPipelineModels, diarizationModels, llmPipelineModels],
+    [
+      asrPipelineModels,
+      alignerPipelineModels,
+      diarizationModels,
+      llmPipelineModels,
+      summaryPipelineModels,
+    ],
   );
 
   const pipelineModels = useMemo(
@@ -173,6 +197,7 @@ export function DiarizationPage({
   const preferredAsrModelOrder = ["Parakeet-TDT-0.6B-v3"];
   const preferredAlignerModelOrder = ["Qwen3-ForcedAligner-0.6B"];
   const preferredLlmModelOrder = ["Qwen3-1.7B-GGUF"];
+  const preferredSummaryModelOrder = ["Qwen3.5-4B"];
 
   const resolvedSelectedModel =
     selectedModel &&
@@ -198,6 +223,10 @@ export function DiarizationPage({
     llmPipelineModels,
     preferredLlmModelOrder,
   );
+  const resolvedSummaryModel = resolvePreferredVariant(
+    summaryPipelineModels,
+    preferredSummaryModelOrder,
+  );
 
   const asrModelReady =
     resolvedAsrModel != null &&
@@ -215,6 +244,37 @@ export function DiarizationPage({
     llmPipelineModels.some(
       (model) => model.variant === resolvedLlmModel && model.status === "ready",
     );
+  const summaryModelStatus = useMemo(() => {
+    if (!resolvedSummaryModel) {
+      return null;
+    }
+    return (
+      summaryPipelineModels.find(
+        (model) => model.variant === resolvedSummaryModel,
+      )?.status ?? null
+    );
+  }, [resolvedSummaryModel, summaryPipelineModels]);
+  const summaryModelReady =
+    resolvedSummaryModel != null &&
+    summaryPipelineModels.some(
+      (model) =>
+        model.variant === resolvedSummaryModel && model.status === "ready",
+    );
+  const summaryModelRequirementMessage = useMemo(() => {
+    const modelName = resolvedSummaryModel || "Qwen3.5-4B";
+    switch (summaryModelStatus) {
+      case "downloaded":
+        return `Load ${modelName} in Diarization Models to generate summaries.`;
+      case "downloading":
+        return `${modelName} is downloading. Wait for download to complete, then generate summaries.`;
+      case "loading":
+        return `${modelName} is loading. Wait for it to become ready, then generate summaries.`;
+      case "not_downloaded":
+      case "error":
+      default:
+        return `Download and load ${modelName} in Diarization Models to generate summaries.`;
+    }
+  }, [resolvedSummaryModel, summaryModelStatus]);
   const pipelineModelsReady = asrModelReady && alignerModelReady;
 
   const targetPipelineVariants = useMemo(
@@ -224,12 +284,14 @@ export function DiarizationPage({
         resolvedAsrModel,
         resolvedAlignerModel,
         resolvedLlmModel,
+        resolvedSummaryModel,
       ].filter((variant): variant is string => !!variant),
     [
       resolvedAlignerModel,
       resolvedAsrModel,
       resolvedLlmModel,
       resolvedSelectedModel,
+      resolvedSummaryModel,
     ],
   );
 
@@ -390,6 +452,13 @@ export function DiarizationPage({
         pipelineLlmModelId={resolvedLlmModel}
         pipelineLlmModelReady={llmModelReady}
         pipelineModelsReady={pipelineModelsReady}
+        summaryModelId={resolvedSummaryModel}
+        summaryModelReady={summaryModelReady}
+        summaryModelStatus={summaryModelStatus}
+        onSummaryModelRequired={() => {
+          openModelManager();
+          onError(summaryModelRequirementMessage);
+        }}
         historyActionContainer={historyActionContainer}
         onPipelineModelsRequired={() => {
           openModelManagerForPipeline();
@@ -401,7 +470,7 @@ export function DiarizationPage({
         isOpen={isModelModalOpen}
         onClose={closeModelModal}
         title="Diarization Models"
-        description="Manage pipeline models for /v1/diarizations."
+        description="Manage pipeline models and summary generation models for /v1/diarizations."
         models={pipelineModels}
         sections={pipelineModelGroups}
         loading={loading}

@@ -9,6 +9,7 @@ import {
   Copy,
   Download,
   Loader2,
+  RotateCcw,
   Trash2,
   X,
 } from "lucide-react";
@@ -22,18 +23,26 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   api,
   type DiarizationRecord,
   type DiarizationRecordRerunRequest,
   type DiarizationRecordSummary,
+  type ModelInfo,
 } from "../api";
 import {
   formattedTranscriptFromRecord,
   previewTranscript,
   transcriptEntriesFromRecord,
 } from "../utils/diarizationTranscript";
+import {
+  buildDiarizationSummaryPreview,
+  diarizationSummaryStatusLabel,
+  diarizationSummaryStatusTone,
+  normalizeDiarizationSummaryStatus,
+} from "../utils/diarizationSummary";
 import { DiarizationExportDialog } from "./DiarizationExportDialog";
 import { DiarizationQualityPanel } from "./DiarizationQualityPanel";
 import { DiarizationReviewWorkspace } from "./DiarizationReviewWorkspace";
@@ -41,6 +50,10 @@ import { DiarizationSpeakerManager } from "./DiarizationSpeakerManager";
 
 interface DiarizationHistoryPanelProps {
   latestRecord?: DiarizationRecord | null;
+  summaryModelReady?: boolean;
+  summaryModelStatus?: ModelInfo["status"] | null;
+  summaryModelId?: string | null;
+  onSummaryModelRequired?: () => void;
   historyActionContainer?: HTMLElement | null;
 }
 
@@ -102,11 +115,22 @@ function summarizeRecord(record: DiarizationRecord): DiarizationRecordSummary {
     audio_filename: record.audio_filename,
     transcript_preview: preview || "No transcript",
     transcript_chars: Array.from(formatted).length,
+    summary_status: normalizeDiarizationSummaryStatus(
+      record.summary_status,
+      record.summary_text,
+      record.summary_error,
+    ),
+    summary_preview: buildDiarizationSummaryPreview(record.summary_text),
+    summary_chars: Array.from(record.summary_text ?? "").length,
   };
 }
 
 export function DiarizationHistoryPanel({
   latestRecord = null,
+  summaryModelReady = true,
+  summaryModelStatus = null,
+  summaryModelId = "Qwen3.5-4B",
+  onSummaryModelRequired,
   historyActionContainer,
 }: DiarizationHistoryPanelProps) {
   const [historyRecords, setHistoryRecords] = useState<
@@ -133,6 +157,12 @@ export function DiarizationHistoryPanel({
   );
   const [rerunPending, setRerunPending] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
+  const [summaryRefreshPendingId, setSummaryRefreshPendingId] = useState<
+    string | null
+  >(null);
+  const [summaryRefreshError, setSummaryRefreshError] = useState<string | null>(
+    null,
+  );
   const [deleteTargetRecordId, setDeleteTargetRecordId] = useState<
     string | null
   >(null);
@@ -140,6 +170,37 @@ export function DiarizationHistoryPanel({
   const [deleteRecordError, setDeleteRecordError] = useState<string | null>(
     null,
   );
+
+  const summaryModelGuidance = useMemo(() => {
+    if (summaryModelReady) {
+      return null;
+    }
+    const modelName = summaryModelId || "Qwen3.5-4B";
+    switch (summaryModelStatus) {
+      case "downloaded":
+        return `Load ${modelName} in Diarization Models to generate summaries.`;
+      case "downloading":
+        return `${modelName} is downloading. Wait for download to complete, then try again.`;
+      case "loading":
+        return `${modelName} is loading. Wait until it is ready, then try again.`;
+      case "not_downloaded":
+      case "error":
+      default:
+        return `Download and load ${modelName} in Diarization Models to generate summaries.`;
+    }
+  }, [summaryModelId, summaryModelReady, summaryModelStatus]);
+
+  const requireSummaryModel = useCallback(() => {
+    if (summaryModelReady) {
+      return true;
+    }
+    onSummaryModelRequired?.();
+    setSummaryRefreshError(
+      summaryModelGuidance ||
+        "Download and load Qwen3.5-4B in Diarization Models to generate summaries.",
+    );
+    return false;
+  }, [onSummaryModelRequired, summaryModelGuidance, summaryModelReady]);
 
   const mergeHistorySummary = useCallback(
     (summary: DiarizationRecordSummary) => {
@@ -365,6 +426,47 @@ export function DiarizationHistoryPanel({
     selectedHistoryRecord.id === selectedHistoryRecordId
       ? selectedHistoryRecord
       : null;
+  const activeHistorySummaryStatus = useMemo(
+    () =>
+      normalizeDiarizationSummaryStatus(
+        activeHistoryRecord?.summary_status,
+        activeHistoryRecord?.summary_text,
+        activeHistoryRecord?.summary_error,
+      ),
+    [
+      activeHistoryRecord?.summary_error,
+      activeHistoryRecord?.summary_status,
+      activeHistoryRecord?.summary_text,
+    ],
+  );
+  const pendingSummaryRecordIds = useMemo(() => {
+    const ids = new Set<string>();
+
+    if (
+      activeHistoryRecord &&
+      normalizeDiarizationSummaryStatus(
+        activeHistoryRecord.summary_status,
+        activeHistoryRecord.summary_text,
+        activeHistoryRecord.summary_error,
+      ) === "pending"
+    ) {
+      ids.add(activeHistoryRecord.id);
+    }
+
+    historyRecords.forEach((record) => {
+      if (
+        normalizeDiarizationSummaryStatus(
+          record.summary_status,
+          record.summary_preview,
+          null,
+        ) === "pending"
+      ) {
+        ids.add(record.id);
+      }
+    });
+
+    return Array.from(ids).sort();
+  }, [activeHistoryRecord, historyRecords]);
   const deleteTargetRecord = useMemo(() => {
     if (!deleteTargetRecordId) {
       return null;
@@ -444,6 +546,49 @@ export function DiarizationHistoryPanel({
     window.setTimeout(() => setHistoryTranscriptCopied(false), 1800);
   }, [normalizedActiveTranscript]);
 
+  useEffect(() => {
+    if (pendingSummaryRecordIds.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    const pollPendingSummaries = async () => {
+      const results = await Promise.allSettled(
+        pendingSummaryRecordIds.map((recordId) =>
+          api.getDiarizationRecord(recordId),
+        ),
+      );
+      if (cancelled) {
+        return;
+      }
+
+      results.forEach((result) => {
+        if (
+          result.status === "fulfilled" &&
+          result.value &&
+          typeof result.value === "object" &&
+          "id" in result.value
+        ) {
+          const record = result.value as DiarizationRecord;
+          if (selectedHistoryRecordId === record.id) {
+            setSelectedHistoryRecord(record);
+          }
+          mergeHistorySummary(summarizeRecord(record));
+        }
+      });
+    };
+
+    void pollPendingSummaries();
+    const intervalId = window.setInterval(() => {
+      void pollPendingSummaries();
+    }, 2500);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [mergeHistorySummary, pendingSummaryRecordIds, selectedHistoryRecordId]);
+
   const handleSaveSpeakerCorrections = useCallback(
     async (speakerNameOverrides: Record<string, string>) => {
       if (!activeHistoryRecord || speakerUpdatePending) {
@@ -483,6 +628,8 @@ export function DiarizationHistoryPanel({
       setRerunPending(true);
       setRerunError(null);
       setSpeakerUpdateError(null);
+      setSummaryRefreshError(null);
+      setSummaryRefreshPendingId(null);
       setSelectedHistoryError(null);
 
       try {
@@ -505,11 +652,49 @@ export function DiarizationHistoryPanel({
     [activeHistoryRecord, mergeHistorySummary, rerunPending],
   );
 
+  const handleRegenerateSummary = useCallback(async () => {
+    if (!requireSummaryModel()) {
+      return;
+    }
+    if (
+      !activeHistoryRecord ||
+      summaryRefreshPendingId === activeHistoryRecord.id
+    ) {
+      return;
+    }
+
+    setSummaryRefreshPendingId(activeHistoryRecord.id);
+    setSummaryRefreshError(null);
+
+    try {
+      const refreshed = await api.regenerateDiarizationSummary(
+        activeHistoryRecord.id,
+      );
+      setSelectedHistoryRecord(refreshed);
+      mergeHistorySummary(summarizeRecord(refreshed));
+    } catch (err) {
+      setSummaryRefreshError(
+        err instanceof Error
+          ? err.message
+          : "Failed to regenerate diarization summary.",
+      );
+    } finally {
+      setSummaryRefreshPendingId(null);
+    }
+  }, [
+    activeHistoryRecord,
+    mergeHistorySummary,
+    requireSummaryModel,
+    summaryRefreshPendingId,
+  ]);
+
   useEffect(() => {
     setHistoryTranscriptCopied(false);
     setRecordWorkspaceTab("transcript");
     setSpeakerUpdateError(null);
     setRerunError(null);
+    setSummaryRefreshError(null);
+    setSummaryRefreshPendingId(null);
   }, [selectedHistoryRecordId]);
 
   const historyDrawer = (
@@ -536,6 +721,11 @@ export function DiarizationHistoryPanel({
               <div className="flex flex-col gap-2.5">
                 {historyRecords.map((record) => {
                   const isActive = record.id === selectedHistoryRecordId;
+                  const summaryStatus = normalizeDiarizationSummaryStatus(
+                    record.summary_status,
+                    record.summary_preview,
+                    null,
+                  );
                   return (
                     <div
                       key={record.id}
@@ -597,6 +787,30 @@ export function DiarizationHistoryPanel({
                       >
                         {record.transcript_preview}
                       </p>
+                      <div className="mt-1 flex items-center justify-between gap-2">
+                        <span className="app-sidebar-row-meta">
+                          {formatAudioDuration(record.duration_secs)}
+                        </span>
+                        <StatusBadge
+                          tone={diarizationSummaryStatusTone(summaryStatus)}
+                          className="px-2 py-0.5 text-[9px] tracking-[0.1em]"
+                        >
+                          {diarizationSummaryStatusLabel(summaryStatus)}
+                        </StatusBadge>
+                      </div>
+                      {record.summary_preview ? (
+                        <p
+                          className="mt-1 text-[11px] leading-snug text-[var(--text-muted)]"
+                          style={{
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                            overflow: "hidden",
+                          }}
+                        >
+                          Summary: {record.summary_preview}
+                        </p>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -677,6 +891,9 @@ export function DiarizationHistoryPanel({
                             activeHistoryRecord.speaker_count}{" "}
                           speakers
                         </span>
+                        <StatusBadge tone={diarizationSummaryStatusTone(activeHistorySummaryStatus)}>
+                          {diarizationSummaryStatusLabel(activeHistorySummaryStatus)}
+                        </StatusBadge>
                         <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[10px] font-medium tracking-[0.02em] text-[var(--text-secondary)] truncate max-w-[220px]">
                           {activeHistoryRecord.model_id || "Unknown model"}
                         </span>
@@ -766,6 +983,23 @@ export function DiarizationHistoryPanel({
 
                         {recordWorkspaceTab === "transcript" ? (
                           <div className="flex items-center gap-2">
+                            <Button
+                              onClick={() => void handleRegenerateSummary()}
+                              variant="outline"
+                              size="sm"
+                              className="h-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-[12px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-2)]"
+                              disabled={
+                                summaryRefreshPendingId === activeHistoryRecord.id
+                              }
+                            >
+                              {summaryRefreshPendingId ===
+                              activeHistoryRecord.id ? (
+                                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                              )}
+                              Regenerate summary
+                            </Button>
                             <button
                               onClick={() => void handleCopyHistoryTranscript()}
                               className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-[12px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-2)] hover:text-[var(--text-primary)] disabled:opacity-45"
@@ -801,6 +1035,12 @@ export function DiarizationHistoryPanel({
                         ) : null}
                       </div>
 
+                      {summaryRefreshError ? (
+                        <div className="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
+                          {summaryRefreshError}
+                        </div>
+                      ) : null}
+
                       <TabsContent
                         value="transcript"
                         className="mt-0 space-y-3"
@@ -810,6 +1050,7 @@ export function DiarizationHistoryPanel({
                           audioUrl={selectedHistoryAudioUrl}
                           loading={selectedHistoryLoading}
                           autoScrollActiveEntry={true}
+                          summaryModelGuidance={summaryModelGuidance}
                           emptyMessage={
                             normalizedActiveTranscript ||
                             "No transcript text available for this record."

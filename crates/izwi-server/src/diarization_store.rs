@@ -12,6 +12,32 @@ use crate::storage_layout::{self, MediaGroup};
 
 const DEFAULT_LIST_LIMIT: usize = 200;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiarizationSummaryStatus {
+    NotRequested,
+    Pending,
+    Ready,
+    Failed,
+}
+
+impl Default for DiarizationSummaryStatus {
+    fn default() -> Self {
+        Self::NotRequested
+    }
+}
+
+impl DiarizationSummaryStatus {
+    fn as_db_value(self) -> &'static str {
+        match self {
+            Self::NotRequested => "not_requested",
+            Self::Pending => "pending",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiarizationSegmentRecord {
     pub speaker: String,
@@ -55,6 +81,9 @@ pub struct DiarizationRecordSummary {
     pub audio_filename: Option<String>,
     pub transcript_preview: String,
     pub transcript_chars: usize,
+    pub summary_status: DiarizationSummaryStatus,
+    pub summary_preview: Option<String>,
+    pub summary_chars: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +110,11 @@ pub struct DiarizationRecord {
     pub asr_text: String,
     pub raw_transcript: String,
     pub transcript: String,
+    pub summary_status: DiarizationSummaryStatus,
+    pub summary_model_id: Option<String>,
+    pub summary_text: Option<String>,
+    pub summary_error: Option<String>,
+    pub summary_updated_at: Option<u64>,
     pub segments: Vec<DiarizationSegmentRecord>,
     pub words: Vec<DiarizationWordRecord>,
     pub utterances: Vec<DiarizationUtteranceRecord>,
@@ -117,6 +151,11 @@ pub struct NewDiarizationRecord {
     pub asr_text: String,
     pub raw_transcript: String,
     pub transcript: String,
+    pub summary_status: DiarizationSummaryStatus,
+    pub summary_model_id: Option<String>,
+    pub summary_text: Option<String>,
+    pub summary_error: Option<String>,
+    pub summary_updated_at: Option<u64>,
     pub segments: Vec<DiarizationSegmentRecord>,
     pub words: Vec<DiarizationWordRecord>,
     pub utterances: Vec<DiarizationUtteranceRecord>,
@@ -124,6 +163,15 @@ pub struct NewDiarizationRecord {
     pub audio_mime_type: String,
     pub audio_filename: Option<String>,
     pub audio_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateDiarizationSummary {
+    pub status: DiarizationSummaryStatus,
+    pub model_id: Option<String>,
+    pub text: Option<String>,
+    pub error: Option<String>,
+    pub updated_at: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -172,6 +220,11 @@ impl DiarizationStore {
                 asr_text TEXT NOT NULL,
                 raw_transcript TEXT NOT NULL,
                 transcript TEXT NOT NULL,
+                summary_status TEXT NOT NULL DEFAULT 'not_requested',
+                summary_model_id TEXT NULL,
+                summary_text TEXT NULL,
+                summary_error TEXT NULL,
+                summary_updated_at INTEGER NULL,
                 segments_json TEXT NOT NULL,
                 words_json TEXT NOT NULL,
                 utterances_json TEXT NOT NULL,
@@ -187,6 +240,11 @@ impl DiarizationStore {
         )
         .context("Failed to initialize diarization database schema")?;
         ensure_diarization_records_speaker_name_overrides_column(&conn)?;
+        ensure_diarization_records_summary_status_column(&conn)?;
+        ensure_diarization_records_summary_model_id_column(&conn)?;
+        ensure_diarization_records_summary_text_column(&conn)?;
+        ensure_diarization_records_summary_error_column(&conn)?;
+        ensure_diarization_records_summary_updated_at_column(&conn)?;
 
         Ok(Self {
             db_path,
@@ -216,7 +274,9 @@ impl DiarizationStore {
                     rtf,
                     audio_mime_type,
                     audio_filename,
-                    transcript
+                    transcript,
+                    summary_status,
+                    summary_text
                 FROM diarization_records
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?1
@@ -231,6 +291,9 @@ impl DiarizationStore {
                 let utterances: Vec<DiarizationUtteranceRecord> = parse_json_vec(row.get(4)?);
                 let speaker_name_overrides = parse_json_map(row.get(5)?);
                 let transcript: String = row.get(11)?;
+                let summary_status =
+                    parse_summary_status(row.get::<_, Option<String>>(12)?);
+                let summary_text: Option<String> = row.get(13)?;
                 Ok(DiarizationRecordSummary {
                     id: row.get(0)?,
                     created_at: i64_to_u64(row.get(1)?),
@@ -255,6 +318,12 @@ impl DiarizationStore {
                         transcript.as_str(),
                     ),
                     transcript_chars: transcript.chars().count(),
+                    summary_status,
+                    summary_preview: summary_preview(summary_text.as_deref()),
+                    summary_chars: summary_text
+                        .as_ref()
+                        .map(|text| text.chars().count())
+                        .unwrap_or(0),
                 })
             })?;
 
@@ -361,6 +430,22 @@ impl DiarizationStore {
             let asr_text = sanitize_required_text(record.asr_text.as_str(), 40_000);
             let raw_transcript = sanitize_required_text(record.raw_transcript.as_str(), 100_000);
             let transcript = sanitize_required_text(record.transcript.as_str(), 100_000);
+            let summary_model_id = sanitize_optional_text(record.summary_model_id.as_deref(), 160);
+            let summary_text = sanitize_optional_text(record.summary_text.as_deref(), 20_000);
+            let summary_error = sanitize_optional_text(record.summary_error.as_deref(), 1_000);
+            let summary_status = normalize_summary_status(
+                record.summary_status,
+                summary_text.as_deref(),
+                summary_error.as_deref(),
+            );
+            let summary_updated_at = normalize_optional_timestamp_i64(record.summary_updated_at)
+                .or_else(|| {
+                    if summary_status == DiarizationSummaryStatus::NotRequested {
+                        None
+                    } else {
+                        Some(now)
+                    }
+                });
             let speaker_name_overrides = sanitize_speaker_name_overrides(
                 &record.speaker_name_overrides,
                 &raw_speaker_labels_from_parts(&record.segments, &record.words, &record.utterances),
@@ -415,6 +500,11 @@ impl DiarizationStore {
                     asr_text,
                     raw_transcript,
                     transcript,
+                    summary_status,
+                    summary_model_id,
+                    summary_text,
+                    summary_error,
+                    summary_updated_at,
                     segments_json,
                     words_json,
                     utterances_json,
@@ -425,7 +515,8 @@ impl DiarizationStore {
                 )
                 VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                    ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
+                    ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29,
+                    ?30, ?31, ?32, ?33
                 )
                 "#,
                 params![
@@ -454,6 +545,11 @@ impl DiarizationStore {
                     asr_text,
                     raw_transcript,
                     transcript,
+                    summary_status.as_db_value(),
+                    summary_model_id,
+                    summary_text,
+                    summary_error,
+                    summary_updated_at,
                     segments_json,
                     words_json,
                     utterances_json,
@@ -541,6 +637,62 @@ impl DiarizationStore {
         .await
     }
 
+    pub async fn update_summary(
+        &self,
+        record_id: String,
+        update: UpdateDiarizationSummary,
+    ) -> anyhow::Result<Option<DiarizationRecord>> {
+        self.run_blocking(move |db_path| {
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
+            let now = now_unix_millis_i64();
+
+            let summary_model_id = sanitize_optional_text(update.model_id.as_deref(), 160);
+            let summary_text = sanitize_optional_text(update.text.as_deref(), 20_000);
+            let summary_error = sanitize_optional_text(update.error.as_deref(), 1_000);
+            let summary_status = normalize_summary_status(
+                update.status,
+                summary_text.as_deref(),
+                summary_error.as_deref(),
+            );
+            let summary_updated_at = normalize_optional_timestamp_i64(update.updated_at)
+                .or_else(|| {
+                    if summary_status == DiarizationSummaryStatus::NotRequested {
+                        None
+                    } else {
+                        Some(now)
+                    }
+                });
+
+            let changed = conn.execute(
+                r#"
+                UPDATE diarization_records
+                SET
+                    summary_status = ?2,
+                    summary_model_id = ?3,
+                    summary_text = ?4,
+                    summary_error = ?5,
+                    summary_updated_at = ?6
+                WHERE id = ?1
+                "#,
+                params![
+                    record_id,
+                    summary_status.as_db_value(),
+                    summary_model_id,
+                    summary_text,
+                    summary_error,
+                    summary_updated_at,
+                ],
+            )?;
+
+            if changed == 0 {
+                return Ok(None);
+            }
+
+            fetch_record_without_audio(&conn, &record_id)
+        })
+        .await
+    }
+
     async fn run_blocking<F, T>(&self, task_fn: F) -> anyhow::Result<T>
     where
         F: FnOnce(PathBuf) -> anyhow::Result<T> + Send + 'static,
@@ -582,6 +734,11 @@ fn fetch_record_without_audio(
                 asr_text,
                 raw_transcript,
                 transcript,
+                summary_status,
+                summary_model_id,
+                summary_text,
+                summary_error,
+                summary_updated_at,
                 segments_json,
                 words_json,
                 utterances_json,
@@ -609,10 +766,10 @@ fn map_diarization_record(row: &Row<'_>) -> rusqlite::Result<DiarizationRecord> 
         .get::<_, Option<i64>>(16)?
         .and_then(i64_to_usize)
         .unwrap_or(0);
-    let segments_raw: String = row.get(21)?;
-    let words_raw: String = row.get(22)?;
-    let utterances_raw: String = row.get(23)?;
-    let speaker_name_overrides = parse_json_map(row.get(24)?);
+    let segments_raw: String = row.get(26)?;
+    let words_raw: String = row.get(27)?;
+    let utterances_raw: String = row.get(28)?;
+    let speaker_name_overrides = parse_json_map(row.get(29)?);
     let segments: Vec<DiarizationSegmentRecord> = parse_json_vec(Some(segments_raw));
     let words: Vec<DiarizationWordRecord> = parse_json_vec(Some(words_raw));
     let utterances: Vec<DiarizationUtteranceRecord> = parse_json_vec(Some(utterances_raw));
@@ -647,12 +804,17 @@ fn map_diarization_record(row: &Row<'_>) -> rusqlite::Result<DiarizationRecord> 
         asr_text: row.get(18)?,
         raw_transcript: row.get(19)?,
         transcript: row.get(20)?,
+        summary_status: parse_summary_status(row.get(21)?),
+        summary_model_id: row.get(22)?,
+        summary_text: row.get(23)?,
+        summary_error: row.get(24)?,
+        summary_updated_at: row.get::<_, Option<i64>>(25)?.map(i64_to_u64),
         segments,
         words,
         utterances,
         speaker_name_overrides,
-        audio_mime_type: row.get(25)?,
-        audio_filename: row.get(26)?,
+        audio_mime_type: row.get(30)?,
+        audio_filename: row.get(31)?,
     })
 }
 
@@ -669,12 +831,58 @@ fn parse_json_map(raw: Option<String>) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
+fn parse_summary_status(raw: Option<String>) -> DiarizationSummaryStatus {
+    match raw
+        .unwrap_or_else(|| "not_requested".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "pending" => DiarizationSummaryStatus::Pending,
+        "ready" => DiarizationSummaryStatus::Ready,
+        "failed" => DiarizationSummaryStatus::Failed,
+        _ => DiarizationSummaryStatus::NotRequested,
+    }
+}
+
+fn normalize_summary_status(
+    requested: DiarizationSummaryStatus,
+    summary_text: Option<&str>,
+    summary_error: Option<&str>,
+) -> DiarizationSummaryStatus {
+    if summary_text.is_some() {
+        return DiarizationSummaryStatus::Ready;
+    }
+    if summary_error.is_some() {
+        return DiarizationSummaryStatus::Failed;
+    }
+    match requested {
+        DiarizationSummaryStatus::Ready => DiarizationSummaryStatus::NotRequested,
+        DiarizationSummaryStatus::Failed => DiarizationSummaryStatus::NotRequested,
+        other => other,
+    }
+}
+
 fn transcript_preview(content: &str) -> String {
     let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         return "No transcript".to_string();
     }
     truncate_string(&normalized, 180)
+}
+
+fn summary_preview(content: Option<&str>) -> Option<String> {
+    let value = content.unwrap_or("").trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(truncate_string(&normalized, 200))
+    }
 }
 
 fn transcript_preview_with_utterances(
@@ -742,9 +950,93 @@ fn sanitize_audio_mime_type(raw: &str) -> String {
     }
 }
 
+fn normalize_optional_timestamp_i64(value: Option<u64>) -> Option<i64> {
+    value.and_then(|raw| i64::try_from(raw).ok())
+}
+
 fn ensure_diarization_records_speaker_name_overrides_column(
     conn: &Connection,
 ) -> anyhow::Result<()> {
+    if diarization_records_has_column(conn, "speaker_name_overrides_json")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE diarization_records ADD COLUMN speaker_name_overrides_json TEXT NOT NULL DEFAULT '{}'",
+        [],
+    )
+    .context("Failed adding diarization_records.speaker_name_overrides_json column")?;
+    Ok(())
+}
+
+fn ensure_diarization_records_summary_status_column(conn: &Connection) -> anyhow::Result<()> {
+    if diarization_records_has_column(conn, "summary_status")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE diarization_records ADD COLUMN summary_status TEXT NOT NULL DEFAULT 'not_requested'",
+        [],
+    )
+    .context("Failed adding diarization_records.summary_status column")?;
+    Ok(())
+}
+
+fn ensure_diarization_records_summary_model_id_column(conn: &Connection) -> anyhow::Result<()> {
+    if diarization_records_has_column(conn, "summary_model_id")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE diarization_records ADD COLUMN summary_model_id TEXT NULL",
+        [],
+    )
+    .context("Failed adding diarization_records.summary_model_id column")?;
+    Ok(())
+}
+
+fn ensure_diarization_records_summary_text_column(conn: &Connection) -> anyhow::Result<()> {
+    if diarization_records_has_column(conn, "summary_text")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE diarization_records ADD COLUMN summary_text TEXT NULL",
+        [],
+    )
+    .context("Failed adding diarization_records.summary_text column")?;
+    Ok(())
+}
+
+fn ensure_diarization_records_summary_error_column(conn: &Connection) -> anyhow::Result<()> {
+    if diarization_records_has_column(conn, "summary_error")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE diarization_records ADD COLUMN summary_error TEXT NULL",
+        [],
+    )
+    .context("Failed adding diarization_records.summary_error column")?;
+    Ok(())
+}
+
+fn ensure_diarization_records_summary_updated_at_column(
+    conn: &Connection,
+) -> anyhow::Result<()> {
+    if diarization_records_has_column(conn, "summary_updated_at")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE diarization_records ADD COLUMN summary_updated_at INTEGER NULL",
+        [],
+    )
+    .context("Failed adding diarization_records.summary_updated_at column")?;
+    Ok(())
+}
+
+fn diarization_records_has_column(conn: &Connection, target: &str) -> anyhow::Result<bool> {
     let mut stmt = conn
         .prepare("PRAGMA table_info(diarization_records)")
         .context("Failed to inspect diarization_records schema")?;
@@ -759,17 +1051,12 @@ fn ensure_diarization_records_speaker_name_overrides_column(
         let name: String = row
             .get(1)
             .context("Failed reading diarization_records column name")?;
-        if name == "speaker_name_overrides_json" {
-            return Ok(());
+        if name == target {
+            return Ok(true);
         }
     }
 
-    conn.execute(
-        "ALTER TABLE diarization_records ADD COLUMN speaker_name_overrides_json TEXT NOT NULL DEFAULT '{}'",
-        [],
-    )
-    .context("Failed adding diarization_records.speaker_name_overrides_json column")?;
-    Ok(())
+    Ok(false)
 }
 
 fn resolve_speaker_label(
@@ -938,6 +1225,11 @@ mod tests {
             asr_text: "hello there".to_string(),
             raw_transcript: "SPEAKER_00 [0.00s - 1.20s]: Hello there.".to_string(),
             transcript: "SPEAKER_00 [0.00s - 1.20s]: Hello there.".to_string(),
+            summary_status: DiarizationSummaryStatus::Ready,
+            summary_model_id: Some("Qwen3.5-4B".to_string()),
+            summary_text: Some("Alice greets, then Bob responds.".to_string()),
+            summary_error: None,
+            summary_updated_at: Some(1),
             segments: vec![
                 DiarizationSegmentRecord {
                     speaker: "SPEAKER_00".to_string(),
@@ -1005,6 +1297,11 @@ mod tests {
             .expect("record should be created");
         assert_eq!(created.corrected_speaker_count, 2);
         assert!(created.speaker_name_overrides.is_empty());
+        assert_eq!(created.summary_status, DiarizationSummaryStatus::Ready);
+        assert_eq!(
+            created.summary_text.as_deref(),
+            Some("Alice greets, then Bob responds.")
+        );
 
         let updated = store
             .update_speaker_name_overrides(
@@ -1030,6 +1327,42 @@ mod tests {
         assert_eq!(summaries[0].corrected_speaker_count, 1);
         assert_eq!(summaries[0].speaker_name_override_count, 2);
         assert!(summaries[0].transcript_preview.contains("Alice"));
+        assert_eq!(summaries[0].summary_status, DiarizationSummaryStatus::Ready);
+        assert_eq!(
+            summaries[0].summary_preview.as_deref(),
+            Some("Alice greets, then Bob responds.")
+        );
+
+        std::fs::remove_dir_all(root).expect("test temp dir should be removable");
+    }
+
+    #[tokio::test]
+    async fn updates_summary_fields() {
+        let (store, root) = build_test_store();
+        let created = store
+            .create_record(sample_record())
+            .await
+            .expect("record should be created");
+
+        let updated = store
+            .update_summary(
+                created.id.clone(),
+                UpdateDiarizationSummary {
+                    status: DiarizationSummaryStatus::Pending,
+                    model_id: Some("Qwen3.5-4B".to_string()),
+                    text: None,
+                    error: None,
+                    updated_at: None,
+                },
+            )
+            .await
+            .expect("summary update should succeed")
+            .expect("record should exist");
+
+        assert_eq!(updated.summary_status, DiarizationSummaryStatus::Pending);
+        assert!(updated.summary_text.is_none());
+        assert!(updated.summary_error.is_none());
+        assert!(updated.summary_updated_at.is_some());
 
         std::fs::remove_dir_all(root).expect("test temp dir should be removable");
     }
