@@ -198,6 +198,9 @@ describe("TranscriptionPlayground history", () => {
       "border",
     );
     expect(screen.getByTestId("transcription-reset-rail")).toBeInTheDocument();
+    expect(screen.getByTestId("transcription-review-player")).toHaveClass(
+      "sticky",
+    );
     expect(screen.getByTestId("transcription-stats-footer")).toBeInTheDocument();
     expect(screen.getByText("220ms")).toBeInTheDocument();
     expect(screen.getByText("Uploaded transcript text.")).toBeInTheDocument();
