@@ -210,6 +210,7 @@ export function TranscriptionPage({
     setRecordActionError(null);
     try {
       await api.deleteTranscriptionRecord(recordId);
+      await refreshHistory();
       navigate("/transcription", { replace: true });
     } catch (err) {
       setRecordActionError(
@@ -220,7 +221,7 @@ export function TranscriptionPage({
     } finally {
       setRecordDeletePending(false);
     }
-  }, [navigate, recordDeletePending, recordId]);
+  }, [navigate, recordDeletePending, recordId, refreshHistory]);
 
   const handleDetailRegenerateSummary = useCallback(async () => {
     if (!recordId || recordSummaryRefreshPending) {

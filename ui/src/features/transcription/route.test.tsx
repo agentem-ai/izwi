@@ -270,6 +270,21 @@ describe("TranscriptionPage detail route", () => {
   });
 
   it("confirms deletion before removing a transcription record", async () => {
+    apiMocks.listTranscriptionRecords
+      .mockResolvedValueOnce([
+        {
+          id: "txr-delete-1",
+          created_at: 1,
+          audio_filename: "meeting.wav",
+          duration_secs: 4,
+          processing_status: "ready",
+          processing_error: null,
+          transcription_preview: "Hello there.",
+          summary_status: "not_requested",
+          summary_preview: null,
+        },
+      ])
+      .mockResolvedValueOnce([]);
     apiMocks.getTranscriptionRecord.mockResolvedValue({
       id: "txr-delete-1",
       created_at: 1,
@@ -303,7 +318,7 @@ describe("TranscriptionPage detail route", () => {
 
     expect(
       await screen.findByText(
-        "This permanently removes the saved audio and transcript from history. This action cannot be undone.",
+        "This permanently removes the saved audio and transcript from history.",
       ),
     ).toBeInTheDocument();
     expect(screen.getAllByText("meeting.wav").length).toBeGreaterThan(0);
@@ -318,10 +333,14 @@ describe("TranscriptionPage detail route", () => {
         "txr-delete-1",
       ),
     );
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalledTimes(2),
+    );
 
     expect(
       await screen.findByRole("heading", { name: "Transcription" }),
     ).toBeInTheDocument();
+    expect(screen.queryByText("meeting.wav")).not.toBeInTheDocument();
   });
 
   it("keeps the current detail view visible while polling in the background", async () => {
