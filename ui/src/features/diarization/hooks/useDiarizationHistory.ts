@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { api, type DiarizationRecordSummary } from "@/api";
-import { normalizeDiarizationSummaryStatus } from "@/utils/diarizationSummary";
 
 export interface UseDiarizationHistoryResult {
   records: DiarizationRecordSummary[];
@@ -33,33 +32,6 @@ export function useDiarizationHistory(): UseDiarizationHistoryResult {
   useEffect(() => {
     void refresh();
   }, [refresh]);
-
-  const pollingRequired = useMemo(
-    () =>
-      records.some(
-        (record) =>
-          normalizeDiarizationSummaryStatus(
-            record.summary_status,
-            record.summary_preview,
-            null,
-          ) === "pending",
-      ),
-    [records],
-  );
-
-  useEffect(() => {
-    if (!pollingRequired) {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      void refresh();
-    }, 2500);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [pollingRequired, refresh]);
 
   return {
     records,

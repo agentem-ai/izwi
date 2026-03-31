@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ModelInfo } from "@/api";
 
 import { DiarizationPage } from "./route";
 
@@ -32,41 +33,43 @@ vi.mock("@/features/models/components/RouteModelModal", () => ({
   RouteModelModal: () => null,
 }));
 
+const baseModels: ModelInfo[] = [
+  {
+    variant: "diar_streaming_sortformer_4spk-v2.1",
+    status: "ready" as const,
+    local_path: "/models/diar",
+    size_bytes: null,
+    download_progress: null,
+    error_message: null,
+  },
+  {
+    variant: "Parakeet-TDT-0.6B-v3",
+    status: "ready" as const,
+    local_path: "/models/asr",
+    size_bytes: null,
+    download_progress: null,
+    error_message: null,
+  },
+  {
+    variant: "Qwen3-ForcedAligner-0.6B",
+    status: "ready" as const,
+    local_path: "/models/aligner",
+    size_bytes: null,
+    download_progress: null,
+    error_message: null,
+  },
+  {
+    variant: "Qwen3.5-4B",
+    status: "ready" as const,
+    local_path: "/models/llm",
+    size_bytes: null,
+    download_progress: null,
+    error_message: null,
+  },
+];
+
 const baseProps = {
-  models: [
-    {
-      variant: "diar_streaming_sortformer_4spk-v2.1",
-      status: "ready" as const,
-      local_path: "/models/diar",
-      size_bytes: null,
-      download_progress: null,
-      error_message: null,
-    },
-    {
-      variant: "Parakeet-TDT-0.6B-v3",
-      status: "ready" as const,
-      local_path: "/models/asr",
-      size_bytes: null,
-      download_progress: null,
-      error_message: null,
-    },
-    {
-      variant: "Qwen3-ForcedAligner-0.6B",
-      status: "ready" as const,
-      local_path: "/models/aligner",
-      size_bytes: null,
-      download_progress: null,
-      error_message: null,
-    },
-    {
-      variant: "Qwen3.5-4B",
-      status: "ready" as const,
-      local_path: "/models/llm",
-      size_bytes: null,
-      download_progress: null,
-      error_message: null,
-    },
-  ],
+  models: baseModels,
   selectedModel: "diar_streaming_sortformer_4spk-v2.1",
   loading: false,
   downloadProgress: {},
@@ -79,14 +82,33 @@ const baseProps = {
   onError: vi.fn(),
 };
 
-function renderRoute(initialEntry: string) {
+function createRouteProps(
+  overrides: Partial<typeof baseProps> = {},
+): typeof baseProps {
+  return {
+    ...baseProps,
+    onDownload: vi.fn(),
+    onCancelDownload: vi.fn(),
+    onLoad: vi.fn(),
+    onUnload: vi.fn(),
+    onDelete: vi.fn(),
+    onSelect: vi.fn(),
+    onError: vi.fn(),
+    ...overrides,
+  };
+}
+
+function renderRoute(
+  initialEntry: string,
+  props: typeof baseProps = createRouteProps(),
+) {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        <Route path="/diarization" element={<DiarizationPage {...baseProps} />} />
+        <Route path="/diarization" element={<DiarizationPage {...props} />} />
         <Route
           path="/diarization/:recordId"
-          element={<DiarizationPage {...baseProps} />}
+          element={<DiarizationPage {...props} />}
         />
       </Routes>
     </MemoryRouter>,
@@ -109,6 +131,15 @@ const pendingSummaryRecord = {
   summary_status: "pending",
   summary_preview: null,
   summary_chars: 0,
+};
+
+const readySummaryRecord = {
+  ...pendingSummaryRecord,
+  id: "diar-2",
+  audio_filename: "board-call.wav",
+  summary_status: "ready",
+  summary_preview: "Board sync covered runway, launch timing, and next hiring steps.",
+  summary_chars: 63,
 };
 
 const fullRecord = {
@@ -185,7 +216,28 @@ describe("DiarizationPage routes", () => {
     expect(
       screen.getByRole("button", { name: /New diarization/i }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "History" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("No diarization records yet")).toBeInTheDocument();
+  });
+
+  it("shows summaries in the diarization history table", async () => {
+    apiMocks.listDiarizationRecords.mockResolvedValue([readySummaryRecord]);
+
+    renderRoute("/diarization");
+
+    await waitFor(() =>
+      expect(apiMocks.listDiarizationRecords).toHaveBeenCalledTimes(1),
+    );
+
+    expect(screen.getByRole("columnheader", { name: "Summary" })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Board sync covered runway, launch timing, and next hiring steps.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Hello there.")).not.toBeInTheDocument();
   });
 
   it("opens the creation modal and routes new diarization runs to their detail page", async () => {
@@ -224,6 +276,80 @@ describe("DiarizationPage routes", () => {
     expect(
       await screen.findByRole("heading", { name: "Diarization Record" }),
     ).toBeInTheDocument();
+  });
+
+  it("loads all diarization stack models from the modal readiness controls", async () => {
+    const props = createRouteProps({
+      models: [
+        {
+          variant: "diar_streaming_sortformer_4spk-v2.1",
+          status: "downloaded" as const,
+          local_path: "/models/diar",
+          size_bytes: null,
+          download_progress: null,
+          error_message: null,
+        },
+        {
+          variant: "Parakeet-TDT-0.6B-v3",
+          status: "not_downloaded" as const,
+          local_path: "/models/asr",
+          size_bytes: null,
+          download_progress: null,
+          error_message: null,
+        },
+        {
+          variant: "Qwen3-ForcedAligner-0.6B",
+          status: "ready" as const,
+          local_path: "/models/aligner",
+          size_bytes: null,
+          download_progress: null,
+          error_message: null,
+        },
+        {
+          variant: "Qwen3.5-4B",
+          status: "downloaded" as const,
+          local_path: "/models/llm",
+          size_bytes: null,
+          download_progress: null,
+          error_message: null,
+        },
+      ],
+      selectedModel: "diar_streaming_sortformer_4spk-v2.1",
+    });
+
+    renderRoute("/diarization", props);
+
+    await waitFor(() =>
+      expect(apiMocks.listDiarizationRecords).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New diarization/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load all models" }));
+
+    expect(props.onLoad).toHaveBeenCalledWith("diar_streaming_sortformer_4spk-v2.1");
+    expect(props.onLoad).toHaveBeenCalledWith("Qwen3.5-4B");
+    expect(props.onDownload).toHaveBeenCalledWith("Parakeet-TDT-0.6B-v3");
+    expect(props.onUnload).not.toHaveBeenCalled();
+  });
+
+  it("unloads all ready diarization stack models from the modal readiness controls", async () => {
+    const props = createRouteProps();
+
+    renderRoute("/diarization", props);
+
+    await waitFor(() =>
+      expect(apiMocks.listDiarizationRecords).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New diarization/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Unload all models" }),
+    );
+
+    expect(props.onUnload).toHaveBeenCalledWith("diar_streaming_sortformer_4spk-v2.1");
+    expect(props.onUnload).toHaveBeenCalledWith("Parakeet-TDT-0.6B-v3");
+    expect(props.onUnload).toHaveBeenCalledWith("Qwen3-ForcedAligner-0.6B");
+    expect(props.onUnload).toHaveBeenCalledWith("Qwen3.5-4B");
   });
 
   it("loads the selected diarization record on /diarization/:recordId", async () => {
@@ -303,7 +429,7 @@ describe("DiarizationPage routes", () => {
     ).toBeInTheDocument();
   });
 
-  it("polls history while a summary is pending", async () => {
+  it("does not keep polling diarization history while viewing the route", async () => {
     vi.useFakeTimers();
     apiMocks.listDiarizationRecords.mockResolvedValue([pendingSummaryRecord]);
 
@@ -319,7 +445,7 @@ describe("DiarizationPage routes", () => {
       vi.advanceTimersByTime(2600);
     });
 
-    expect(apiMocks.listDiarizationRecords).toHaveBeenCalledTimes(2);
+    expect(apiMocks.listDiarizationRecords).toHaveBeenCalledTimes(1);
   });
 
   it("polls the selected record while its summary is pending", async () => {

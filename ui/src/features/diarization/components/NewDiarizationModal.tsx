@@ -228,6 +228,13 @@ interface NewDiarizationModalProps {
   pipelineModelsReady?: boolean;
   onModelRequired: () => void;
   onPipelineModelsRequired: () => void;
+  managedModelCount?: number;
+  readyManagedModelCount?: number;
+  canLoadAnyManagedModels?: boolean;
+  canUnloadAnyManagedModels?: boolean;
+  isManagedModelActionBusy?: boolean;
+  onLoadAllManagedModels: () => void;
+  onUnloadAllManagedModels: () => void;
   onCreated: (record: DiarizationRecord) => Promise<void> | void;
 }
 
@@ -242,6 +249,13 @@ export function NewDiarizationModal({
   pipelineModelsReady = true,
   onModelRequired,
   onPipelineModelsRequired,
+  managedModelCount = 0,
+  readyManagedModelCount = 0,
+  canLoadAnyManagedModels = false,
+  canUnloadAnyManagedModels = false,
+  isManagedModelActionBusy = false,
+  onLoadAllManagedModels,
+  onUnloadAllManagedModels,
   onCreated,
 }: NewDiarizationModalProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -454,6 +468,10 @@ export function NewDiarizationModal({
 
   const pipelineReadyForUse =
     !!pipelineAsrModelId && !!pipelineAlignerModelId && pipelineModelsReady;
+  const managedModelStatusLabel =
+    managedModelCount === 0
+      ? "No diarization route models are available."
+      : `${readyManagedModelCount} of ${managedModelCount} diarization route models are ready.`;
 
   return (
     <Dialog
@@ -678,69 +696,69 @@ export function NewDiarizationModal({
                   Model readiness
                 </div>
 
-                <div className="mt-2.5 space-y-2.5">
+                <div className="mt-2.5 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-[var(--text-primary)]">
-                        Diarization model
+                        Diarization stack
                       </div>
-                      <div className="mt-0.5 truncate text-[13px] leading-5 text-[var(--text-muted)]">
-                        {selectedModel || "No model selected"}
-                      </div>
-                    </div>
-                    <StatusBadge tone={selectedModelReady ? "success" : "warning"}>
-                      {selectedModelReady ? "Ready" : "Needs action"}
-                    </StatusBadge>
-                  </div>
-
-                  <div className="flex items-start justify-between gap-3 border-t border-[var(--border-muted)] pt-2.5">
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-[var(--text-primary)]">
-                        ASR + forced aligner
-                      </div>
-                      <div className="mt-0.5 truncate text-[13px] leading-5 text-[var(--text-muted)]">
-                        {pipelineAsrModelId && pipelineAlignerModelId
-                          ? `${pipelineAsrModelId} + ${pipelineAlignerModelId}`
-                          : "Pipeline models not ready"}
+                      <div className="mt-1 text-[13px] leading-5 text-[var(--text-muted)]">
+                        {managedModelStatusLabel}
                       </div>
                     </div>
                     <StatusBadge
-                      tone={pipelineReadyForUse ? "success" : "warning"}
+                      tone={
+                        selectedModelReady && pipelineReadyForUse
+                          ? "success"
+                          : "warning"
+                      }
                     >
-                      {pipelineReadyForUse ? "Ready" : "Needs action"}
+                      {selectedModelReady && pipelineReadyForUse
+                        ? "Ready"
+                        : "Needs action"}
                     </StatusBadge>
                   </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-8"
+                      onClick={onLoadAllManagedModels}
+                      disabled={
+                        isSubmitting ||
+                        isRecording ||
+                        isManagedModelActionBusy ||
+                        !canLoadAnyManagedModels
+                      }
+                    >
+                      Load all models
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8"
+                      onClick={onUnloadAllManagedModels}
+                      disabled={
+                        isSubmitting ||
+                        isRecording ||
+                        isManagedModelActionBusy ||
+                        !canUnloadAnyManagedModels
+                      }
+                    >
+                      Unload all models
+                    </Button>
+                  </div>
+
+                  {(!selectedModelReady || !pipelineReadyForUse) && (
+                    <div className="mt-3 text-[12px] leading-5 text-[var(--text-muted)]">
+                      {selectedModelReady
+                        ? "Finish loading the ASR and forced aligner models before starting a run."
+                        : "Load the diarization stack before creating a run."}
+                    </div>
+                  )}
                 </div>
-
-                {!selectedModelReady ? (
-                  <div className="mt-3.5">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-8"
-                      onClick={onModelRequired}
-                      disabled={isSubmitting || isRecording}
-                    >
-                      Open diarization models
-                    </Button>
-                  </div>
-                ) : null}
-
-                {!pipelineReadyForUse ? (
-                  <div className="mt-3.5">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-8"
-                      onClick={onPipelineModelsRequired}
-                      disabled={isSubmitting || isRecording}
-                    >
-                      Open pipeline models
-                    </Button>
-                  </div>
-                ) : null}
               </div>
 
               {error ? (
