@@ -398,8 +398,8 @@ export function NewDiarizationModal({
           min_silence_duration_ms: captureSettings.minSilenceMs,
         });
 
-        await onCreated(record);
         onClose();
+        await Promise.resolve(onCreated(record));
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to create diarization.",
@@ -507,6 +507,8 @@ export function NewDiarizationModal({
 
   const pipelineReadyForUse =
     !!pipelineAsrModelId && !!pipelineAlignerModelId && pipelineModelsReady;
+  const allManagedModelsReady =
+    managedModelCount > 0 && readyManagedModelCount === managedModelCount;
   const managedModelStatusLabel =
     managedModelCount === 0
       ? "No diarization route models are available."
@@ -528,7 +530,7 @@ export function NewDiarizationModal({
           </DialogTitle>
           <DialogDescription className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--text-muted)]">
             Upload a recording or capture from your microphone, then open the
-            diarization run on its own page as soon as processing completes.
+            diarization run on its own page as soon as the upload is accepted.
           </DialogDescription>
         </div>
 
@@ -647,7 +649,7 @@ export function NewDiarizationModal({
             </div>
 
             <div className="mt-3 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3.5 py-3 text-[13px] leading-5 text-[var(--text-muted)]">
-              The run opens on its own page as soon as diarization finishes.
+              The run opens on its own page as soon as the upload is accepted.
             </div>
           </div>
 
@@ -746,55 +748,52 @@ export function NewDiarizationModal({
                       </div>
                     </div>
                     <StatusBadge
-                      tone={
-                        selectedModelReady && pipelineReadyForUse
-                          ? "success"
-                          : "warning"
-                      }
+                      tone={allManagedModelsReady ? "success" : "warning"}
                     >
-                      {selectedModelReady && pipelineReadyForUse
-                        ? "Ready"
-                        : "Needs action"}
+                      {allManagedModelsReady ? "Ready" : "Needs action"}
                     </StatusBadge>
                   </div>
 
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      className="h-8"
-                      onClick={onLoadAllManagedModels}
-                      disabled={
-                        isSubmitting ||
-                        isRecording ||
-                        isManagedModelActionBusy ||
-                        !canLoadAnyManagedModels
-                      }
-                    >
-                      Load all models
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-8"
-                      onClick={onUnloadAllManagedModels}
-                      disabled={
-                        isSubmitting ||
-                        isRecording ||
-                        isManagedModelActionBusy ||
-                        !canUnloadAnyManagedModels
-                      }
-                    >
-                      Unload all models
-                    </Button>
+                    {allManagedModelsReady ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8"
+                        onClick={onUnloadAllManagedModels}
+                        disabled={
+                          isSubmitting ||
+                          isRecording ||
+                          isManagedModelActionBusy ||
+                          !canUnloadAnyManagedModels
+                        }
+                      >
+                        Unload Models
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-8"
+                        onClick={onLoadAllManagedModels}
+                        disabled={
+                          isSubmitting ||
+                          isRecording ||
+                          isManagedModelActionBusy ||
+                          !canLoadAnyManagedModels
+                        }
+                      >
+                        Load Models
+                      </Button>
+                    )}
                   </div>
 
-                  {(!selectedModelReady || !pipelineReadyForUse) && (
+                  {!allManagedModelsReady && (
                     <div className="mt-3 text-[12px] leading-5 text-[var(--text-muted)]">
-                      {selectedModelReady
-                        ? "Finish loading the ASR and forced aligner models before starting a run."
-                        : "Load the diarization stack before creating a run."}
+                      {selectedModelReady && pipelineReadyForUse
+                        ? "Load the remaining diarization route models to mark the full stack ready."
+                        : "Load the diarization, ASR, and forced aligner models before starting a run."}
                     </div>
                   )}
                 </div>

@@ -294,6 +294,9 @@ describe("DiarizationPage routes", () => {
     expect(
       await screen.findByRole("heading", { name: "Diarization Record" }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "New diarization" }),
+    ).not.toBeInTheDocument();
 
     await act(async () => {
       if (resolveRefreshHistory) {
@@ -302,7 +305,7 @@ describe("DiarizationPage routes", () => {
     });
   });
 
-  it("loads all diarization stack models from the modal readiness controls", async () => {
+  it("shows a single load action until the full diarization stack is ready", async () => {
     const props = createRouteProps({
       models: [
         {
@@ -348,7 +351,11 @@ describe("DiarizationPage routes", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /New diarization/i }));
-    fireEvent.click(await screen.findByRole("button", { name: "Load all models" }));
+    expect(await screen.findByText("Needs action")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Unload Models" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Load Models" }));
 
     expect(props.onLoad).toHaveBeenCalledWith("diar_streaming_sortformer_4spk-v2.1");
     expect(props.onLoad).toHaveBeenCalledWith("Qwen3.5-4B");
@@ -356,7 +363,7 @@ describe("DiarizationPage routes", () => {
     expect(props.onUnload).not.toHaveBeenCalled();
   });
 
-  it("unloads all ready diarization stack models from the modal readiness controls", async () => {
+  it("shows unload only after the full diarization stack is ready", async () => {
     const props = createRouteProps();
 
     renderRoute("/diarization", props);
@@ -366,8 +373,12 @@ describe("DiarizationPage routes", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /New diarization/i }));
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Load Models" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(
-      await screen.findByRole("button", { name: "Unload all models" }),
+      await screen.findByRole("button", { name: "Unload Models" }),
     );
 
     expect(props.onUnload).toHaveBeenCalledWith("diar_streaming_sortformer_4spk-v2.1");
