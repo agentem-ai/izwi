@@ -11,6 +11,8 @@ const record = {
   asr_model_id: "Parakeet-TDT-0.6B-v3",
   aligner_model_id: "Qwen3-ForcedAligner-0.6B",
   llm_model_id: null,
+  processing_status: "ready" as const,
+  processing_error: null,
   min_speakers: 1,
   max_speakers: 4,
   min_speech_duration_ms: 240,

@@ -24,6 +24,8 @@ export function summarizeDiarizationRecord(
     id: record.id,
     created_at: record.created_at,
     model_id: record.model_id,
+    processing_status: record.processing_status,
+    processing_error: record.processing_error,
     speaker_count: record.speaker_count ?? 0,
     corrected_speaker_count:
       record.corrected_speaker_count ?? record.speaker_count ?? 0,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, type DiarizationRecord } from "@/api";
+import { normalizeDiarizationProcessingStatus } from "@/utils/diarizationProcessing";
 import { normalizeDiarizationSummaryStatus } from "@/utils/diarizationSummary";
 
 export interface UseDiarizationRecordResult {
@@ -70,11 +71,23 @@ export function useDiarizationRecord(
   const pollingRequired = useMemo(
     () =>
       !!record &&
-      normalizeDiarizationSummaryStatus(
-        record.summary_status,
-        record.summary_text,
-        record.summary_error,
-      ) === "pending",
+      (() => {
+        const processingStatus = normalizeDiarizationProcessingStatus(
+          record.processing_status,
+          record.processing_error,
+        );
+        if (processingStatus === "pending" || processingStatus === "processing") {
+          return true;
+        }
+
+        return (
+          normalizeDiarizationSummaryStatus(
+            record.summary_status,
+            record.summary_text,
+            record.summary_error,
+          ) === "pending"
+        );
+      })(),
     [record],
   );
 

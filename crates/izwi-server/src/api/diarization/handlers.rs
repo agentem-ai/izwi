@@ -9,13 +9,14 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::api::request_context::RequestContext;
 use crate::diarization_store::{
-    DiarizationRecord, DiarizationRecordSummary, DiarizationSegmentRecord,
-    DiarizationSummaryStatus, DiarizationUtteranceRecord, DiarizationWordRecord,
-    DiarizationStore, NewDiarizationRecord, StoredDiarizationAudio, UpdateDiarizationSummary,
+    CompleteDiarizationRecord, DiarizationProcessingStatus, DiarizationRecord,
+    DiarizationRecordSummary, DiarizationSegmentRecord, DiarizationSummaryStatus,
+    DiarizationUtteranceRecord, DiarizationWordRecord, DiarizationStore,
+    NewDiarizationRecord, StoredDiarizationAudio, UpdateDiarizationSummary,
 };
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -226,16 +227,18 @@ pub async fn create_record(
         ));
     }
 
-    let record = execute_diarization_record(&state, parsed).await?;
-    maybe_spawn_summary_generation(
+    let placeholder = create_pending_record(&state, &parsed).await?;
+    spawn_diarization_processing_task(
         state.runtime.clone(),
         state.diarization_store.clone(),
         state.request_semaphore.clone(),
-        &record,
+        state.request_timeout_secs,
+        placeholder.id.clone(),
+        parsed,
         Some(ctx.correlation_id),
     );
 
-    Ok(Json(record).into_response())
+    Ok((StatusCode::ACCEPTED, Json(placeholder)).into_response())
 }
 
 pub async fn regenerate_summary(
@@ -275,35 +278,14 @@ async fn execute_diarization_record(
     parsed: ParsedDiarizationCreateRequest,
 ) -> Result<DiarizationRecord, ApiError> {
     validate_speaker_bounds(parsed.min_speakers, parsed.max_speakers)?;
-
-    let _permit = state.acquire_permit().await;
-    let started = Instant::now();
-
-    let output = state
-        .runtime
-        .diarize_with_transcript_bytes(
-            parsed.audio_bytes.as_slice(),
-            parsed.model_id.as_deref(),
-            parsed.asr_model_id.as_deref(),
-            parsed.aligner_model_id.as_deref(),
-            parsed.llm_model_id.as_deref(),
-            &DiarizationConfig {
-                min_speakers: parsed.min_speakers,
-                max_speakers: parsed.max_speakers,
-                min_speech_duration_ms: parsed.min_speech_duration_ms.map(|v| v as f32),
-                min_silence_duration_ms: parsed.min_silence_duration_ms.map(|v| v as f32),
-            },
-            parsed.enable_llm_refinement.unwrap_or(false),
-        )
-        .await?;
-
-    let processing_time_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let rtf = if output.duration_secs > 0.0 {
-        Some((processing_time_ms / 1000.0) / output.duration_secs as f64)
-    } else {
-        None
-    };
-    let (summary_status, summary_model_id) = initial_summary_state(output.transcript.as_str());
+    let artifacts = generate_diarization_artifacts(
+        state.runtime.clone(),
+        state.request_semaphore.clone(),
+        state.request_timeout_secs,
+        &parsed,
+        None,
+    )
+    .await?;
 
     state
         .diarization_store
@@ -312,60 +294,31 @@ async fn execute_diarization_record(
             asr_model_id: parsed.asr_model_id,
             aligner_model_id: parsed.aligner_model_id,
             llm_model_id: parsed.llm_model_id,
+            processing_status: DiarizationProcessingStatus::Ready,
+            processing_error: None,
             min_speakers: parsed.min_speakers,
             max_speakers: parsed.max_speakers,
             min_speech_duration_ms: parsed.min_speech_duration_ms,
             min_silence_duration_ms: parsed.min_silence_duration_ms,
             enable_llm_refinement: parsed.enable_llm_refinement.unwrap_or(false),
-            processing_time_ms,
-            duration_secs: Some(output.duration_secs as f64),
-            rtf,
-            speaker_count: output.speaker_count,
-            alignment_coverage: Some(output.alignment_coverage as f64),
-            unattributed_words: output.unattributed_words,
-            llm_refined: output.llm_refined,
-            asr_text: output.asr_text,
-            raw_transcript: output.raw_transcript,
-            transcript: output.transcript,
-            summary_status,
-            summary_model_id,
+            processing_time_ms: artifacts.processing_time_ms,
+            duration_secs: Some(artifacts.duration_secs),
+            rtf: artifacts.rtf,
+            speaker_count: artifacts.speaker_count,
+            alignment_coverage: artifacts.alignment_coverage,
+            unattributed_words: artifacts.unattributed_words,
+            llm_refined: artifacts.llm_refined,
+            asr_text: artifacts.asr_text,
+            raw_transcript: artifacts.raw_transcript,
+            transcript: artifacts.transcript,
+            summary_status: artifacts.summary_status,
+            summary_model_id: artifacts.summary_model_id,
             summary_text: None,
             summary_error: None,
             summary_updated_at: None,
-            segments: output
-                .segments
-                .into_iter()
-                .map(|segment| DiarizationSegmentRecord {
-                    speaker: segment.speaker,
-                    start: segment.start_secs,
-                    end: segment.end_secs,
-                    confidence: segment.confidence,
-                })
-                .collect(),
-            words: output
-                .words
-                .into_iter()
-                .map(|word| DiarizationWordRecord {
-                    word: word.word,
-                    speaker: word.speaker,
-                    start: word.start_secs,
-                    end: word.end_secs,
-                    speaker_confidence: word.speaker_confidence,
-                    overlaps_segment: word.overlaps_segment,
-                })
-                .collect(),
-            utterances: output
-                .utterances
-                .into_iter()
-                .map(|utterance| DiarizationUtteranceRecord {
-                    speaker: utterance.speaker,
-                    start: utterance.start_secs,
-                    end: utterance.end_secs,
-                    text: utterance.text,
-                    word_start: utterance.word_start,
-                    word_end: utterance.word_end,
-                })
-                .collect(),
+            segments: artifacts.segments,
+            words: artifacts.words,
+            utterances: artifacts.utterances,
             audio_mime_type: parsed
                 .audio_mime_type
                 .unwrap_or_else(|| "audio/wav".to_string()),
@@ -375,6 +328,271 @@ async fn execute_diarization_record(
         })
         .await
         .map_err(map_store_error)
+}
+
+async fn create_pending_record(
+    state: &AppState,
+    parsed: &ParsedDiarizationCreateRequest,
+) -> Result<DiarizationRecord, ApiError> {
+    validate_speaker_bounds(parsed.min_speakers, parsed.max_speakers)?;
+
+    state
+        .diarization_store
+        .create_record(NewDiarizationRecord {
+            model_id: parsed.model_id.clone(),
+            asr_model_id: parsed.asr_model_id.clone(),
+            aligner_model_id: parsed.aligner_model_id.clone(),
+            llm_model_id: parsed.llm_model_id.clone(),
+            processing_status: DiarizationProcessingStatus::Pending,
+            processing_error: None,
+            min_speakers: parsed.min_speakers,
+            max_speakers: parsed.max_speakers,
+            min_speech_duration_ms: parsed.min_speech_duration_ms,
+            min_silence_duration_ms: parsed.min_silence_duration_ms,
+            enable_llm_refinement: parsed.enable_llm_refinement.unwrap_or(false),
+            processing_time_ms: 0.0,
+            duration_secs: None,
+            rtf: None,
+            speaker_count: 0,
+            alignment_coverage: None,
+            unattributed_words: 0,
+            llm_refined: false,
+            asr_text: String::new(),
+            raw_transcript: String::new(),
+            transcript: String::new(),
+            summary_status: DiarizationSummaryStatus::NotRequested,
+            summary_model_id: None,
+            summary_text: None,
+            summary_error: None,
+            summary_updated_at: None,
+            segments: Vec::new(),
+            words: Vec::new(),
+            utterances: Vec::new(),
+            speaker_name_overrides: BTreeMap::new(),
+            audio_mime_type: parsed
+                .audio_mime_type
+                .clone()
+                .unwrap_or_else(|| "audio/wav".to_string()),
+            audio_filename: parsed.audio_filename.clone(),
+            audio_bytes: parsed.audio_bytes.clone(),
+        })
+        .await
+        .map_err(map_store_error)
+}
+
+#[derive(Debug)]
+struct GeneratedDiarizationArtifacts {
+    duration_secs: f64,
+    processing_time_ms: f64,
+    rtf: Option<f64>,
+    speaker_count: usize,
+    alignment_coverage: Option<f64>,
+    unattributed_words: usize,
+    llm_refined: bool,
+    asr_text: String,
+    raw_transcript: String,
+    transcript: String,
+    summary_status: DiarizationSummaryStatus,
+    summary_model_id: Option<String>,
+    segments: Vec<DiarizationSegmentRecord>,
+    words: Vec<DiarizationWordRecord>,
+    utterances: Vec<DiarizationUtteranceRecord>,
+}
+
+fn spawn_diarization_processing_task(
+    runtime: Arc<RuntimeService>,
+    diarization_store: Arc<DiarizationStore>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    request_timeout_secs: u64,
+    record_id: String,
+    parsed: ParsedDiarizationCreateRequest,
+    correlation_id: Option<String>,
+) {
+    tokio::spawn(async move {
+        let _ = diarization_store
+            .update_processing_status(
+                record_id.clone(),
+                DiarizationProcessingStatus::Processing,
+                None,
+            )
+            .await;
+
+        match generate_diarization_artifacts(
+            runtime.clone(),
+            semaphore.clone(),
+            request_timeout_secs,
+            &parsed,
+            correlation_id.as_deref(),
+        )
+        .await
+        {
+            Ok(artifacts) => {
+                match diarization_store
+                    .complete_record(
+                        record_id.clone(),
+                        CompleteDiarizationRecord {
+                            model_id: parsed.model_id,
+                            asr_model_id: parsed.asr_model_id,
+                            aligner_model_id: parsed.aligner_model_id,
+                            llm_model_id: parsed.llm_model_id,
+                            min_speakers: parsed.min_speakers,
+                            max_speakers: parsed.max_speakers,
+                            min_speech_duration_ms: parsed.min_speech_duration_ms,
+                            min_silence_duration_ms: parsed.min_silence_duration_ms,
+                            enable_llm_refinement: parsed.enable_llm_refinement.unwrap_or(false),
+                            processing_time_ms: artifacts.processing_time_ms,
+                            duration_secs: Some(artifacts.duration_secs),
+                            rtf: artifacts.rtf,
+                            speaker_count: artifacts.speaker_count,
+                            alignment_coverage: artifacts.alignment_coverage,
+                            unattributed_words: artifacts.unattributed_words,
+                            llm_refined: artifacts.llm_refined,
+                            asr_text: artifacts.asr_text,
+                            raw_transcript: artifacts.raw_transcript,
+                            transcript: artifacts.transcript,
+                            summary_status: artifacts.summary_status,
+                            summary_model_id: artifacts.summary_model_id,
+                            summary_text: None,
+                            summary_error: None,
+                            summary_updated_at: None,
+                            segments: artifacts.segments,
+                            words: artifacts.words,
+                            utterances: artifacts.utterances,
+                        },
+                    )
+                    .await
+                {
+                    Ok(Some(record)) => {
+                        maybe_spawn_summary_generation(
+                            runtime.clone(),
+                            diarization_store.clone(),
+                            semaphore.clone(),
+                            &record,
+                            correlation_id,
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        let _ = diarization_store
+                            .update_processing_status(
+                                record_id,
+                                DiarizationProcessingStatus::Failed,
+                                Some(format!("Failed to save diarization record: {err}")),
+                            )
+                            .await;
+                    }
+                }
+            }
+            Err(err) => {
+                let _ = diarization_store
+                    .update_processing_status(
+                        record_id,
+                        DiarizationProcessingStatus::Failed,
+                        Some(err.message),
+                    )
+                    .await;
+            }
+        }
+    });
+}
+
+async fn generate_diarization_artifacts(
+    runtime: Arc<RuntimeService>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    request_timeout_secs: u64,
+    parsed: &ParsedDiarizationCreateRequest,
+    _correlation_id: Option<&str>,
+) -> Result<GeneratedDiarizationArtifacts, ApiError> {
+    let _permit = stateful_acquire(semaphore).await?;
+    let started = Instant::now();
+    let timeout = Duration::from_secs(request_timeout_secs);
+
+    let output = tokio::time::timeout(timeout, async {
+        runtime
+            .diarize_with_transcript_bytes(
+                parsed.audio_bytes.as_slice(),
+                parsed.model_id.as_deref(),
+                parsed.asr_model_id.as_deref(),
+                parsed.aligner_model_id.as_deref(),
+                parsed.llm_model_id.as_deref(),
+                &DiarizationConfig {
+                    min_speakers: parsed.min_speakers,
+                    max_speakers: parsed.max_speakers,
+                    min_speech_duration_ms: parsed.min_speech_duration_ms.map(|v| v as f32),
+                    min_silence_duration_ms: parsed.min_silence_duration_ms.map(|v| v as f32),
+                },
+                parsed.enable_llm_refinement.unwrap_or(false),
+            )
+            .await
+    })
+    .await
+    .map_err(|_| ApiError::internal("Diarization request timed out"))??;
+
+    let processing_time_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let rtf = if output.duration_secs > 0.0 {
+        Some((processing_time_ms / 1000.0) / output.duration_secs as f64)
+    } else {
+        None
+    };
+    let (summary_status, summary_model_id) = initial_summary_state(output.transcript.as_str());
+
+    Ok(GeneratedDiarizationArtifacts {
+        duration_secs: output.duration_secs as f64,
+        processing_time_ms,
+        rtf,
+        speaker_count: output.speaker_count,
+        alignment_coverage: Some(output.alignment_coverage as f64),
+        unattributed_words: output.unattributed_words,
+        llm_refined: output.llm_refined,
+        asr_text: output.asr_text,
+        raw_transcript: output.raw_transcript,
+        transcript: output.transcript,
+        summary_status,
+        summary_model_id,
+        segments: output
+            .segments
+            .into_iter()
+            .map(|segment| DiarizationSegmentRecord {
+                speaker: segment.speaker,
+                start: segment.start_secs,
+                end: segment.end_secs,
+                confidence: segment.confidence,
+            })
+            .collect(),
+        words: output
+            .words
+            .into_iter()
+            .map(|word| DiarizationWordRecord {
+                word: word.word,
+                speaker: word.speaker,
+                start: word.start_secs,
+                end: word.end_secs,
+                speaker_confidence: word.speaker_confidence,
+                overlaps_segment: word.overlaps_segment,
+            })
+            .collect(),
+        utterances: output
+            .utterances
+            .into_iter()
+            .map(|utterance| DiarizationUtteranceRecord {
+                speaker: utterance.speaker,
+                start: utterance.start_secs,
+                end: utterance.end_secs,
+                text: utterance.text,
+                word_start: utterance.word_start,
+                word_end: utterance.word_end,
+            })
+            .collect(),
+    })
+}
+
+async fn stateful_acquire(
+    semaphore: Arc<tokio::sync::Semaphore>,
+) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
+    semaphore
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::internal("Request semaphore closed"))
 }
 
 fn build_rerun_create_request(
@@ -856,6 +1074,8 @@ mod tests {
             asr_model_id: Some("Parakeet-TDT-0.6B-v3".to_string()),
             aligner_model_id: Some("Qwen3-ForcedAligner-0.6B".to_string()),
             llm_model_id: Some("Qwen3-1.7B-GGUF".to_string()),
+            processing_status: DiarizationProcessingStatus::Ready,
+            processing_error: None,
             min_speakers: Some(1),
             max_speakers: Some(4),
             min_speech_duration_ms: Some(240.0),

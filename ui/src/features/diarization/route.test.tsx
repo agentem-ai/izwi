@@ -119,6 +119,8 @@ const pendingSummaryRecord = {
   id: "diar-1",
   created_at: 1,
   model_id: "diar_streaming_sortformer_4spk-v2.1",
+  processing_status: "ready" as const,
+  processing_error: null,
   speaker_count: 2,
   corrected_speaker_count: 2,
   duration_secs: 42,
@@ -149,6 +151,8 @@ const fullRecord = {
   asr_model_id: "Parakeet-TDT-0.6B-v3",
   aligner_model_id: "Qwen3-ForcedAligner-0.6B",
   llm_model_id: "Qwen3.5-4B",
+  processing_status: "ready" as const,
+  processing_error: null,
   min_speakers: 1,
   max_speakers: 4,
   min_speech_duration_ms: 240,
@@ -245,6 +249,25 @@ describe("DiarizationPage routes", () => {
 
   it("opens the creation modal and routes new diarization runs to their detail page", async () => {
     let resolveRefreshHistory: ((records: unknown[]) => void) | null = null;
+    const pendingCreatedRecord = {
+      ...fullRecord,
+      processing_status: "pending" as const,
+      processing_time_ms: 0,
+      duration_secs: null,
+      rtf: null,
+      speaker_count: 0,
+      corrected_speaker_count: 0,
+      alignment_coverage: null,
+      llm_refined: false,
+      asr_text: "",
+      raw_transcript: "",
+      transcript: "",
+      summary_status: "not_requested" as const,
+      summary_model_id: null,
+      segments: [],
+      words: [],
+      utterances: [],
+    };
     apiMocks.listDiarizationRecords
       .mockResolvedValueOnce([])
       .mockImplementationOnce(
@@ -253,6 +276,10 @@ describe("DiarizationPage routes", () => {
             resolveRefreshHistory = resolve;
           }),
       );
+    apiMocks.createDiarizationRecord.mockResolvedValueOnce(pendingCreatedRecord);
+    apiMocks.getDiarizationRecord
+      .mockResolvedValueOnce(pendingCreatedRecord)
+      .mockResolvedValueOnce(fullRecord);
 
     renderRoute("/diarization");
 
@@ -303,6 +330,50 @@ describe("DiarizationPage routes", () => {
         resolveRefreshHistory([]);
       }
     });
+  });
+
+  it("polls a newly created pending diarization record until processing completes", async () => {
+    vi.useFakeTimers();
+    const pendingCreatedRecord = {
+      ...fullRecord,
+      processing_status: "pending" as const,
+      processing_time_ms: 0,
+      duration_secs: null,
+      rtf: null,
+      speaker_count: 0,
+      corrected_speaker_count: 0,
+      alignment_coverage: null,
+      llm_refined: false,
+      asr_text: "",
+      raw_transcript: "",
+      transcript: "",
+      summary_status: "not_requested" as const,
+      summary_model_id: null,
+      segments: [],
+      words: [],
+      utterances: [],
+    };
+    apiMocks.listDiarizationRecords.mockResolvedValue([]);
+    apiMocks.getDiarizationRecord
+      .mockResolvedValueOnce(pendingCreatedRecord)
+      .mockResolvedValueOnce(fullRecord);
+
+    renderRoute("/diarization/diar-1");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByText(
+        "This diarization run is queued and will begin processing shortly.",
+      ),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(2600);
+    });
+
+    expect(apiMocks.getDiarizationRecord).toHaveBeenCalledTimes(2);
   });
 
   it("shows a single load action until the full diarization stack is ready", async () => {

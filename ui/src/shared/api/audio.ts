@@ -586,6 +586,8 @@ export interface DiarizationRecordSummary {
   id: string;
   created_at: number;
   model_id: string | null;
+  processing_status: DiarizationProcessingStatus;
+  processing_error?: string | null;
   speaker_count: number;
   corrected_speaker_count?: number;
   speaker_name_override_count?: number;
@@ -607,6 +609,12 @@ export type DiarizationSummaryStatus =
   | "ready"
   | "failed";
 
+export type DiarizationProcessingStatus =
+  | "pending"
+  | "processing"
+  | "ready"
+  | "failed";
+
 export interface DiarizationRecord {
   id: string;
   created_at: number;
@@ -614,6 +622,8 @@ export interface DiarizationRecord {
   asr_model_id: string | null;
   aligner_model_id: string | null;
   llm_model_id: string | null;
+  processing_status: DiarizationProcessingStatus;
+  processing_error?: string | null;
   min_speakers: number | null;
   max_speakers: number | null;
   min_speech_duration_ms: number | null;
