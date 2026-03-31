@@ -278,7 +278,7 @@ export function TranscriptionPage({
   );
   const detailDescription = useMemo(() => {
     if (!record) {
-      return "Inspect processing progress, transcript output, and summary state for this transcription record.";
+      return "Inspect job status, transcript output, and summary state for this transcription record.";
     }
 
     const processingStatus = normalizeProcessingStatus(
@@ -287,14 +287,14 @@ export function TranscriptionPage({
     );
     switch (processingStatus) {
       case "pending":
-        return "This record is queued for transcription.";
+        return "This transcription job is queued.";
       case "processing":
-        return "This record is actively being transcribed.";
+        return "This transcription job is actively processing.";
       case "failed":
-        return "This record failed during transcription processing.";
+        return "This transcription job failed during processing.";
       case "ready":
       default:
-        return "Inspect processing progress, transcript output, and summary state for this transcription record.";
+        return "Inspect job status, transcript output, and summary state for this transcription record.";
     }
   }, [record]);
 
@@ -337,7 +337,7 @@ export function TranscriptionPage({
         <>
           <PageHeader
             title="Transcription"
-            description="Review in-flight and completed transcriptions in one operational history table."
+            description="Monitor queued, processing, and completed transcription jobs in one operational history table."
             actions={
               <>
                 <Button
