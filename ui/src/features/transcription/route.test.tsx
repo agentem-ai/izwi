@@ -67,6 +67,16 @@ function renderRoute(initialEntry: string) {
   );
 }
 
+function deferredPromise<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("TranscriptionPage detail route", () => {
   beforeEach(() => {
     apiMocks.getTranscriptionRecord.mockReset();
@@ -252,6 +262,100 @@ describe("TranscriptionPage detail route", () => {
     expect(
       screen.getByRole("button", { name: /Back to transcriptions/i }),
     ).toBeInTheDocument();
+  });
+
+  it("keeps the current detail view visible while polling in the background", async () => {
+    const backgroundRefresh =
+      deferredPromise<Awaited<ReturnType<typeof apiMocks.getTranscriptionRecord>>>();
+    const intervalCallbacks: Array<() => void> = [];
+    const setIntervalSpy = vi
+      .spyOn(window, "setInterval")
+      .mockImplementation((handler) => {
+        if (typeof handler === "function") {
+          intervalCallbacks.push(handler);
+        }
+        return 1 as unknown as ReturnType<typeof window.setInterval>;
+      });
+    const clearIntervalSpy = vi
+      .spyOn(window, "clearInterval")
+      .mockImplementation(() => {});
+
+    try {
+      apiMocks.getTranscriptionRecord
+        .mockResolvedValueOnce({
+          id: "txr-polling-1",
+          created_at: 1,
+          model_id: "Parakeet-TDT-0.6B-v3",
+          aligner_model_id: null,
+          language: "English",
+          processing_status: "processing",
+          processing_error: null,
+          duration_secs: 4,
+          processing_time_ms: 120,
+          rtf: 0.5,
+          audio_mime_type: "audio/wav",
+          audio_filename: "meeting.wav",
+          transcription: "",
+          segments: [],
+          words: [],
+          summary_status: "not_requested",
+          summary_model_id: null,
+          summary_text: null,
+          summary_error: null,
+          summary_updated_at: null,
+        })
+        .mockImplementationOnce(() => backgroundRefresh.promise);
+
+      renderRoute("/transcription/txr-polling-1");
+
+      expect(
+        await screen.findByRole("heading", { name: "meeting.wav" }),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Transcription in progress")).toBeInTheDocument();
+      expect(screen.queryByText("Loading transcript...")).not.toBeInTheDocument();
+
+      await waitFor(() => expect(setIntervalSpy).toHaveBeenCalled());
+      if (intervalCallbacks.length === 0) {
+        throw new Error("Expected transcription polling to register an interval.");
+      }
+
+      intervalCallbacks.forEach((callback) => callback());
+
+      await waitFor(() =>
+        expect(apiMocks.getTranscriptionRecord).toHaveBeenCalledTimes(2),
+      );
+
+      expect(screen.getByText("Transcription in progress")).toBeInTheDocument();
+      expect(screen.queryByText("Loading transcript...")).not.toBeInTheDocument();
+
+      backgroundRefresh.resolve({
+        id: "txr-polling-1",
+        created_at: 1,
+        model_id: "Parakeet-TDT-0.6B-v3",
+        aligner_model_id: null,
+        language: "English",
+        processing_status: "ready",
+        processing_error: null,
+        duration_secs: 4,
+        processing_time_ms: 120,
+        rtf: 0.5,
+        audio_mime_type: "audio/wav",
+        audio_filename: "meeting.wav",
+        transcription: "Hello there.",
+        segments: [],
+        words: [],
+        summary_status: "not_requested",
+        summary_model_id: null,
+        summary_text: null,
+        summary_error: null,
+        summary_updated_at: null,
+      });
+
+      expect(await screen.findByText("Hello there.")).toBeInTheDocument();
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
   });
 
   it("shows route-level load errors for missing records", async () => {

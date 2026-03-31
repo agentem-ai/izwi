@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, type TranscriptionRecord } from "@/api";
 import {
@@ -19,8 +19,13 @@ export function useTranscriptionRecord(
   const [record, setRecord] = useState<TranscriptionRecord | null>(null);
   const [loading, setLoading] = useState(Boolean(recordId));
   const [error, setError] = useState<string | null>(null);
+  const recordRef = useRef<TranscriptionRecord | null>(null);
 
-  const refresh = useCallback(async () => {
+  useEffect(() => {
+    recordRef.current = record;
+  }, [record]);
+
+  const loadRecord = useCallback(async (background = false) => {
     if (!recordId) {
       setRecord(null);
       setLoading(false);
@@ -28,13 +33,20 @@ export function useTranscriptionRecord(
       return;
     }
 
-    setLoading(true);
-    setError(null);
+    const hasVisibleRecord = recordRef.current !== null;
+    if (!background || !hasVisibleRecord) {
+      setLoading(true);
+      setError(null);
+    }
+
     try {
       const nextRecord = await api.getTranscriptionRecord(recordId);
       setRecord(nextRecord);
+      setError(null);
     } catch (err) {
-      setRecord(null);
+      if (!background || !hasVisibleRecord) {
+        setRecord(null);
+      }
       setError(
         err instanceof Error
           ? err.message
@@ -45,9 +57,17 @@ export function useTranscriptionRecord(
     }
   }, [recordId]);
 
+  const refresh = useCallback(async () => {
+    await loadRecord(recordRef.current !== null);
+  }, [loadRecord]);
+
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    recordRef.current = null;
+    setRecord(null);
+    setLoading(Boolean(recordId));
+    setError(null);
+    void loadRecord(false);
+  }, [loadRecord, recordId]);
 
   const pollingRequired = useMemo(() => {
     if (!record) {
@@ -79,13 +99,13 @@ export function useTranscriptionRecord(
     }
 
     const intervalId = window.setInterval(() => {
-      void refresh();
+      void loadRecord(true);
     }, 2500);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [pollingRequired, recordId, refresh]);
+  }, [loadRecord, pollingRequired, recordId]);
 
   return {
     record,
