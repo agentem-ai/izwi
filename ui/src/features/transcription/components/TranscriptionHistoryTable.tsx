@@ -76,10 +76,10 @@ export function TranscriptionHistoryTable({
         </div>
         <div className="p-10 text-center">
           <h3 className="text-lg font-semibold text-[var(--text-primary)]">
-            No transcriptions yet
+            No transcription jobs yet
           </h3>
           <p className="mt-2 text-sm text-[var(--text-muted)]">
-            Completed and in-flight transcription records will appear here.
+            Queued, processing, and completed jobs will appear here.
           </p>
         </div>
       </div>
@@ -132,6 +132,7 @@ export function TranscriptionHistoryTable({
               return (
                 <tr
                   key={record.id}
+                  aria-label={`Open transcription ${record.audio_filename || record.id}`}
                   className="cursor-pointer border-t border-[var(--border-muted)] transition-colors hover:bg-[var(--bg-surface-1)]"
                   onClick={() => onOpenRecord(record.id)}
                   onKeyDown={(event) => {
