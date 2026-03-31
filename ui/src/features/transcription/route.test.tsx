@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -255,6 +255,98 @@ describe("TranscriptionPage detail route", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows streamed transcript deltas on the detail page while processing", async () => {
+    let streamCallbacks:
+      | {
+          onStart?: () => void;
+          onDelta?: (delta: string) => void;
+          onFinal?: (record: unknown) => void;
+        }
+      | undefined;
+
+    apiMocks.createTranscriptionRecordStream.mockImplementationOnce(
+      (_request, callbacks) => {
+        streamCallbacks = callbacks;
+        callbacks.onCreated?.({
+          id: "txr-stream-1",
+          created_at: 1,
+          model_id: "Parakeet-TDT-0.6B-v3",
+          aligner_model_id: null,
+          language: "English",
+          processing_status: "pending",
+          processing_error: null,
+          duration_secs: null,
+          processing_time_ms: 0,
+          rtf: null,
+          audio_mime_type: "audio/wav",
+          audio_filename: "streamed.wav",
+          transcription: "",
+          segments: [],
+          words: [],
+          summary_status: "not_requested",
+          summary_model_id: null,
+          summary_text: null,
+          summary_error: null,
+          summary_updated_at: null,
+        });
+        return new AbortController();
+      },
+    );
+    apiMocks.getTranscriptionRecord.mockResolvedValue({
+      id: "txr-stream-1",
+      created_at: 1,
+      model_id: "Parakeet-TDT-0.6B-v3",
+      aligner_model_id: null,
+      language: "English",
+      processing_status: "processing",
+      processing_error: null,
+      duration_secs: null,
+      processing_time_ms: 0,
+      rtf: null,
+      audio_mime_type: "audio/wav",
+      audio_filename: "streamed.wav",
+      transcription: "",
+      segments: [],
+      words: [],
+      summary_status: "not_requested",
+      summary_model_id: null,
+      summary_text: null,
+      summary_error: null,
+      summary_updated_at: null,
+    });
+
+    renderRoute("/transcription");
+
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New transcript/i }));
+
+    const fileInput = document.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement | null;
+    expect(fileInput).not.toBeNull();
+
+    fireEvent.change(fileInput!, {
+      target: {
+        files: [new File(["audio"], "streamed.wav", { type: "audio/wav" })],
+      },
+    });
+
+    expect(
+      await screen.findByRole("heading", { name: "Transcription Record" }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      streamCallbacks?.onStart?.();
+      streamCallbacks?.onDelta?.("Hello ");
+      streamCallbacks?.onDelta?.("world");
+    });
+
+    expect(screen.getByText("Hello world")).toBeInTheDocument();
+  });
+
   it("refreshes transcription history after creating a record", async () => {
     apiMocks.listTranscriptionRecords
       .mockResolvedValueOnce([])
@@ -461,7 +553,7 @@ describe("TranscriptionPage detail route", () => {
 
     expect(
       await screen.findByText(
-        "This permanently removes the saved audio and transcript from history.",
+        /This permanently removes the saved audio and transcript from history\./i,
       ),
     ).toBeInTheDocument();
     expect(screen.getAllByText("meeting.wav").length).toBeGreaterThan(0);

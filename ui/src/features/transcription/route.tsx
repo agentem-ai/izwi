@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, type ModelInfo, type TranscriptionRecord } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
@@ -75,6 +75,8 @@ export function TranscriptionPage({
   const [recordSummaryRefreshError, setRecordSummaryRefreshError] = useState<
     string | null
   >(null);
+  const [streamingRecord, setStreamingRecord] =
+    useState<TranscriptionRecord | null>(null);
   const viewConfig = VIEW_CONFIGS.transcription;
   const transcriptionAlignerModels = useMemo(
     () =>
@@ -191,6 +193,31 @@ export function TranscriptionPage({
     refresh: refreshRecord,
   } = useTranscriptionRecord(recordId);
 
+  useEffect(() => {
+    if (!recordId) {
+      setStreamingRecord(null);
+      return;
+    }
+
+    setStreamingRecord((current) =>
+      current?.id === recordId ? current : null,
+    );
+  }, [recordId]);
+
+  useEffect(() => {
+    if (!record || !streamingRecord || record.id !== streamingRecord.id) {
+      return;
+    }
+
+    const processingStatus = normalizeProcessingStatus(
+      record.processing_status,
+      record.processing_error,
+    );
+    if (processingStatus === "ready" || processingStatus === "failed") {
+      setStreamingRecord(null);
+    }
+  }, [record, streamingRecord]);
+
   const handleOpenModels = useCallback(() => {
     openModelManager();
   }, [openModelManager]);
@@ -278,13 +305,16 @@ export function TranscriptionPage({
     [transcriptionAlignerModels],
   );
   const detailDescription = useMemo(() => {
-    if (!record) {
+    const visibleRecord =
+      streamingRecord && streamingRecord.id === recordId ? streamingRecord : record;
+
+    if (!visibleRecord) {
       return "Inspect job status, transcript output, and summary state for this transcription record.";
     }
 
     const processingStatus = normalizeProcessingStatus(
-      record.processing_status,
-      record.processing_error,
+      visibleRecord.processing_status,
+      visibleRecord.processing_error,
     );
     switch (processingStatus) {
       case "pending":
@@ -297,7 +327,38 @@ export function TranscriptionPage({
       default:
         return "Inspect job status, transcript output, and summary state for this transcription record.";
     }
-  }, [record]);
+  }, [record, recordId, streamingRecord]);
+  const visibleRecord = useMemo(() => {
+    if (!recordId) {
+      return null;
+    }
+    if (!streamingRecord || streamingRecord.id !== recordId) {
+      return record;
+    }
+    if (!record) {
+      return streamingRecord;
+    }
+
+    return {
+      ...record,
+      processing_status: streamingRecord.processing_status,
+      processing_error:
+        streamingRecord.processing_error ?? record.processing_error,
+      language: streamingRecord.language ?? record.language,
+      duration_secs: record.duration_secs ?? streamingRecord.duration_secs,
+      processing_time_ms:
+        record.processing_time_ms || streamingRecord.processing_time_ms,
+      rtf: record.rtf ?? streamingRecord.rtf,
+      transcription:
+        streamingRecord.transcription || record.transcription,
+      segments:
+        streamingRecord.segments.length > 0
+          ? streamingRecord.segments
+          : record.segments,
+      words:
+        streamingRecord.words.length > 0 ? streamingRecord.words : record.words,
+    };
+  }, [record, recordId, streamingRecord]);
 
   return (
     <PageShell className={recordId ? "pb-32 sm:pb-36" : undefined}>
@@ -321,7 +382,7 @@ export function TranscriptionPage({
           />
 
           <TranscriptionRecordDetail
-            record={record}
+            record={visibleRecord}
             audioUrl={detailAudioUrl}
             loading={recordLoading}
             error={recordError}
@@ -390,8 +451,36 @@ export function TranscriptionPage({
               onError("Load the timestamp aligner model to enable timestamps.");
             }}
             onCreated={async (createdRecord: TranscriptionRecord) => {
+              setStreamingRecord(createdRecord);
               await refreshHistory().catch(() => undefined);
               navigate(`/transcription/${createdRecord.id}`);
+            }}
+            onStreamingStart={() => {
+              setStreamingRecord((current) =>
+                current
+                  ? {
+                      ...current,
+                      processing_status: "processing",
+                    }
+                  : current,
+              );
+            }}
+            onStreamingDelta={(delta) => {
+              setStreamingRecord((current) =>
+                current
+                  ? {
+                      ...current,
+                      processing_status: "processing",
+                      transcription: `${current.transcription}${delta}`,
+                    }
+                  : current,
+              );
+            }}
+            onStreamingFinal={(finalRecord) => {
+              setStreamingRecord(finalRecord);
+            }}
+            onStreamingError={() => {
+              void refreshRecord();
             }}
           />
         </>
