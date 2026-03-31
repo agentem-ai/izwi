@@ -128,12 +128,15 @@ describe("TranscriptionPage detail route", () => {
     );
 
     expect(
-      await screen.findByRole("heading", { name: "Transcription history" }),
+      await screen.findByRole("heading", { name: "Transcription" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /New transcript/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Models/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "No transcription jobs yet" }),
+    ).toBeInTheDocument();
   });
 
   it("opens the new transcript modal from the header action", async () => {
