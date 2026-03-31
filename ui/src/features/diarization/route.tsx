@@ -216,6 +216,34 @@ export function DiarizationPage({
     [llmPipelineModels],
   );
   const resolvedSummaryModel = resolvedLlmModel;
+  const managedModelVariants = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [
+            resolvedSelectedModel,
+            resolvedAsrModel,
+            resolvedAlignerModel,
+            resolvedLlmModel,
+          ].filter((variant): variant is string => Boolean(variant)),
+        ),
+      ),
+    [
+      resolvedAlignerModel,
+      resolvedAsrModel,
+      resolvedLlmModel,
+      resolvedSelectedModel,
+    ],
+  );
+  const managedModels = useMemo(
+    () =>
+      managedModelVariants
+        .map((variant) =>
+          pipelineModels.find((model) => model.variant === variant) ?? null,
+        )
+        .filter((model): model is ModelInfo => model !== null),
+    [managedModelVariants, pipelineModels],
+  );
 
   const asrModelReady =
     resolvedAsrModel != null &&
@@ -260,6 +288,21 @@ export function DiarizationPage({
     }
   }, [resolvedSummaryModel, summaryModelStatus]);
   const pipelineModelsReady = asrModelReady && alignerModelReady;
+  const readyManagedModelCount = managedModels.filter(
+    (model) => model.status === "ready",
+  ).length;
+  const canLoadAnyManagedModels = managedModels.some(
+    (model) =>
+      model.status === "downloaded" ||
+      model.status === "not_downloaded" ||
+      model.status === "error",
+  );
+  const canUnloadAnyManagedModels = managedModels.some(
+    (model) => model.status === "ready",
+  );
+  const isManagedModelActionBusy = managedModels.some(
+    (model) => model.status === "loading" || model.status === "downloading",
+  );
 
   const {
     records,
@@ -346,6 +389,27 @@ export function DiarizationPage({
   const handleOpenModels = useCallback(() => {
     openModelManager();
   }, [openModelManager]);
+
+  const handleLoadAllManagedModels = useCallback(() => {
+    for (const model of managedModels) {
+      if (model.status === "downloaded") {
+        onLoad(model.variant);
+      } else if (
+        model.status === "not_downloaded" ||
+        model.status === "error"
+      ) {
+        onDownload(model.variant);
+      }
+    }
+  }, [managedModels, onDownload, onLoad]);
+
+  const handleUnloadAllManagedModels = useCallback(() => {
+    for (const model of managedModels) {
+      if (model.status === "ready") {
+        onUnload(model.variant);
+      }
+    }
+  }, [managedModels, onUnload]);
 
   const handleCreatedRecord = useCallback(
     async (createdRecord: DiarizationRecord) => {
@@ -490,26 +554,13 @@ export function DiarizationPage({
             }
           />
 
-          <section className="space-y-3">
-            <div className="flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-semibold tracking-tight text-[var(--text-primary)]">
-                  History
-                </h2>
-                <p className="mt-1 text-sm text-[var(--text-muted)]">
-                  Open saved diarization runs on their own review pages.
-                </p>
-              </div>
-            </div>
-
-            <DiarizationHistoryTable
-              records={visibleHistoryRecords}
-              loading={historyLoading}
-              error={historyError}
-              onRefresh={() => void refreshHistory()}
-              onOpenRecord={handleOpenRecord}
-            />
-          </section>
+          <DiarizationHistoryTable
+            records={visibleHistoryRecords}
+            loading={historyLoading}
+            error={historyError}
+            onRefresh={() => void refreshHistory()}
+            onOpenRecord={handleOpenRecord}
+          />
 
           <NewDiarizationModal
             isOpen={isNewDiarizationModalOpen}
@@ -530,6 +581,13 @@ export function DiarizationPage({
               openModelManagerForPipeline();
               onError("Load ASR and forced aligner models before diarization.");
             }}
+            managedModelCount={managedModels.length}
+            readyManagedModelCount={readyManagedModelCount}
+            canLoadAnyManagedModels={canLoadAnyManagedModels}
+            canUnloadAnyManagedModels={canUnloadAnyManagedModels}
+            isManagedModelActionBusy={isManagedModelActionBusy}
+            onLoadAllManagedModels={handleLoadAllManagedModels}
+            onUnloadAllManagedModels={handleUnloadAllManagedModels}
             onCreated={handleCreatedRecord}
           />
         </>

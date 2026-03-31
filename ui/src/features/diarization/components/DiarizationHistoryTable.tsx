@@ -2,6 +2,10 @@ import { AlertTriangle, Loader2 } from "lucide-react";
 
 import { type DiarizationRecordSummary } from "@/api";
 import { Button } from "@/components/ui/button";
+import {
+  diarizationSummaryStatusLabel,
+  normalizeDiarizationSummaryStatus,
+} from "@/utils/diarizationSummary";
 
 function formatCreatedAt(timestampMs: number): string {
   if (!Number.isFinite(timestampMs)) {
@@ -100,57 +104,70 @@ export function DiarizationHistoryTable({
               <th className="px-4 py-3 font-semibold">File</th>
               <th className="px-4 py-3 font-semibold">Speakers</th>
               <th className="px-4 py-3 font-semibold">Duration</th>
-              <th className="px-4 py-3 font-semibold">Preview</th>
+              <th className="px-4 py-3 font-semibold">Summary</th>
             </tr>
           </thead>
           <tbody>
-            {records.map((record) => (
-              <tr
-                key={record.id}
-                aria-label={`Open diarization ${record.audio_filename || record.id}`}
-                className="cursor-pointer border-t border-[var(--border-muted)] transition-colors hover:bg-[var(--bg-surface-1)]"
-                onClick={() => onOpenRecord(record.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    onOpenRecord(record.id);
-                  }
-                }}
-                tabIndex={0}
-              >
-                <td className="px-4 py-3 align-top text-[var(--text-secondary)] sm:px-5">
-                  {formatCreatedAt(record.created_at)}
-                </td>
-                <td className="px-4 py-3 align-top">
-                  <div className="font-medium text-[var(--text-primary)]">
-                    {record.audio_filename || "Audio input"}
-                  </div>
-                  {record.model_id ? (
-                    <div className="mt-1 text-xs text-[var(--text-muted)]">
-                      {record.model_id}
+            {records.map((record) => {
+              const summaryStatus = normalizeDiarizationSummaryStatus(
+                record.summary_status,
+                record.summary_preview,
+                null,
+              );
+              const summaryLabel =
+                summaryStatus === "not_requested"
+                  ? "No summary yet"
+                  : diarizationSummaryStatusLabel(summaryStatus);
+
+              return (
+                <tr
+                  key={record.id}
+                  aria-label={`Open diarization ${record.audio_filename || record.id}`}
+                  className="cursor-pointer border-t border-[var(--border-muted)] transition-colors hover:bg-[var(--bg-surface-1)]"
+                  onClick={() => onOpenRecord(record.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onOpenRecord(record.id);
+                    }
+                  }}
+                  tabIndex={0}
+                >
+                  <td className="px-4 py-3 align-top text-[var(--text-secondary)] sm:px-5">
+                    {formatCreatedAt(record.created_at)}
+                  </td>
+                  <td className="px-4 py-3 align-top">
+                    <div className="font-medium text-[var(--text-primary)]">
+                      {record.audio_filename || "Audio input"}
                     </div>
-                  ) : null}
-                </td>
-                <td className="px-4 py-3 align-top text-[var(--text-secondary)]">
-                  {record.corrected_speaker_count ?? record.speaker_count}
-                </td>
-                <td className="px-4 py-3 align-top text-[var(--text-secondary)]">
-                  {formatAudioDuration(record.duration_secs)}
-                </td>
-                <td className="px-4 py-3 align-top text-[var(--text-secondary)]">
-                  <div className="max-w-[34rem]">
-                    <div className="line-clamp-2 text-[var(--text-primary)]">
-                      {record.transcript_preview}
-                    </div>
-                    {record.summary_preview ? (
-                      <div className="mt-1 line-clamp-1 text-xs text-[var(--text-muted)]">
-                        Summary: {record.summary_preview}
+                    {record.model_id ? (
+                      <div className="mt-1 text-xs text-[var(--text-muted)]">
+                        {record.model_id}
                       </div>
                     ) : null}
-                  </div>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="px-4 py-3 align-top text-[var(--text-secondary)]">
+                    {record.corrected_speaker_count ?? record.speaker_count}
+                  </td>
+                  <td className="px-4 py-3 align-top text-[var(--text-secondary)]">
+                    {formatAudioDuration(record.duration_secs)}
+                  </td>
+                  <td className="px-4 py-3 align-top text-[var(--text-secondary)]">
+                    <div className="max-w-[34rem]">
+                      {record.summary_preview ? (
+                        <div className="line-clamp-3 text-[var(--text-primary)]">
+                          {record.summary_preview}
+                        </div>
+                      ) : (
+                        <div className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                          {summaryLabel}
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
