@@ -198,6 +198,10 @@ export function AppRoutes() {
           element={withSuspense(<TranscriptionPage {...pageProps} />)}
         />
         <Route
+          path="/transcription/:recordId"
+          element={withSuspense(<TranscriptionPage {...pageProps} />)}
+        />
+        <Route
           path="/diarization"
           element={withSuspense(<DiarizationPage {...pageProps} />)}
         />
