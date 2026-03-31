@@ -249,54 +249,58 @@ export function TranscriptionRecordDetail({
           }
         }}
       >
-        <DialogContent className="max-w-md border-[var(--border-strong)] bg-[var(--bg-surface-0)] p-6">
+        <DialogContent className="max-w-md border-[var(--border-strong)] bg-[var(--bg-surface-1)] p-5">
           <DialogTitle className="sr-only">Delete transcription?</DialogTitle>
-          <div className="flex items-start gap-4">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--danger-bg)] text-[var(--danger-text)]">
-              <AlertTriangle className="h-5 w-5" />
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 rounded-full border border-[var(--danger-border)] bg-[var(--danger-bg)] p-2 text-[var(--danger-text)]">
+              <AlertTriangle className="h-4 w-4" />
             </div>
             <div className="min-w-0 flex-1">
-              <h3 className="text-base font-semibold text-[var(--text-primary)]">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                 Delete transcription?
               </h3>
-              <DialogDescription className="mt-1.5 text-sm leading-relaxed text-[var(--text-muted)]">
+              <DialogDescription className="mt-1 text-sm text-[var(--text-muted)]">
                 This permanently removes the saved audio and transcript from
-                history. This action cannot be undone.
+                history.
               </DialogDescription>
-              <div className="mt-4 rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3">
-                <p className="truncate text-xs font-medium text-[var(--text-secondary)]">
-                  {record?.audio_filename || record?.model_id || record?.id || "Transcription record"}
-                </p>
-              </div>
+              <p className="mt-2 truncate text-xs text-[var(--text-subtle)]">
+                {record?.audio_filename ||
+                  record?.model_id ||
+                  record?.id ||
+                  "Transcription record"}
+              </p>
             </div>
           </div>
 
           {deleteError ? (
-            <div className="mt-4 flex items-start gap-2 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-3 text-sm text-[var(--danger-text)]">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <p>{deleteError}</p>
+            <div className="mt-4 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
+              {deleteError}
             </div>
           ) : null}
 
-          <div className="mt-6 flex items-center justify-end gap-3 border-t border-[var(--border-muted)] pt-5">
+          <div className="mt-5 flex items-center justify-end gap-2">
             <Button
               type="button"
               variant="outline"
               onClick={() => setDeleteConfirmOpen(false)}
+              size="sm"
+              className="h-8 border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface-3)]"
               disabled={deletePending}
             >
               Cancel
             </Button>
             <Button
               type="button"
-              className="bg-[var(--danger-text)] text-white hover:bg-[var(--danger-text)]/90"
+              variant="destructive"
+              size="sm"
+              className="h-8 gap-1.5"
               onClick={() => void handleConfirmDelete()}
               disabled={deletePending}
             >
               {deletePending ? (
                 <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Deleting...
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Deleting
                 </>
               ) : (
                 "Delete transcription"

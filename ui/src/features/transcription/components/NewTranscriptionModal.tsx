@@ -29,6 +29,11 @@ interface NewTranscriptionModalProps {
   onModelRequired: () => void;
   onTimestampAlignerRequired: () => void;
   onCreated: (record: TranscriptionRecord) => Promise<void> | void;
+  onStreamingStart?: () => void;
+  onStreamingDelta?: (delta: string) => void;
+  onStreamingFinal?: (record: TranscriptionRecord) => void;
+  onStreamingError?: (message: string) => void;
+  onStreamingDone?: () => void;
 }
 
 interface SubmitAudioOptions {
@@ -45,6 +50,11 @@ export function NewTranscriptionModal({
   onModelRequired,
   onTimestampAlignerRequired,
   onCreated,
+  onStreamingStart,
+  onStreamingDelta,
+  onStreamingFinal,
+  onStreamingError,
+  onStreamingDone,
 }: NewTranscriptionModalProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -142,6 +152,9 @@ export function NewTranscriptionModal({
               let settled = false;
 
               api.createTranscriptionRecordStream(request, {
+                onStart: () => {
+                  onStreamingStart?.();
+                },
                 onCreated: (createdRecord) => {
                   if (settled) {
                     return;
@@ -149,7 +162,14 @@ export function NewTranscriptionModal({
                   settled = true;
                   resolve(createdRecord);
                 },
+                onDelta: (delta) => {
+                  onStreamingDelta?.(delta);
+                },
+                onFinal: (finalRecord) => {
+                  onStreamingFinal?.(finalRecord);
+                },
                 onError: (message) => {
+                  onStreamingError?.(message);
                   if (settled) {
                     return;
                   }
@@ -157,6 +177,7 @@ export function NewTranscriptionModal({
                   reject(new Error(message));
                 },
                 onDone: () => {
+                  onStreamingDone?.();
                   if (settled) {
                     return;
                   }
@@ -184,6 +205,11 @@ export function NewTranscriptionModal({
       includeTimestamps,
       onClose,
       onCreated,
+      onStreamingDelta,
+      onStreamingDone,
+      onStreamingError,
+      onStreamingFinal,
+      onStreamingStart,
       requireReadyModel,
       requireTimestampAligner,
       selectedLanguage,
