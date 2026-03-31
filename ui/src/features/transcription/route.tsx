@@ -1,14 +1,20 @@
-import { useMemo, useState } from "react";
-import type { ModelInfo } from "@/api";
+import { useCallback, useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { api, type ModelInfo } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
+import { Button } from "@/components/ui/button";
 import { VIEW_CONFIGS } from "@/types";
 import { TranscriptionPlayground } from "@/features/transcription/components/TranscriptionPlayground";
+import { TranscriptionRecordDetail } from "@/features/transcription/components/TranscriptionRecordDetail";
 import {
   TRANSCRIPTION_PREFERRED_MODELS,
   resolvePreferredRouteModel,
 } from "@/features/models/catalog/routeModelCatalog";
 import { RouteModelModal } from "@/features/models/components/RouteModelModal";
 import { useRouteModelSelection } from "@/features/models/hooks/useRouteModelSelection";
+import { useTranscriptionRecord } from "@/features/transcription/hooks/useTranscriptionRecord";
+import { normalizeProcessingStatus } from "@/features/transcription/playground/support";
+import { Settings2 } from "lucide-react";
 
 const TRANSCRIPTION_PREFERRED_ALIGNERS = ["Qwen3-ForcedAligner-0.6B"] as const;
 const TRANSCRIPTION_PREFERRED_SUMMARY_MODELS = ["Qwen3.5-4B"] as const;
@@ -57,8 +63,17 @@ export function TranscriptionPage({
   onSelect,
   onError,
 }: TranscriptionPageProps) {
+  const { recordId } = useParams<{ recordId: string }>();
+  const navigate = useNavigate();
   const [historyActionContainer, setHistoryActionContainer] =
     useState<HTMLDivElement | null>(null);
+  const [recordActionError, setRecordActionError] = useState<string | null>(null);
+  const [recordDeletePending, setRecordDeletePending] = useState(false);
+  const [recordSummaryRefreshPending, setRecordSummaryRefreshPending] =
+    useState(false);
+  const [recordSummaryRefreshError, setRecordSummaryRefreshError] = useState<
+    string | null
+  >(null);
   const viewConfig = VIEW_CONFIGS.transcription;
   const transcriptionAlignerModels = useMemo(
     () =>
@@ -180,46 +195,177 @@ export function TranscriptionPage({
     ],
     [transcriptionAlignerModels, transcriptionModels, transcriptionSummaryModels],
   );
+  const {
+    record,
+    loading: recordLoading,
+    error: recordError,
+    refresh: refreshRecord,
+  } = useTranscriptionRecord(recordId);
+
+  const handleOpenModels = useCallback(() => {
+    openModelManager();
+  }, [openModelManager]);
+
+  const handleDetailDelete = useCallback(async () => {
+    if (!recordId || recordDeletePending) {
+      return;
+    }
+
+    setRecordDeletePending(true);
+    setRecordActionError(null);
+    try {
+      await api.deleteTranscriptionRecord(recordId);
+      navigate("/transcription", { replace: true });
+    } catch (err) {
+      setRecordActionError(
+        err instanceof Error
+          ? err.message
+          : "Failed to delete transcription record.",
+      );
+    } finally {
+      setRecordDeletePending(false);
+    }
+  }, [navigate, recordDeletePending, recordId]);
+
+  const handleDetailRegenerateSummary = useCallback(async () => {
+    if (!recordId || recordSummaryRefreshPending) {
+      return;
+    }
+    if (!summaryModelReady) {
+      openModelManager();
+      setRecordSummaryRefreshError(summaryModelRequirementMessage);
+      onError(summaryModelRequirementMessage);
+      return;
+    }
+
+    setRecordSummaryRefreshPending(true);
+    setRecordSummaryRefreshError(null);
+    setRecordActionError(null);
+
+    try {
+      await api.regenerateTranscriptionSummary(recordId);
+      await refreshRecord();
+    } catch (err) {
+      setRecordSummaryRefreshError(
+        err instanceof Error
+          ? err.message
+          : "Failed to regenerate transcription summary.",
+      );
+    } finally {
+      setRecordSummaryRefreshPending(false);
+    }
+  }, [
+    onError,
+    openModelManager,
+    recordId,
+    recordSummaryRefreshPending,
+    refreshRecord,
+    summaryModelReady,
+    summaryModelRequirementMessage,
+  ]);
+
+  const detailAudioUrl = useMemo(
+    () => (recordId ? api.transcriptionRecordAudioUrl(recordId) : null),
+    [recordId],
+  );
+  const detailDescription = useMemo(() => {
+    if (!record) {
+      return "Inspect processing progress, transcript output, and summary state for this transcription record.";
+    }
+
+    const processingStatus = normalizeProcessingStatus(
+      record.processing_status,
+      record.processing_error,
+    );
+    switch (processingStatus) {
+      case "pending":
+        return "This record is queued for transcription.";
+      case "processing":
+        return "This record is actively being transcribed.";
+      case "failed":
+        return "This record failed during transcription processing.";
+      case "ready":
+      default:
+        return "Inspect processing progress, transcript output, and summary state for this transcription record.";
+    }
+  }, [record]);
 
   return (
     <PageShell>
-      <PageHeader
-        title="Transcription"
-        description="Capture audio, transcribe live, add optional timestamps, and browse saved transcription history."
-        actions={
-          <div
-            ref={setHistoryActionContainer}
-            data-testid="page-header-history-slot"
-            className="flex min-h-9 items-center"
+      {recordId ? (
+        <>
+          <PageHeader
+            title="Transcription Record"
+            description={detailDescription}
+            actions={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 gap-2"
+                onClick={handleOpenModels}
+              >
+                <Settings2 className="h-4 w-4" />
+                Models
+              </Button>
+            }
           />
-        }
-      />
 
-      <TranscriptionPlayground
-        selectedModel={resolvedSelectedModel}
-        selectedModelReady={selectedModelReady}
-        modelOptions={modelOptions}
-        onSelectModel={handleModelSelect}
-        onOpenModelManager={openModelManager}
-        onModelRequired={() => {
-          requestModel();
-          onError("Select and load an ASR model to start transcribing.");
-        }}
-        timestampAlignerModelId={resolvedAlignerModel}
-        timestampAlignerReady={timestampAlignerReady}
-        onTimestampAlignerRequired={() => {
-          openModelManager();
-          onError("Load the timestamp aligner model to enable timestamps.");
-        }}
-        summaryModelId={resolvedSummaryModel}
-        summaryModelReady={summaryModelReady}
-        summaryModelStatus={summaryModelStatus}
-        onSummaryModelRequired={() => {
-          openModelManager();
-          onError(summaryModelRequirementMessage);
-        }}
-        historyActionContainer={historyActionContainer}
-      />
+          <TranscriptionRecordDetail
+            record={record}
+            audioUrl={detailAudioUrl}
+            loading={recordLoading}
+            error={recordActionError || recordError}
+            summaryModelGuidance={summaryModelReady ? null : summaryModelRequirementMessage}
+            onBack={() => navigate("/transcription")}
+            onDelete={() => void handleDetailDelete()}
+            onRegenerateSummary={() => void handleDetailRegenerateSummary()}
+            deletePending={recordDeletePending}
+            summaryRefreshPending={recordSummaryRefreshPending}
+            summaryRefreshError={recordSummaryRefreshError}
+          />
+        </>
+      ) : (
+        <>
+          <PageHeader
+            title="Transcription"
+            description="Capture audio, transcribe live, add optional timestamps, and browse saved transcription history."
+            actions={
+              <div
+                ref={setHistoryActionContainer}
+                data-testid="page-header-history-slot"
+                className="flex min-h-9 items-center"
+              />
+            }
+          />
+
+          <TranscriptionPlayground
+            selectedModel={resolvedSelectedModel}
+            selectedModelReady={selectedModelReady}
+            modelOptions={modelOptions}
+            onSelectModel={handleModelSelect}
+            onOpenModelManager={openModelManager}
+            onModelRequired={() => {
+              requestModel();
+              onError("Select and load an ASR model to start transcribing.");
+            }}
+            timestampAlignerModelId={resolvedAlignerModel}
+            timestampAlignerReady={timestampAlignerReady}
+            onTimestampAlignerRequired={() => {
+              openModelManager();
+              onError("Load the timestamp aligner model to enable timestamps.");
+            }}
+            summaryModelId={resolvedSummaryModel}
+            summaryModelReady={summaryModelReady}
+            summaryModelStatus={summaryModelStatus}
+            onSummaryModelRequired={() => {
+              openModelManager();
+              onError(summaryModelRequirementMessage);
+            }}
+            historyActionContainer={historyActionContainer}
+          />
+        </>
+      )}
 
       <RouteModelModal
         isOpen={isModelModalOpen}

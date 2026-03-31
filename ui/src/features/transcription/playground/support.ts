@@ -1,5 +1,6 @@
 import type {
   ModelInfo,
+  TranscriptionProcessingStatus,
   TranscriptionRecord,
   TranscriptionRecordSummary,
   TranscriptionSummaryStatus,
@@ -289,6 +290,55 @@ export function normalizeSummaryStatus(
   return "not_requested";
 }
 
+export function normalizeProcessingStatus(
+  status: string | null | undefined,
+  processingError?: string | null,
+): TranscriptionProcessingStatus {
+  if (
+    status === "pending" ||
+    status === "processing" ||
+    status === "ready" ||
+    status === "failed"
+  ) {
+    return status;
+  }
+  if ((processingError ?? "").trim().length > 0) {
+    return "failed";
+  }
+  return "ready";
+}
+
+export function processingStatusLabel(
+  status: TranscriptionProcessingStatus,
+): string {
+  switch (status) {
+    case "pending":
+      return "Queued";
+    case "processing":
+      return "Processing";
+    case "failed":
+      return "Failed";
+    case "ready":
+    default:
+      return "Ready";
+  }
+}
+
+export function processingStatusTone(
+  status: TranscriptionProcessingStatus,
+): "neutral" | "warning" | "success" | "danger" {
+  switch (status) {
+    case "pending":
+    case "processing":
+      return "warning";
+    case "failed":
+      return "danger";
+    case "ready":
+    default:
+      return "success";
+  }
+}
+
 export function summaryStatusLabel(status: TranscriptionSummaryStatus): string {
   switch (status) {
     case "pending":
@@ -333,6 +383,11 @@ export function summarizeRecord(
     created_at: record.created_at,
     model_id: record.model_id,
     language: record.language,
+    processing_status: normalizeProcessingStatus(
+      record.processing_status,
+      record.processing_error,
+    ),
+    processing_error: record.processing_error ?? null,
     duration_secs: record.duration_secs,
     processing_time_ms: record.processing_time_ms,
     rtf: record.rtf,

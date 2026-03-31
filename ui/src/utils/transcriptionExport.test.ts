@@ -9,6 +9,8 @@ const record = {
   model_id: "Parakeet-TDT-0.6B-v3",
   aligner_model_id: "Qwen3-ForcedAligner-0.6B",
   language: "English",
+  processing_status: "ready",
+  processing_error: null,
   duration_secs: 2.5,
   processing_time_ms: 120,
   rtf: 0.5,
