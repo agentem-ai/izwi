@@ -388,6 +388,7 @@ describe("DiarizationPage routes", () => {
 
     expect(await screen.findByText("meeting.wav")).toBeInTheDocument();
     expect(screen.getByText("Diarization Record")).toBeInTheDocument();
+    expect(screen.getByTestId("diarization-review-player")).toHaveClass("fixed");
   });
 
   it("opens saved diarization records from the history table", async () => {

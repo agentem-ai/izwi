@@ -184,4 +184,19 @@ describe("DiarizationReviewWorkspace", () => {
       inline: "nearest",
     });
   });
+
+  it("can pin playback controls in a fixed footer for record detail pages", () => {
+    render(
+      <DiarizationReviewWorkspace
+        record={record}
+        audioUrl="/audio/meeting.wav"
+        fixedPlaybackFooter={true}
+      />,
+    );
+
+    expect(screen.getByTestId("diarization-review-player")).toHaveClass("fixed");
+    expect(screen.getByTestId("diarization-review-player")).toHaveClass(
+      "lg:left-[var(--app-shell-left)]",
+    );
+  });
 });

@@ -47,6 +47,9 @@ interface DiarizationReviewWorkspaceProps {
   emptyTitle?: string;
   emptyMessage?: string;
   autoScrollActiveEntry?: boolean;
+  showPlayback?: boolean;
+  stickyPlaybackFooter?: boolean;
+  fixedPlaybackFooter?: boolean;
   summaryModelGuidance?: string | null;
 }
 
@@ -106,6 +109,9 @@ export function DiarizationReviewWorkspace({
   emptyTitle = "Ready to diarize",
   emptyMessage = "No diarization transcript is available yet.",
   autoScrollActiveEntry = false,
+  showPlayback = true,
+  stickyPlaybackFooter = false,
+  fixedPlaybackFooter = false,
   summaryModelGuidance = null,
 }: DiarizationReviewWorkspaceProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -291,8 +297,26 @@ export function DiarizationReviewWorkspace({
     );
   }
 
+  const floatingPlaybackFooter = stickyPlaybackFooter || fixedPlaybackFooter;
+  const rootClassName = floatingPlaybackFooter
+    ? "relative flex min-h-0 flex-col"
+    : "flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)]";
+  const contentClassName = fixedPlaybackFooter
+    ? "grid gap-6 pb-32 xl:grid-cols-[minmax(0,1fr),248px]"
+    : stickyPlaybackFooter
+      ? "grid gap-6 pb-20 xl:grid-cols-[minmax(0,1fr),248px]"
+      : "grid gap-6 xl:grid-cols-[minmax(0,1fr),248px] pb-20";
+  const playbackClassName = fixedPlaybackFooter
+    ? "fixed inset-x-0 bottom-0 z-40 border-t border-[var(--border-muted)] bg-[var(--bg-surface-0)]/96 shadow-[0_-18px_48px_-30px_rgba(15,23,42,0.45)] backdrop-blur lg:left-[var(--app-shell-left)]"
+    : stickyPlaybackFooter
+      ? "sticky bottom-0 -mx-4 -mb-4 mt-auto border-t border-[var(--border-muted)] bg-[var(--bg-surface-0)]/95 p-3 backdrop-blur sm:-mx-5 sm:-mb-5 sm:px-5 sm:py-3"
+      : "sticky bottom-0 -mx-4 -mb-4 mt-auto border-t border-[var(--border-muted)] bg-[var(--bg-surface-0)]/95 p-3 backdrop-blur sm:-mx-5 sm:-mb-5 sm:px-5 sm:py-3";
+  const playbackInnerClassName = fixedPlaybackFooter
+    ? "mx-auto flex w-full max-w-[calc(100vw-var(--app-shell-left))] flex-col gap-2.5 px-4 py-3 sm:px-6"
+    : "flex flex-col gap-2.5";
+
   return (
-    <div className="flex flex-col h-full relative">
+    <div className={rootClassName}>
       <audio
         ref={audioRef}
         src={audioUrl ?? undefined}
@@ -318,7 +342,7 @@ export function DiarizationReviewWorkspace({
         className="hidden"
       />
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr),248px] pb-20">
+      <div className={contentClassName}>
         <div className="space-y-5">
           <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3.5 py-3.5">
             <div className="flex items-center justify-between gap-3">
@@ -487,126 +511,131 @@ export function DiarizationReviewWorkspace({
         </div>
       </div>
 
-      <div className="sticky bottom-0 -mx-4 -mb-4 mt-auto border-t border-[var(--border-muted)] bg-[var(--bg-surface-0)]/95 p-3 backdrop-blur sm:-mx-5 sm:-mb-5 sm:px-5 sm:py-3">
-        <div className="flex flex-col gap-2.5">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] hover:bg-[var(--bg-surface-2)]"
-                onClick={() => skip(-10)}
-                disabled={!audioUrl}
-                title="Rewind 10 seconds"
-              >
-                <SkipBack className="h-4 w-4" />
-              </Button>
-              <Button
-                type="button"
-                size="icon"
-                className="h-9 w-9 rounded-full bg-[var(--text-primary)] text-[var(--bg-surface-0)] hover:bg-[var(--text-secondary)] shadow-md"
-                onClick={() => void togglePlayback()}
-                disabled={!audioUrl}
-              >
-                {isPlaying ? (
-                  <Pause className="h-4 w-4" fill="currentColor" />
-                ) : (
-                  <Play className="ml-0.5 h-4 w-4" fill="currentColor" />
-                )}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] hover:bg-[var(--bg-surface-2)]"
-                onClick={() => skip(10)}
-                disabled={!audioUrl}
-                title="Forward 10 seconds"
-              >
-                <SkipForward className="h-4 w-4" />
-              </Button>
-            </div>
-
-            <div className="font-mono text-[13px] font-medium tabular-nums tracking-tight text-[var(--text-primary)]">
-              {formatClockTime(currentTime)}{" "}
-              <span className="text-[var(--text-muted)] font-normal">
-                / {formatClockTime(viewerDuration)}
-              </span>
-            </div>
-
-            <div className="group relative mx-1.5 flex h-9 flex-1 items-center">
-              <div className="pointer-events-none absolute inset-x-0 top-1/2 h-7 -translate-y-1/2 overflow-hidden rounded bg-[var(--bg-surface-2)]/50">
-                {viewerDuration > 0
-                  ? transcriptEntries.map((entry, index) => {
-                      const left = (entry.start / viewerDuration) * 100;
-                      const width =
-                        ((entry.end - entry.start) / viewerDuration) * 100;
-                      const speakerIndex = speakerSummaries.findIndex(
-                        (s) => s.displaySpeaker === entry.speaker,
-                      );
-                      const accent = speakerAccent(
-                        speakerIndex >= 0 ? speakerIndex : index,
-                      );
-                      const active = index === activeEntryIndex;
-
-                      return (
-                        <div
-                          key={`wave-${index}`}
-                          className="absolute top-0 bottom-0 transition-all duration-200 border-r border-[var(--bg-surface-0)]"
-                          style={{
-                            left: `${left}%`,
-                            width: `${Math.max(width, 0.5)}%`,
-                            backgroundColor: active
-                              ? accent.solid
-                              : accent.soft,
-                            opacity: active ? 1 : 0.7,
-                          }}
-                        />
-                      );
-                    })
-                  : null}
+      {showPlayback ? (
+        <div
+          data-testid="diarization-review-player"
+          className={playbackClassName}
+        >
+          <div className={playbackInnerClassName}>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] hover:bg-[var(--bg-surface-2)]"
+                  onClick={() => skip(-10)}
+                  disabled={!audioUrl}
+                  title="Rewind 10 seconds"
+                >
+                  <SkipBack className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  size="icon"
+                  className="h-9 w-9 rounded-full bg-[var(--text-primary)] text-[var(--bg-surface-0)] hover:bg-[var(--text-secondary)] shadow-md"
+                  onClick={() => void togglePlayback()}
+                  disabled={!audioUrl}
+                >
+                  {isPlaying ? (
+                    <Pause className="h-4 w-4" fill="currentColor" />
+                  ) : (
+                    <Play className="ml-0.5 h-4 w-4" fill="currentColor" />
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] hover:bg-[var(--bg-surface-2)]"
+                  onClick={() => skip(10)}
+                  disabled={!audioUrl}
+                  title="Forward 10 seconds"
+                >
+                  <SkipForward className="h-4 w-4" />
+                </Button>
               </div>
 
-              <input
-                type="range"
-                min={0}
-                max={viewerDuration || 0}
-                step={0.05}
-                value={Math.min(currentTime, viewerDuration || 0)}
-                onChange={(event) => seek(Number(event.target.value))}
-                aria-label="Seek audio timeline"
-                disabled={!audioUrl || viewerDuration <= 0}
-                className="relative z-10 h-7 w-full cursor-pointer appearance-none bg-transparent accent-[var(--text-primary)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-45 [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-none [&::-moz-range-thumb]:bg-[var(--text-primary)] [&::-moz-range-thumb]:shadow-md [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:-mt-1 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-none [&::-webkit-slider-thumb]:bg-[var(--text-primary)] [&::-webkit-slider-thumb]:shadow-md"
-              />
-            </div>
-
-            <div className="flex items-center gap-2">
-              <div className="min-w-[68px] truncate text-right text-[13px] font-semibold text-[var(--text-primary)]">
-                {activeSpeaker ?? ""}
+              <div className="font-mono text-[13px] font-medium tabular-nums tracking-tight text-[var(--text-primary)]">
+                {formatClockTime(currentTime)}{" "}
+                <span className="font-normal text-[var(--text-muted)]">
+                  / {formatClockTime(viewerDuration)}
+                </span>
               </div>
 
-              <select
-                className="h-7 rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 text-[11px] font-medium text-[var(--text-primary)] outline-none"
-                value={playbackRate}
-                onChange={(e) => updatePlaybackRate(Number(e.target.value))}
-              >
-                {PLAYBACK_SPEEDS.map((rate) => (
-                  <option key={rate} value={rate}>
-                    {rate}x
-                  </option>
-                ))}
-              </select>
+              <div className="group relative mx-1.5 flex h-9 flex-1 items-center">
+                <div className="pointer-events-none absolute inset-x-0 top-1/2 h-7 -translate-y-1/2 overflow-hidden rounded bg-[var(--bg-surface-2)]/50">
+                  {viewerDuration > 0
+                    ? transcriptEntries.map((entry, index) => {
+                        const left = (entry.start / viewerDuration) * 100;
+                        const width =
+                          ((entry.end - entry.start) / viewerDuration) * 100;
+                        const speakerIndex = speakerSummaries.findIndex(
+                          (s) => s.displaySpeaker === entry.speaker,
+                        );
+                        const accent = speakerAccent(
+                          speakerIndex >= 0 ? speakerIndex : index,
+                        );
+                        const active = index === activeEntryIndex;
+
+                        return (
+                          <div
+                            key={`wave-${index}`}
+                            className="absolute bottom-0 top-0 border-r border-[var(--bg-surface-0)] transition-all duration-200"
+                            style={{
+                              left: `${left}%`,
+                              width: `${Math.max(width, 0.5)}%`,
+                              backgroundColor: active
+                                ? accent.solid
+                                : accent.soft,
+                              opacity: active ? 1 : 0.7,
+                            }}
+                          />
+                        );
+                      })
+                    : null}
+                </div>
+
+                <input
+                  type="range"
+                  min={0}
+                  max={viewerDuration || 0}
+                  step={0.05}
+                  value={Math.min(currentTime, viewerDuration || 0)}
+                  onChange={(event) => seek(Number(event.target.value))}
+                  aria-label="Seek audio timeline"
+                  disabled={!audioUrl || viewerDuration <= 0}
+                  className="relative z-10 h-7 w-full cursor-pointer appearance-none bg-transparent accent-[var(--text-primary)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-45 [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-none [&::-moz-range-thumb]:bg-[var(--text-primary)] [&::-moz-range-thumb]:shadow-md [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:-mt-1 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-none [&::-webkit-slider-thumb]:bg-[var(--text-primary)] [&::-webkit-slider-thumb]:shadow-md"
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <div className="min-w-[68px] truncate text-right text-[13px] font-semibold text-[var(--text-primary)]">
+                  {activeSpeaker ?? ""}
+                </div>
+
+                <select
+                  className="h-7 rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 text-[11px] font-medium text-[var(--text-primary)] outline-none"
+                  value={playbackRate}
+                  onChange={(e) => updatePlaybackRate(Number(e.target.value))}
+                >
+                  {PLAYBACK_SPEEDS.map((rate) => (
+                    <option key={rate} value={rate}>
+                      {rate}x
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
+
+            {audioError ? (
+              <div className="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
+                {audioError}
+              </div>
+            ) : null}
           </div>
-
-          {audioError ? (
-            <div className="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
-              {audioError}
-            </div>
-          ) : null}
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }

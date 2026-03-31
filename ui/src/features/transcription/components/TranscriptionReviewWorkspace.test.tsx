@@ -168,6 +168,23 @@ describe("TranscriptionReviewWorkspace", () => {
     );
   });
 
+  it("keeps the fixed playback footer clear of the expanded sidebar", () => {
+    render(
+      <TranscriptionReviewWorkspace
+        record={record}
+        audioUrl="/audio/meeting.wav"
+        fixedPlaybackFooter={true}
+      />,
+    );
+
+    expect(screen.getByTestId("transcription-review-player")).toHaveClass(
+      "fixed",
+    );
+    expect(screen.getByTestId("transcription-review-player")).toHaveClass(
+      "lg:left-[var(--app-shell-left)]",
+    );
+  });
+
   it("auto-scrolls the active transcript entry into view during playback when enabled", () => {
     const { container } = render(
       <TranscriptionReviewWorkspace
