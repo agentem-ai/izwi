@@ -26,7 +26,7 @@ const apiMocks = vi.hoisted(() => ({
   diarizationRecordAudioUrl: vi.fn(),
 }));
 
-vi.mock("../api", () => ({
+vi.mock("@/api", () => ({
   api: {
     createDiarizationRecord: apiMocks.createDiarizationRecord,
     updateDiarizationRecord: apiMocks.updateDiarizationRecord,
@@ -41,6 +41,7 @@ vi.mock("../api", () => ({
 
 describe("DiarizationPlayground speaker corrections", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -534,12 +535,10 @@ describe("DiarizationPlayground speaker corrections", () => {
     });
 
     await screen.findByText("Hello there.");
-    await waitFor(() =>
-      expect(apiMocks.getDiarizationRecord).toHaveBeenCalledTimes(2),
-    );
+    expect(apiMocks.getDiarizationRecord).toHaveBeenCalledTimes(1);
 
     await new Promise((resolve) => window.setTimeout(resolve, 150));
-    expect(apiMocks.getDiarizationRecord).toHaveBeenCalledTimes(2);
+    expect(apiMocks.getDiarizationRecord).toHaveBeenCalledTimes(1);
   });
 
   it("restores the richer empty state when diarization returns no transcript entries", async () => {

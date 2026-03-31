@@ -24,7 +24,7 @@ import {
   type ModelInfo,
   type DiarizationRecord,
   type DiarizationRecordRerunRequest,
-} from "../api";
+} from "@/api";
 import { formattedTranscriptFromResult } from "../utils/diarizationTranscript";
 import {
   diarizationSummaryStatusLabel,
@@ -32,7 +32,6 @@ import {
   normalizeDiarizationSummaryStatus,
 } from "../utils/diarizationSummary";
 import { DiarizationExportDialog } from "./DiarizationExportDialog";
-import { DiarizationHistoryPanel } from "./DiarizationHistoryPanel";
 import { DiarizationQualityPanel } from "./DiarizationQualityPanel";
 import { DiarizationReviewWorkspace } from "./DiarizationReviewWorkspace";
 import { DiarizationSpeakerManager } from "./DiarizationSpeakerManager";
@@ -90,7 +89,7 @@ interface DiarizationPlaygroundProps {
   summaryModelReady?: boolean;
   summaryModelStatus?: ModelInfo["status"] | null;
   onSummaryModelRequired?: () => void;
-  historyActionContainer?: HTMLElement | null;
+  onLatestRecordChange?: (record: DiarizationRecord | null) => void;
 }
 
 function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
@@ -281,7 +280,7 @@ export function DiarizationPlayground({
   summaryModelReady = true,
   summaryModelStatus = null,
   onSummaryModelRequired,
-  historyActionContainer = null,
+  onLatestRecordChange,
 }: DiarizationPlaygroundProps) {
   const [speakerTranscript, setSpeakerTranscript] = useState("");
   const [isDiarizationSessionActive, setIsDiarizationSessionActive] =
@@ -763,6 +762,10 @@ export function DiarizationPlayground({
       revokeObjectUrlIfNeeded(audioUrl);
     };
   }, [audioUrl]);
+
+  useEffect(() => {
+    onLatestRecordChange?.(latestRecord);
+  }, [latestRecord, onLatestRecordChange]);
 
   const canRunInput =
     !isProcessing && !isRecording && selectedModelReady && pipelineModelsReady;
@@ -1290,14 +1293,6 @@ export function DiarizationPlayground({
         Shortcut: <span className="app-kbd">Ctrl/Cmd + Enter</span> start or stop capture, <span className="app-kbd">Esc</span> stop recording, <span className="app-kbd">Shift + Esc</span> reset.
       </div>
 
-      <DiarizationHistoryPanel
-        latestRecord={latestRecord}
-        summaryModelReady={summaryModelReady}
-        summaryModelStatus={summaryModelStatus}
-        summaryModelId={summaryModelId}
-        onSummaryModelRequired={onSummaryModelRequired}
-        historyActionContainer={historyActionContainer}
-      />
     </div>
   );
 }

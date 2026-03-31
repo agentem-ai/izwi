@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -25,6 +26,22 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../api", () => ({
+  api: {
+    listSpeechHistoryRecords: apiMocks.listSpeechHistoryRecords,
+    getSpeechHistoryRecord: apiMocks.getSpeechHistoryRecord,
+    deleteSpeechHistoryRecord: apiMocks.deleteSpeechHistoryRecord,
+    speechHistoryRecordAudioUrl: apiMocks.speechHistoryRecordAudioUrl,
+    listDiarizationRecords: apiMocks.listDiarizationRecords,
+    getDiarizationRecord: apiMocks.getDiarizationRecord,
+    updateDiarizationRecord: apiMocks.updateDiarizationRecord,
+    rerunDiarizationRecord: apiMocks.rerunDiarizationRecord,
+    regenerateDiarizationSummary: apiMocks.regenerateDiarizationSummary,
+    deleteDiarizationRecord: apiMocks.deleteDiarizationRecord,
+    diarizationRecordAudioUrl: apiMocks.diarizationRecordAudioUrl,
+  },
+}));
+
+vi.mock("@/api", () => ({
   api: {
     listSpeechHistoryRecords: apiMocks.listSpeechHistoryRecords,
     getSpeechHistoryRecord: apiMocks.getSpeechHistoryRecord,
@@ -137,7 +154,7 @@ describe("History panels", () => {
   });
 
   it("keeps the diarization history drawer open while confirming a delete", async () => {
-    apiMocks.listDiarizationRecords.mockResolvedValue([
+    const historyRecords = [
       {
         id: "diar-1",
         created_at: 1,
@@ -151,34 +168,19 @@ describe("History panels", () => {
         transcript_preview: "SPEAKER_00 [0.00s - 1.00s]: Hello there.",
         transcript_chars: 40,
       },
-    ]);
-    apiMocks.getDiarizationRecord.mockResolvedValue({
-      id: "diar-1",
-      created_at: 1,
-      model_id: "diar_streaming_sortformer_4spk-v2.1",
-      speaker_count: 2,
-      duration_secs: 6.4,
-      processing_time_ms: 120,
-      rtf: 0.5,
-      audio_mime_type: "audio/wav",
-      audio_filename: "meeting.wav",
-      transcript: "",
-      raw_transcript: "",
-      utterances: [
-        {
-          speaker: "SPEAKER_00",
-          start: 0,
-          end: 1,
-          text: "Hello there.",
-        },
-      ],
-    });
-    apiMocks.deleteDiarizationRecord.mockResolvedValue(undefined);
+    ];
+    const handleDeleteRecord = vi.fn().mockResolvedValue(undefined);
 
-    render(<DiarizationHistoryPanel />);
-
-    await waitFor(() =>
-      expect(apiMocks.listDiarizationRecords).toHaveBeenCalled(),
+    render(
+      <DiarizationHistoryPanel
+        historyRecords={historyRecords}
+        onOpenRecord={vi.fn()}
+        onCloseRecord={vi.fn()}
+        onDeleteRecord={handleDeleteRecord}
+        onSaveSpeakerCorrections={vi.fn()}
+        onRerunRecord={vi.fn()}
+        onRegenerateSummary={vi.fn()}
+      />,
     );
 
     const historyButton = screen.getByRole("button", { name: /History/i });
@@ -201,7 +203,7 @@ describe("History panels", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete record" }));
 
     await waitFor(() =>
-      expect(apiMocks.deleteDiarizationRecord).toHaveBeenCalledWith("diar-1"),
+      expect(handleDeleteRecord).toHaveBeenCalledWith("diar-1"),
     );
   });
 
@@ -254,44 +256,55 @@ describe("History panels", () => {
       segments: [],
     };
 
-    apiMocks.listDiarizationRecords.mockResolvedValue([
-      {
-        id: "diar-1",
-        created_at: 1,
-        model_id: "diar_streaming_sortformer_4spk-v2.1",
-        speaker_count: 2,
-        corrected_speaker_count: 2,
-        duration_secs: 6.4,
-        processing_time_ms: 120,
-        rtf: 0.5,
-        audio_mime_type: "audio/wav",
-        audio_filename: "meeting.wav",
-        transcript_preview: "SPEAKER_00 [0.00s - 1.00s]: Hello there.",
-        transcript_chars: 40,
-      },
-    ]);
-    apiMocks.getDiarizationRecord.mockResolvedValue(initialRecord);
-    apiMocks.updateDiarizationRecord.mockResolvedValue({
+    const updatedRecord = {
       ...initialRecord,
       speaker_name_overrides: {
         SPEAKER_00: "Alice",
       },
-    });
+    };
+    apiMocks.updateDiarizationRecord.mockResolvedValue(updatedRecord);
 
-    const { container } = render(
-      <DiarizationHistoryPanel latestRecord={initialRecord} />,
-    );
+    function ControlledPanel() {
+      const [record, setRecord] = useState(initialRecord);
+
+      return (
+        <DiarizationHistoryPanel
+          latestRecord={record}
+          historyRecords={[
+            {
+              id: "diar-1",
+              created_at: 1,
+              model_id: "diar_streaming_sortformer_4spk-v2.1",
+              speaker_count: 2,
+              corrected_speaker_count: 2,
+              duration_secs: 6.4,
+              processing_time_ms: 120,
+              rtf: 0.5,
+              audio_mime_type: "audio/wav",
+              audio_filename: "meeting.wav",
+              transcript_preview: "SPEAKER_00 [0.00s - 1.00s]: Hello there.",
+              transcript_chars: 40,
+            },
+          ]}
+          selectedRecordId="diar-1"
+          selectedRecord={record}
+          onOpenRecord={vi.fn()}
+          onCloseRecord={vi.fn()}
+          onDeleteRecord={vi.fn()}
+          onSaveSpeakerCorrections={async (recordId, speakerNameOverrides) => {
+            const nextRecord = await apiMocks.updateDiarizationRecord(recordId, {
+              speaker_name_overrides: speakerNameOverrides,
+            });
+            setRecord(nextRecord);
+          }}
+          onRerunRecord={vi.fn()}
+          onRegenerateSummary={vi.fn()}
+        />
+      );
+    }
+
+    const { container } = render(<ControlledPanel />);
     const scope = within(container);
-
-    await waitFor(() =>
-      expect(apiMocks.listDiarizationRecords).toHaveBeenCalled(),
-    );
-
-    fireEvent.click(scope.getByRole("button", { name: /History/i }));
-    const historyRecordEntries = await screen.findAllByText("meeting.wav");
-    const historyRecordEntry = historyRecordEntries[historyRecordEntries.length - 1];
-    expect(historyRecordEntry).toBeDefined();
-    fireEvent.click(historyRecordEntry!);
 
     expect(await scope.findByText("Diarization Record")).toBeInTheDocument();
 
@@ -360,24 +373,7 @@ describe("History panels", () => {
       segments: [],
     };
 
-    apiMocks.listDiarizationRecords.mockResolvedValue([
-      {
-        id: "diar-1",
-        created_at: 1,
-        model_id: "diar_streaming_sortformer_4spk-v2.1",
-        speaker_count: 2,
-        corrected_speaker_count: 2,
-        duration_secs: 6.4,
-        processing_time_ms: 120,
-        rtf: 0.5,
-        audio_mime_type: "audio/wav",
-        audio_filename: "meeting.wav",
-        transcript_preview: "SPEAKER_00 [0.00s - 1.00s]: Hello there.",
-        transcript_chars: 40,
-      },
-    ]);
-    apiMocks.getDiarizationRecord.mockResolvedValue(initialRecord);
-    apiMocks.rerunDiarizationRecord.mockResolvedValue({
+    const rerunRecord = {
       ...initialRecord,
       id: "diar-2",
       created_at: 2,
@@ -398,21 +394,71 @@ describe("History panels", () => {
           word_end: 1,
         },
       ],
-    });
+    };
+    apiMocks.rerunDiarizationRecord.mockResolvedValue(rerunRecord);
 
-    const { container } = render(
-      <DiarizationHistoryPanel latestRecord={initialRecord} />,
-    );
+    function ControlledPanel() {
+      const [recordId, setRecordId] = useState("diar-1");
+      const [record, setRecord] = useState(initialRecord);
+      const [historyRecords, setHistoryRecords] = useState([
+        {
+          id: "diar-1",
+          created_at: 1,
+          model_id: "diar_streaming_sortformer_4spk-v2.1",
+          speaker_count: 2,
+          corrected_speaker_count: 2,
+          duration_secs: 6.4,
+          processing_time_ms: 120,
+          rtf: 0.5,
+          audio_mime_type: "audio/wav",
+          audio_filename: "meeting.wav",
+          transcript_preview: "SPEAKER_00 [0.00s - 1.00s]: Hello there.",
+          transcript_chars: 40,
+        },
+      ]);
+
+      return (
+        <DiarizationHistoryPanel
+          latestRecord={record}
+          historyRecords={historyRecords}
+          selectedRecordId={recordId}
+          selectedRecord={record}
+          onOpenRecord={vi.fn()}
+          onCloseRecord={vi.fn()}
+          onDeleteRecord={vi.fn()}
+          onSaveSpeakerCorrections={vi.fn()}
+          onRerunRecord={async (targetRecordId, request) => {
+            const nextRecord = await apiMocks.rerunDiarizationRecord(
+              targetRecordId,
+              request,
+            );
+            setRecord(nextRecord);
+            setRecordId(nextRecord.id);
+            setHistoryRecords((current) => [
+              {
+                id: nextRecord.id,
+                created_at: nextRecord.created_at,
+                model_id: nextRecord.model_id,
+                speaker_count: nextRecord.speaker_count,
+                corrected_speaker_count: nextRecord.corrected_speaker_count,
+                duration_secs: nextRecord.duration_secs,
+                processing_time_ms: nextRecord.processing_time_ms,
+                rtf: nextRecord.rtf,
+                audio_mime_type: nextRecord.audio_mime_type,
+                audio_filename: nextRecord.audio_filename,
+                transcript_preview: "Updated turn.",
+                transcript_chars: 13,
+              },
+              ...current,
+            ]);
+          }}
+          onRegenerateSummary={vi.fn()}
+        />
+      );
+    }
+
+    const { container } = render(<ControlledPanel />);
     const scope = within(container);
-
-    await waitFor(() =>
-      expect(apiMocks.listDiarizationRecords).toHaveBeenCalled(),
-    );
-
-    fireEvent.click(scope.getByRole("button", { name: /History/i }));
-    const historyRecordEntries = await screen.findAllByText("meeting.wav");
-    const historyRecordEntry = historyRecordEntries[historyRecordEntries.length - 1];
-    fireEvent.click(historyRecordEntry!);
 
     await scope.findByText("Diarization Record");
 
@@ -442,10 +488,6 @@ describe("History panels", () => {
         min_silence_duration_ms: 120,
         enable_llm_refinement: false,
       }),
-    );
-
-    await waitFor(() =>
-      expect(apiMocks.diarizationRecordAudioUrl).toHaveBeenCalledWith("diar-2"),
     );
 
     activateTab(scope, "Transcript");
@@ -498,45 +540,57 @@ describe("History panels", () => {
       segments: [],
     };
 
-    apiMocks.listDiarizationRecords.mockResolvedValue([
-      {
-        id: "diar-1",
-        created_at: 1,
-        model_id: "diar_streaming_sortformer_4spk-v2.1",
-        speaker_count: 1,
-        corrected_speaker_count: 1,
-        duration_secs: 6.4,
-        processing_time_ms: 120,
-        rtf: 0.5,
-        audio_mime_type: "audio/wav",
-        audio_filename: "meeting.wav",
-        transcript_preview: "SPEAKER_00 [0.00s - 1.00s]: Hello there.",
-        transcript_chars: 40,
-        summary_status: "ready",
-        summary_preview: "Initial summary.",
-        summary_chars: 16,
-      },
-    ]);
-    apiMocks.getDiarizationRecord.mockResolvedValue(initialRecord);
-    apiMocks.regenerateDiarizationSummary.mockResolvedValue({
+    const refreshedRecord = {
       ...initialRecord,
       summary_status: "pending",
       summary_text: null,
       summary_updated_at: 2,
-    });
+    };
+    apiMocks.regenerateDiarizationSummary.mockResolvedValue(refreshedRecord);
 
-    const { container } = render(
-      <DiarizationHistoryPanel latestRecord={initialRecord} />,
-    );
+    function ControlledPanel() {
+      const [record, setRecord] = useState(initialRecord);
+
+      return (
+        <DiarizationHistoryPanel
+          latestRecord={record}
+          historyRecords={[
+            {
+              id: "diar-1",
+              created_at: 1,
+              model_id: "diar_streaming_sortformer_4spk-v2.1",
+              speaker_count: 1,
+              corrected_speaker_count: 1,
+              duration_secs: 6.4,
+              processing_time_ms: 120,
+              rtf: 0.5,
+              audio_mime_type: "audio/wav",
+              audio_filename: "meeting.wav",
+              transcript_preview: "SPEAKER_00 [0.00s - 1.00s]: Hello there.",
+              transcript_chars: 40,
+              summary_status: "ready",
+              summary_preview: "Initial summary.",
+              summary_chars: 16,
+            },
+          ]}
+          selectedRecordId="diar-1"
+          selectedRecord={record}
+          onOpenRecord={vi.fn()}
+          onCloseRecord={vi.fn()}
+          onDeleteRecord={vi.fn()}
+          onSaveSpeakerCorrections={vi.fn()}
+          onRerunRecord={vi.fn()}
+          onRegenerateSummary={async (recordId) => {
+            const nextRecord =
+              await apiMocks.regenerateDiarizationSummary(recordId);
+            setRecord(nextRecord);
+          }}
+        />
+      );
+    }
+
+    const { container } = render(<ControlledPanel />);
     const scope = within(container);
-
-    await waitFor(() =>
-      expect(apiMocks.listDiarizationRecords).toHaveBeenCalled(),
-    );
-
-    fireEvent.click(scope.getByRole("button", { name: /History/i }));
-    const historyRecordEntries = await screen.findAllByText("meeting.wav");
-    fireEvent.click(historyRecordEntries[historyRecordEntries.length - 1]!);
 
     await scope.findByText("Diarization Record");
     fireEvent.click(scope.getByRole("button", { name: "Regenerate summary" }));

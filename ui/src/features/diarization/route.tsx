@@ -1,8 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { ModelInfo } from "@/api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import {
+  api,
+  type DiarizationRecord,
+  type DiarizationRecordRerunRequest,
+  type ModelInfo,
+} from "@/api";
 import { DiarizationPlayground } from "@/components/DiarizationPlayground";
+import { DiarizationHistoryPanel } from "@/components/DiarizationHistoryPanel";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { RouteModelModal } from "@/features/models/components/RouteModelModal";
+import { useDiarizationHistory } from "@/features/diarization/hooks/useDiarizationHistory";
+import { useDiarizationRecord } from "@/features/diarization/hooks/useDiarizationRecord";
 
 interface DiarizationPageProps {
   models: ModelInfo[];
@@ -92,6 +101,8 @@ export function DiarizationPage({
   onSelect,
   onError,
 }: DiarizationPageProps) {
+  const { recordId } = useParams<{ recordId: string }>();
+  const navigate = useNavigate();
   const [historyActionContainer, setHistoryActionContainer] =
     useState<HTMLDivElement | null>(null);
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
@@ -101,6 +112,9 @@ export function DiarizationPage({
     useState(false);
   const loadAllDownloadRequestedRef = useRef(new Set<string>());
   const loadAllLoadRequestedRef = useRef(new Set<string>());
+  const [latestRecord, setLatestRecord] = useState<DiarizationRecord | null>(
+    null,
+  );
 
   const diarizationModels = useMemo(
     () =>
@@ -286,6 +300,18 @@ export function DiarizationPage({
     targetPipelineModels.some(
       (model) => model.status === "downloading" || model.status === "loading",
     );
+  const {
+    records,
+    loading: historyLoading,
+    error: historyError,
+    refresh: refreshHistory,
+  } = useDiarizationHistory();
+  const {
+    record,
+    loading: recordLoading,
+    error: recordError,
+    refresh: refreshRecord,
+  } = useDiarizationRecord(recordId);
 
   const closeModelModal = () => {
     setIsModelModalOpen(false);
@@ -391,6 +417,73 @@ export function DiarizationPage({
     }
   }, [isPipelineLoadAllRequested, onDownload, onLoad, targetPipelineModels]);
 
+  const handleOpenRecord = useCallback(
+    (nextRecordId: string) => {
+      navigate(`/diarization/${nextRecordId}`);
+    },
+    [navigate],
+  );
+
+  const handleCloseRecord = useCallback(() => {
+    navigate("/diarization");
+  }, [navigate]);
+
+  const handleDeleteRecord = useCallback(
+    async (targetRecordId: string) => {
+      await api.deleteDiarizationRecord(targetRecordId);
+      await refreshHistory();
+      if (recordId === targetRecordId) {
+        navigate("/diarization", { replace: true });
+      }
+      if (latestRecord?.id === targetRecordId) {
+        setLatestRecord(null);
+      }
+    },
+    [latestRecord?.id, navigate, recordId, refreshHistory],
+  );
+
+  const handleSaveSpeakerCorrections = useCallback(
+    async (
+      targetRecordId: string,
+      speakerNameOverrides: Record<string, string>,
+    ) => {
+      await api.updateDiarizationRecord(targetRecordId, {
+        speaker_name_overrides: speakerNameOverrides,
+      });
+      await Promise.all([
+        refreshHistory(),
+        recordId === targetRecordId ? refreshRecord() : Promise.resolve(),
+      ]);
+    },
+    [recordId, refreshHistory, refreshRecord],
+  );
+
+  const handleRerunRecord = useCallback(
+    async (
+      targetRecordId: string,
+      request: DiarizationRecordRerunRequest,
+    ) => {
+      const rerunRecord = await api.rerunDiarizationRecord(targetRecordId, request);
+      await refreshHistory();
+      if (latestRecord?.id === targetRecordId) {
+        setLatestRecord(rerunRecord);
+      }
+      navigate(`/diarization/${rerunRecord.id}`);
+    },
+    [latestRecord?.id, navigate, refreshHistory],
+  );
+
+  const handleRegenerateSummary = useCallback(
+    async (targetRecordId: string) => {
+      await api.regenerateDiarizationSummary(targetRecordId);
+      await Promise.all([
+        refreshHistory(),
+        recordId === targetRecordId ? refreshRecord() : Promise.resolve(),
+      ]);
+    },
+    [recordId, refreshHistory, refreshRecord],
+  );
+
   return (
     <PageShell>
       <PageHeader
@@ -430,11 +523,36 @@ export function DiarizationPage({
           openModelManager();
           onError(summaryModelRequirementMessage);
         }}
-        historyActionContainer={historyActionContainer}
+        onLatestRecordChange={setLatestRecord}
         onPipelineModelsRequired={() => {
           openModelManagerForPipeline();
           onError("Load ASR and forced aligner models before diarization.");
         }}
+      />
+
+      <DiarizationHistoryPanel
+        latestRecord={latestRecord}
+        historyRecords={records}
+        historyLoading={historyLoading}
+        historyError={historyError}
+        selectedRecordId={recordId ?? null}
+        selectedRecord={record}
+        selectedRecordLoading={recordLoading}
+        selectedRecordError={recordError}
+        summaryModelReady={summaryModelReady}
+        summaryModelStatus={summaryModelStatus}
+        summaryModelId={resolvedSummaryModel}
+        onOpenRecord={handleOpenRecord}
+        onCloseRecord={handleCloseRecord}
+        onDeleteRecord={handleDeleteRecord}
+        onSaveSpeakerCorrections={handleSaveSpeakerCorrections}
+        onRerunRecord={handleRerunRecord}
+        onRegenerateSummary={handleRegenerateSummary}
+        onSummaryModelRequired={() => {
+          openModelManager();
+          onError(summaryModelRequirementMessage);
+        }}
+        historyActionContainer={historyActionContainer}
       />
 
       <RouteModelModal

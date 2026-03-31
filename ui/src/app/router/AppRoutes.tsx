@@ -205,6 +205,10 @@ export function AppRoutes() {
           path="/diarization"
           element={withSuspense(<DiarizationPage {...pageProps} />)}
         />
+        <Route
+          path="/diarization/:recordId"
+          element={withSuspense(<DiarizationPage {...pageProps} />)}
+        />
         <Route path="/chat" element={withSuspense(<ChatPage {...pageProps} />)} />
         <Route
           path="/voice"
