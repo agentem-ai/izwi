@@ -31,7 +31,7 @@ import {
   type DiarizationRecordRerunRequest,
   type DiarizationRecordSummary,
   type ModelInfo,
-} from "../api";
+} from "@/api";
 import {
   formattedTranscriptFromRecord,
   previewTranscript,
@@ -50,9 +50,28 @@ import { DiarizationSpeakerManager } from "./DiarizationSpeakerManager";
 
 interface DiarizationHistoryPanelProps {
   latestRecord?: DiarizationRecord | null;
+  historyRecords?: DiarizationRecordSummary[];
+  historyLoading?: boolean;
+  historyError?: string | null;
+  selectedRecordId?: string | null;
+  selectedRecord?: DiarizationRecord | null;
+  selectedRecordLoading?: boolean;
+  selectedRecordError?: string | null;
   summaryModelReady?: boolean;
   summaryModelStatus?: ModelInfo["status"] | null;
   summaryModelId?: string | null;
+  onOpenRecord: (recordId: string) => void;
+  onCloseRecord: () => void;
+  onDeleteRecord: (recordId: string) => Promise<void> | void;
+  onSaveSpeakerCorrections: (
+    recordId: string,
+    speakerNameOverrides: Record<string, string>,
+  ) => Promise<void> | void;
+  onRerunRecord: (
+    recordId: string,
+    request: DiarizationRecordRerunRequest,
+  ) => Promise<void> | void;
+  onRegenerateSummary: (recordId: string) => Promise<void> | void;
   onSummaryModelRequired?: () => void;
   historyActionContainer?: HTMLElement | null;
 }
@@ -127,28 +146,26 @@ function summarizeRecord(record: DiarizationRecord): DiarizationRecordSummary {
 
 export function DiarizationHistoryPanel({
   latestRecord = null,
+  historyRecords = [],
+  historyLoading = false,
+  historyError = null,
+  selectedRecordId = null,
+  selectedRecord = null,
+  selectedRecordLoading = false,
+  selectedRecordError = null,
   summaryModelReady = true,
   summaryModelStatus = null,
   summaryModelId = "Qwen3.5-4B",
+  onOpenRecord,
+  onCloseRecord,
+  onDeleteRecord,
+  onSaveSpeakerCorrections,
+  onRerunRecord,
+  onRegenerateSummary,
   onSummaryModelRequired,
   historyActionContainer,
 }: DiarizationHistoryPanelProps) {
-  const [historyRecords, setHistoryRecords] = useState<
-    DiarizationRecordSummary[]
-  >([]);
-  const [historyLoading, setHistoryLoading] = useState(true);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const [selectedHistoryRecordId, setSelectedHistoryRecordId] = useState<
-    string | null
-  >(null);
-  const [selectedHistoryRecord, setSelectedHistoryRecord] =
-    useState<DiarizationRecord | null>(null);
-  const [selectedHistoryLoading, setSelectedHistoryLoading] = useState(false);
-  const [selectedHistoryError, setSelectedHistoryError] = useState<
-    string | null
-  >(null);
   const [isHistoryDrawerOpen, setIsHistoryDrawerOpen] = useState(false);
-  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [historyTranscriptCopied, setHistoryTranscriptCopied] = useState(false);
   const [recordWorkspaceTab, setRecordWorkspaceTab] = useState("transcript");
   const [speakerUpdatePending, setSpeakerUpdatePending] = useState(false);
@@ -202,111 +219,144 @@ export function DiarizationHistoryPanel({
     return false;
   }, [onSummaryModelRequired, summaryModelGuidance, summaryModelReady]);
 
-  const mergeHistorySummary = useCallback(
-    (summary: DiarizationRecordSummary) => {
-      setHistoryRecords((previous) => {
-        const next = [
-          summary,
-          ...previous.filter((item) => item.id !== summary.id),
-        ];
-        next.sort((a, b) => b.created_at - a.created_at);
-        return next;
-      });
-    },
-    [],
+  const visibleHistoryRecords = useMemo(() => {
+    const nextRecords = latestRecord
+      ? [summarizeRecord(latestRecord), ...historyRecords]
+      : historyRecords;
+    const deduped = nextRecords.filter(
+      (record, index, list) =>
+        list.findIndex((candidate) => candidate.id === record.id) === index,
+    );
+    deduped.sort((left, right) => right.created_at - left.created_at);
+    return deduped;
+  }, [historyRecords, latestRecord]);
+
+  const selectedHistorySummary = useMemo(
+    () =>
+      selectedRecordId
+        ? (visibleHistoryRecords.find((record) => record.id === selectedRecordId) ??
+          null)
+        : null,
+    [selectedRecordId, visibleHistoryRecords],
   );
 
-  const loadHistory = useCallback(async () => {
-    setHistoryLoading(true);
-    setHistoryError(null);
-    try {
-      const records = await api.listDiarizationRecords();
-      setHistoryRecords(records);
-      setSelectedHistoryRecordId((current) => {
-        if (current && records.some((item) => item.id === current)) {
-          return current;
-        }
-        return records[0]?.id ?? null;
-      });
-    } catch (err) {
-      setHistoryError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load diarization history.",
-      );
-    } finally {
-      setHistoryLoading(false);
+  const activeHistoryRecord = useMemo(() => {
+    if (!selectedRecordId) {
+      return null;
     }
-  }, []);
+    if (selectedRecord?.id === selectedRecordId) {
+      return selectedRecord;
+    }
+    if (latestRecord?.id === selectedRecordId) {
+      return latestRecord;
+    }
+    return null;
+  }, [latestRecord, selectedRecord, selectedRecordId]);
+
+  const activeHistorySummaryStatus = useMemo(
+    () =>
+      normalizeDiarizationSummaryStatus(
+        activeHistoryRecord?.summary_status,
+        activeHistoryRecord?.summary_text,
+        activeHistoryRecord?.summary_error,
+      ),
+    [
+      activeHistoryRecord?.summary_error,
+      activeHistoryRecord?.summary_status,
+      activeHistoryRecord?.summary_text,
+    ],
+  );
+
+  const deleteTargetRecord = useMemo(() => {
+    if (!deleteTargetRecordId) {
+      return null;
+    }
+    const fromSummary = visibleHistoryRecords.find(
+      (record) => record.id === deleteTargetRecordId,
+    );
+    if (fromSummary) {
+      return fromSummary;
+    }
+    if (
+      activeHistoryRecord &&
+      activeHistoryRecord.id === deleteTargetRecordId
+    ) {
+      return summarizeRecord(activeHistoryRecord);
+    }
+    return null;
+  }, [activeHistoryRecord, deleteTargetRecordId, visibleHistoryRecords]);
+
+  const selectedHistoryAudioUrl = useMemo(
+    () =>
+      selectedRecordId ? api.diarizationRecordAudioUrl(selectedRecordId) : null,
+    [selectedRecordId],
+  );
+
+  const selectedHistoryIndex = useMemo(
+    () =>
+      selectedRecordId
+        ? visibleHistoryRecords.findIndex((record) => record.id === selectedRecordId)
+        : -1,
+    [selectedRecordId, visibleHistoryRecords],
+  );
+
+  const canOpenNewerHistory = selectedHistoryIndex > 0;
+  const canOpenOlderHistory =
+    selectedHistoryIndex >= 0 &&
+    selectedHistoryIndex < visibleHistoryRecords.length - 1;
+
+  const normalizedActiveTranscript = useMemo(
+    () =>
+      activeHistoryRecord
+        ? formattedTranscriptFromRecord(activeHistoryRecord)
+        : "",
+    [activeHistoryRecord],
+  );
 
   useEffect(() => {
-    void loadHistory();
-  }, [loadHistory]);
-
-  useEffect(() => {
-    if (!selectedHistoryRecordId) {
-      setSelectedHistoryRecord(null);
-      setSelectedHistoryError(null);
+    if (!selectedRecordId) {
       return;
     }
-
-    if (selectedHistoryRecord?.id === selectedHistoryRecordId) {
-      return;
-    }
-
-    let cancelled = false;
-    setSelectedHistoryLoading(true);
-    setSelectedHistoryError(null);
-
-    api
-      .getDiarizationRecord(selectedHistoryRecordId)
-      .then((record) => {
-        if (cancelled) {
-          return;
-        }
-        setSelectedHistoryRecord(record);
-        mergeHistorySummary(summarizeRecord(record));
-      })
-      .catch((err) => {
-        if (cancelled) {
-          return;
-        }
-        setSelectedHistoryError(
-          err instanceof Error
-            ? err.message
-            : "Failed to load diarization record details.",
-        );
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setSelectedHistoryLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onCloseRecord();
+      }
     };
-  }, [mergeHistorySummary, selectedHistoryRecord, selectedHistoryRecordId]);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [onCloseRecord, selectedRecordId]);
 
   useEffect(() => {
-    if (!latestRecord) {
+    if (!selectedRecordId) {
       return;
     }
-    setSelectedHistoryRecord(latestRecord);
-    setSelectedHistoryRecordId(latestRecord.id);
-    setSelectedHistoryError(null);
-    mergeHistorySummary(summarizeRecord(latestRecord));
-  }, [latestRecord?.id, latestRecord, mergeHistorySummary]);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [selectedRecordId]);
 
-  const closeHistoryModal = useCallback(() => {
-    setIsHistoryModalOpen(false);
-  }, []);
+  useEffect(() => {
+    setHistoryTranscriptCopied(false);
+    setRecordWorkspaceTab("transcript");
+    setSpeakerUpdateError(null);
+    setRerunError(null);
+    setSummaryRefreshError(null);
+    setSummaryRefreshPendingId(null);
+  }, [selectedRecordId]);
 
-  const openHistoryRecord = useCallback((recordId: string) => {
-    setSelectedHistoryRecordId(recordId);
-    setSelectedHistoryError(null);
-    setIsHistoryModalOpen(true);
-  }, []);
+  const handleHistoryDrawerOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen && deleteTargetRecordId) {
+        return;
+      }
+      setIsHistoryDrawerOpen(nextOpen);
+    },
+    [deleteTargetRecordId],
+  );
 
   const openDeleteRecordConfirm = useCallback((recordId: string) => {
     setDeleteTargetRecordId(recordId);
@@ -321,195 +371,6 @@ export function DiarizationHistoryPanel({
     setDeleteRecordError(null);
   }, [deleteRecordPending]);
 
-  const handleHistoryDrawerOpenChange = useCallback(
-    (nextOpen: boolean) => {
-      if (!nextOpen && deleteTargetRecordId) {
-        return;
-      }
-      setIsHistoryDrawerOpen(nextOpen);
-    },
-    [deleteTargetRecordId],
-  );
-
-  const confirmDeleteRecord = useCallback(async () => {
-    if (!deleteTargetRecordId || deleteRecordPending) {
-      return;
-    }
-
-    setDeleteRecordPending(true);
-    setDeleteRecordError(null);
-
-    try {
-      await api.deleteDiarizationRecord(deleteTargetRecordId);
-
-      const previous = historyRecords;
-      const deletedIndex = previous.findIndex(
-        (record) => record.id === deleteTargetRecordId,
-      );
-      const remaining = previous.filter(
-        (record) => record.id !== deleteTargetRecordId,
-      );
-
-      setHistoryRecords(remaining);
-
-      if (selectedHistoryRecordId === deleteTargetRecordId) {
-        const fallbackIndex =
-          deletedIndex >= 0 ? Math.min(deletedIndex, remaining.length - 1) : 0;
-        const fallbackId = remaining[fallbackIndex]?.id ?? null;
-        setSelectedHistoryRecordId(fallbackId);
-        if (!fallbackId) {
-          setSelectedHistoryRecord(null);
-          setIsHistoryModalOpen(false);
-        }
-      }
-
-      if (selectedHistoryRecord?.id === deleteTargetRecordId) {
-        setSelectedHistoryRecord(null);
-      }
-
-      setDeleteTargetRecordId(null);
-      setDeleteRecordError(null);
-    } catch (err) {
-      setDeleteRecordError(
-        err instanceof Error
-          ? err.message
-          : "Failed to delete diarization record.",
-      );
-    } finally {
-      setDeleteRecordPending(false);
-    }
-  }, [
-    deleteRecordPending,
-    deleteTargetRecordId,
-    historyRecords,
-    selectedHistoryRecord,
-    selectedHistoryRecordId,
-  ]);
-
-  useEffect(() => {
-    if (!isHistoryModalOpen) {
-      return;
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        closeHistoryModal();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [closeHistoryModal, isHistoryModalOpen]);
-
-  useEffect(() => {
-    if (!isHistoryModalOpen) {
-      return;
-    }
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [isHistoryModalOpen]);
-
-  const selectedHistorySummary = useMemo(
-    () =>
-      selectedHistoryRecordId
-        ? (historyRecords.find(
-            (record) => record.id === selectedHistoryRecordId,
-          ) ?? null)
-        : null,
-    [historyRecords, selectedHistoryRecordId],
-  );
-  const activeHistoryRecord =
-    selectedHistoryRecord &&
-    selectedHistoryRecord.id === selectedHistoryRecordId
-      ? selectedHistoryRecord
-      : null;
-  const activeHistorySummaryStatus = useMemo(
-    () =>
-      normalizeDiarizationSummaryStatus(
-        activeHistoryRecord?.summary_status,
-        activeHistoryRecord?.summary_text,
-        activeHistoryRecord?.summary_error,
-      ),
-    [
-      activeHistoryRecord?.summary_error,
-      activeHistoryRecord?.summary_status,
-      activeHistoryRecord?.summary_text,
-    ],
-  );
-  const pendingSummaryRecordIds = useMemo(() => {
-    const ids = new Set<string>();
-
-    if (
-      activeHistoryRecord &&
-      normalizeDiarizationSummaryStatus(
-        activeHistoryRecord.summary_status,
-        activeHistoryRecord.summary_text,
-        activeHistoryRecord.summary_error,
-      ) === "pending"
-    ) {
-      ids.add(activeHistoryRecord.id);
-    }
-
-    historyRecords.forEach((record) => {
-      if (
-        normalizeDiarizationSummaryStatus(
-          record.summary_status,
-          record.summary_preview,
-          null,
-        ) === "pending"
-      ) {
-        ids.add(record.id);
-      }
-    });
-
-    return Array.from(ids).sort();
-  }, [activeHistoryRecord, historyRecords]);
-  const pendingSummaryRecordIdsKey = useMemo(
-    () => pendingSummaryRecordIds.join("|"),
-    [pendingSummaryRecordIds],
-  );
-  const deleteTargetRecord = useMemo(() => {
-    if (!deleteTargetRecordId) {
-      return null;
-    }
-    const fromSummary = historyRecords.find(
-      (record) => record.id === deleteTargetRecordId,
-    );
-    if (fromSummary) {
-      return fromSummary;
-    }
-    if (
-      activeHistoryRecord &&
-      activeHistoryRecord.id === deleteTargetRecordId
-    ) {
-      return summarizeRecord(activeHistoryRecord);
-    }
-    return null;
-  }, [activeHistoryRecord, deleteTargetRecordId, historyRecords]);
-  const selectedHistoryAudioUrl = useMemo(
-    () =>
-      selectedHistoryRecordId
-        ? api.diarizationRecordAudioUrl(selectedHistoryRecordId)
-        : null,
-    [selectedHistoryRecordId],
-  );
-  const selectedHistoryIndex = useMemo(
-    () =>
-      selectedHistoryRecordId
-        ? historyRecords.findIndex(
-            (record) => record.id === selectedHistoryRecordId,
-          )
-        : -1,
-    [historyRecords, selectedHistoryRecordId],
-  );
-  const canOpenNewerHistory = selectedHistoryIndex > 0;
-  const canOpenOlderHistory =
-    selectedHistoryIndex >= 0 &&
-    selectedHistoryIndex < historyRecords.length - 1;
-
   const openAdjacentHistoryRecord = useCallback(
     (direction: "newer" | "older") => {
       if (selectedHistoryIndex < 0) {
@@ -519,26 +380,16 @@ export function DiarizationHistoryPanel({
         direction === "newer"
           ? selectedHistoryIndex - 1
           : selectedHistoryIndex + 1;
-      if (targetIndex < 0 || targetIndex >= historyRecords.length) {
+      if (targetIndex < 0 || targetIndex >= visibleHistoryRecords.length) {
         return;
       }
-      const target = historyRecords[targetIndex];
+      const target = visibleHistoryRecords[targetIndex];
       if (!target) {
         return;
       }
-      setSelectedHistoryRecordId(target.id);
-      setSelectedHistoryError(null);
-      setIsHistoryModalOpen(true);
+      onOpenRecord(target.id);
     },
-    [historyRecords, selectedHistoryIndex],
-  );
-
-  const normalizedActiveTranscript = useMemo(
-    () =>
-      activeHistoryRecord
-        ? formattedTranscriptFromRecord(activeHistoryRecord)
-        : "",
-    [activeHistoryRecord],
+    [onOpenRecord, selectedHistoryIndex, visibleHistoryRecords],
   );
 
   const handleCopyHistoryTranscript = useCallback(async () => {
@@ -550,59 +401,6 @@ export function DiarizationHistoryPanel({
     window.setTimeout(() => setHistoryTranscriptCopied(false), 1800);
   }, [normalizedActiveTranscript]);
 
-  useEffect(() => {
-    if (!pendingSummaryRecordIdsKey) {
-      return;
-    }
-
-    const recordIds = pendingSummaryRecordIdsKey.split("|");
-    let cancelled = false;
-    let pollingInFlight = false;
-    const pollPendingSummaries = async () => {
-      if (cancelled || pollingInFlight) {
-        return;
-      }
-      pollingInFlight = true;
-      try {
-        const results = await Promise.allSettled(
-          recordIds.map((recordId) =>
-            api.getDiarizationRecord(recordId),
-          ),
-        );
-        if (cancelled) {
-          return;
-        }
-
-        results.forEach((result) => {
-          if (
-            result.status === "fulfilled" &&
-            result.value &&
-            typeof result.value === "object" &&
-            "id" in result.value
-          ) {
-            const record = result.value as DiarizationRecord;
-            if (selectedHistoryRecordId === record.id) {
-              setSelectedHistoryRecord(record);
-            }
-            mergeHistorySummary(summarizeRecord(record));
-          }
-        });
-      } finally {
-        pollingInFlight = false;
-      }
-    };
-
-    void pollPendingSummaries();
-    const intervalId = window.setInterval(() => {
-      void pollPendingSummaries();
-    }, 2500);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [mergeHistorySummary, pendingSummaryRecordIdsKey, selectedHistoryRecordId]);
-
   const handleSaveSpeakerCorrections = useCallback(
     async (speakerNameOverrides: Record<string, string>) => {
       if (!activeHistoryRecord || speakerUpdatePending) {
@@ -612,14 +410,10 @@ export function DiarizationHistoryPanel({
       setSpeakerUpdatePending(true);
       setSpeakerUpdateError(null);
       try {
-        const updatedRecord = await api.updateDiarizationRecord(
+        await onSaveSpeakerCorrections(
           activeHistoryRecord.id,
-          {
-            speaker_name_overrides: speakerNameOverrides,
-          },
+          speakerNameOverrides,
         );
-        setSelectedHistoryRecord(updatedRecord);
-        mergeHistorySummary(summarizeRecord(updatedRecord));
       } catch (err) {
         setSpeakerUpdateError(
           err instanceof Error
@@ -630,7 +424,7 @@ export function DiarizationHistoryPanel({
         setSpeakerUpdatePending(false);
       }
     },
-    [activeHistoryRecord, mergeHistorySummary, speakerUpdatePending],
+    [activeHistoryRecord, onSaveSpeakerCorrections, speakerUpdatePending],
   );
 
   const handleRerunRecord = useCallback(
@@ -644,17 +438,10 @@ export function DiarizationHistoryPanel({
       setSpeakerUpdateError(null);
       setSummaryRefreshError(null);
       setSummaryRefreshPendingId(null);
-      setSelectedHistoryError(null);
 
       try {
-        const rerunRecord = await api.rerunDiarizationRecord(
-          activeHistoryRecord.id,
-          request,
-        );
-        setSelectedHistoryRecord(rerunRecord);
-        setSelectedHistoryRecordId(rerunRecord.id);
+        await onRerunRecord(activeHistoryRecord.id, request);
         setRecordWorkspaceTab("transcript");
-        mergeHistorySummary(summarizeRecord(rerunRecord));
       } catch (err) {
         setRerunError(
           err instanceof Error ? err.message : "Failed to rerun diarization.",
@@ -663,7 +450,7 @@ export function DiarizationHistoryPanel({
         setRerunPending(false);
       }
     },
-    [activeHistoryRecord, mergeHistorySummary, rerunPending],
+    [activeHistoryRecord, onRerunRecord, rerunPending],
   );
 
   const handleRegenerateSummary = useCallback(async () => {
@@ -681,11 +468,7 @@ export function DiarizationHistoryPanel({
     setSummaryRefreshError(null);
 
     try {
-      const refreshed = await api.regenerateDiarizationSummary(
-        activeHistoryRecord.id,
-      );
-      setSelectedHistoryRecord(refreshed);
-      mergeHistorySummary(summarizeRecord(refreshed));
+      await onRegenerateSummary(activeHistoryRecord.id);
     } catch (err) {
       setSummaryRefreshError(
         err instanceof Error
@@ -697,25 +480,39 @@ export function DiarizationHistoryPanel({
     }
   }, [
     activeHistoryRecord,
-    mergeHistorySummary,
+    onRegenerateSummary,
     requireSummaryModel,
     summaryRefreshPendingId,
   ]);
 
-  useEffect(() => {
-    setHistoryTranscriptCopied(false);
-    setRecordWorkspaceTab("transcript");
-    setSpeakerUpdateError(null);
-    setRerunError(null);
-    setSummaryRefreshError(null);
-    setSummaryRefreshPendingId(null);
-  }, [selectedHistoryRecordId]);
+  const confirmDeleteRecord = useCallback(async () => {
+    if (!deleteTargetRecordId || deleteRecordPending) {
+      return;
+    }
+
+    setDeleteRecordPending(true);
+    setDeleteRecordError(null);
+
+    try {
+      await onDeleteRecord(deleteTargetRecordId);
+      setDeleteTargetRecordId(null);
+      setDeleteRecordError(null);
+    } catch (err) {
+      setDeleteRecordError(
+        err instanceof Error
+          ? err.message
+          : "Failed to delete diarization record.",
+      );
+    } finally {
+      setDeleteRecordPending(false);
+    }
+  }, [deleteRecordPending, deleteTargetRecordId, onDeleteRecord]);
 
   const historyDrawer = (
     <RouteHistoryDrawer
       title="Diarization History"
-      countLabel={`${historyRecords.length} ${historyRecords.length === 1 ? "record" : "records"}`}
-      triggerCount={historyRecords.length}
+      countLabel={`${visibleHistoryRecords.length} ${visibleHistoryRecords.length === 1 ? "record" : "records"}`}
+      triggerCount={visibleHistoryRecords.length}
       open={isHistoryDrawerOpen}
       onOpenChange={handleHistoryDrawerOpenChange}
     >
@@ -727,14 +524,14 @@ export function DiarizationHistoryPanel({
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 Loading history...
               </div>
-            ) : historyRecords.length === 0 ? (
+            ) : visibleHistoryRecords.length === 0 ? (
               <div className="app-sidebar-empty">
                 No saved diarization records yet.
               </div>
             ) : (
               <div className="flex flex-col gap-2.5">
-                {historyRecords.map((record) => {
-                  const isActive = record.id === selectedHistoryRecordId;
+                {visibleHistoryRecords.map((record) => {
+                  const isActive = record.id === selectedRecordId;
                   const summaryStatus = normalizeDiarizationSummaryStatus(
                     record.summary_status,
                     record.summary_preview,
@@ -746,13 +543,13 @@ export function DiarizationHistoryPanel({
                       role="button"
                       tabIndex={0}
                       onClick={() => {
-                        openHistoryRecord(record.id);
+                        onOpenRecord(record.id);
                         close();
                       }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
                           event.preventDefault();
-                          openHistoryRecord(record.id);
+                          onOpenRecord(record.id);
                           close();
                         }
                       }}
@@ -838,7 +635,7 @@ export function DiarizationHistoryPanel({
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
                 exit={{ opacity: 0, height: 0 }}
-                className="rounded border bg-[var(--danger-bg)] p-2 text-xs text-[var(--danger-text)] border-[var(--danger-border)]"
+                className="rounded border border-[var(--danger-border)] bg-[var(--danger-bg)] p-2 text-xs text-[var(--danger-text)]"
               >
                 {historyError}
               </motion.div>
@@ -858,13 +655,13 @@ export function DiarizationHistoryPanel({
           : null}
 
       <AnimatePresence>
-        {isHistoryModalOpen && (
+        {selectedRecordId ? (
           <motion.div
             className="fixed inset-0 z-50 bg-black/70 p-3 backdrop-blur-sm sm:p-6"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={closeHistoryModal}
+            onClick={onCloseRecord}
           >
             <motion.div
               initial={{ y: 18, opacity: 0, scale: 0.985 }}
@@ -880,9 +677,11 @@ export function DiarizationHistoryPanel({
                     Diarization Record
                   </p>
                   <div className="mt-1 flex items-center gap-3">
-                    <h2 className="truncate text-[1.95rem] font-semibold leading-none text-[var(--text-primary)] tracking-[-0.03em]">
+                    <h2 className="truncate text-[1.95rem] font-semibold leading-none tracking-[-0.03em] text-[var(--text-primary)]">
                       {selectedHistorySummary?.audio_filename ||
+                        activeHistoryRecord?.audio_filename ||
                         selectedHistorySummary?.model_id ||
+                        activeHistoryRecord?.model_id ||
                         "Diarization transcript"}
                     </h2>
                   </div>
@@ -896,42 +695,42 @@ export function DiarizationHistoryPanel({
                       <>
                         <span className="text-[var(--text-subtle)]">•</span>
                         <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[10px] font-medium tracking-[0.08em] text-[var(--text-secondary)]">
-                          {formatAudioDuration(
-                            activeHistoryRecord.duration_secs,
-                          )}
+                          {formatAudioDuration(activeHistoryRecord.duration_secs)}
                         </span>
                         <span className="inline-flex items-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2.5 py-0.5 text-[10px] font-medium tracking-[0.08em] text-[var(--text-secondary)]">
                           {activeHistoryRecord.corrected_speaker_count ??
                             activeHistoryRecord.speaker_count}{" "}
                           speakers
                         </span>
-                        <StatusBadge tone={diarizationSummaryStatusTone(activeHistorySummaryStatus)}>
+                        <StatusBadge
+                          tone={diarizationSummaryStatusTone(
+                            activeHistorySummaryStatus,
+                          )}
+                        >
                           {diarizationSummaryStatusLabel(activeHistorySummaryStatus)}
                         </StatusBadge>
                       </>
                     ) : null}
                   </div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0 self-start">
-                  {activeHistoryRecord && (
+                <div className="flex shrink-0 items-center gap-2 self-start">
+                  {activeHistoryRecord ? (
                     <button
-                      onClick={() =>
-                        openDeleteRecordConfirm(activeHistoryRecord.id)
-                      }
+                      onClick={() => openDeleteRecordConfirm(activeHistoryRecord.id)}
                       className="inline-flex h-8 items-center gap-1 rounded-full border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 text-[11px] font-medium text-[var(--danger-text)] transition-colors hover:bg-[var(--danger-bg-hover)]"
                       title="Delete this record"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Trash2 className="h-3.5 w-3.5" />
                       Delete
                     </button>
-                  )}
+                  ) : null}
                   <button
                     onClick={() => openAdjacentHistoryRecord("newer")}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40"
                     disabled={!canOpenNewerHistory}
                     title="Open newer record"
                   >
-                    <ChevronLeft className="w-4 h-4" />
+                    <ChevronLeft className="h-4 w-4" />
                   </button>
                   <button
                     onClick={() => openAdjacentHistoryRecord("older")}
@@ -939,28 +738,28 @@ export function DiarizationHistoryPanel({
                     disabled={!canOpenOlderHistory}
                     title="Open older record"
                   >
-                    <ChevronRight className="w-4 h-4" />
+                    <ChevronRight className="h-4 w-4" />
                   </button>
                   <button
-                    onClick={closeHistoryModal}
+                    onClick={onCloseRecord}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
                     title="Close"
                   >
-                    <X className="w-4 h-4" />
+                    <X className="h-4 w-4" />
                   </button>
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto flex flex-col">
-                {selectedHistoryLoading ? (
-                  <div className="h-full min-h-[220px] flex items-center justify-center gap-2 text-sm text-[var(--text-muted)]">
-                    <Loader2 className="w-4 h-4 animate-spin" />
+              <div className="flex flex-1 flex-col overflow-y-auto">
+                {selectedRecordLoading ? (
+                  <div className="flex min-h-[220px] h-full items-center justify-center gap-2 text-sm text-[var(--text-muted)]">
+                    <Loader2 className="h-4 w-4 animate-spin" />
                     Loading record...
                   </div>
-                ) : selectedHistoryError ? (
+                ) : selectedRecordError ? (
                   <div className="p-4 sm:p-5">
                     <div className="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
-                      {selectedHistoryError}
+                      {selectedRecordError}
                     </div>
                   </div>
                 ) : activeHistoryRecord ? (
@@ -1018,19 +817,17 @@ export function DiarizationHistoryPanel({
                             >
                               {historyTranscriptCopied ? (
                                 <>
-                                  <Check className="w-3.5 h-3.5" />
+                                  <Check className="h-3.5 w-3.5" />
                                   Copied
                                 </>
                               ) : (
                                 <>
-                                  <Copy className="w-3.5 h-3.5" />
+                                  <Copy className="h-3.5 w-3.5" />
                                   Copy
                                 </>
                               )}
                             </button>
-                            <DiarizationExportDialog
-                              record={activeHistoryRecord}
-                            >
+                            <DiarizationExportDialog record={activeHistoryRecord}>
                               <Button
                                 type="button"
                                 variant="outline"
@@ -1038,7 +835,7 @@ export function DiarizationHistoryPanel({
                                 className="h-8 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 text-[12px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-2)]"
                                 disabled={!normalizedActiveTranscript}
                               >
-                                <Download className="w-3.5 h-3.5 mr-1.5" />
+                                <Download className="mr-1.5 h-3.5 w-3.5" />
                                 Export
                               </Button>
                             </DiarizationExportDialog>
@@ -1052,14 +849,11 @@ export function DiarizationHistoryPanel({
                         </div>
                       ) : null}
 
-                      <TabsContent
-                        value="transcript"
-                        className="mt-0 space-y-3"
-                      >
+                      <TabsContent value="transcript" className="mt-0 space-y-3">
                         <DiarizationReviewWorkspace
                           record={activeHistoryRecord}
                           audioUrl={selectedHistoryAudioUrl}
-                          loading={selectedHistoryLoading}
+                          loading={selectedRecordLoading}
                           autoScrollActiveEntry={true}
                           summaryModelGuidance={summaryModelGuidance}
                           emptyMessage={
@@ -1070,14 +864,12 @@ export function DiarizationHistoryPanel({
                       </TabsContent>
 
                       <TabsContent value="speakers" className="mt-0">
-                        {activeHistoryRecord ? (
-                          <DiarizationSpeakerManager
-                            record={activeHistoryRecord}
-                            isSaving={speakerUpdatePending}
-                            error={speakerUpdateError}
-                            onSave={handleSaveSpeakerCorrections}
-                          />
-                        ) : null}
+                        <DiarizationSpeakerManager
+                          record={activeHistoryRecord}
+                          isSaving={speakerUpdatePending}
+                          error={speakerUpdateError}
+                          onSave={handleSaveSpeakerCorrections}
+                        />
                       </TabsContent>
 
                       <TabsContent value="quality" className="mt-0">
@@ -1091,14 +883,14 @@ export function DiarizationHistoryPanel({
                     </Tabs>
                   </div>
                 ) : (
-                  <div className="h-full min-h-[220px] flex items-center justify-center text-sm text-[var(--text-subtle)] text-center">
+                  <div className="flex min-h-[220px] h-full items-center justify-center text-center text-sm text-[var(--text-subtle)]">
                     Select a history record to inspect playback and transcript.
                   </div>
                 )}
               </div>
             </motion.div>
           </motion.div>
-        )}
+        ) : null}
       </AnimatePresence>
 
       <Dialog
@@ -1135,7 +927,7 @@ export function DiarizationHistoryPanel({
             </div>
 
             <AnimatePresence>
-              {deleteRecordError && (
+              {deleteRecordError ? (
                 <motion.div
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
@@ -1144,7 +936,7 @@ export function DiarizationHistoryPanel({
                 >
                   {deleteRecordError}
                 </motion.div>
-              )}
+              ) : null}
             </AnimatePresence>
 
             <div className="mt-5 flex items-center justify-end gap-2">
