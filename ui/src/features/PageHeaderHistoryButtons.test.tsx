@@ -128,7 +128,7 @@ describe("Page header history buttons", () => {
     );
 
     expect(
-      await screen.findByRole("heading", { name: "Transcription history" }),
+      await screen.findByRole("heading", { name: "Transcription" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /New transcript/i }),
