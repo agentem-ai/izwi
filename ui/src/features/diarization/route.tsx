@@ -11,6 +11,13 @@ import { Button } from "@/components/ui/button";
 import { DiarizationHistoryTable } from "@/features/diarization/components/DiarizationHistoryTable";
 import { NewDiarizationModal } from "@/features/diarization/components/NewDiarizationModal";
 import { DiarizationRecordDetail } from "@/features/diarization/components/DiarizationRecordDetail";
+import {
+  DIARIZATION_PREFERRED_ALIGNER_MODELS,
+  DIARIZATION_PREFERRED_ASR_MODELS,
+  DIARIZATION_PREFERRED_MODELS,
+  DIARIZATION_PREFERRED_SUMMARY_MODELS,
+  resolvePreferredRouteModel,
+} from "@/features/models/catalog/routeModelCatalog";
 import { RouteModelModal } from "@/features/models/components/RouteModelModal";
 import { useDiarizationHistory } from "@/features/diarization/hooks/useDiarizationHistory";
 import { useDiarizationRecord } from "@/features/diarization/hooks/useDiarizationRecord";
@@ -45,34 +52,6 @@ interface DiarizationModelGroup {
   title: string;
   description: string;
   models: ModelInfo[];
-}
-
-function resolvePreferredVariant(
-  availableModels: ModelInfo[],
-  preferredOrder: string[],
-): string | null {
-  for (const variant of preferredOrder) {
-    const readyPreferred = availableModels.find(
-      (model) => model.variant === variant && model.status === "ready",
-    );
-    if (readyPreferred) {
-      return readyPreferred.variant;
-    }
-  }
-
-  const readyModel = availableModels.find((model) => model.status === "ready");
-  if (readyModel) {
-    return readyModel.variant;
-  }
-
-  for (const variant of preferredOrder) {
-    const preferred = availableModels.find((model) => model.variant === variant);
-    if (preferred) {
-      return preferred.variant;
-    }
-  }
-
-  return availableModels[0]?.variant ?? null;
 }
 
 function isDiarizationVariant(variant: string): boolean {
@@ -189,16 +168,16 @@ export function DiarizationPage({
     [pipelineModelGroups],
   );
 
-  const preferredDiarizationModelOrder = ["diar_streaming_sortformer_4spk-v2.1"];
-  const preferredAsrModelOrder = ["Parakeet-TDT-0.6B-v3"];
-  const preferredAlignerModelOrder = ["Qwen3-ForcedAligner-0.6B"];
-  const preferredLlmModelOrder = ["Qwen3.5-4B"];
-
-  const resolvedSelectedModel =
-    selectedModel &&
-    diarizationModels.some((model) => model.variant === selectedModel)
-      ? selectedModel
-      : resolvePreferredVariant(diarizationModels, preferredDiarizationModelOrder);
+  const resolvedSelectedModel = useMemo(
+    () =>
+      resolvePreferredRouteModel({
+        models: diarizationModels,
+        selectedModel,
+        preferredVariants: DIARIZATION_PREFERRED_MODELS,
+        preferAnyPreferredBeforeReadyAny: true,
+      }),
+    [diarizationModels, selectedModel],
+  );
 
   const selectedModelInfo =
     diarizationModels.find(
@@ -206,17 +185,35 @@ export function DiarizationPage({
     ) ?? null;
   const selectedModelReady = selectedModelInfo?.status === "ready";
 
-  const resolvedAsrModel = resolvePreferredVariant(
-    asrPipelineModels,
-    preferredAsrModelOrder,
+  const resolvedAsrModel = useMemo(
+    () =>
+      resolvePreferredRouteModel({
+        models: asrPipelineModels,
+        selectedModel: null,
+        preferredVariants: DIARIZATION_PREFERRED_ASR_MODELS,
+        preferAnyPreferredBeforeReadyAny: true,
+      }),
+    [asrPipelineModels],
   );
-  const resolvedAlignerModel = resolvePreferredVariant(
-    alignerPipelineModels,
-    preferredAlignerModelOrder,
+  const resolvedAlignerModel = useMemo(
+    () =>
+      resolvePreferredRouteModel({
+        models: alignerPipelineModels,
+        selectedModel: null,
+        preferredVariants: DIARIZATION_PREFERRED_ALIGNER_MODELS,
+        preferAnyPreferredBeforeReadyAny: true,
+      }),
+    [alignerPipelineModels],
   );
-  const resolvedLlmModel = resolvePreferredVariant(
-    llmPipelineModels,
-    preferredLlmModelOrder,
+  const resolvedLlmModel = useMemo(
+    () =>
+      resolvePreferredRouteModel({
+        models: llmPipelineModels,
+        selectedModel: null,
+        preferredVariants: DIARIZATION_PREFERRED_SUMMARY_MODELS,
+        preferAnyPreferredBeforeReadyAny: true,
+      }),
+    [llmPipelineModels],
   );
   const resolvedSummaryModel = resolvedLlmModel;
 
