@@ -156,6 +156,45 @@ function fallbackAudioFilename(inputBlob: Blob): string {
   return extension ? `audio.${extension}` : "audio.bin";
 }
 
+function replaceAudioFilenameExtension(
+  filename: string,
+  nextExtension: string,
+): string {
+  const trimmed = filename.trim();
+  if (!trimmed) {
+    return `audio.${nextExtension}`;
+  }
+
+  const normalized = trimmed.split(/[/\\]/).pop() ?? trimmed;
+  const extensionIndex = normalized.lastIndexOf(".");
+  if (extensionIndex <= 0) {
+    return `${normalized}.${nextExtension}`;
+  }
+  return `${normalized.slice(0, extensionIndex)}.${nextExtension}`;
+}
+
+export function resolveDiarizationUploadFilename(options: {
+  sourceFileName?: string;
+  sourceBlob: Blob;
+  uploadedBlob: Blob;
+}): string {
+  const { sourceFileName, sourceBlob, uploadedBlob } = options;
+  const trimmedSourceFileName = sourceFileName?.trim();
+  if (!trimmedSourceFileName) {
+    return fallbackAudioFilename(uploadedBlob);
+  }
+
+  if (uploadedBlob === sourceBlob) {
+    return trimmedSourceFileName;
+  }
+
+  const uploadedExtension = extensionForAudioMimeType(uploadedBlob.type) ?? "wav";
+  return replaceAudioFilenameExtension(
+    trimmedSourceFileName,
+    uploadedExtension,
+  );
+}
+
 async function transcodeToWav(
   inputBlob: Blob,
   targetSampleRate = 16000,
@@ -335,19 +374,19 @@ export function NewDiarizationModal({
 
       try {
         const sourceFileName = sourceAudioFilename(audioBlob);
-        const wavBlob = await transcodeToWav(
+        const uploadedBlob = await transcodeToWav(
           audioBlob,
           16000,
           sourceFileName,
         ).catch(() => audioBlob);
-
-        const uploadFilename =
-          wavBlob === audioBlob
-            ? sourceFileName ?? fallbackAudioFilename(audioBlob)
-            : "audio.wav";
+        const uploadFilename = resolveDiarizationUploadFilename({
+          sourceFileName,
+          sourceBlob: audioBlob,
+          uploadedBlob,
+        });
 
         const record = await api.createDiarizationRecord({
-          audio_file: wavBlob,
+          audio_file: uploadedBlob,
           audio_filename: uploadFilename,
           model_id: selectedModel || undefined,
           asr_model_id: pipelineAsrModelId || undefined,

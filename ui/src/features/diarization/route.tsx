@@ -412,10 +412,10 @@ export function DiarizationPage({
   }, [managedModels, onUnload]);
 
   const handleCreatedRecord = useCallback(
-    async (createdRecord: DiarizationRecord) => {
+    (createdRecord: DiarizationRecord) => {
       setLatestRecord(createdRecord);
-      await refreshHistory().catch(() => undefined);
       navigate(`/diarization/${createdRecord.id}`);
+      void refreshHistory().catch(() => undefined);
     },
     [navigate, refreshHistory],
   );

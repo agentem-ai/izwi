@@ -244,6 +244,16 @@ describe("DiarizationPage routes", () => {
   });
 
   it("opens the creation modal and routes new diarization runs to their detail page", async () => {
+    let resolveRefreshHistory: ((records: unknown[]) => void) | null = null;
+    apiMocks.listDiarizationRecords
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveRefreshHistory = resolve;
+          }),
+      );
+
     renderRoute("/diarization");
 
     await waitFor(() =>
@@ -272,6 +282,11 @@ describe("DiarizationPage routes", () => {
     await waitFor(() =>
       expect(apiMocks.createDiarizationRecord).toHaveBeenCalledTimes(1),
     );
+    expect(apiMocks.createDiarizationRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audio_filename: "meeting.wav",
+      }),
+    );
     await waitFor(() =>
       expect(apiMocks.getDiarizationRecord).toHaveBeenCalledWith("diar-1"),
     );
@@ -279,6 +294,12 @@ describe("DiarizationPage routes", () => {
     expect(
       await screen.findByRole("heading", { name: "Diarization Record" }),
     ).toBeInTheDocument();
+
+    await act(async () => {
+      if (resolveRefreshHistory) {
+        resolveRefreshHistory([]);
+      }
+    });
   });
 
   it("loads all diarization stack models from the modal readiness controls", async () => {
