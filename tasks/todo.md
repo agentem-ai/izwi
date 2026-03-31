@@ -52,7 +52,7 @@ Align the `/diarization` route with the current `/transcription` route UX and st
   Commit:
   `feat(ui): scaffold diarization record routes and data hooks`
 
-- [ ] Phase 2: Replace drawer-first history with a table and dedicated record pages
+- [x] Phase 2: Replace drawer-first history with a table and dedicated record pages
   Scope:
   Introduce a `DiarizationHistoryTable` and a `DiarizationRecordDetail` flow modeled after transcription. Move history record opening from drawer/modal interactions to route navigation. Preserve delete, copy, export, summary regeneration, speaker corrections, rerun access, and audio playback from the dedicated record page.
   Notes:
