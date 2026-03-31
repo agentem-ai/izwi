@@ -20,9 +20,10 @@ use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::transcription_store::{
-    NewTranscriptionRecord, StoredTranscriptionAudio, TranscriptionRecord,
-    TranscriptionRecordSummary, TranscriptionSegmentRecord, TranscriptionStore,
-    TranscriptionSummaryStatus, TranscriptionWordRecord, UpdateTranscriptionSummary,
+    CompleteTranscriptionRecord, NewTranscriptionRecord, StoredTranscriptionAudio,
+    TranscriptionProcessingStatus, TranscriptionRecord, TranscriptionRecordSummary,
+    TranscriptionSegmentRecord, TranscriptionStore, TranscriptionSummaryStatus,
+    TranscriptionWordRecord, UpdateTranscriptionSummary,
 };
 use izwi_core::{
     parse_chat_model_variant, ChatMessage, ChatRole, GenerationParams, RuntimeService,
@@ -83,6 +84,12 @@ struct JsonCreateRequest {
 #[derive(Debug, Serialize)]
 struct StreamStartEvent {
     event: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct StreamCreatedEvent {
+    event: &'static str,
+    record: TranscriptionRecord,
 }
 
 #[derive(Debug, Serialize)]
@@ -216,223 +223,51 @@ pub async fn create_record(
     req: Request,
 ) -> Result<Response, ApiError> {
     let parsed = parse_create_request(req).await?;
+    let placeholder = create_pending_record(&state, &parsed).await?;
 
     if parsed.stream {
-        return create_record_stream(state, parsed, ctx.correlation_id).await;
+        return create_record_stream(state, parsed, placeholder, ctx.correlation_id).await;
     }
 
-    let _permit = state.acquire_permit().await;
-    let started = Instant::now();
-
-    let artifacts = generate_transcription_artifacts(
-        state.runtime.clone(),
-        parsed.audio_bytes.as_slice(),
-        parsed.model_id.as_deref(),
-        parsed.aligner_model_id.as_deref(),
-        parsed.language.as_deref(),
-        parsed.include_timestamps,
-        Some(&ctx.correlation_id),
-        |_delta| {},
-    )
-    .await?;
-
-    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let rtf = if artifacts.duration_secs > 0.0 {
-        Some((elapsed_ms / 1000.0) / artifacts.duration_secs)
-    } else {
-        None
-    };
-    let (summary_status, summary_model_id) = initial_summary_state(artifacts.text.as_str());
-
-    let record = state
-        .transcription_store
-        .create_record(NewTranscriptionRecord {
-            model_id: parsed.model_id,
-            aligner_model_id: artifacts.aligner_model_id,
-            language: artifacts.language,
-            duration_secs: Some(artifacts.duration_secs),
-            processing_time_ms: elapsed_ms,
-            rtf,
-            audio_mime_type: parsed
-                .audio_mime_type
-                .unwrap_or_else(|| "audio/wav".to_string()),
-            audio_filename: parsed.audio_filename,
-            audio_bytes: parsed.audio_bytes,
-            transcription: artifacts.text,
-            segments: artifacts.segments,
-            words: artifacts.words,
-            summary_status,
-            summary_model_id,
-            summary_text: None,
-            summary_error: None,
-            summary_updated_at: None,
-        })
-        .await
-        .map_err(map_store_error)?;
-
-    maybe_spawn_summary_generation(
+    spawn_transcription_processing_task(
         state.runtime.clone(),
         state.transcription_store.clone(),
         state.request_semaphore.clone(),
-        &record,
+        state.request_timeout_secs,
+        placeholder.id.clone(),
+        parsed,
         Some(ctx.correlation_id),
+        None,
     );
 
-    Ok(Json(record).into_response())
+    Ok((StatusCode::ACCEPTED, Json(placeholder)).into_response())
 }
 
 async fn create_record_stream(
     state: AppState,
     parsed: ParsedTranscriptionCreateRequest,
+    placeholder: TranscriptionRecord,
     correlation_id: String,
 ) -> Result<Response, ApiError> {
-    let timeout = Duration::from_secs(state.request_timeout_secs);
-    let model_id = parsed.model_id;
-    let aligner_model_id = parsed.aligner_model_id;
-    let requested_language = parsed.language;
-    let include_timestamps = parsed.include_timestamps;
-    let audio_mime_type = parsed
-        .audio_mime_type
-        .unwrap_or_else(|| "audio/wav".to_string());
-    let audio_filename = parsed.audio_filename;
-    let audio_bytes = parsed.audio_bytes;
-
-    let runtime = state.runtime.clone();
-    let transcription_store = state.transcription_store.clone();
-    let semaphore = state.request_semaphore.clone();
-
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<String>();
-
-    tokio::spawn(async move {
-        let _permit = match semaphore.clone().acquire_owned().await {
-            Ok(permit) => permit,
-            Err(_) => {
-                let _ = event_tx.send(
-                    serde_json::to_string(&StreamErrorEvent {
-                        event: "error",
-                        error: "Server is shutting down".to_string(),
-                    })
-                    .unwrap_or_default(),
-                );
-                let _ = event_tx.send(
-                    serde_json::to_string(&StreamDoneEvent { event: "done" }).unwrap_or_default(),
-                );
-                return;
-            }
-        };
-
-        let _ = event_tx
-            .send(serde_json::to_string(&StreamStartEvent { event: "start" }).unwrap_or_default());
-
-        let delta_tx = event_tx.clone();
-        let started = Instant::now();
-
-        let generation_result = tokio::time::timeout(timeout, async {
-            generate_transcription_artifacts(
-                runtime.clone(),
-                audio_bytes.as_slice(),
-                model_id.as_deref(),
-                aligner_model_id.as_deref(),
-                requested_language.as_deref(),
-                include_timestamps,
-                Some(correlation_id.as_str()),
-                move |delta| {
-                    let _ = delta_tx.send(
-                        serde_json::to_string(&StreamDeltaEvent {
-                            event: "delta",
-                            delta,
-                        })
-                        .unwrap_or_default(),
-                    );
-                },
-            )
-            .await
+    let _ = event_tx.send(
+        serde_json::to_string(&StreamCreatedEvent {
+            event: "created",
+            record: placeholder.clone(),
         })
-        .await;
+        .unwrap_or_default(),
+    );
 
-        match generation_result {
-            Ok(Ok(artifacts)) => {
-                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-                let rtf = if artifacts.duration_secs > 0.0 {
-                    Some((elapsed_ms / 1000.0) / artifacts.duration_secs)
-                } else {
-                    None
-                };
-                let (summary_status, summary_model_id) =
-                    initial_summary_state(artifacts.text.as_str());
-
-                match transcription_store
-                    .create_record(NewTranscriptionRecord {
-                        model_id: model_id.clone(),
-                        aligner_model_id: artifacts.aligner_model_id,
-                        language: artifacts.language,
-                        duration_secs: Some(artifacts.duration_secs),
-                        processing_time_ms: elapsed_ms,
-                        rtf,
-                        audio_mime_type,
-                        audio_filename,
-                        audio_bytes,
-                        transcription: artifacts.text,
-                        segments: artifacts.segments,
-                        words: artifacts.words,
-                        summary_status,
-                        summary_model_id,
-                        summary_text: None,
-                        summary_error: None,
-                        summary_updated_at: None,
-                    })
-                    .await
-                {
-                    Ok(record) => {
-                        maybe_spawn_summary_generation(
-                            runtime.clone(),
-                            transcription_store.clone(),
-                            semaphore.clone(),
-                            &record,
-                            Some(correlation_id.clone()),
-                        );
-                        let _ = event_tx.send(
-                            serde_json::to_string(&StreamFinalEvent {
-                                event: "final",
-                                record,
-                            })
-                            .unwrap_or_default(),
-                        );
-                    }
-                    Err(err) => {
-                        let _ = event_tx.send(
-                            serde_json::to_string(&StreamErrorEvent {
-                                event: "error",
-                                error: format!("Failed to save transcription record: {err}"),
-                            })
-                            .unwrap_or_default(),
-                        );
-                    }
-                }
-            }
-            Ok(Err(err)) => {
-                let _ = event_tx.send(
-                    serde_json::to_string(&StreamErrorEvent {
-                        event: "error",
-                        error: err.message,
-                    })
-                    .unwrap_or_default(),
-                );
-            }
-            Err(_) => {
-                let _ = event_tx.send(
-                    serde_json::to_string(&StreamErrorEvent {
-                        event: "error",
-                        error: "Transcription request timed out".to_string(),
-                    })
-                    .unwrap_or_default(),
-                );
-            }
-        }
-
-        let _ = event_tx
-            .send(serde_json::to_string(&StreamDoneEvent { event: "done" }).unwrap_or_default());
-    });
+    spawn_transcription_processing_task(
+        state.runtime.clone(),
+        state.transcription_store.clone(),
+        state.request_semaphore.clone(),
+        state.request_timeout_secs,
+        placeholder.id.clone(),
+        parsed,
+        Some(correlation_id),
+        Some(event_tx),
+    );
 
     let stream = async_stream::stream! {
         while let Some(payload) = event_rx.recv().await {
@@ -453,6 +288,249 @@ async fn create_record_stream(
         .headers_mut()
         .insert("x-accel-buffering", HeaderValue::from_static("no"));
     Ok(response)
+}
+
+async fn create_pending_record(
+    state: &AppState,
+    parsed: &ParsedTranscriptionCreateRequest,
+) -> Result<TranscriptionRecord, ApiError> {
+    state
+        .transcription_store
+        .create_record(NewTranscriptionRecord {
+            model_id: parsed.model_id.clone(),
+            aligner_model_id: parsed.aligner_model_id.clone(),
+            language: parsed.language.clone(),
+            processing_status: TranscriptionProcessingStatus::Pending,
+            processing_error: None,
+            duration_secs: None,
+            processing_time_ms: 0.0,
+            rtf: None,
+            audio_mime_type: parsed
+                .audio_mime_type
+                .clone()
+                .unwrap_or_else(|| "audio/wav".to_string()),
+            audio_filename: parsed.audio_filename.clone(),
+            audio_bytes: parsed.audio_bytes.clone(),
+            transcription: String::new(),
+            segments: Vec::new(),
+            words: Vec::new(),
+            summary_status: TranscriptionSummaryStatus::NotRequested,
+            summary_model_id: None,
+            summary_text: None,
+            summary_error: None,
+            summary_updated_at: None,
+        })
+        .await
+        .map_err(map_store_error)
+}
+
+fn spawn_transcription_processing_task(
+    runtime: Arc<RuntimeService>,
+    transcription_store: Arc<TranscriptionStore>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    request_timeout_secs: u64,
+    record_id: String,
+    parsed: ParsedTranscriptionCreateRequest,
+    correlation_id: Option<String>,
+    event_tx: Option<mpsc::UnboundedSender<String>>,
+) {
+    tokio::spawn(async move {
+        let send_event = |payload: String| {
+            if let Some(tx) = &event_tx {
+                let _ = tx.send(payload);
+            }
+        };
+
+        let _permit = match semaphore.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                let error_message = "Server is shutting down".to_string();
+                let _ = transcription_store
+                    .update_processing_status(
+                        record_id.clone(),
+                        TranscriptionProcessingStatus::Failed,
+                        Some(error_message.clone()),
+                    )
+                    .await;
+                send_event(
+                    serde_json::to_string(&StreamErrorEvent {
+                        event: "error",
+                        error: error_message,
+                    })
+                    .unwrap_or_default(),
+                );
+                send_event(
+                    serde_json::to_string(&StreamDoneEvent { event: "done" })
+                        .unwrap_or_default(),
+                );
+                return;
+            }
+        };
+
+        let _ = transcription_store
+            .update_processing_status(
+                record_id.clone(),
+                TranscriptionProcessingStatus::Processing,
+                None,
+            )
+            .await;
+        send_event(
+            serde_json::to_string(&StreamStartEvent { event: "start" }).unwrap_or_default(),
+        );
+
+        let delta_tx = event_tx.clone();
+        let timeout = Duration::from_secs(request_timeout_secs);
+        let started = Instant::now();
+        let model_id = parsed.model_id.clone();
+        let aligner_model_id = parsed.aligner_model_id.clone();
+        let requested_language = parsed.language.clone();
+        let include_timestamps = parsed.include_timestamps;
+        let audio_bytes = parsed.audio_bytes;
+        let correlation_id_ref = correlation_id.clone();
+
+        let generation_result = tokio::time::timeout(timeout, async {
+            generate_transcription_artifacts(
+                runtime.clone(),
+                audio_bytes.as_slice(),
+                model_id.as_deref(),
+                aligner_model_id.as_deref(),
+                requested_language.as_deref(),
+                include_timestamps,
+                correlation_id_ref.as_deref(),
+                move |delta| {
+                    if let Some(tx) = &delta_tx {
+                        let _ = tx.send(
+                            serde_json::to_string(&StreamDeltaEvent {
+                                event: "delta",
+                                delta,
+                            })
+                            .unwrap_or_default(),
+                        );
+                    }
+                },
+            )
+            .await
+        })
+        .await;
+
+        match generation_result {
+            Ok(Ok(artifacts)) => {
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                let rtf = if artifacts.duration_secs > 0.0 {
+                    Some((elapsed_ms / 1000.0) / artifacts.duration_secs)
+                } else {
+                    None
+                };
+                let (summary_status, summary_model_id) =
+                    initial_summary_state(artifacts.text.as_str());
+
+                match transcription_store
+                    .complete_record(
+                        record_id.clone(),
+                        CompleteTranscriptionRecord {
+                            model_id,
+                            aligner_model_id: artifacts.aligner_model_id,
+                            language: artifacts.language,
+                            duration_secs: Some(artifacts.duration_secs),
+                            processing_time_ms: elapsed_ms,
+                            rtf,
+                            transcription: artifacts.text,
+                            segments: artifacts.segments,
+                            words: artifacts.words,
+                            summary_status,
+                            summary_model_id,
+                            summary_text: None,
+                            summary_error: None,
+                            summary_updated_at: None,
+                        },
+                    )
+                    .await
+                {
+                    Ok(Some(record)) => {
+                        maybe_spawn_summary_generation(
+                            runtime.clone(),
+                            transcription_store.clone(),
+                            semaphore.clone(),
+                            &record,
+                            correlation_id.clone(),
+                        );
+                        send_event(
+                            serde_json::to_string(&StreamFinalEvent {
+                                event: "final",
+                                record,
+                            })
+                            .unwrap_or_default(),
+                        );
+                    }
+                    Ok(None) => {
+                        send_event(
+                            serde_json::to_string(&StreamErrorEvent {
+                                event: "error",
+                                error: "Transcription record not found".to_string(),
+                            })
+                            .unwrap_or_default(),
+                        );
+                    }
+                    Err(err) => {
+                        let message = format!(
+                            "Failed to save transcription record: {err}"
+                        );
+                        let _ = transcription_store
+                            .update_processing_status(
+                                record_id.clone(),
+                                TranscriptionProcessingStatus::Failed,
+                                Some(message.clone()),
+                            )
+                            .await;
+                        send_event(
+                            serde_json::to_string(&StreamErrorEvent {
+                                event: "error",
+                                error: message,
+                            })
+                            .unwrap_or_default(),
+                        );
+                    }
+                }
+            }
+            Ok(Err(err)) => {
+                let _ = transcription_store
+                    .update_processing_status(
+                        record_id.clone(),
+                        TranscriptionProcessingStatus::Failed,
+                        Some(err.message.clone()),
+                    )
+                    .await;
+                send_event(
+                    serde_json::to_string(&StreamErrorEvent {
+                        event: "error",
+                        error: err.message,
+                    })
+                    .unwrap_or_default(),
+                );
+            }
+            Err(_) => {
+                let error_message = "Transcription request timed out".to_string();
+                let _ = transcription_store
+                    .update_processing_status(
+                        record_id.clone(),
+                        TranscriptionProcessingStatus::Failed,
+                        Some(error_message.clone()),
+                    )
+                    .await;
+                send_event(
+                    serde_json::to_string(&StreamErrorEvent {
+                        event: "error",
+                        error: error_message,
+                    })
+                    .unwrap_or_default(),
+                );
+            }
+        }
+
+        send_event(
+            serde_json::to_string(&StreamDoneEvent { event: "done" }).unwrap_or_default(),
+        );
+    });
 }
 
 async fn generate_transcription_artifacts<F>(
