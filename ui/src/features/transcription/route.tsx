@@ -1,9 +1,10 @@
 import { useCallback, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api, type ModelInfo } from "@/api";
+import { api, type ModelInfo, type TranscriptionRecord } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Button } from "@/components/ui/button";
 import { VIEW_CONFIGS } from "@/types";
+import { NewTranscriptionModal } from "@/features/transcription/components/NewTranscriptionModal";
 import { TranscriptionHistoryTable } from "@/features/transcription/components/TranscriptionHistoryTable";
 import { TranscriptionRecordDetail } from "@/features/transcription/components/TranscriptionRecordDetail";
 import {
@@ -65,6 +66,8 @@ export function TranscriptionPage({
 }: TranscriptionPageProps) {
   const { recordId } = useParams<{ recordId: string }>();
   const navigate = useNavigate();
+  const [isNewTranscriptionModalOpen, setIsNewTranscriptionModalOpen] =
+    useState(false);
   const [recordActionError, setRecordActionError] = useState<string | null>(null);
   const [recordDeletePending, setRecordDeletePending] = useState(false);
   const [recordSummaryRefreshPending, setRecordSummaryRefreshPending] =
@@ -90,10 +93,12 @@ export function TranscriptionPage({
   const {
     routeModels: transcriptionModels,
     resolvedSelectedModel,
+    selectedModelReady,
     isModelModalOpen,
     intentVariant,
     closeModelModal,
     openModelManager,
+    requestModel,
   } = useRouteModelSelection({
     models,
     selectedModel,
@@ -189,6 +194,12 @@ export function TranscriptionPage({
   const handleOpenModels = useCallback(() => {
     openModelManager();
   }, [openModelManager]);
+  const handleOpenNewTranscriptionModal = useCallback(() => {
+    setIsNewTranscriptionModalOpen(true);
+  }, []);
+  const handleCloseNewTranscriptionModal = useCallback(() => {
+    setIsNewTranscriptionModalOpen(false);
+  }, []);
 
   const handleDetailDelete = useCallback(async () => {
     if (!recordId || recordDeletePending) {
@@ -252,6 +263,19 @@ export function TranscriptionPage({
     () => (recordId ? api.transcriptionRecordAudioUrl(recordId) : null),
     [recordId],
   );
+  const timestampAlignerReady = useMemo(
+    () =>
+      transcriptionAlignerModels.some((model) => model.status === "ready"),
+    [transcriptionAlignerModels],
+  );
+  const resolvedAlignerModel = useMemo(
+    () =>
+      transcriptionAlignerModels.find((model) => model.status === "ready")
+        ?.variant ??
+      transcriptionAlignerModels[0]?.variant ??
+      null,
+    [transcriptionAlignerModels],
+  );
   const detailDescription = useMemo(() => {
     if (!record) {
       return "Inspect processing progress, transcript output, and summary state for this transcription record.";
@@ -314,6 +338,28 @@ export function TranscriptionPage({
           <PageHeader
             title="Transcription"
             description="Review in-flight and completed transcriptions in one operational history table."
+            actions={
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-9 gap-2"
+                  onClick={handleOpenNewTranscriptionModal}
+                >
+                  New transcript
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9 gap-2"
+                  onClick={handleOpenModels}
+                >
+                  <Settings2 className="h-4 w-4" />
+                  Models
+                </Button>
+              </>
+            }
           />
 
           <TranscriptionHistoryTable
@@ -323,6 +369,26 @@ export function TranscriptionPage({
             onRefresh={() => void refreshHistory()}
             onOpenRecord={(nextRecordId) => {
               navigate(`/transcription/${nextRecordId}`);
+            }}
+          />
+
+          <NewTranscriptionModal
+            isOpen={isNewTranscriptionModalOpen}
+            onClose={handleCloseNewTranscriptionModal}
+            selectedModel={resolvedSelectedModel}
+            selectedModelReady={selectedModelReady}
+            timestampAlignerModelId={resolvedAlignerModel}
+            timestampAlignerReady={timestampAlignerReady}
+            onModelRequired={() => {
+              requestModel();
+              onError("Select and load an ASR model to start transcribing.");
+            }}
+            onTimestampAlignerRequired={() => {
+              openModelManager();
+              onError("Load the timestamp aligner model to enable timestamps.");
+            }}
+            onCreated={(_createdRecord: TranscriptionRecord) => {
+              void refreshHistory();
             }}
           />
         </>

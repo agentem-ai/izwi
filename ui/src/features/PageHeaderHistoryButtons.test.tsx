@@ -120,7 +120,7 @@ describe("Page header history buttons", () => {
     );
   });
 
-  it("TranscriptionPage renders the history table instead of a header history button", async () => {
+  it("TranscriptionPage renders new transcript and model actions in the header", async () => {
     render(
       <MemoryRouter>
         <TranscriptionPage {...baseProps} />
@@ -131,8 +131,9 @@ describe("Page header history buttons", () => {
       await screen.findByRole("heading", { name: "Transcription history" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /History/i }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: /New transcript/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Models/i })).toBeInTheDocument();
   });
 
   it("StudioPage renders project actions in the page header slot", async () => {
