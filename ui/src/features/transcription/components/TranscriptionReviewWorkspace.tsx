@@ -40,6 +40,7 @@ interface TranscriptionReviewWorkspaceProps {
   showPlayback?: boolean;
   autoScrollActiveEntry?: boolean;
   stickyPlaybackFooter?: boolean;
+  fixedPlaybackFooter?: boolean;
   summaryModelGuidance?: string | null;
 }
 
@@ -93,6 +94,7 @@ export function TranscriptionReviewWorkspace({
   showPlayback = true,
   autoScrollActiveEntry = false,
   stickyPlaybackFooter = false,
+  fixedPlaybackFooter = false,
   summaryModelGuidance = null,
 }: TranscriptionReviewWorkspaceProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -282,15 +284,23 @@ export function TranscriptionReviewWorkspace({
     );
   }
 
-  const rootClassName = stickyPlaybackFooter
+  const floatingPlaybackFooter = stickyPlaybackFooter || fixedPlaybackFooter;
+  const rootClassName = floatingPlaybackFooter
     ? "relative flex min-h-0 flex-col"
     : "flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)]";
-  const contentClassName = stickyPlaybackFooter
+  const contentClassName = fixedPlaybackFooter
+    ? "grid gap-5 pb-32 xl:grid-cols-[minmax(0,1fr),220px]"
+    : stickyPlaybackFooter
     ? "grid gap-5 pb-20 xl:grid-cols-[minmax(0,1fr),220px]"
     : "grid flex-1 min-h-0 gap-5 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 xl:grid-cols-[minmax(0,1fr),220px]";
-  const playbackClassName = stickyPlaybackFooter
+  const playbackClassName = fixedPlaybackFooter
+    ? "fixed inset-x-0 bottom-0 z-40 border-t border-[var(--border-muted)] bg-[var(--bg-surface-0)]/96 shadow-[0_-18px_48px_-30px_rgba(15,23,42,0.45)] backdrop-blur"
+    : stickyPlaybackFooter
     ? "sticky bottom-0 -mx-4 -mb-4 mt-auto border-t border-[var(--border-muted)] bg-[var(--bg-surface-0)]/95 px-4 py-3 backdrop-blur sm:-mx-5 sm:-mb-5 sm:px-5 sm:py-3"
     : "border-t border-[var(--border-muted)] bg-[var(--bg-surface-0)]/95 px-4 py-3 backdrop-blur sm:px-5";
+  const playbackInnerClassName = fixedPlaybackFooter
+    ? "mx-auto flex w-full max-w-[1460px] flex-col gap-2.5 px-4 py-3 sm:px-6 lg:px-0"
+    : "flex flex-col gap-2.5";
 
   return (
     <div className={rootClassName}>
@@ -506,7 +516,7 @@ export function TranscriptionReviewWorkspace({
           data-testid="transcription-review-player"
           className={playbackClassName}
         >
-          <div className="flex flex-col gap-2.5">
+          <div className={playbackInnerClassName}>
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
                 <Button

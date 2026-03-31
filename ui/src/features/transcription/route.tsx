@@ -299,7 +299,7 @@ export function TranscriptionPage({
   }, [record]);
 
   return (
-    <PageShell>
+    <PageShell className={recordId ? "pb-32 sm:pb-36" : undefined}>
       {recordId ? (
         <>
           <PageHeader
@@ -323,10 +323,11 @@ export function TranscriptionPage({
             record={record}
             audioUrl={detailAudioUrl}
             loading={recordLoading}
-            error={recordActionError || recordError}
+            error={recordError}
+            deleteError={recordActionError}
             summaryModelGuidance={summaryModelReady ? null : summaryModelRequirementMessage}
             onBack={() => navigate("/transcription")}
-            onDelete={() => void handleDetailDelete()}
+            onDelete={handleDetailDelete}
             onRegenerateSummary={() => void handleDetailRegenerateSummary()}
             deletePending={recordDeletePending}
             summaryRefreshPending={recordSummaryRefreshPending}

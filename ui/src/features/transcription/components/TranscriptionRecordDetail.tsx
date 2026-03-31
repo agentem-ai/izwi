@@ -13,18 +13,18 @@ import {
 import { type TranscriptionRecord } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { StatusBadge } from "@/components/ui/status-badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { TranscriptionExportDialog } from "@/features/transcription/components/TranscriptionExportDialog";
 import { TranscriptionReviewWorkspace } from "@/features/transcription/components/TranscriptionReviewWorkspace";
 import {
   formatAudioDuration,
   formatCreatedAt,
   normalizeProcessingStatus,
-  normalizeSummaryStatus,
-  processingStatusLabel,
-  processingStatusTone,
-  summaryStatusLabel,
-  summaryStatusTone,
 } from "@/features/transcription/playground/support";
 import { formatTranscriptionText } from "@/features/transcription/transcript";
 
@@ -33,9 +33,10 @@ interface TranscriptionRecordDetailProps {
   audioUrl: string | null;
   loading?: boolean;
   error?: string | null;
+  deleteError?: string | null;
   summaryModelGuidance?: string | null;
   onBack?: () => void;
-  onDelete?: () => void;
+  onDelete?: () => Promise<void> | void;
   onRegenerateSummary?: () => void;
   deletePending?: boolean;
   summaryRefreshPending?: boolean;
@@ -47,6 +48,7 @@ export function TranscriptionRecordDetail({
   audioUrl,
   loading = false,
   error = null,
+  deleteError = null,
   summaryModelGuidance = null,
   onBack,
   onDelete,
@@ -56,6 +58,7 @@ export function TranscriptionRecordDetail({
   summaryRefreshError = null,
 }: TranscriptionRecordDetailProps) {
   const [copied, setCopied] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   const processingStatus = useMemo(
     () =>
@@ -64,15 +67,6 @@ export function TranscriptionRecordDetail({
         record?.processing_error,
       ),
     [record?.processing_error, record?.processing_status],
-  );
-  const summaryStatus = useMemo(
-    () =>
-      normalizeSummaryStatus(
-        record?.summary_status,
-        record?.summary_text,
-        record?.summary_error,
-      ),
-    [record?.summary_error, record?.summary_status, record?.summary_text],
   );
   const exportText = useMemo(() => formatTranscriptionText(record), [record]);
   const hasTranscript = useMemo(
@@ -102,19 +96,27 @@ export function TranscriptionRecordDetail({
     window.setTimeout(() => setCopied(false), 1800);
   }
 
+  async function handleConfirmDelete(): Promise<void> {
+    if (!onDelete || deletePending) {
+      return;
+    }
+
+    await onDelete();
+  }
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           {onBack ? (
             <Button
               type="button"
-              variant="ghost"
+              variant="outline"
               size="sm"
-              className="mb-2 h-8 gap-1.5 px-2 text-xs text-[var(--text-muted)]"
+              className="mb-4 h-10 gap-2 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 text-sm font-medium text-[var(--text-secondary)] shadow-sm hover:bg-[var(--bg-surface-1)]"
               onClick={onBack}
             >
-              <ArrowLeft className="h-3.5 w-3.5" />
+              <ArrowLeft className="h-4 w-4" />
               Back to transcriptions
             </Button>
           ) : null}
@@ -132,12 +134,6 @@ export function TranscriptionRecordDetail({
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <StatusBadge tone={processingStatusTone(processingStatus)}>
-            {processingStatusLabel(processingStatus)}
-          </StatusBadge>
-          <StatusBadge tone={summaryStatusTone(summaryStatus)}>
-            {summaryStatusLabel(summaryStatus)}
-          </StatusBadge>
           {onRegenerateSummary ? (
             <Button
               type="button"
@@ -189,7 +185,7 @@ export function TranscriptionRecordDetail({
               variant="outline"
               size="sm"
               className="h-9 gap-2 border-[var(--danger-border)] text-[var(--danger-text)] hover:bg-[var(--danger-bg)]"
-              onClick={onDelete}
+              onClick={() => setDeleteConfirmOpen(true)}
               disabled={deletePending}
             >
               {deletePending ? (
@@ -239,11 +235,76 @@ export function TranscriptionRecordDetail({
         audioUrl={audioUrl}
         loading={loading}
         autoScrollActiveEntry={true}
-        stickyPlaybackFooter={true}
+        fixedPlaybackFooter={true}
         summaryModelGuidance={summaryModelGuidance}
         emptyTitle="Transcription in progress"
         emptyMessage="The transcript will appear here as soon as this record is ready."
       />
+
+      <Dialog
+        open={deleteConfirmOpen}
+        onOpenChange={(open) => {
+          if (!deletePending) {
+            setDeleteConfirmOpen(open);
+          }
+        }}
+      >
+        <DialogContent className="max-w-md border-[var(--border-strong)] bg-[var(--bg-surface-0)] p-6">
+          <DialogTitle className="sr-only">Delete transcription?</DialogTitle>
+          <div className="flex items-start gap-4">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--danger-bg)] text-[var(--danger-text)]">
+              <AlertTriangle className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-base font-semibold text-[var(--text-primary)]">
+                Delete transcription?
+              </h3>
+              <DialogDescription className="mt-1.5 text-sm leading-relaxed text-[var(--text-muted)]">
+                This permanently removes the saved audio and transcript from
+                history. This action cannot be undone.
+              </DialogDescription>
+              <div className="mt-4 rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3">
+                <p className="truncate text-xs font-medium text-[var(--text-secondary)]">
+                  {record?.audio_filename || record?.model_id || record?.id || "Transcription record"}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {deleteError ? (
+            <div className="mt-4 flex items-start gap-2 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-3 text-sm text-[var(--danger-text)]">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>{deleteError}</p>
+            </div>
+          ) : null}
+
+          <div className="mt-6 flex items-center justify-end gap-3 border-t border-[var(--border-muted)] pt-5">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDeleteConfirmOpen(false)}
+              disabled={deletePending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-[var(--danger-text)] text-white hover:bg-[var(--danger-text)]/90"
+              onClick={() => void handleConfirmDelete()}
+              disabled={deletePending}
+            >
+              {deletePending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                "Delete transcription"
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

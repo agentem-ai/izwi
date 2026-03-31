@@ -89,6 +89,7 @@ describe("TranscriptionPage detail route", () => {
 
     apiMocks.transcriptionRecordAudioUrl.mockReturnValue("/audio/transcription.wav");
     apiMocks.listTranscriptionRecords.mockResolvedValue([]);
+    apiMocks.deleteTranscriptionRecord.mockResolvedValue(undefined);
     apiMocks.createTranscriptionRecord.mockResolvedValue({
       id: "txr-created-1",
       created_at: 1,
@@ -261,6 +262,65 @@ describe("TranscriptionPage detail route", () => {
     expect(screen.getByText("Hello there.")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Back to transcriptions/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/^Ready$/)).not.toBeInTheDocument();
+    expect(screen.getByTestId("transcription-review-player")).toHaveClass(
+      "fixed",
+    );
+  });
+
+  it("confirms deletion before removing a transcription record", async () => {
+    apiMocks.getTranscriptionRecord.mockResolvedValue({
+      id: "txr-delete-1",
+      created_at: 1,
+      model_id: "Parakeet-TDT-0.6B-v3",
+      aligner_model_id: null,
+      language: "English",
+      processing_status: "ready",
+      processing_error: null,
+      duration_secs: 4,
+      processing_time_ms: 120,
+      rtf: 0.5,
+      audio_mime_type: "audio/wav",
+      audio_filename: "meeting.wav",
+      transcription: "Hello there.",
+      segments: [],
+      words: [],
+      summary_status: "not_requested",
+      summary_model_id: null,
+      summary_text: null,
+      summary_error: null,
+      summary_updated_at: null,
+    });
+
+    renderRoute("/transcription/txr-delete-1");
+
+    expect(
+      await screen.findByRole("heading", { name: "meeting.wav" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Delete$/i }));
+
+    expect(
+      await screen.findByText(
+        "This permanently removes the saved audio and transcript from history. This action cannot be undone.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("meeting.wav").length).toBeGreaterThan(0);
+    expect(apiMocks.deleteTranscriptionRecord).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete transcription" }),
+    );
+
+    await waitFor(() =>
+      expect(apiMocks.deleteTranscriptionRecord).toHaveBeenCalledWith(
+        "txr-delete-1",
+      ),
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Transcription" }),
     ).toBeInTheDocument();
   });
 
