@@ -11,6 +11,7 @@ const apiMocks = vi.hoisted(() => ({
   deleteTranscriptionRecord: vi.fn(),
   regenerateTranscriptionSummary: vi.fn(),
   createTranscriptionRecord: vi.fn(),
+  createTranscriptionRecordStream: vi.fn(),
 }));
 
 const hookMocks = vi.hoisted(() => ({
@@ -25,6 +26,7 @@ vi.mock("@/api", () => ({
     deleteTranscriptionRecord: apiMocks.deleteTranscriptionRecord,
     regenerateTranscriptionSummary: apiMocks.regenerateTranscriptionSummary,
     createTranscriptionRecord: apiMocks.createTranscriptionRecord,
+    createTranscriptionRecordStream: apiMocks.createTranscriptionRecordStream,
   },
 }));
 
@@ -85,6 +87,7 @@ describe("TranscriptionPage detail route", () => {
     apiMocks.deleteTranscriptionRecord.mockReset();
     apiMocks.regenerateTranscriptionSummary.mockReset();
     apiMocks.createTranscriptionRecord.mockReset();
+    apiMocks.createTranscriptionRecordStream.mockReset();
     hookMocks.useRouteModelSelection.mockReset();
 
     apiMocks.transcriptionRecordAudioUrl.mockReturnValue("/audio/transcription.wav");
@@ -112,6 +115,33 @@ describe("TranscriptionPage detail route", () => {
       summary_error: null,
       summary_updated_at: null,
     });
+    apiMocks.createTranscriptionRecordStream.mockImplementation(
+      (_request, callbacks) => {
+        callbacks.onCreated?.({
+          id: "txr-created-1",
+          created_at: 1,
+          model_id: "Parakeet-TDT-0.6B-v3",
+          aligner_model_id: null,
+          language: "English",
+          processing_status: "pending",
+          processing_error: null,
+          duration_secs: null,
+          processing_time_ms: 0,
+          rtf: null,
+          audio_mime_type: "audio/wav",
+          audio_filename: "clip.wav",
+          transcription: "",
+          segments: [],
+          words: [],
+          summary_status: "not_requested",
+          summary_model_id: null,
+          summary_text: null,
+          summary_error: null,
+          summary_updated_at: null,
+        });
+        return new AbortController();
+      },
+    );
     hookMocks.useRouteModelSelection.mockReturnValue({
       routeModels: [],
       resolvedSelectedModel: "Parakeet-TDT-0.6B-v3",
@@ -162,6 +192,10 @@ describe("TranscriptionPage detail route", () => {
     expect(
       await screen.findByRole("heading", { name: "New transcript" }),
     ).toBeInTheDocument();
+    expect(screen.getByText("Bring in a recording")).toBeInTheDocument();
+    expect(screen.getByText("Review job settings")).toBeInTheDocument();
+    expect(screen.getByText("Upload audio")).toBeInTheDocument();
+    expect(screen.getByText("Stream results")).toBeInTheDocument();
   });
 
   it("redirects to /transcription/:id after an upload creates a record", async () => {
@@ -208,7 +242,7 @@ describe("TranscriptionPage detail route", () => {
     });
 
     await waitFor(() =>
-      expect(apiMocks.createTranscriptionRecord).toHaveBeenCalled(),
+      expect(apiMocks.createTranscriptionRecordStream).toHaveBeenCalled(),
     );
     await waitFor(() =>
       expect(apiMocks.getTranscriptionRecord).toHaveBeenCalledWith(
@@ -219,6 +253,115 @@ describe("TranscriptionPage detail route", () => {
     expect(
       await screen.findByRole("heading", { name: "Transcription Record" }),
     ).toBeInTheDocument();
+  });
+
+  it("refreshes transcription history after creating a record", async () => {
+    apiMocks.listTranscriptionRecords
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "txr-created-1",
+          created_at: 1,
+          audio_filename: "clip.wav",
+          duration_secs: null,
+          processing_status: "pending",
+          processing_error: null,
+          transcription_preview: "",
+          summary_status: "not_requested",
+          summary_preview: null,
+        },
+      ]);
+    apiMocks.getTranscriptionRecord.mockResolvedValue({
+      id: "txr-created-1",
+      created_at: 1,
+      model_id: "Parakeet-TDT-0.6B-v3",
+      aligner_model_id: null,
+      language: "English",
+      processing_status: "processing",
+      processing_error: null,
+      duration_secs: null,
+      processing_time_ms: 0,
+      rtf: null,
+      audio_mime_type: "audio/wav",
+      audio_filename: "clip.wav",
+      transcription: "",
+      segments: [],
+      words: [],
+      summary_status: "not_requested",
+      summary_model_id: null,
+      summary_text: null,
+      summary_error: null,
+      summary_updated_at: null,
+    });
+
+    renderRoute("/transcription");
+
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New transcript/i }));
+
+    const fileInput = document.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement | null;
+    expect(fileInput).not.toBeNull();
+
+    fireEvent.change(fileInput!, {
+      target: {
+        files: [new File(["audio"], "clip.wav", { type: "audio/wav" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalledTimes(2),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Transcription Record" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Back to transcriptions/i }),
+    );
+
+    expect(await screen.findByText("clip.wav")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "No transcription jobs yet" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("accepts drag and drop on the upload area", async () => {
+    renderRoute("/transcription");
+
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New transcript/i }));
+
+    const uploadArea = await screen.findByRole("button", {
+      name: "Upload audio file",
+    });
+    const file = new File(["audio"], "dragged-clip.wav", {
+      type: "audio/wav",
+    });
+
+    fireEvent.dragOver(uploadArea, {
+      dataTransfer: { files: [file] },
+    });
+    fireEvent.drop(uploadArea, {
+      dataTransfer: { files: [file] },
+    });
+
+    await waitFor(() =>
+      expect(apiMocks.createTranscriptionRecordStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          audio_file: file,
+          audio_filename: "dragged-clip.wav",
+        }),
+        expect.any(Object),
+      ),
+    );
   });
 
   it("loads an existing record directly from /transcription/:id", async () => {
