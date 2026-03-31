@@ -140,11 +140,6 @@ export function DiarizationHistoryTable({
                     <div className="font-medium text-[var(--text-primary)]">
                       {record.audio_filename || "Audio input"}
                     </div>
-                    {record.model_id ? (
-                      <div className="mt-1 text-xs text-[var(--text-muted)]">
-                        {record.model_id}
-                      </div>
-                    ) : null}
                   </td>
                   <td className="px-4 py-3 align-top text-[var(--text-secondary)]">
                     {record.corrected_speaker_count ?? record.speaker_count}

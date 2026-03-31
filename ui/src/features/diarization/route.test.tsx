@@ -237,6 +237,9 @@ describe("DiarizationPage routes", () => {
         "Board sync covered runway, launch timing, and next hiring steps.",
       ),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText("diar_streaming_sortformer_4spk-v2.1"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("Hello there.")).not.toBeInTheDocument();
   });
 
