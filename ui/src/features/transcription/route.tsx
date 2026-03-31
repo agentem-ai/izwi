@@ -4,7 +4,7 @@ import { api, type ModelInfo } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Button } from "@/components/ui/button";
 import { VIEW_CONFIGS } from "@/types";
-import { TranscriptionPlayground } from "@/features/transcription/components/TranscriptionPlayground";
+import { TranscriptionHistoryTable } from "@/features/transcription/components/TranscriptionHistoryTable";
 import { TranscriptionRecordDetail } from "@/features/transcription/components/TranscriptionRecordDetail";
 import {
   TRANSCRIPTION_PREFERRED_MODELS,
@@ -12,11 +12,11 @@ import {
 } from "@/features/models/catalog/routeModelCatalog";
 import { RouteModelModal } from "@/features/models/components/RouteModelModal";
 import { useRouteModelSelection } from "@/features/models/hooks/useRouteModelSelection";
+import { useTranscriptionHistory } from "@/features/transcription/hooks/useTranscriptionHistory";
 import { useTranscriptionRecord } from "@/features/transcription/hooks/useTranscriptionRecord";
 import { normalizeProcessingStatus } from "@/features/transcription/playground/support";
 import { Settings2 } from "lucide-react";
 
-const TRANSCRIPTION_PREFERRED_ALIGNERS = ["Qwen3-ForcedAligner-0.6B"] as const;
 const TRANSCRIPTION_PREFERRED_SUMMARY_MODELS = ["Qwen3.5-4B"] as const;
 
 function isTranscriptionAlignerVariant(variant: string): boolean {
@@ -65,8 +65,6 @@ export function TranscriptionPage({
 }: TranscriptionPageProps) {
   const { recordId } = useParams<{ recordId: string }>();
   const navigate = useNavigate();
-  const [historyActionContainer, setHistoryActionContainer] =
-    useState<HTMLDivElement | null>(null);
   const [recordActionError, setRecordActionError] = useState<string | null>(null);
   const [recordDeletePending, setRecordDeletePending] = useState(false);
   const [recordSummaryRefreshPending, setRecordSummaryRefreshPending] =
@@ -92,14 +90,10 @@ export function TranscriptionPage({
   const {
     routeModels: transcriptionModels,
     resolvedSelectedModel,
-    selectedModelReady,
     isModelModalOpen,
     intentVariant,
     closeModelModal,
     openModelManager,
-    requestModel,
-    handleModelSelect,
-    modelOptions,
   } = useRouteModelSelection({
     models,
     selectedModel,
@@ -113,22 +107,6 @@ export function TranscriptionPage({
         preferAnyPreferredBeforeReadyAny: true,
       }),
   });
-  const resolvedAlignerModel = useMemo(
-    () =>
-      resolvePreferredRouteModel({
-        models: transcriptionAlignerModels,
-        selectedModel: null,
-        preferredVariants: TRANSCRIPTION_PREFERRED_ALIGNERS,
-        preferAnyPreferredBeforeReadyAny: true,
-      }),
-    [transcriptionAlignerModels],
-  );
-  const timestampAlignerReady =
-    resolvedAlignerModel != null &&
-    transcriptionAlignerModels.some(
-      (model) =>
-        model.variant === resolvedAlignerModel && model.status === "ready",
-    );
   const resolvedSummaryModel = useMemo(
     () =>
       resolvePreferredRouteModel({
@@ -195,6 +173,12 @@ export function TranscriptionPage({
     ],
     [transcriptionAlignerModels, transcriptionModels, transcriptionSummaryModels],
   );
+  const {
+    records,
+    loading: historyLoading,
+    error: historyError,
+    refresh: refreshHistory,
+  } = useTranscriptionHistory();
   const {
     record,
     loading: recordLoading,
@@ -329,40 +313,17 @@ export function TranscriptionPage({
         <>
           <PageHeader
             title="Transcription"
-            description="Capture audio, transcribe live, add optional timestamps, and browse saved transcription history."
-            actions={
-              <div
-                ref={setHistoryActionContainer}
-                data-testid="page-header-history-slot"
-                className="flex min-h-9 items-center"
-              />
-            }
+            description="Review in-flight and completed transcriptions in one operational history table."
           />
 
-          <TranscriptionPlayground
-            selectedModel={resolvedSelectedModel}
-            selectedModelReady={selectedModelReady}
-            modelOptions={modelOptions}
-            onSelectModel={handleModelSelect}
-            onOpenModelManager={openModelManager}
-            onModelRequired={() => {
-              requestModel();
-              onError("Select and load an ASR model to start transcribing.");
+          <TranscriptionHistoryTable
+            records={records}
+            loading={historyLoading}
+            error={historyError}
+            onRefresh={() => void refreshHistory()}
+            onOpenRecord={(nextRecordId) => {
+              navigate(`/transcription/${nextRecordId}`);
             }}
-            timestampAlignerModelId={resolvedAlignerModel}
-            timestampAlignerReady={timestampAlignerReady}
-            onTimestampAlignerRequired={() => {
-              openModelManager();
-              onError("Load the timestamp aligner model to enable timestamps.");
-            }}
-            summaryModelId={resolvedSummaryModel}
-            summaryModelReady={summaryModelReady}
-            summaryModelStatus={summaryModelStatus}
-            onSummaryModelRequired={() => {
-              openModelManager();
-              onError(summaryModelRequirementMessage);
-            }}
-            historyActionContainer={historyActionContainer}
           />
         </>
       )}
