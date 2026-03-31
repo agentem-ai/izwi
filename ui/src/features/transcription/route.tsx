@@ -389,7 +389,8 @@ export function TranscriptionPage({
               openModelManager();
               onError("Load the timestamp aligner model to enable timestamps.");
             }}
-            onCreated={(createdRecord: TranscriptionRecord) => {
+            onCreated={async (createdRecord: TranscriptionRecord) => {
+              await refreshHistory().catch(() => undefined);
               navigate(`/transcription/${createdRecord.id}`);
             }}
           />
