@@ -72,7 +72,7 @@ Align the `/diarization` route with the current `/transcription` route UX and st
   Commit:
   `feat(ui): move diarization setup into a creation modal`
 
-- [ ] Phase 4: Polish the diarization record workspace to match transcription conventions
+- [x] Phase 4: Polish the diarization record workspace to match transcription conventions
   Scope:
   Refine the new record page so it matches the transcription detail rhythm: cleaner header metadata, grouped actions, better empty/loading/error states, styled delete confirmation, summary guidance, and background-safe refresh behavior. Keep diarization-specific tabs for transcript, speakers, and quality.
   Notes:

@@ -429,7 +429,7 @@ export function DiarizationPage({
   );
 
   return (
-    <PageShell>
+    <PageShell className={recordId ? "pb-24 sm:pb-28" : undefined}>
       {recordId ? (
         <>
           <PageHeader
