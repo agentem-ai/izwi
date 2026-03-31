@@ -22,6 +22,7 @@ import { RouteModelModal } from "@/features/models/components/RouteModelModal";
 import { useDiarizationHistory } from "@/features/diarization/hooks/useDiarizationHistory";
 import { useDiarizationRecord } from "@/features/diarization/hooks/useDiarizationRecord";
 import { summarizeDiarizationRecord } from "@/features/diarization/historySummary";
+import { normalizeDiarizationProcessingStatus } from "@/utils/diarizationProcessing";
 import { Settings2 } from "lucide-react";
 
 interface DiarizationPageProps {
@@ -320,16 +321,55 @@ export function DiarizationPage({
     () => (recordId ? api.diarizationRecordAudioUrl(recordId) : null),
     [recordId],
   );
-  const visibleHistoryRecords = useMemo(() => {
-    const nextRecords = latestRecord
-      ? [summarizeDiarizationRecord(latestRecord), ...records]
-      : records;
-    return nextRecords.filter(
-      (recordSummary, index, list) =>
-        list.findIndex((candidate) => candidate.id === recordSummary.id) ===
-        index,
+  const visibleRecord = useMemo(() => {
+    if (!recordId) {
+      return null;
+    }
+    if (!record) {
+      return latestRecord?.id === recordId ? latestRecord : null;
+    }
+    return record;
+  }, [latestRecord, record, recordId]);
+  const detailDescription = useMemo(() => {
+    if (!visibleRecord) {
+      return "Inspect transcript output, speaker corrections, and quality reruns for this saved diarization record.";
+    }
+
+    const processingStatus = normalizeDiarizationProcessingStatus(
+      visibleRecord.processing_status,
+      visibleRecord.processing_error,
     );
+    switch (processingStatus) {
+      case "pending":
+        return "This diarization run is queued.";
+      case "processing":
+        return "This diarization run is actively processing.";
+      case "failed":
+        return "This diarization run failed during processing.";
+      case "ready":
+      default:
+        return "Inspect transcript output, speaker corrections, and quality reruns for this saved diarization record.";
+    }
+  }, [visibleRecord]);
+  const visibleHistoryRecords = useMemo(() => {
+    if (!latestRecord) {
+      return records;
+    }
+    if (records.some((recordSummary) => recordSummary.id === latestRecord.id)) {
+      return records;
+    }
+    return [summarizeDiarizationRecord(latestRecord), ...records];
   }, [latestRecord, records]);
+
+  useEffect(() => {
+    if (!record || !latestRecord || record.id !== latestRecord.id) {
+      return;
+    }
+    if (record === latestRecord) {
+      return;
+    }
+    setLatestRecord(record);
+  }, [latestRecord, record]);
 
   const closeModelModal = () => {
     setIsModelModalOpen(false);
@@ -495,7 +535,7 @@ export function DiarizationPage({
         <>
           <PageHeader
             title="Diarization Record"
-            description="Inspect transcript output, speaker corrections, and quality reruns for this saved diarization record."
+            description={detailDescription}
             actions={
               <Button
                 type="button"
@@ -511,7 +551,7 @@ export function DiarizationPage({
           />
 
           <DiarizationRecordDetail
-            record={record}
+            record={visibleRecord}
             audioUrl={detailAudioUrl}
             loading={recordLoading}
             error={recordError}

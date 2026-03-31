@@ -268,6 +268,11 @@ describe("DiarizationPage routes", () => {
       words: [],
       utterances: [],
     };
+    const refreshedCreatedSummaryRecord = {
+      ...readySummaryRecord,
+      id: "diar-1",
+      audio_filename: "meeting.wav",
+    };
     apiMocks.listDiarizationRecords
       .mockResolvedValueOnce([])
       .mockImplementationOnce(
@@ -327,9 +332,17 @@ describe("DiarizationPage routes", () => {
 
     await act(async () => {
       if (resolveRefreshHistory) {
-        resolveRefreshHistory([]);
+        resolveRefreshHistory([refreshedCreatedSummaryRecord]);
       }
     });
+
+    fireEvent.click(screen.getByRole("button", { name: /Back to diarization/i }));
+
+    expect(
+      await screen.findByText(
+        "Board sync covered runway, launch timing, and next hiring steps.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("polls a newly created pending diarization record until processing completes", async () => {
