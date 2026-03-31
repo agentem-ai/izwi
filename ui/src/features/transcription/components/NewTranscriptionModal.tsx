@@ -344,7 +344,7 @@ export function NewTranscriptionModal({
 
         <div className="flex items-center justify-between border-t border-[var(--border-muted)] px-6 py-4">
           <p className="text-xs text-[var(--text-muted)]">
-            The record will appear in the history table as soon as the upload is accepted.
+            The record will open on its own page as soon as the upload is accepted.
           </p>
           <div className="flex items-center gap-2">
             <Button type="button" variant="ghost" onClick={onClose} disabled={isSubmitting}>

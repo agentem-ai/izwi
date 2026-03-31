@@ -103,7 +103,7 @@ describe("TranscriptionPage detail route", () => {
     });
     hookMocks.useRouteModelSelection.mockReturnValue({
       routeModels: [],
-      resolvedSelectedModel: null,
+      resolvedSelectedModel: "Parakeet-TDT-0.6B-v3",
       selectedModelReady: true,
       isModelModalOpen: false,
       intentVariant: null,
@@ -147,6 +147,63 @@ describe("TranscriptionPage detail route", () => {
 
     expect(
       await screen.findByRole("heading", { name: "New transcript" }),
+    ).toBeInTheDocument();
+  });
+
+  it("redirects to /transcription/:id after an upload creates a record", async () => {
+    apiMocks.getTranscriptionRecord.mockResolvedValue({
+      id: "txr-created-1",
+      created_at: 1,
+      model_id: "Parakeet-TDT-0.6B-v3",
+      aligner_model_id: null,
+      language: "English",
+      processing_status: "processing",
+      processing_error: null,
+      duration_secs: null,
+      processing_time_ms: 0,
+      rtf: null,
+      audio_mime_type: "audio/wav",
+      audio_filename: "clip.wav",
+      transcription: "",
+      segments: [],
+      words: [],
+      summary_status: "not_requested",
+      summary_model_id: null,
+      summary_text: null,
+      summary_error: null,
+      summary_updated_at: null,
+    });
+
+    renderRoute("/transcription");
+
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New transcript/i }));
+
+    const fileInput = document.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement | null;
+    expect(fileInput).not.toBeNull();
+
+    fireEvent.change(fileInput!, {
+      target: {
+        files: [new File(["audio"], "clip.wav", { type: "audio/wav" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(apiMocks.createTranscriptionRecord).toHaveBeenCalled(),
+    );
+    await waitFor(() =>
+      expect(apiMocks.getTranscriptionRecord).toHaveBeenCalledWith(
+        "txr-created-1",
+      ),
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Transcription Record" }),
     ).toBeInTheDocument();
   });
 
