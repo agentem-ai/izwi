@@ -62,7 +62,7 @@ Align the `/diarization` route with the current `/transcription` route UX and st
   Commit:
   `feat(ui): move diarization history into dedicated record pages`
 
-- [ ] Phase 3: Move diarization job creation into a dedicated modal
+- [x] Phase 3: Move diarization job creation into a dedicated modal
   Scope:
   Build a `NewDiarizationModal` that takes over the inline session setup currently embedded in `DiarizationPlayground`. The modal should keep diarization-specific controls: upload and microphone entry points, speaker range, timing windows, pipeline readiness, and route-model guidance.
   Notes:
