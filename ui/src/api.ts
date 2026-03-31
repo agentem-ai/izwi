@@ -14,6 +14,7 @@ export type {
   ASRTranscribeResponse,
   DiarizationRecord,
   DiarizationRecordCreateRequest,
+  DiarizationProcessingStatus,
   DiarizationRecordRerunRequest,
   DiarizationRecordSummary,
   DiarizationSummaryStatus,

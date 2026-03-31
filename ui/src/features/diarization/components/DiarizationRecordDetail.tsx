@@ -25,6 +25,7 @@ import { DiarizationQualityPanel } from "@/components/DiarizationQualityPanel";
 import { DiarizationReviewWorkspace } from "@/components/DiarizationReviewWorkspace";
 import { DiarizationSpeakerManager } from "@/components/DiarizationSpeakerManager";
 import { normalizeDiarizationSummaryStatus } from "@/utils/diarizationSummary";
+import { normalizeDiarizationProcessingStatus } from "@/utils/diarizationProcessing";
 import { formattedTranscriptFromRecord } from "@/utils/diarizationTranscript";
 
 function formatCreatedAt(timestampMs: number): string {
@@ -111,6 +112,14 @@ export function DiarizationRecordDetail({
     [record],
   );
   const hasTranscript = transcriptText.trim().length > 0;
+  const processingStatus = useMemo(
+    () =>
+      normalizeDiarizationProcessingStatus(
+        record?.processing_status,
+        record?.processing_error,
+      ),
+    [record?.processing_error, record?.processing_status],
+  );
   const summaryStatus = useMemo(
     () =>
       normalizeDiarizationSummaryStatus(
@@ -120,7 +129,20 @@ export function DiarizationRecordDetail({
       ),
     [record?.summary_error, record?.summary_status, record?.summary_text],
   );
-  const statusMessage = useMemo(() => {
+  const processingStatusMessage = useMemo(() => {
+    switch (processingStatus) {
+      case "pending":
+        return "This diarization run is queued and will begin processing shortly.";
+      case "processing":
+        return "This diarization run is being processed. The transcript will appear here automatically.";
+      case "failed":
+        return record?.processing_error || "Diarization processing failed.";
+      case "ready":
+      default:
+        return null;
+    }
+  }, [processingStatus, record?.processing_error]);
+  const summaryStatusMessage = useMemo(() => {
     switch (summaryStatus) {
       case "pending":
         return "Summary generation is still running in the background. The transcript is ready to review now.";
@@ -340,7 +362,26 @@ export function DiarizationRecordDetail({
         </Card>
       ) : null}
 
-      {statusMessage ? (
+      {processingStatusMessage ? (
+        <Card
+          className={
+            processingStatus === "failed"
+              ? "border-[var(--danger-border)] bg-[var(--danger-bg)] p-4 text-sm text-[var(--danger-text)]"
+              : "border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] p-4 text-sm text-[var(--status-warning-text)]"
+          }
+        >
+          <div className="flex items-start gap-3">
+            {processingStatus === "failed" ? (
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            ) : (
+              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+            )}
+            <p>{processingStatusMessage}</p>
+          </div>
+        </Card>
+      ) : null}
+
+      {summaryStatusMessage ? (
         <Card
           className={
             summaryStatus === "failed"
@@ -354,7 +395,7 @@ export function DiarizationRecordDetail({
             ) : (
               <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
             )}
-            <p>{statusMessage}</p>
+            <p>{summaryStatusMessage}</p>
           </div>
         </Card>
       ) : null}
