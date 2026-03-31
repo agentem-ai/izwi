@@ -434,6 +434,8 @@ export interface TranscriptionRecordSummary {
   created_at: number;
   model_id: string | null;
   language: string | null;
+  processing_status: TranscriptionProcessingStatus;
+  processing_error?: string | null;
   duration_secs: number | null;
   processing_time_ms: number;
   rtf: number | null;
@@ -466,12 +468,20 @@ export type TranscriptionSummaryStatus =
   | "ready"
   | "failed";
 
+export type TranscriptionProcessingStatus =
+  | "pending"
+  | "processing"
+  | "ready"
+  | "failed";
+
 export interface TranscriptionRecord {
   id: string;
   created_at: number;
   model_id: string | null;
   aligner_model_id: string | null;
   language: string | null;
+  processing_status: TranscriptionProcessingStatus;
+  processing_error?: string | null;
   duration_secs: number | null;
   processing_time_ms: number;
   rtf: number | null;
@@ -498,6 +508,7 @@ export interface TranscriptionRecordCreateRequest {
 }
 
 type TranscriptionRecordStreamEvent =
+  | { event: "created"; record: TranscriptionRecord }
   | { event: "start" }
   | { event: "delta"; delta: string }
   | { event: "final"; record: TranscriptionRecord }
@@ -505,6 +516,7 @@ type TranscriptionRecordStreamEvent =
   | { event: "done" };
 
 export interface TranscriptionRecordStreamCallbacks {
+  onCreated?: (record: TranscriptionRecord) => void;
   onStart?: () => void;
   onDelta?: (delta: string) => void;
   onFinal?: (record: TranscriptionRecord) => void;
@@ -1692,6 +1704,9 @@ export class AudioApiClient {
           try {
             const event = JSON.parse(data) as TranscriptionRecordStreamEvent;
             switch (event.event) {
+              case "created":
+                callbacks.onCreated?.(event.record);
+                break;
               case "start":
                 callbacks.onStart?.();
                 break;

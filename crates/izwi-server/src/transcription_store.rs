@@ -26,6 +26,32 @@ impl Default for TranscriptionSummaryStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptionProcessingStatus {
+    Pending,
+    Processing,
+    Ready,
+    Failed,
+}
+
+impl Default for TranscriptionProcessingStatus {
+    fn default() -> Self {
+        Self::Pending
+    }
+}
+
+impl TranscriptionProcessingStatus {
+    fn as_db_value(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Processing => "processing",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 impl TranscriptionSummaryStatus {
     fn as_db_value(self) -> &'static str {
         match self {
@@ -59,6 +85,8 @@ pub struct TranscriptionRecordSummary {
     pub created_at: u64,
     pub model_id: Option<String>,
     pub language: Option<String>,
+    pub processing_status: TranscriptionProcessingStatus,
+    pub processing_error: Option<String>,
     pub duration_secs: Option<f64>,
     pub processing_time_ms: f64,
     pub rtf: Option<f64>,
@@ -78,6 +106,8 @@ pub struct TranscriptionRecord {
     pub model_id: Option<String>,
     pub aligner_model_id: Option<String>,
     pub language: Option<String>,
+    pub processing_status: TranscriptionProcessingStatus,
+    pub processing_error: Option<String>,
     pub duration_secs: Option<f64>,
     pub processing_time_ms: f64,
     pub rtf: Option<f64>,
@@ -105,6 +135,8 @@ pub struct NewTranscriptionRecord {
     pub model_id: Option<String>,
     pub aligner_model_id: Option<String>,
     pub language: Option<String>,
+    pub processing_status: TranscriptionProcessingStatus,
+    pub processing_error: Option<String>,
     pub duration_secs: Option<f64>,
     pub processing_time_ms: f64,
     pub rtf: Option<f64>,
@@ -128,6 +160,24 @@ pub struct UpdateTranscriptionSummary {
     pub text: Option<String>,
     pub error: Option<String>,
     pub updated_at: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompleteTranscriptionRecord {
+    pub model_id: Option<String>,
+    pub aligner_model_id: Option<String>,
+    pub language: Option<String>,
+    pub duration_secs: Option<f64>,
+    pub processing_time_ms: f64,
+    pub rtf: Option<f64>,
+    pub transcription: String,
+    pub segments: Vec<TranscriptionSegmentRecord>,
+    pub words: Vec<TranscriptionWordRecord>,
+    pub summary_status: TranscriptionSummaryStatus,
+    pub summary_model_id: Option<String>,
+    pub summary_text: Option<String>,
+    pub summary_error: Option<String>,
+    pub summary_updated_at: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -163,6 +213,8 @@ impl TranscriptionStore {
                 model_id TEXT NULL,
                 aligner_model_id TEXT NULL,
                 language TEXT NULL,
+                processing_status TEXT NOT NULL DEFAULT 'ready',
+                processing_error TEXT NULL,
                 duration_secs REAL NULL,
                 processing_time_ms REAL NOT NULL,
                 rtf REAL NULL,
@@ -185,6 +237,8 @@ impl TranscriptionStore {
         )
         .context("Failed to initialize transcription database schema")?;
         ensure_transcription_records_aligner_model_id_column(&conn)?;
+        ensure_transcription_records_processing_status_column(&conn)?;
+        ensure_transcription_records_processing_error_column(&conn)?;
         ensure_transcription_records_segments_json_column(&conn)?;
         ensure_transcription_records_words_json_column(&conn)?;
         ensure_transcription_records_summary_status_column(&conn)?;
@@ -214,6 +268,8 @@ impl TranscriptionStore {
                     created_at,
                     model_id,
                     language,
+                    processing_status,
+                    processing_error,
                     duration_secs,
                     processing_time_ms,
                     rtf,
@@ -229,21 +285,30 @@ impl TranscriptionStore {
             )?;
 
             let rows = stmt.query_map(params![list_limit], |row| {
-                let transcription: String = row.get(9)?;
+                let processing_status =
+                    parse_processing_status(row.get::<_, Option<String>>(4)?);
+                let processing_error: Option<String> = row.get(5)?;
+                let transcription: String = row.get(11)?;
                 let summary_status =
-                    parse_summary_status(row.get::<_, Option<String>>(10)?);
-                let summary_text: Option<String> = row.get(11)?;
+                    parse_summary_status(row.get::<_, Option<String>>(12)?);
+                let summary_text: Option<String> = row.get(13)?;
                 Ok(TranscriptionRecordSummary {
                     id: row.get(0)?,
                     created_at: i64_to_u64(row.get(1)?),
                     model_id: row.get(2)?,
                     language: row.get(3)?,
-                    duration_secs: row.get(4)?,
-                    processing_time_ms: row.get(5)?,
-                    rtf: row.get(6)?,
-                    audio_mime_type: row.get(7)?,
-                    audio_filename: row.get(8)?,
-                    transcription_preview: transcription_preview(&transcription),
+                    processing_status,
+                    processing_error: processing_error.clone(),
+                    duration_secs: row.get(6)?,
+                    processing_time_ms: row.get(7)?,
+                    rtf: row.get(8)?,
+                    audio_mime_type: row.get(9)?,
+                    audio_filename: row.get(10)?,
+                    transcription_preview: transcription_preview(
+                        processing_status,
+                        processing_error.as_deref(),
+                        &transcription,
+                    ),
                     transcription_chars: transcription.chars().count(),
                     summary_status,
                     summary_preview: summary_preview(summary_text.as_deref()),
@@ -326,6 +391,12 @@ impl TranscriptionStore {
             let model_id = sanitize_optional_text(record.model_id.as_deref(), 160);
             let aligner_model_id = sanitize_optional_text(record.aligner_model_id.as_deref(), 160);
             let language = sanitize_optional_text(record.language.as_deref(), 80);
+            let processing_error =
+                sanitize_optional_text(record.processing_error.as_deref(), 1_000);
+            let processing_status = normalize_processing_status(
+                record.processing_status,
+                processing_error.as_deref(),
+            );
             let duration_secs = record.duration_secs.filter(|v| v.is_finite() && *v >= 0.0);
             let processing_time_ms = if record.processing_time_ms.is_finite() {
                 record.processing_time_ms.max(0.0)
@@ -381,6 +452,8 @@ impl TranscriptionStore {
                     model_id,
                     aligner_model_id,
                     language,
+                    processing_status,
+                    processing_error,
                     duration_secs,
                     processing_time_ms,
                     rtf,
@@ -396,7 +469,7 @@ impl TranscriptionStore {
                     summary_error,
                     summary_updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
                 "#,
                 params![
                     &record_id,
@@ -404,6 +477,8 @@ impl TranscriptionStore {
                     model_id,
                     aligner_model_id,
                     language,
+                    processing_status.as_db_value(),
+                    processing_error,
                     duration_secs,
                     processing_time_ms,
                     rtf,
@@ -490,6 +565,127 @@ impl TranscriptionStore {
         .await
     }
 
+    pub async fn update_processing_status(
+        &self,
+        record_id: String,
+        status: TranscriptionProcessingStatus,
+        error: Option<String>,
+    ) -> anyhow::Result<Option<TranscriptionRecord>> {
+        self.run_blocking(move |db_path| {
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
+            let processing_error = sanitize_optional_text(error.as_deref(), 1_000);
+            let processing_status =
+                normalize_processing_status(status, processing_error.as_deref());
+
+            let changed = conn.execute(
+                r#"
+                UPDATE transcription_records
+                SET
+                    processing_status = ?2,
+                    processing_error = ?3
+                WHERE id = ?1
+                "#,
+                params![
+                    record_id,
+                    processing_status.as_db_value(),
+                    processing_error,
+                ],
+            )?;
+
+            if changed == 0 {
+                return Ok(None);
+            }
+
+            fetch_record_without_audio(&conn, &record_id)
+        })
+        .await
+    }
+
+    pub async fn complete_record(
+        &self,
+        record_id: String,
+        record: CompleteTranscriptionRecord,
+    ) -> anyhow::Result<Option<TranscriptionRecord>> {
+        self.run_blocking(move |db_path| {
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
+
+            let model_id = sanitize_optional_text(record.model_id.as_deref(), 160);
+            let aligner_model_id = sanitize_optional_text(record.aligner_model_id.as_deref(), 160);
+            let language = sanitize_optional_text(record.language.as_deref(), 80);
+            let duration_secs = record.duration_secs.filter(|v| v.is_finite() && *v >= 0.0);
+            let processing_time_ms = if record.processing_time_ms.is_finite() {
+                record.processing_time_ms.max(0.0)
+            } else {
+                0.0
+            };
+            let rtf = record.rtf.filter(|v| v.is_finite() && *v >= 0.0);
+            let transcription = sanitize_required_text(record.transcription.as_str(), 100_000);
+            let segments = sanitize_segments(record.segments);
+            let words = sanitize_words(record.words);
+            let summary_model_id = sanitize_optional_text(record.summary_model_id.as_deref(), 160);
+            let summary_text = sanitize_optional_text(record.summary_text.as_deref(), 20_000);
+            let summary_error = sanitize_optional_text(record.summary_error.as_deref(), 1_000);
+            let summary_status = normalize_summary_status(
+                record.summary_status,
+                summary_text.as_deref(),
+                summary_error.as_deref(),
+            );
+            let summary_updated_at = normalize_optional_timestamp_i64(record.summary_updated_at);
+            let segments_json =
+                serde_json::to_string(&segments).context("Failed serializing segments")?;
+            let words_json = serde_json::to_string(&words).context("Failed serializing words")?;
+
+            let changed = conn.execute(
+                r#"
+                UPDATE transcription_records
+                SET
+                    model_id = ?2,
+                    aligner_model_id = ?3,
+                    language = ?4,
+                    processing_status = ?5,
+                    processing_error = NULL,
+                    duration_secs = ?6,
+                    processing_time_ms = ?7,
+                    rtf = ?8,
+                    transcription = ?9,
+                    segments_json = ?10,
+                    words_json = ?11,
+                    summary_status = ?12,
+                    summary_model_id = ?13,
+                    summary_text = ?14,
+                    summary_error = ?15,
+                    summary_updated_at = ?16
+                WHERE id = ?1
+                "#,
+                params![
+                    record_id,
+                    model_id,
+                    aligner_model_id,
+                    language,
+                    TranscriptionProcessingStatus::Ready.as_db_value(),
+                    duration_secs,
+                    processing_time_ms,
+                    rtf,
+                    transcription,
+                    segments_json,
+                    words_json,
+                    summary_status.as_db_value(),
+                    summary_model_id,
+                    summary_text,
+                    summary_error,
+                    summary_updated_at,
+                ],
+            )?;
+
+            if changed == 0 {
+                return Ok(None);
+            }
+
+            fetch_record_without_audio(&conn, &record_id)
+        })
+        .await
+    }
+
     pub async fn delete_record(&self, record_id: String) -> anyhow::Result<bool> {
         let media_root = self.media_root.clone();
         self.run_blocking(move |db_path| {
@@ -542,6 +738,8 @@ fn fetch_record_without_audio(
                 model_id,
                 aligner_model_id,
                 language,
+                processing_status,
+                processing_error,
                 duration_secs,
                 processing_time_ms,
                 rtf,
@@ -572,20 +770,36 @@ fn map_transcription_record(row: &Row<'_>) -> rusqlite::Result<TranscriptionReco
         model_id: row.get(2)?,
         aligner_model_id: row.get(3)?,
         language: row.get(4)?,
-        duration_secs: row.get(5)?,
-        processing_time_ms: row.get(6)?,
-        rtf: row.get(7)?,
-        audio_mime_type: row.get(8)?,
-        audio_filename: row.get(9)?,
-        transcription: row.get(10)?,
-        segments: parse_json_vec(row.get(11)?),
-        words: parse_json_vec(row.get(12)?),
-        summary_status: parse_summary_status(row.get(13)?),
-        summary_model_id: row.get(14)?,
-        summary_text: row.get(15)?,
-        summary_error: row.get(16)?,
-        summary_updated_at: row.get::<_, Option<i64>>(17)?.map(i64_to_u64),
+        processing_status: parse_processing_status(row.get(5)?),
+        processing_error: row.get(6)?,
+        duration_secs: row.get(7)?,
+        processing_time_ms: row.get(8)?,
+        rtf: row.get(9)?,
+        audio_mime_type: row.get(10)?,
+        audio_filename: row.get(11)?,
+        transcription: row.get(12)?,
+        segments: parse_json_vec(row.get(13)?),
+        words: parse_json_vec(row.get(14)?),
+        summary_status: parse_summary_status(row.get(15)?),
+        summary_model_id: row.get(16)?,
+        summary_text: row.get(17)?,
+        summary_error: row.get(18)?,
+        summary_updated_at: row.get::<_, Option<i64>>(19)?.map(i64_to_u64),
     })
+}
+
+fn parse_processing_status(raw: Option<String>) -> TranscriptionProcessingStatus {
+    match raw
+        .unwrap_or_else(|| "ready".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "pending" => TranscriptionProcessingStatus::Pending,
+        "processing" => TranscriptionProcessingStatus::Processing,
+        "failed" => TranscriptionProcessingStatus::Failed,
+        _ => TranscriptionProcessingStatus::Ready,
+    }
 }
 
 fn parse_summary_status(raw: Option<String>) -> TranscriptionSummaryStatus {
@@ -599,6 +813,20 @@ fn parse_summary_status(raw: Option<String>) -> TranscriptionSummaryStatus {
         "ready" => TranscriptionSummaryStatus::Ready,
         "failed" => TranscriptionSummaryStatus::Failed,
         _ => TranscriptionSummaryStatus::NotRequested,
+    }
+}
+
+fn normalize_processing_status(
+    requested: TranscriptionProcessingStatus,
+    processing_error: Option<&str>,
+) -> TranscriptionProcessingStatus {
+    if processing_error.is_some() {
+        return TranscriptionProcessingStatus::Failed;
+    }
+
+    match requested {
+        TranscriptionProcessingStatus::Failed => TranscriptionProcessingStatus::Pending,
+        other => other,
     }
 }
 
@@ -624,7 +852,27 @@ fn normalize_optional_timestamp_i64(value: Option<u64>) -> Option<i64> {
     value.and_then(|raw| i64::try_from(raw).ok())
 }
 
-fn transcription_preview(content: &str) -> String {
+fn transcription_preview(
+    processing_status: TranscriptionProcessingStatus,
+    processing_error: Option<&str>,
+    content: &str,
+) -> String {
+    if processing_status == TranscriptionProcessingStatus::Pending {
+        return "Queued for transcription".to_string();
+    }
+    if processing_status == TranscriptionProcessingStatus::Processing {
+        return "Transcription in progress".to_string();
+    }
+    if processing_status == TranscriptionProcessingStatus::Failed {
+        if let Some(error) = processing_error {
+            let normalized = error.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !normalized.is_empty() {
+                return truncate_string(&normalized, 160);
+            }
+        }
+        return "Transcription failed".to_string();
+    }
+
     let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         return "No transcript".to_string();
@@ -729,6 +977,32 @@ fn ensure_transcription_records_aligner_model_id_column(conn: &Connection) -> an
         [],
     )
     .context("Failed adding transcription_records.aligner_model_id column")?;
+    Ok(())
+}
+
+fn ensure_transcription_records_processing_status_column(conn: &Connection) -> anyhow::Result<()> {
+    if transcription_records_has_column(conn, "processing_status")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE transcription_records ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'ready'",
+        [],
+    )
+    .context("Failed adding transcription_records.processing_status column")?;
+    Ok(())
+}
+
+fn ensure_transcription_records_processing_error_column(conn: &Connection) -> anyhow::Result<()> {
+    if transcription_records_has_column(conn, "processing_error")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE transcription_records ADD COLUMN processing_error TEXT NULL",
+        [],
+    )
+    .context("Failed adding transcription_records.processing_error column")?;
     Ok(())
 }
 
@@ -908,6 +1182,8 @@ mod tests {
             model_id: Some("Parakeet-TDT-0.6B-v3".to_string()),
             aligner_model_id: Some("Qwen3-ForcedAligner-0.6B".to_string()),
             language: Some("English".to_string()),
+            processing_status: TranscriptionProcessingStatus::Ready,
+            processing_error: None,
             duration_secs: Some(6.0),
             processing_time_ms: 120.0,
             rtf: Some(0.5),
@@ -974,6 +1250,7 @@ mod tests {
             created.aligner_model_id.as_deref(),
             Some("Qwen3-ForcedAligner-0.6B")
         );
+        assert_eq!(created.processing_status, TranscriptionProcessingStatus::Ready);
         assert_eq!(created.words.len(), 4);
         assert_eq!(created.segments.len(), 2);
         assert_eq!(created.summary_status, TranscriptionSummaryStatus::Ready);
@@ -1002,6 +1279,7 @@ mod tests {
         record.aligner_model_id = None;
         record.words = Vec::new();
         record.segments = Vec::new();
+        record.processing_status = TranscriptionProcessingStatus::Ready;
         record.summary_status = TranscriptionSummaryStatus::NotRequested;
         record.summary_model_id = None;
         record.summary_text = None;
@@ -1029,6 +1307,125 @@ mod tests {
             summaries[0].summary_status,
             TranscriptionSummaryStatus::NotRequested
         );
+
+        std::fs::remove_dir_all(root).expect("test temp dir should be removable");
+    }
+
+    #[tokio::test]
+    async fn updates_pending_records_through_processing_and_completion() {
+        let (store, root) = build_test_store();
+        let mut record = sample_record();
+        record.processing_status = TranscriptionProcessingStatus::Pending;
+        record.duration_secs = None;
+        record.processing_time_ms = 0.0;
+        record.rtf = None;
+        record.transcription = String::new();
+        record.segments = Vec::new();
+        record.words = Vec::new();
+        record.summary_status = TranscriptionSummaryStatus::NotRequested;
+        record.summary_model_id = None;
+        record.summary_text = None;
+        record.summary_error = None;
+        record.summary_updated_at = None;
+
+        let created = store
+            .create_record(record)
+            .await
+            .expect("pending record should be created");
+        assert_eq!(created.processing_status, TranscriptionProcessingStatus::Pending);
+        assert_eq!(created.transcription, "");
+
+        let processing = store
+            .update_processing_status(
+                created.id.clone(),
+                TranscriptionProcessingStatus::Processing,
+                None,
+            )
+            .await
+            .expect("status update should succeed")
+            .expect("record should exist");
+        assert_eq!(
+            processing.processing_status,
+            TranscriptionProcessingStatus::Processing
+        );
+
+        let completed = store
+            .complete_record(
+                created.id.clone(),
+                CompleteTranscriptionRecord {
+                    model_id: Some("Parakeet-TDT-0.6B-v3".to_string()),
+                    aligner_model_id: Some("Qwen3-ForcedAligner-0.6B".to_string()),
+                    language: Some("English".to_string()),
+                    duration_secs: Some(6.0),
+                    processing_time_ms: 120.0,
+                    rtf: Some(0.5),
+                    transcription: "Hello there. General Kenobi.".to_string(),
+                    segments: vec![TranscriptionSegmentRecord {
+                        start: 0.0,
+                        end: 1.2,
+                        text: "Hello there.".to_string(),
+                        word_start: 0,
+                        word_end: 1,
+                    }],
+                    words: vec![TranscriptionWordRecord {
+                        word: "Hello".to_string(),
+                        start: 0.0,
+                        end: 0.4,
+                    }],
+                    summary_status: TranscriptionSummaryStatus::Pending,
+                    summary_model_id: Some("Qwen3.5-4B".to_string()),
+                    summary_text: None,
+                    summary_error: None,
+                    summary_updated_at: None,
+                },
+            )
+            .await
+            .expect("completion should succeed")
+            .expect("record should exist");
+
+        assert_eq!(completed.processing_status, TranscriptionProcessingStatus::Ready);
+        assert!(completed.processing_error.is_none());
+        assert_eq!(completed.summary_status, TranscriptionSummaryStatus::Pending);
+        assert_eq!(completed.transcription, "Hello there. General Kenobi.");
+
+        std::fs::remove_dir_all(root).expect("test temp dir should be removable");
+    }
+
+    #[tokio::test]
+    async fn stores_failed_processing_errors_on_records() {
+        let (store, root) = build_test_store();
+        let mut record = sample_record();
+        record.processing_status = TranscriptionProcessingStatus::Pending;
+        record.transcription = String::new();
+        record.segments = Vec::new();
+        record.words = Vec::new();
+        record.summary_status = TranscriptionSummaryStatus::NotRequested;
+        record.summary_model_id = None;
+        record.summary_text = None;
+        record.summary_error = None;
+        record.summary_updated_at = None;
+
+        let created = store
+            .create_record(record)
+            .await
+            .expect("pending record should be created");
+
+        let failed = store
+            .update_processing_status(
+                created.id.clone(),
+                TranscriptionProcessingStatus::Failed,
+                Some("Runtime unavailable".to_string()),
+            )
+            .await
+            .expect("failed status update should succeed")
+            .expect("record should exist");
+
+        assert_eq!(failed.processing_status, TranscriptionProcessingStatus::Failed);
+        assert_eq!(failed.processing_error.as_deref(), Some("Runtime unavailable"));
+
+        let summaries = store.list_records(10).await.expect("list should succeed");
+        assert_eq!(summaries[0].processing_status, TranscriptionProcessingStatus::Failed);
+        assert_eq!(summaries[0].transcription_preview, "Runtime unavailable");
 
         std::fs::remove_dir_all(root).expect("test temp dir should be removable");
     }
