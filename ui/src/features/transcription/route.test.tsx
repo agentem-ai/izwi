@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -10,6 +10,7 @@ const apiMocks = vi.hoisted(() => ({
   transcriptionRecordAudioUrl: vi.fn(),
   deleteTranscriptionRecord: vi.fn(),
   regenerateTranscriptionSummary: vi.fn(),
+  createTranscriptionRecord: vi.fn(),
 }));
 
 const hookMocks = vi.hoisted(() => ({
@@ -23,6 +24,7 @@ vi.mock("@/api", () => ({
     transcriptionRecordAudioUrl: apiMocks.transcriptionRecordAudioUrl,
     deleteTranscriptionRecord: apiMocks.deleteTranscriptionRecord,
     regenerateTranscriptionSummary: apiMocks.regenerateTranscriptionSummary,
+    createTranscriptionRecord: apiMocks.createTranscriptionRecord,
   },
 }));
 
@@ -72,14 +74,37 @@ describe("TranscriptionPage detail route", () => {
     apiMocks.transcriptionRecordAudioUrl.mockReset();
     apiMocks.deleteTranscriptionRecord.mockReset();
     apiMocks.regenerateTranscriptionSummary.mockReset();
+    apiMocks.createTranscriptionRecord.mockReset();
     hookMocks.useRouteModelSelection.mockReset();
 
     apiMocks.transcriptionRecordAudioUrl.mockReturnValue("/audio/transcription.wav");
     apiMocks.listTranscriptionRecords.mockResolvedValue([]);
+    apiMocks.createTranscriptionRecord.mockResolvedValue({
+      id: "txr-created-1",
+      created_at: 1,
+      model_id: "Parakeet-TDT-0.6B-v3",
+      aligner_model_id: null,
+      language: "English",
+      processing_status: "pending",
+      processing_error: null,
+      duration_secs: null,
+      processing_time_ms: 0,
+      rtf: null,
+      audio_mime_type: "audio/wav",
+      audio_filename: "clip.wav",
+      transcription: "",
+      segments: [],
+      words: [],
+      summary_status: "not_requested",
+      summary_model_id: null,
+      summary_text: null,
+      summary_error: null,
+      summary_updated_at: null,
+    });
     hookMocks.useRouteModelSelection.mockReturnValue({
       routeModels: [],
       resolvedSelectedModel: null,
-      selectedModelReady: false,
+      selectedModelReady: true,
       isModelModalOpen: false,
       intentVariant: null,
       closeModelModal: vi.fn(),
@@ -104,6 +129,24 @@ describe("TranscriptionPage detail route", () => {
 
     expect(
       await screen.findByRole("heading", { name: "Transcription history" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /New transcript/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Models/i })).toBeInTheDocument();
+  });
+
+  it("opens the new transcript modal from the header action", async () => {
+    renderRoute("/transcription");
+
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New transcript/i }));
+
+    expect(
+      await screen.findByRole("heading", { name: "New transcript" }),
     ).toBeInTheDocument();
   });
 
