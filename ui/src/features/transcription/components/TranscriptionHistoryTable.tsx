@@ -24,7 +24,7 @@ export function TranscriptionHistoryTable({
 }: TranscriptionHistoryTableProps) {
   if (loading) {
     return (
-      <div className="flex min-h-[20rem] items-center justify-center rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] text-sm text-[var(--text-muted)]">
+      <div className="mb-6 flex min-h-[20rem] items-center justify-center rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] text-sm text-[var(--text-muted)]">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
         Loading transcriptions...
       </div>
@@ -33,7 +33,7 @@ export function TranscriptionHistoryTable({
 
   if (error) {
     return (
-      <div className="rounded-2xl border border-[var(--danger-border)] bg-[var(--danger-bg)] p-4 text-sm text-[var(--danger-text)]">
+      <div className="mb-6 rounded-2xl border border-[var(--danger-border)] bg-[var(--danger-bg)] p-4 text-sm text-[var(--danger-text)]">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -51,19 +51,19 @@ export function TranscriptionHistoryTable({
 
   if (records.length === 0) {
     return (
-      <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-10 text-center">
-          <h3 className="text-lg font-semibold text-[var(--text-primary)]">
-            No transcription jobs yet
-          </h3>
-          <p className="mt-2 text-sm text-[var(--text-muted)]">
-            Queued, processing, and completed jobs will appear here.
-          </p>
+      <div className="mb-6 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-10 text-center">
+        <h3 className="text-lg font-semibold text-[var(--text-primary)]">
+          No transcription jobs yet
+        </h3>
+        <p className="mt-2 text-sm text-[var(--text-muted)]">
+          Queued, processing, and completed jobs will appear here.
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)]">
+    <div className="mb-6 overflow-hidden rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)]">
       <div className="overflow-x-auto">
         <table className="min-w-full border-collapse text-sm">
           <thead className="bg-[var(--bg-surface-1)] text-left text-xs uppercase tracking-[0.14em] text-[var(--text-muted)]">
