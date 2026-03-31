@@ -19,17 +19,12 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DiarizationExportDialog } from "@/components/DiarizationExportDialog";
 import { DiarizationQualityPanel } from "@/components/DiarizationQualityPanel";
 import { DiarizationReviewWorkspace } from "@/components/DiarizationReviewWorkspace";
 import { DiarizationSpeakerManager } from "@/components/DiarizationSpeakerManager";
-import {
-  diarizationSummaryStatusLabel,
-  diarizationSummaryStatusTone,
-  normalizeDiarizationSummaryStatus,
-} from "@/utils/diarizationSummary";
+import { normalizeDiarizationSummaryStatus } from "@/utils/diarizationSummary";
 import { formattedTranscriptFromRecord } from "@/utils/diarizationTranscript";
 
 function formatCreatedAt(timestampMs: number): string {
@@ -275,11 +270,6 @@ export function DiarizationRecordDetail({
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-2">
-          {record ? (
-            <StatusBadge tone={diarizationSummaryStatusTone(summaryStatus)}>
-              {diarizationSummaryStatusLabel(summaryStatus)}
-            </StatusBadge>
-          ) : null}
           <Button
             type="button"
             variant="outline"
@@ -407,6 +397,7 @@ export function DiarizationRecordDetail({
             audioUrl={audioUrl}
             loading={loading}
             autoScrollActiveEntry={true}
+            fixedPlaybackFooter={true}
             summaryModelGuidance={summaryModelGuidance}
             emptyTitle="Diarization record loading"
             emptyMessage="The transcript will appear here once the diarization record is ready."

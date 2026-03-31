@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -583,6 +583,12 @@ export function AppLayout({
           "flex-1 flex flex-col pt-16 lg:pt-0 transition-all duration-300 min-w-0 overflow-hidden",
           isSidebarCollapsed ? "lg:ml-[88px]" : "lg:ml-[18rem]",
         )}
+        style={
+          {
+            "--app-shell-left":
+              isSidebarCollapsed ? "88px" : "18rem",
+          } as CSSProperties
+        }
       >
         <div className="hidden lg:flex justify-end px-6 lg:px-8 pt-4 shrink-0">
           <div className="flex w-full justify-end">
