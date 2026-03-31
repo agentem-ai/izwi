@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   api,
@@ -6,10 +6,10 @@ import {
   type DiarizationRecordRerunRequest,
   type ModelInfo,
 } from "@/api";
-import { DiarizationPlayground } from "@/components/DiarizationPlayground";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Button } from "@/components/ui/button";
 import { DiarizationHistoryTable } from "@/features/diarization/components/DiarizationHistoryTable";
+import { NewDiarizationModal } from "@/features/diarization/components/NewDiarizationModal";
 import { DiarizationRecordDetail } from "@/features/diarization/components/DiarizationRecordDetail";
 import { RouteModelModal } from "@/features/models/components/RouteModelModal";
 import { useDiarizationHistory } from "@/features/diarization/hooks/useDiarizationHistory";
@@ -107,13 +107,11 @@ export function DiarizationPage({
 }: DiarizationPageProps) {
   const { recordId } = useParams<{ recordId: string }>();
   const navigate = useNavigate();
+  const [isNewDiarizationModalOpen, setIsNewDiarizationModalOpen] =
+    useState(false);
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [modalIntentModel, setModalIntentModel] = useState<string | null>(null);
   const [autoCloseOnIntentReady, setAutoCloseOnIntentReady] = useState(false);
-  const [isPipelineLoadAllRequested, setIsPipelineLoadAllRequested] =
-    useState(false);
-  const loadAllDownloadRequestedRef = useRef(new Set<string>());
-  const loadAllLoadRequestedRef = useRef(new Set<string>());
   const [latestRecord, setLatestRecord] = useState<DiarizationRecord | null>(
     null,
   );
@@ -266,42 +264,6 @@ export function DiarizationPage({
   }, [resolvedSummaryModel, summaryModelStatus]);
   const pipelineModelsReady = asrModelReady && alignerModelReady;
 
-  const targetPipelineVariants = useMemo(
-    () =>
-      [
-        resolvedSelectedModel,
-        resolvedAsrModel,
-        resolvedAlignerModel,
-        resolvedLlmModel,
-      ].filter((variant): variant is string => !!variant),
-    [
-      resolvedAlignerModel,
-      resolvedAsrModel,
-      resolvedLlmModel,
-      resolvedSelectedModel,
-    ],
-  );
-
-  const targetPipelineModels = useMemo(
-    () =>
-      targetPipelineVariants
-        .map(
-          (variant) =>
-            pipelineModels.find((model) => model.variant === variant) ?? null,
-        )
-        .filter((model): model is ModelInfo => model !== null),
-    [pipelineModels, targetPipelineVariants],
-  );
-
-  const pipelineAllLoaded =
-    targetPipelineModels.length > 0 &&
-    targetPipelineModels.every((model) => model.status === "ready");
-
-  const pipelineLoadAllBusy =
-    isPipelineLoadAllRequested ||
-    targetPipelineModels.some(
-      (model) => model.status === "downloading" || model.status === "loading",
-    );
   const {
     records,
     loading: historyLoading,
@@ -367,72 +329,6 @@ export function DiarizationPage({
     setIsModelModalOpen(true);
   };
 
-  const handleToggleLoadAllPipeline = () => {
-    if (pipelineAllLoaded) {
-      for (const model of targetPipelineModels) {
-        if (model.status === "ready") {
-          onUnload(model.variant);
-        }
-      }
-      return;
-    }
-
-    loadAllDownloadRequestedRef.current.clear();
-    loadAllLoadRequestedRef.current.clear();
-    setIsPipelineLoadAllRequested(true);
-  };
-
-  useEffect(() => {
-    if (!isPipelineLoadAllRequested) {
-      return;
-    }
-
-    if (targetPipelineModels.length === 0) {
-      setIsPipelineLoadAllRequested(false);
-      return;
-    }
-
-    let allReady = true;
-    let encounteredError = false;
-
-    for (const model of targetPipelineModels) {
-      if (model.status === "ready") {
-        continue;
-      }
-
-      allReady = false;
-
-      if (
-        model.status === "error" &&
-        loadAllDownloadRequestedRef.current.has(model.variant)
-      ) {
-        encounteredError = true;
-      }
-
-      if (
-        (model.status === "not_downloaded" || model.status === "error") &&
-        !loadAllDownloadRequestedRef.current.has(model.variant)
-      ) {
-        loadAllDownloadRequestedRef.current.add(model.variant);
-        onDownload(model.variant);
-      }
-
-      if (
-        model.status === "downloaded" &&
-        !loadAllLoadRequestedRef.current.has(model.variant)
-      ) {
-        loadAllLoadRequestedRef.current.add(model.variant);
-        onLoad(model.variant);
-      }
-    }
-
-    if (allReady || encounteredError) {
-      setIsPipelineLoadAllRequested(false);
-      loadAllDownloadRequestedRef.current.clear();
-      loadAllLoadRequestedRef.current.clear();
-    }
-  }, [isPipelineLoadAllRequested, onDownload, onLoad, targetPipelineModels]);
-
   const handleOpenRecord = useCallback(
     (nextRecordId: string) => {
       navigate(`/diarization/${nextRecordId}`);
@@ -443,10 +339,25 @@ export function DiarizationPage({
   const handleCloseRecord = useCallback(() => {
     navigate("/diarization");
   }, [navigate]);
+  const handleOpenNewDiarizationModal = useCallback(() => {
+    setIsNewDiarizationModalOpen(true);
+  }, []);
+  const handleCloseNewDiarizationModal = useCallback(() => {
+    setIsNewDiarizationModalOpen(false);
+  }, []);
 
   const handleOpenModels = useCallback(() => {
     openModelManager();
   }, [openModelManager]);
+
+  const handleCreatedRecord = useCallback(
+    async (createdRecord: DiarizationRecord) => {
+      setLatestRecord(createdRecord);
+      await refreshHistory().catch(() => undefined);
+      navigate(`/diarization/${createdRecord.id}`);
+    },
+    [navigate, refreshHistory],
+  );
 
   const handleDeleteRecord = useCallback(
     async (targetRecordId: string) => {
@@ -557,51 +468,29 @@ export function DiarizationPage({
         <>
           <PageHeader
             title="Diarization"
-            description="Capture speaker-separated transcripts, tune diarization quality, and review saved records from one workspace."
+            description="Monitor saved diarization runs in one history table and launch new speaker-separated transcripts from a focused creation modal."
             actions={
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-9 gap-2"
-                onClick={handleOpenModels}
-              >
-                <Settings2 className="h-4 w-4" />
-                Models
-              </Button>
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-9 gap-2"
+                  onClick={handleOpenNewDiarizationModal}
+                >
+                  New diarization
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9 gap-2"
+                  onClick={handleOpenModels}
+                >
+                  <Settings2 className="h-4 w-4" />
+                  Models
+                </Button>
+              </>
             }
-          />
-
-          <DiarizationPlayground
-            selectedModel={resolvedSelectedModel}
-            selectedModelReady={selectedModelReady}
-            onOpenModelManager={openModelManager}
-            onTogglePipelineLoadAll={handleToggleLoadAllPipeline}
-            pipelineAllLoaded={pipelineAllLoaded}
-            pipelineLoadAllBusy={pipelineLoadAllBusy}
-            onModelRequired={() => {
-              setModalIntentModel(resolvedSelectedModel);
-              setAutoCloseOnIntentReady(true);
-              setIsModelModalOpen(true);
-              onError("Select and load a diarization model to start.");
-            }}
-            pipelineAsrModelId={resolvedAsrModel}
-            pipelineAlignerModelId={resolvedAlignerModel}
-            pipelineLlmModelId={resolvedLlmModel}
-            pipelineLlmModelReady={llmModelReady}
-            pipelineModelsReady={pipelineModelsReady}
-            summaryModelId={resolvedSummaryModel}
-            summaryModelReady={summaryModelReady}
-            summaryModelStatus={summaryModelStatus}
-            onSummaryModelRequired={() => {
-              openModelManager();
-              onError(summaryModelRequirementMessage);
-            }}
-            onLatestRecordChange={setLatestRecord}
-            onPipelineModelsRequired={() => {
-              openModelManagerForPipeline();
-              onError("Load ASR and forced aligner models before diarization.");
-            }}
           />
 
           <section className="space-y-3">
@@ -624,6 +513,28 @@ export function DiarizationPage({
               onOpenRecord={handleOpenRecord}
             />
           </section>
+
+          <NewDiarizationModal
+            isOpen={isNewDiarizationModalOpen}
+            onClose={handleCloseNewDiarizationModal}
+            selectedModel={resolvedSelectedModel}
+            selectedModelReady={selectedModelReady}
+            pipelineAsrModelId={resolvedAsrModel}
+            pipelineAlignerModelId={resolvedAlignerModel}
+            pipelineLlmModelId={resolvedLlmModel}
+            pipelineModelsReady={pipelineModelsReady}
+            onModelRequired={() => {
+              setModalIntentModel(resolvedSelectedModel);
+              setAutoCloseOnIntentReady(true);
+              setIsModelModalOpen(true);
+              onError("Select and load a diarization model to start.");
+            }}
+            onPipelineModelsRequired={() => {
+              openModelManagerForPipeline();
+              onError("Load ASR and forced aligner models before diarization.");
+            }}
+            onCreated={handleCreatedRecord}
+          />
         </>
       )}
 

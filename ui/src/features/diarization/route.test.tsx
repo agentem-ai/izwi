@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -33,8 +33,41 @@ vi.mock("@/features/models/components/RouteModelModal", () => ({
 }));
 
 const baseProps = {
-  models: [],
-  selectedModel: null,
+  models: [
+    {
+      variant: "diar_streaming_sortformer_4spk-v2.1",
+      status: "ready" as const,
+      local_path: "/models/diar",
+      size_bytes: null,
+      download_progress: null,
+      error_message: null,
+    },
+    {
+      variant: "Parakeet-TDT-0.6B-v3",
+      status: "ready" as const,
+      local_path: "/models/asr",
+      size_bytes: null,
+      download_progress: null,
+      error_message: null,
+    },
+    {
+      variant: "Qwen3-ForcedAligner-0.6B",
+      status: "ready" as const,
+      local_path: "/models/aligner",
+      size_bytes: null,
+      download_progress: null,
+      error_message: null,
+    },
+    {
+      variant: "Qwen3.5-4B",
+      status: "ready" as const,
+      local_path: "/models/llm",
+      size_bytes: null,
+      download_progress: null,
+      error_message: null,
+    },
+  ],
+  selectedModel: "diar_streaming_sortformer_4spk-v2.1",
   loading: false,
   downloadProgress: {},
   onDownload: vi.fn(),
@@ -135,6 +168,7 @@ describe("DiarizationPage routes", () => {
 
     apiMocks.listDiarizationRecords.mockResolvedValue([]);
     apiMocks.getDiarizationRecord.mockResolvedValue(fullRecord);
+    apiMocks.createDiarizationRecord.mockResolvedValue(fullRecord);
     apiMocks.diarizationRecordAudioUrl.mockReturnValue("/audio/meeting.wav");
   });
 
@@ -148,7 +182,48 @@ describe("DiarizationPage routes", () => {
     expect(
       await screen.findByRole("heading", { name: "Diarization" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Diarization Settings")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /New diarization/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("No diarization records yet")).toBeInTheDocument();
+  });
+
+  it("opens the creation modal and routes new diarization runs to their detail page", async () => {
+    renderRoute("/diarization");
+
+    await waitFor(() =>
+      expect(apiMocks.listDiarizationRecords).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New diarization/i }));
+
+    expect(
+      await screen.findByRole("heading", { name: "New diarization" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Choose how to start")).toBeInTheDocument();
+    expect(screen.getByText("Review run settings")).toBeInTheDocument();
+
+    const fileInput = document.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement | null;
+    expect(fileInput).not.toBeNull();
+
+    fireEvent.change(fileInput!, {
+      target: {
+        files: [new File(["audio"], "meeting.wav", { type: "audio/wav" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(apiMocks.createDiarizationRecord).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() =>
+      expect(apiMocks.getDiarizationRecord).toHaveBeenCalledWith("diar-1"),
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Diarization Record" }),
+    ).toBeInTheDocument();
   });
 
   it("loads the selected diarization record on /diarization/:recordId", async () => {
