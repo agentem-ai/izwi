@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   CHAT_PREFERRED_MODELS,
+  DIARIZATION_PREFERRED_ASR_MODELS,
+  DIARIZATION_PREFERRED_MODELS,
+  DIARIZATION_PREFERRED_SUMMARY_MODELS,
   getChatRouteModelLabel,
   isThinkingChatModel,
   resolvePreferredRouteModel,
@@ -49,6 +52,49 @@ describe("route model catalog", () => {
     });
 
     expect(selected).toBe("Qwen3.5-4B");
+  });
+
+  it("keeps diarization defaults anchored to the preferred pipeline variants", () => {
+    const selected = resolvePreferredRouteModel({
+      models: [
+        { variant: "diar_streaming_sortformer_4spk-v2.1", status: "downloaded" },
+        { variant: "diar_general_sortformer", status: "ready" },
+      ],
+      selectedModel: null,
+      preferredVariants: DIARIZATION_PREFERRED_MODELS,
+      preferAnyPreferredBeforeReadyAny: true,
+    });
+
+    expect(selected).toBe("diar_streaming_sortformer_4spk-v2.1");
+  });
+
+  it("falls back to the ready diarization summary model when it is available", () => {
+    const selected = resolvePreferredRouteModel({
+      models: [
+        { variant: "SomeOtherLLM", status: "downloaded" },
+        { variant: "Qwen3.5-4B", status: "ready" },
+        { variant: "Parakeet-TDT-0.6B-v3", status: "ready" },
+      ],
+      selectedModel: null,
+      preferredVariants: DIARIZATION_PREFERRED_SUMMARY_MODELS,
+      preferAnyPreferredBeforeReadyAny: true,
+    });
+
+    expect(selected).toBe("Qwen3.5-4B");
+  });
+
+  it("prefers the diarization ASR pipeline variant over a non-preferred ready model", () => {
+    const selected = resolvePreferredRouteModel({
+      models: [
+        { variant: "Parakeet-TDT-0.6B-v3", status: "downloaded" },
+        { variant: "Parakeet-TDT-1.1B", status: "ready" },
+      ],
+      selectedModel: null,
+      preferredVariants: DIARIZATION_PREFERRED_ASR_MODELS,
+      preferAnyPreferredBeforeReadyAny: true,
+    });
+
+    expect(selected).toBe("Parakeet-TDT-0.6B-v3");
   });
 
   it("treats Qwen3.5 models as thinking-capable chat models", () => {

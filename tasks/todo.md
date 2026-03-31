@@ -82,7 +82,7 @@ Align the `/diarization` route with the current `/transcription` route UX and st
   Commit:
   `feat(ui): polish the diarization record workspace`
 
-- [ ] Phase 5: Align model-management ergonomics and clean up legacy diarization UI
+- [x] Phase 5: Align model-management ergonomics and clean up legacy diarization UI
   Scope:
   Reuse the newer route model selection patterns where they fit, centralize preferred diarization model resolution, preserve pipeline sections and load-all behavior, and remove the now-obsolete drawer/modal history path and any dead playground-only orchestration.
   Notes:

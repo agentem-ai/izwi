@@ -36,6 +36,20 @@ export const TRANSCRIPTION_PREFERRED_MODELS = [
   "Whisper-Large-v3-Turbo",
 ] as const;
 
+export const DIARIZATION_PREFERRED_MODELS = [
+  "diar_streaming_sortformer_4spk-v2.1",
+] as const;
+
+export const DIARIZATION_PREFERRED_ASR_MODELS = [
+  "Parakeet-TDT-0.6B-v3",
+] as const;
+
+export const DIARIZATION_PREFERRED_ALIGNER_MODELS = [
+  "Qwen3-ForcedAligner-0.6B",
+] as const;
+
+export const DIARIZATION_PREFERRED_SUMMARY_MODELS = ["Qwen3.5-4B"] as const;
+
 export const CHAT_PREFERRED_MODELS = [
   "Qwen3-8B-GGUF",
   "Qwen3-4B-GGUF",
