@@ -240,6 +240,69 @@ describe("DiarizationPage routes", () => {
     expect(screen.getByText("Diarization Record")).toBeInTheDocument();
   });
 
+  it("opens saved diarization records from the history table", async () => {
+    apiMocks.listDiarizationRecords.mockResolvedValue([pendingSummaryRecord]);
+
+    renderRoute("/diarization");
+
+    await waitFor(() =>
+      expect(apiMocks.listDiarizationRecords).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.click(screen.getByText("meeting.wav"));
+
+    await waitFor(() =>
+      expect(apiMocks.getDiarizationRecord).toHaveBeenCalledWith("diar-1"),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Diarization Record" }),
+    ).toBeInTheDocument();
+  });
+
+  it("navigates back to the diarization index from a record page", async () => {
+    apiMocks.listDiarizationRecords.mockResolvedValue([pendingSummaryRecord]);
+
+    renderRoute("/diarization/diar-1");
+
+    await waitFor(() =>
+      expect(apiMocks.getDiarizationRecord).toHaveBeenCalledWith("diar-1"),
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Back to diarization/i }),
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Diarization" }),
+    ).toBeInTheDocument();
+  });
+
+  it("deletes a diarization record from the detail page and returns to history", async () => {
+    apiMocks.listDiarizationRecords.mockResolvedValue([pendingSummaryRecord]);
+    apiMocks.deleteDiarizationRecord.mockResolvedValue({
+      id: "diar-1",
+      deleted: true,
+    });
+
+    renderRoute("/diarization/diar-1");
+
+    await waitFor(() =>
+      expect(apiMocks.getDiarizationRecord).toHaveBeenCalledWith("diar-1"),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Delete$/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Delete record/i }),
+    );
+
+    await waitFor(() =>
+      expect(apiMocks.deleteDiarizationRecord).toHaveBeenCalledWith("diar-1"),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Diarization" }),
+    ).toBeInTheDocument();
+  });
+
   it("polls history while a summary is pending", async () => {
     vi.useFakeTimers();
     apiMocks.listDiarizationRecords.mockResolvedValue([pendingSummaryRecord]);

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -125,6 +125,32 @@ export function DiarizationRecordDetail({
       ),
     [record?.summary_error, record?.summary_status, record?.summary_text],
   );
+  const statusMessage = useMemo(() => {
+    switch (summaryStatus) {
+      case "pending":
+        return "Summary generation is still running in the background. The transcript is ready to review now.";
+      case "failed":
+        return record?.summary_error || "Summary generation failed for this diarization record.";
+      case "ready":
+      case "not_requested":
+      default:
+        return null;
+    }
+  }, [record?.summary_error, summaryStatus]);
+
+  useEffect(() => {
+    setWorkspaceTab("transcript");
+    setCopied(false);
+    setDeleteConfirmOpen(false);
+    setDeletePending(false);
+    setDeleteError(null);
+    setSpeakerUpdatePending(false);
+    setSpeakerUpdateError(null);
+    setRerunPending(false);
+    setRerunError(null);
+    setSummaryRefreshPending(false);
+    setSummaryRefreshError(null);
+  }, [record?.id]);
 
   async function handleCopy(): Promise<void> {
     if (!transcriptText) {
@@ -260,7 +286,7 @@ export function DiarizationRecordDetail({
             size="sm"
             className="h-9 gap-2"
             onClick={() => void handleRegenerateSummary()}
-            disabled={!record || summaryRefreshPending}
+            disabled={!record || summaryRefreshPending || !hasTranscript}
           >
             {summaryRefreshPending ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -321,6 +347,31 @@ export function DiarizationRecordDetail({
       {summaryRefreshError ? (
         <Card className="border-[var(--danger-border)] bg-[var(--danger-bg)] p-4 text-sm text-[var(--danger-text)]">
           {summaryRefreshError}
+        </Card>
+      ) : null}
+
+      {statusMessage ? (
+        <Card
+          className={
+            summaryStatus === "failed"
+              ? "border-[var(--danger-border)] bg-[var(--danger-bg)] p-4 text-sm text-[var(--danger-text)]"
+              : "border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] p-4 text-sm text-[var(--status-warning-text)]"
+          }
+        >
+          <div className="flex items-start gap-3">
+            {summaryStatus === "failed" ? (
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            ) : (
+              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+            )}
+            <p>{statusMessage}</p>
+          </div>
+        </Card>
+      ) : null}
+
+      {summaryModelGuidance ? (
+        <Card className="border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] p-4 text-sm text-[var(--status-warning-text)]">
+          {summaryModelGuidance}
         </Card>
       ) : null}
 
