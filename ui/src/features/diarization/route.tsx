@@ -7,11 +7,15 @@ import {
   type ModelInfo,
 } from "@/api";
 import { DiarizationPlayground } from "@/components/DiarizationPlayground";
-import { DiarizationHistoryPanel } from "@/components/DiarizationHistoryPanel";
 import { PageHeader, PageShell } from "@/components/PageShell";
+import { Button } from "@/components/ui/button";
+import { DiarizationHistoryTable } from "@/features/diarization/components/DiarizationHistoryTable";
+import { DiarizationRecordDetail } from "@/features/diarization/components/DiarizationRecordDetail";
 import { RouteModelModal } from "@/features/models/components/RouteModelModal";
 import { useDiarizationHistory } from "@/features/diarization/hooks/useDiarizationHistory";
 import { useDiarizationRecord } from "@/features/diarization/hooks/useDiarizationRecord";
+import { summarizeDiarizationRecord } from "@/features/diarization/historySummary";
+import { Settings2 } from "lucide-react";
 
 interface DiarizationPageProps {
   models: ModelInfo[];
@@ -103,8 +107,6 @@ export function DiarizationPage({
 }: DiarizationPageProps) {
   const { recordId } = useParams<{ recordId: string }>();
   const navigate = useNavigate();
-  const [historyActionContainer, setHistoryActionContainer] =
-    useState<HTMLDivElement | null>(null);
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [modalIntentModel, setModalIntentModel] = useState<string | null>(null);
   const [autoCloseOnIntentReady, setAutoCloseOnIntentReady] = useState(false);
@@ -312,6 +314,20 @@ export function DiarizationPage({
     error: recordError,
     refresh: refreshRecord,
   } = useDiarizationRecord(recordId);
+  const detailAudioUrl = useMemo(
+    () => (recordId ? api.diarizationRecordAudioUrl(recordId) : null),
+    [recordId],
+  );
+  const visibleHistoryRecords = useMemo(() => {
+    const nextRecords = latestRecord
+      ? [summarizeDiarizationRecord(latestRecord), ...records]
+      : records;
+    return nextRecords.filter(
+      (recordSummary, index, list) =>
+        list.findIndex((candidate) => candidate.id === recordSummary.id) ===
+        index,
+    );
+  }, [latestRecord, records]);
 
   const closeModelModal = () => {
     setIsModelModalOpen(false);
@@ -428,6 +444,10 @@ export function DiarizationPage({
     navigate("/diarization");
   }, [navigate]);
 
+  const handleOpenModels = useCallback(() => {
+    openModelManager();
+  }, [openModelManager]);
+
   const handleDeleteRecord = useCallback(
     async (targetRecordId: string) => {
       await api.deleteDiarizationRecord(targetRecordId);
@@ -475,85 +495,137 @@ export function DiarizationPage({
 
   const handleRegenerateSummary = useCallback(
     async (targetRecordId: string) => {
+      if (!summaryModelReady) {
+        openModelManager();
+        onError(summaryModelRequirementMessage);
+        throw new Error(summaryModelRequirementMessage);
+      }
       await api.regenerateDiarizationSummary(targetRecordId);
       await Promise.all([
         refreshHistory(),
         recordId === targetRecordId ? refreshRecord() : Promise.resolve(),
       ]);
     },
-    [recordId, refreshHistory, refreshRecord],
+    [
+      onError,
+      openModelManager,
+      recordId,
+      refreshHistory,
+      refreshRecord,
+      summaryModelReady,
+      summaryModelRequirementMessage,
+    ],
   );
 
   return (
     <PageShell>
-      <PageHeader
-        title="Diarization"
-        description="Separate speakers from audio streams and review timestamped transcript segments."
-        actions={
-          <div
-            ref={setHistoryActionContainer}
-            data-testid="page-header-history-slot"
-            className="flex min-h-9 items-center"
+      {recordId ? (
+        <>
+          <PageHeader
+            title="Diarization Record"
+            description="Inspect transcript output, speaker corrections, and quality reruns for this saved diarization record."
+            actions={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 gap-2"
+                onClick={handleOpenModels}
+              >
+                <Settings2 className="h-4 w-4" />
+                Models
+              </Button>
+            }
           />
-        }
-      />
 
-      <DiarizationPlayground
-        selectedModel={resolvedSelectedModel}
-        selectedModelReady={selectedModelReady}
-        onOpenModelManager={openModelManager}
-        onTogglePipelineLoadAll={handleToggleLoadAllPipeline}
-        pipelineAllLoaded={pipelineAllLoaded}
-        pipelineLoadAllBusy={pipelineLoadAllBusy}
-        onModelRequired={() => {
-          setModalIntentModel(resolvedSelectedModel);
-          setAutoCloseOnIntentReady(true);
-          setIsModelModalOpen(true);
-          onError("Select and load a diarization model to start.");
-        }}
-        pipelineAsrModelId={resolvedAsrModel}
-        pipelineAlignerModelId={resolvedAlignerModel}
-        pipelineLlmModelId={resolvedLlmModel}
-        pipelineLlmModelReady={llmModelReady}
-        pipelineModelsReady={pipelineModelsReady}
-        summaryModelId={resolvedSummaryModel}
-        summaryModelReady={summaryModelReady}
-        summaryModelStatus={summaryModelStatus}
-        onSummaryModelRequired={() => {
-          openModelManager();
-          onError(summaryModelRequirementMessage);
-        }}
-        onLatestRecordChange={setLatestRecord}
-        onPipelineModelsRequired={() => {
-          openModelManagerForPipeline();
-          onError("Load ASR and forced aligner models before diarization.");
-        }}
-      />
+          <DiarizationRecordDetail
+            record={record}
+            audioUrl={detailAudioUrl}
+            loading={recordLoading}
+            error={recordError}
+            summaryModelGuidance={
+              summaryModelReady ? null : summaryModelRequirementMessage
+            }
+            onBack={handleCloseRecord}
+            onDelete={handleDeleteRecord}
+            onSaveSpeakerCorrections={handleSaveSpeakerCorrections}
+            onRerun={handleRerunRecord}
+            onRegenerateSummary={handleRegenerateSummary}
+          />
+        </>
+      ) : (
+        <>
+          <PageHeader
+            title="Diarization"
+            description="Capture speaker-separated transcripts, tune diarization quality, and review saved records from one workspace."
+            actions={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 gap-2"
+                onClick={handleOpenModels}
+              >
+                <Settings2 className="h-4 w-4" />
+                Models
+              </Button>
+            }
+          />
 
-      <DiarizationHistoryPanel
-        latestRecord={latestRecord}
-        historyRecords={records}
-        historyLoading={historyLoading}
-        historyError={historyError}
-        selectedRecordId={recordId ?? null}
-        selectedRecord={record}
-        selectedRecordLoading={recordLoading}
-        selectedRecordError={recordError}
-        summaryModelReady={summaryModelReady}
-        summaryModelStatus={summaryModelStatus}
-        summaryModelId={resolvedSummaryModel}
-        onOpenRecord={handleOpenRecord}
-        onCloseRecord={handleCloseRecord}
-        onDeleteRecord={handleDeleteRecord}
-        onSaveSpeakerCorrections={handleSaveSpeakerCorrections}
-        onRerunRecord={handleRerunRecord}
-        onRegenerateSummary={handleRegenerateSummary}
-        onSummaryModelRequired={() => {
-          openModelManager();
-          onError(summaryModelRequirementMessage);
-        }}
-        historyActionContainer={historyActionContainer}
-      />
+          <DiarizationPlayground
+            selectedModel={resolvedSelectedModel}
+            selectedModelReady={selectedModelReady}
+            onOpenModelManager={openModelManager}
+            onTogglePipelineLoadAll={handleToggleLoadAllPipeline}
+            pipelineAllLoaded={pipelineAllLoaded}
+            pipelineLoadAllBusy={pipelineLoadAllBusy}
+            onModelRequired={() => {
+              setModalIntentModel(resolvedSelectedModel);
+              setAutoCloseOnIntentReady(true);
+              setIsModelModalOpen(true);
+              onError("Select and load a diarization model to start.");
+            }}
+            pipelineAsrModelId={resolvedAsrModel}
+            pipelineAlignerModelId={resolvedAlignerModel}
+            pipelineLlmModelId={resolvedLlmModel}
+            pipelineLlmModelReady={llmModelReady}
+            pipelineModelsReady={pipelineModelsReady}
+            summaryModelId={resolvedSummaryModel}
+            summaryModelReady={summaryModelReady}
+            summaryModelStatus={summaryModelStatus}
+            onSummaryModelRequired={() => {
+              openModelManager();
+              onError(summaryModelRequirementMessage);
+            }}
+            onLatestRecordChange={setLatestRecord}
+            onPipelineModelsRequired={() => {
+              openModelManagerForPipeline();
+              onError("Load ASR and forced aligner models before diarization.");
+            }}
+          />
+
+          <section className="space-y-3">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold tracking-tight text-[var(--text-primary)]">
+                  History
+                </h2>
+                <p className="mt-1 text-sm text-[var(--text-muted)]">
+                  Open saved diarization runs on their own review pages.
+                </p>
+              </div>
+            </div>
+
+            <DiarizationHistoryTable
+              records={visibleHistoryRecords}
+              loading={historyLoading}
+              error={historyError}
+              onRefresh={() => void refreshHistory()}
+              onOpenRecord={handleOpenRecord}
+            />
+          </section>
+        </>
+      )}
 
       <RouteModelModal
         isOpen={isModelModalOpen}
