@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TranscriptionPage } from "./route";
 
 const apiMocks = vi.hoisted(() => ({
+  listTranscriptionRecords: vi.fn(),
   getTranscriptionRecord: vi.fn(),
   transcriptionRecordAudioUrl: vi.fn(),
   deleteTranscriptionRecord: vi.fn(),
@@ -17,6 +18,7 @@ const hookMocks = vi.hoisted(() => ({
 
 vi.mock("@/api", () => ({
   api: {
+    listTranscriptionRecords: apiMocks.listTranscriptionRecords,
     getTranscriptionRecord: apiMocks.getTranscriptionRecord,
     transcriptionRecordAudioUrl: apiMocks.transcriptionRecordAudioUrl,
     deleteTranscriptionRecord: apiMocks.deleteTranscriptionRecord,
@@ -66,12 +68,14 @@ function renderRoute(initialEntry: string) {
 describe("TranscriptionPage detail route", () => {
   beforeEach(() => {
     apiMocks.getTranscriptionRecord.mockReset();
+    apiMocks.listTranscriptionRecords.mockReset();
     apiMocks.transcriptionRecordAudioUrl.mockReset();
     apiMocks.deleteTranscriptionRecord.mockReset();
     apiMocks.regenerateTranscriptionSummary.mockReset();
     hookMocks.useRouteModelSelection.mockReset();
 
     apiMocks.transcriptionRecordAudioUrl.mockReturnValue("/audio/transcription.wav");
+    apiMocks.listTranscriptionRecords.mockResolvedValue([]);
     hookMocks.useRouteModelSelection.mockReturnValue({
       routeModels: [],
       resolvedSelectedModel: null,
@@ -89,6 +93,18 @@ describe("TranscriptionPage detail route", () => {
     vi.spyOn(window.HTMLMediaElement.prototype, "pause").mockImplementation(
       () => {},
     );
+  });
+
+  it("renders the transcription history table on /transcription", async () => {
+    renderRoute("/transcription");
+
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalled(),
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Transcription history" }),
+    ).toBeInTheDocument();
   });
 
   it("loads an existing record directly from /transcription/:id", async () => {

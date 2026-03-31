@@ -107,7 +107,6 @@ describe("Page header history buttons", () => {
     ["TextToSpeechPage", <TextToSpeechPage {...baseProps} />],
     ["VoiceCloningPage", <VoiceCloningPage {...baseProps} />],
     ["DiarizationPage", <DiarizationPage {...baseProps} />],
-    ["TranscriptionPage", <TranscriptionPage {...baseProps} />],
   ])("%s renders the history button in the page header slot", async (_, ui) => {
     render(<MemoryRouter>{ui}</MemoryRouter>);
 
@@ -119,6 +118,21 @@ describe("Page header history buttons", () => {
     expect(within(slot).getByRole("button", { name: /History/i })).not.toHaveClass(
       "fixed",
     );
+  });
+
+  it("TranscriptionPage renders the history table instead of a header history button", async () => {
+    render(
+      <MemoryRouter>
+        <TranscriptionPage {...baseProps} />
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Transcription history" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /History/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("StudioPage renders project actions in the page header slot", async () => {
