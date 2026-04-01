@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, Settings2 } from "lucide-react";
+import { Settings2 } from "lucide-react";
 
-import { type ModelInfo, type SpeechHistoryRecord } from "@/api";
+import { api, type ModelInfo, type SpeechHistoryRecord } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { StatusBadge } from "@/components/ui/status-badge";
 import {
   TEXT_TO_SPEECH_PREFERRED_MODELS,
   resolvePreferredRouteModel,
@@ -15,12 +13,11 @@ import { RouteModelModal } from "@/features/models/components/RouteModelModal";
 import { useRouteModelSelection } from "@/features/models/hooks/useRouteModelSelection";
 import { TextToSpeechHistoryTable } from "@/features/text-to-speech/components/TextToSpeechHistoryTable";
 import { NewTextToSpeechModal } from "@/features/text-to-speech/components/NewTextToSpeechModal";
+import { TextToSpeechRecordDetail } from "@/features/text-to-speech/components/TextToSpeechRecordDetail";
 import { useTextToSpeechHistory } from "@/features/text-to-speech/hooks/useTextToSpeechHistory";
 import { useTextToSpeechRecord } from "@/features/text-to-speech/hooks/useTextToSpeechRecord";
 import {
-  formatSpeechCreatedAt,
   normalizeSpeechProcessingStatus,
-  speechProcessingStatusLabel,
 } from "@/features/text-to-speech/support";
 
 interface TextToSpeechPageProps {
@@ -46,22 +43,6 @@ interface TextToSpeechPageProps {
   onError: (message: string) => void;
 }
 
-function statusToneFor(
-  status: ReturnType<typeof normalizeSpeechProcessingStatus>,
-): "neutral" | "warning" | "success" | "danger" {
-  switch (status) {
-    case "pending":
-      return "neutral";
-    case "processing":
-      return "warning";
-    case "failed":
-      return "danger";
-    case "ready":
-    default:
-      return "success";
-  }
-}
-
 export function TextToSpeechPage({
   models,
   selectedModel,
@@ -84,6 +65,10 @@ export function TextToSpeechPage({
     useState(false);
   const [streamingRecord, setStreamingRecord] =
     useState<SpeechHistoryRecord | null>(null);
+  const [recordActionError, setRecordActionError] = useState<string | null>(
+    null,
+  );
+  const [recordDeletePending, setRecordDeletePending] = useState(false);
   const {
     routeModels,
     resolvedSelectedModel,
@@ -148,9 +133,11 @@ export function TextToSpeechPage({
 
   useEffect(() => {
     if (!recordId) {
+      setRecordActionError(null);
       return;
     }
 
+    setRecordActionError(null);
     setStreamingRecord((current) =>
       current?.id === recordId ? current : null,
     );
@@ -241,6 +228,33 @@ export function TextToSpeechPage({
     }
   }, [visibleRecord]);
 
+  const detailAudioUrl = useMemo(
+    () =>
+      recordId ? api.textToSpeechRecordAudioUrl(recordId) : null,
+    [recordId],
+  );
+
+  const handleDetailDelete = async () => {
+    if (!recordId || recordDeletePending) {
+      return;
+    }
+
+    setRecordDeletePending(true);
+    setRecordActionError(null);
+    try {
+      await api.deleteTextToSpeechRecord(recordId);
+      setStreamingRecord(null);
+      await refreshHistory();
+      navigate("/text-to-speech", { replace: true });
+    } catch (err) {
+      setRecordActionError(
+        err instanceof Error ? err.message : "Failed to delete generation.",
+      );
+    } finally {
+      setRecordDeletePending(false);
+    }
+  };
+
   return (
     <PageShell>
       {recordId ? (
@@ -262,91 +276,16 @@ export function TextToSpeechPage({
             }
           />
 
-          <Card className="mb-6 border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-5 sm:p-6">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="mb-4 h-10 gap-2 rounded-full px-4"
-              onClick={() => navigate("/text-to-speech")}
-            >
-              <ArrowLeft className="h-4 w-4" />
-              Back to history
-            </Button>
-
-            {recordLoading ? (
-              <p className="text-sm text-[var(--text-muted)]">Loading record...</p>
-            ) : null}
-
-            {recordError ? (
-              <div className="rounded-xl border border-[var(--danger-border)] bg-[var(--danger-bg)] p-4 text-sm text-[var(--danger-text)]">
-                <div className="flex items-center justify-between gap-3">
-                  <p>{recordError}</p>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void refreshRecord()}
-                  >
-                    Retry
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-
-            {!recordLoading && !recordError && visibleRecord ? (
-              <div className="space-y-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <StatusBadge
-                    tone={statusToneFor(
-                      normalizeSpeechProcessingStatus(
-                        visibleRecord.processing_status,
-                        visibleRecord.processing_error,
-                      ),
-                    )}
-                  >
-                    {speechProcessingStatusLabel(
-                      normalizeSpeechProcessingStatus(
-                        visibleRecord.processing_status,
-                        visibleRecord.processing_error,
-                      ),
-                    )}
-                  </StatusBadge>
-                  <span className="text-xs text-[var(--text-muted)]">
-                    {formatSpeechCreatedAt(visibleRecord.created_at)}
-                  </span>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                      Model
-                    </div>
-                    <div className="mt-1 text-sm text-[var(--text-primary)]">
-                      {visibleRecord.model_id || "Unknown"}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                      Voice
-                    </div>
-                    <div className="mt-1 text-sm text-[var(--text-primary)]">
-                      {visibleRecord.saved_voice_id ||
-                        visibleRecord.speaker ||
-                        "No voice metadata"}
-                    </div>
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                    Input
-                  </div>
-                  <p className="mt-1 whitespace-pre-wrap rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3 text-sm leading-6 text-[var(--text-primary)]">
-                    {visibleRecord.input_text}
-                  </p>
-                </div>
-              </div>
-            ) : null}
-          </Card>
+          <TextToSpeechRecordDetail
+            record={visibleRecord}
+            audioUrl={detailAudioUrl}
+            loading={recordLoading}
+            error={recordError}
+            deleteError={recordActionError}
+            deletePending={recordDeletePending}
+            onBack={() => navigate("/text-to-speech")}
+            onDelete={() => void handleDetailDelete()}
+          />
         </>
       ) : (
         <>
@@ -404,6 +343,7 @@ export function TextToSpeechPage({
           );
         }}
         onCreated={async (createdRecord) => {
+          setRecordActionError(null);
           setStreamingRecord(createdRecord);
           await refreshHistory().catch(() => undefined);
           navigate(`/text-to-speech/${createdRecord.id}`);
