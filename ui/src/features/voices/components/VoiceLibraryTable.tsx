@@ -8,7 +8,6 @@ import {
 import { Loader2, Pause, Play } from "lucide-react";
 
 import { StatePanel } from "@/components/ui/state-panel";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { type VoiceLibraryItem } from "@/features/voices/types";
 import { cn } from "@/lib/utils";
 
@@ -304,12 +303,6 @@ export function VoiceLibraryTable({
         className,
       )}
     >
-      <div className="flex items-center justify-between border-b border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-2 text-xs text-[var(--text-muted)]">
-        <span>{items.length === 1 ? "1 voice listed" : `${items.length} voices listed`}</span>
-        <span className="hidden sm:inline">
-          Scroll horizontally for preview and actions on narrow screens.
-        </span>
-      </div>
       <div className="overflow-x-auto">
         <table
           className={cn(
@@ -358,7 +351,9 @@ export function VoiceLibraryTable({
                     </div>
                   </td>
                   <td className="px-4 py-3.5">
-                    <StatusBadge>{item.categoryLabel}</StatusBadge>
+                    <span className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+                      {item.categoryLabel}
+                    </span>
                   </td>
                   <td className="px-4 py-3.5 text-[var(--text-secondary)]">
                     <p className="line-clamp-2">

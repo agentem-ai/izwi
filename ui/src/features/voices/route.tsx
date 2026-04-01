@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import {
   Loader2,
   Mic2,
+  Settings2,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -12,7 +13,6 @@ import { PageHeader, PageShell } from "@/components/PageShell";
 import { Button } from "@/components/ui/button";
 import { StatePanel } from "@/components/ui/state-panel";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { WorkspacePanel } from "@/components/ui/workspace";
 import { getSpeakerProfilesForVariant, isLfm25AudioVariant } from "@/types";
 import {
   TEXT_TO_SPEECH_PREFERRED_MODELS,
@@ -135,6 +135,7 @@ export function VoicesPage({
     isModelModalOpen,
     intentVariant,
     closeModelModal,
+    openModelManager,
     requestModel,
     handleModelSelect,
   } = useRouteModelSelection({
@@ -263,6 +264,8 @@ export function VoicesPage({
       setPreviewLoadingVoiceId(null);
     }
   };
+  const tableActionButtonClass =
+    "h-8 w-[7.5rem] rounded-[0.6rem] px-3 text-xs font-semibold";
 
   const savedVoiceItems: VoiceLibraryItem[] = savedVoices.map(
     (voice) => ({
@@ -279,7 +282,7 @@ export function VoicesPage({
         <>
           <Button
             size="sm"
-            className="h-8 rounded-[var(--radius-pill)] px-3.5 text-xs font-semibold"
+            className={tableActionButtonClass}
             onClick={(event) => {
               event.stopPropagation();
               handleUseSavedVoice(voice.id);
@@ -291,7 +294,10 @@ export function VoicesPage({
           <Button
             variant="outline"
             size="sm"
-            className="h-8 rounded-[var(--radius-pill)] border-[var(--border-strong)] bg-[var(--bg-surface-1)]/72 px-3.5 text-xs font-semibold"
+            className={cn(
+              tableActionButtonClass,
+              "border-[var(--border-strong)] bg-[var(--bg-surface-1)]/72",
+            )}
             onClick={(event) => {
               event.stopPropagation();
               void handleDeleteVoice(voice.id);
@@ -332,7 +338,7 @@ export function VoicesPage({
               event.stopPropagation();
               handleUseBuiltInVoice(voice.id);
             }}
-            className="h-8 rounded-[var(--radius-pill)] px-3.5 text-xs font-semibold"
+            className={tableActionButtonClass}
           >
             <Mic2 className="h-4 w-4" />
             Use in TTS
@@ -345,7 +351,10 @@ export function VoicesPage({
               void handlePreviewBuiltInVoice(voice.id, voice.language);
             }}
             disabled={previewLoadingVoiceId === voice.id}
-            className="h-8 rounded-[var(--radius-pill)] border-[var(--border-strong)] bg-[var(--bg-surface-1)]/72 px-3.5 text-xs font-semibold"
+            className={cn(
+              tableActionButtonClass,
+              "border-[var(--border-strong)] bg-[var(--bg-surface-1)]/72",
+            )}
           >
             {previewLoadingVoiceId === voice.id ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -378,8 +387,8 @@ export function VoicesPage({
         onValueChange={(value) => setActiveTab(value as VoiceLibraryTab)}
         className="w-full"
       >
-        <WorkspacePanel className={cn("p-5 sm:p-6", embedded && "p-4 sm:p-5")}>
-          <div className="flex flex-col gap-4 border-b border-[var(--border-muted)] pb-4">
+        <div className={cn("p-5 sm:p-6", embedded && "p-4 sm:p-5")}>
+          <div className="flex flex-col gap-4 pb-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <TabsList className="grid h-10 w-full max-w-[30rem] grid-cols-3 overflow-hidden rounded-[var(--radius-pill)] border-[var(--border-strong)] bg-[var(--bg-surface-2)] p-[2px] shadow-none">
                 <TabsTrigger
@@ -450,7 +459,7 @@ export function VoicesPage({
             className="mt-5"
             compact={embedded}
           />
-        </WorkspacePanel>
+        </div>
       </Tabs>
     </div>
   );
@@ -490,6 +499,18 @@ export function VoicesPage({
       <PageHeader
         title="Voices"
         description="Manage, browse, and use your saved, cloned, and designed voices for text-to-speech."
+        actions={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-9 gap-2"
+            onClick={openModelManager}
+          >
+            <Settings2 className="h-4 w-4" />
+            Models
+          </Button>
+        }
       />
       {workspaceContent}
       {routeModelModal}

@@ -195,7 +195,7 @@ describe("VoicesPage", () => {
     expect(screen.getByRole("button", { name: "Preview" })).toBeDisabled();
   });
 
-  it("removes secondary controls, summary badges, and model guidance banner", async () => {
+  it("keeps only top-level model action while removing secondary strips", async () => {
     render(
       <MemoryRouter>
         <VoicesPage {...baseProps} />
@@ -213,6 +213,7 @@ describe("VoicesPage", () => {
     );
 
     expect(await screen.findByText("Balanced 21 yo")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Models/i })).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: "All" })).not.toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: "Cloned" })).not.toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: "Designed" })).not.toBeInTheDocument();
@@ -231,6 +232,12 @@ describe("VoicesPage", () => {
       ),
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Model" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/voices listed/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        /Scroll horizontally for preview and actions on narrow screens/i,
+      ),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(/RESULTS/)).not.toBeInTheDocument();
     expect(screen.queryByText(/SAVED\s+\d+/)).not.toBeInTheDocument();
     expect(screen.queryByText(/CLONED\s+\d+/)).not.toBeInTheDocument();
