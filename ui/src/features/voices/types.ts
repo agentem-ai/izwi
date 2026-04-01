@@ -3,9 +3,9 @@ import type { ReactNode } from "react";
 export interface VoiceLibraryItem {
   id: string;
   name: string;
+  secondaryLabel?: string;
   categoryLabel: string;
   description?: string;
-  meta?: string[];
   previewUrl?: string | null;
   previewMessage?: string | null;
   previewLoading?: boolean;

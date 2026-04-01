@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  AlertTriangle,
   Loader2,
   Mic2,
   Settings2,
@@ -11,6 +12,12 @@ import type { ModelInfo, SavedVoiceSummary } from "@/api";
 import { api } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { StatePanel } from "@/components/ui/state-panel";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getSpeakerProfilesForVariant, isLfm25AudioVariant } from "@/types";
@@ -87,6 +94,12 @@ function savedVoiceSourceLabel(
   }
 }
 
+function shouldShowSavedVoiceCreatedDate(
+  source: SavedVoiceSummary["source_route_kind"],
+): boolean {
+  return source === "voice_cloning" || source === "voice_design";
+}
+
 function previewTextForLanguage(language: string): string {
   const normalized = language.toLowerCase();
   if (normalized.includes("chinese")) return BUILT_IN_PREVIEW_TEXT.chinese;
@@ -121,6 +134,12 @@ export function VoicesPage({
   const [savedVoicesLoading, setSavedVoicesLoading] = useState(true);
   const [savedVoicesError, setSavedVoicesError] = useState<string | null>(null);
   const [deletingVoiceId, setDeletingVoiceId] = useState<string | null>(null);
+  const [deleteConfirmVoiceId, setDeleteConfirmVoiceId] = useState<string | null>(
+    null,
+  );
+  const [deleteConfirmError, setDeleteConfirmError] = useState<string | null>(
+    null,
+  );
   const [previewLoadingVoiceId, setPreviewLoadingVoiceId] = useState<
     string | null
   >(null);
@@ -130,7 +149,6 @@ export function VoicesPage({
   const {
     routeModels,
     resolvedSelectedModel,
-    selectedModelInfo,
     selectedModelReady,
     isModelModalOpen,
     intentVariant,
@@ -209,15 +227,22 @@ export function VoicesPage({
     navigate(`/text-to-speech?${params.toString()}`);
   };
 
-  const handleDeleteVoice = async (voiceId: string) => {
-    setDeletingVoiceId(voiceId);
+  const handleDeleteVoice = async () => {
+    if (!deleteConfirmVoiceId || deletingVoiceId) {
+      return;
+    }
+
+    setDeletingVoiceId(deleteConfirmVoiceId);
+    setDeleteConfirmError(null);
     try {
-      await api.deleteSavedVoice(voiceId);
+      await api.deleteSavedVoice(deleteConfirmVoiceId);
       setSavedVoices((current) =>
-        current.filter((voice) => voice.id !== voiceId),
+        current.filter((voice) => voice.id !== deleteConfirmVoiceId),
       );
+      setDeleteConfirmVoiceId(null);
+      setDeleteConfirmError(null);
     } catch (error) {
-      onError(
+      setDeleteConfirmError(
         error instanceof Error
           ? error.message
           : "Failed to delete saved voice.",
@@ -266,17 +291,19 @@ export function VoicesPage({
   };
   const tableActionButtonClass =
     "h-8 w-[7.5rem] rounded-[0.6rem] px-3 text-xs font-semibold";
+  const deleteTargetVoice = savedVoices.find(
+    (voice) => voice.id === deleteConfirmVoiceId,
+  );
 
   const savedVoiceItems: VoiceLibraryItem[] = savedVoices.map(
     (voice) => ({
       id: voice.id,
       name: voice.name,
+      secondaryLabel: shouldShowSavedVoiceCreatedDate(voice.source_route_kind)
+        ? `Created ${formatRelativeDate(voice.created_at)}`
+        : undefined,
       categoryLabel: savedVoiceSourceLabel(voice.source_route_kind),
       description: voice.reference_text_preview,
-      meta: [
-        `${voice.reference_text_chars} chars`,
-        formatRelativeDate(voice.updated_at || voice.created_at),
-      ],
       previewUrl: api.savedVoiceAudioUrl(voice.id),
       actions: (
         <>
@@ -300,7 +327,8 @@ export function VoicesPage({
             )}
             onClick={(event) => {
               event.stopPropagation();
-              void handleDeleteVoice(voice.id);
+              setDeleteConfirmVoiceId(voice.id);
+              setDeleteConfirmError(null);
             }}
             disabled={deletingVoiceId === voice.id}
           >
@@ -322,7 +350,6 @@ export function VoicesPage({
       name: voice.name,
       categoryLabel: "Built-in voice",
       description: voice.description,
-      meta: [voice.language, selectedModelInfo?.variant ?? "Model preview"],
       previewUrl: previewUrls[voice.id] ?? null,
       previewLoading: previewLoadingVoiceId === voice.id,
       previewMessage: previewUrls[voice.id]
@@ -387,7 +414,7 @@ export function VoicesPage({
         onValueChange={(value) => setActiveTab(value as VoiceLibraryTab)}
         className="w-full"
       >
-        <div className={cn("p-5 sm:p-6", embedded && "p-4 sm:p-5")}>
+        <div className={cn("pb-4 sm:pb-5", embedded && "pb-3 sm:pb-4")}>
           <div className="flex flex-col gap-4 pb-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <TabsList className="grid h-10 w-full max-w-[30rem] grid-cols-3 overflow-hidden rounded-[var(--radius-pill)] border-[var(--border-strong)] bg-[var(--bg-surface-2)] p-[2px] shadow-none">
@@ -464,6 +491,74 @@ export function VoicesPage({
     </div>
   );
 
+  const deleteVoiceDialog = (
+    <Dialog
+      open={deleteConfirmVoiceId !== null}
+      onOpenChange={(open) => {
+        if (!deletingVoiceId && !open) {
+          setDeleteConfirmVoiceId(null);
+          setDeleteConfirmError(null);
+        }
+      }}
+    >
+      <DialogContent className="max-w-md border-[var(--border-strong)] bg-[var(--bg-surface-1)] p-5">
+        <DialogTitle className="sr-only">Delete voice?</DialogTitle>
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded-full border border-[var(--danger-border)] bg-[var(--danger-bg)] p-2 text-[var(--danger-text)]">
+            <AlertTriangle className="h-4 w-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+              Delete voice?
+            </h3>
+            <DialogDescription className="mt-1 text-sm text-[var(--text-muted)]">
+              This permanently removes the saved voice from your library.
+            </DialogDescription>
+            <p className="mt-2 truncate text-xs text-[var(--text-subtle)]">
+              {deleteTargetVoice?.name || deleteConfirmVoiceId}
+            </p>
+          </div>
+        </div>
+
+        {deleteConfirmError ? (
+          <div className="mt-4 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
+            {deleteConfirmError}
+          </div>
+        ) : null}
+
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setDeleteConfirmVoiceId(null)}
+            size="sm"
+            className="h-8 border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface-3)]"
+            disabled={deletingVoiceId !== null}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            className="h-8 gap-1.5"
+            onClick={() => void handleDeleteVoice()}
+            disabled={deletingVoiceId !== null}
+          >
+            {deletingVoiceId ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Deleting
+              </>
+            ) : (
+              "Delete voice"
+            )}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+
   const routeModelModal = (
     <RouteModelModal
       isOpen={isModelModalOpen}
@@ -489,6 +584,7 @@ export function VoicesPage({
     return (
       <>
         {workspaceContent}
+        {deleteVoiceDialog}
         {routeModelModal}
       </>
     );
@@ -513,6 +609,7 @@ export function VoicesPage({
         }
       />
       {workspaceContent}
+      {deleteVoiceDialog}
       {routeModelModal}
     </PageShell>
   );
