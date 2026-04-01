@@ -17,6 +17,7 @@ interface VoiceLibraryTableProps {
   emptyTitle: string;
   emptyDescription: string;
   className?: string;
+  compact?: boolean;
 }
 
 interface TablePreviewPlayerProps {
@@ -279,6 +280,7 @@ export function VoiceLibraryTable({
   emptyTitle,
   emptyDescription,
   className,
+  compact = false,
 }: VoiceLibraryTableProps) {
   const [activePreviewId, setActivePreviewId] = useState<string | null>(null);
 
@@ -298,19 +300,31 @@ export function VoiceLibraryTable({
     <div
       className={cn(
         "overflow-hidden rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)]",
+        compact && "rounded-xl",
         className,
       )}
     >
+      <div className="flex items-center justify-between border-b border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-2 text-xs text-[var(--text-muted)]">
+        <span>{items.length === 1 ? "1 voice listed" : `${items.length} voices listed`}</span>
+        <span className="hidden sm:inline">
+          Scroll horizontally for preview and actions on narrow screens.
+        </span>
+      </div>
       <div className="overflow-x-auto">
-        <table className="min-w-[72rem] w-full border-collapse text-sm">
-          <thead className="bg-[var(--bg-surface-1)] text-left text-xs uppercase tracking-[0.14em] text-[var(--text-muted)]">
+        <table
+          className={cn(
+            "w-full border-collapse text-sm",
+            compact ? "min-w-[64rem]" : "min-w-[72rem]",
+          )}
+        >
+          <thead className="sticky top-0 z-[1] bg-[var(--bg-surface-1)] text-left text-xs uppercase tracking-[0.14em] text-[var(--text-muted)]">
             <tr>
-              <th className="px-4 py-3 font-semibold">Voice</th>
-              <th className="px-4 py-3 font-semibold">Type</th>
-              <th className="px-4 py-3 font-semibold">Notes</th>
-              <th className="px-4 py-3 font-semibold">Metadata</th>
-              <th className="px-4 py-3 font-semibold">Preview</th>
-              <th className="px-4 py-3 font-semibold text-right">Actions</th>
+              <th className="whitespace-nowrap px-4 py-2.5 font-semibold">Voice</th>
+              <th className="whitespace-nowrap px-4 py-2.5 font-semibold">Type</th>
+              <th className="whitespace-nowrap px-4 py-2.5 font-semibold">Notes</th>
+              <th className="whitespace-nowrap px-4 py-2.5 font-semibold">Metadata</th>
+              <th className="whitespace-nowrap px-4 py-2.5 font-semibold">Preview</th>
+              <th className="whitespace-nowrap px-4 py-2.5 font-semibold text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -333,26 +347,26 @@ export function VoiceLibraryTable({
                   onKeyDown={handleRowKeyDown}
                   data-testid={`voice-row-${item.id}`}
                   className={cn(
-                    "border-t border-[var(--border-muted)] align-top",
+                    "border-t border-[var(--border-muted)] align-top transition-colors hover:bg-[var(--bg-surface-1)]/60",
                     item.onSelect &&
-                      "cursor-pointer transition-colors hover:bg-[var(--bg-surface-1)] focus-visible:bg-[var(--bg-surface-1)] focus-visible:outline-none",
+                      "cursor-pointer focus-visible:bg-[var(--bg-surface-1)] focus-visible:outline-none",
                   )}
                 >
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3.5">
                     <div className="font-semibold text-[var(--text-primary)]">
                       {item.name}
                     </div>
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3.5">
                     <StatusBadge>{item.categoryLabel}</StatusBadge>
                   </td>
-                  <td className="px-4 py-3 text-[var(--text-secondary)]">
+                  <td className="px-4 py-3.5 text-[var(--text-secondary)]">
                     <p className="line-clamp-2">
                       {item.description ||
                         "No reference notes were saved for this voice yet."}
                     </p>
                   </td>
-                  <td className="px-4 py-3 text-[var(--text-secondary)]">
+                  <td className="px-4 py-3.5 text-[var(--text-secondary)]">
                     <div className="flex flex-wrap gap-1.5">
                       {(item.meta ?? []).map((meta) => (
                         <span
@@ -367,16 +381,16 @@ export function VoiceLibraryTable({
                       ) : null}
                     </div>
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3.5">
                     <TablePreviewPlayer
                       item={item}
                       activePreviewId={activePreviewId}
                       onActivePreviewChange={setActivePreviewId}
                     />
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3.5">
                     <div
-                      className="flex flex-wrap justify-end gap-2"
+                      className="flex flex-wrap justify-start gap-2 lg:justify-end"
                       onClick={(event) => event.stopPropagation()}
                     >
                       {item.actions}
