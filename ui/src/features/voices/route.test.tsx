@@ -144,7 +144,7 @@ describe("VoicesPage", () => {
     onError: vi.fn(),
   };
 
-  it("renders saved voice actions and shows built-in preview loading state", async () => {
+  it("renders voice rows in a table and keeps built-in preview flow", async () => {
     render(
       <MemoryRouter>
         <VoicesPage {...baseProps} />
@@ -152,8 +152,14 @@ describe("VoicesPage", () => {
     );
 
     await waitFor(() =>
-      expect(apiMocks.listSavedVoices).toHaveBeenCalled(),
+    expect(apiMocks.listSavedVoices).toHaveBeenCalled(),
     );
+
+    expect(screen.getByRole("columnheader", { name: "Voice" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Type" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Preview" })).toBeInTheDocument();
+    expect(screen.getByTestId("voice-row-voice-balanced")).toBeInTheDocument();
+    expect(screen.queryByTestId("voice-card-voice-balanced")).not.toBeInTheDocument();
 
     expect(screen.getByText("Balanced 21 yo")).toBeInTheDocument();
     expect(screen.getByText("Designed voice")).toBeInTheDocument();
@@ -168,6 +174,7 @@ describe("VoicesPage", () => {
       expect(builtInTab).toHaveAttribute("data-state", "active"),
     );
 
+    expect(screen.getByTestId("voice-row-alloy")).toBeInTheDocument();
     expect(await screen.findByText("Alloy")).toBeInTheDocument();
     expect(screen.getAllByText("Built-in voice").length).toBeGreaterThan(0);
     expect(screen.getAllByText("MockVoiceModel").length).toBeGreaterThan(0);
@@ -188,7 +195,7 @@ describe("VoicesPage", () => {
     expect(screen.getByRole("button", { name: "Preview" })).toBeDisabled();
   });
 
-  it("supports the all-voices tab with sidebar filter and search controls", async () => {
+  it("keeps inline filter and search controls without sidebar sections", async () => {
     render(
       <MemoryRouter>
         <VoicesPage {...baseProps} />
@@ -214,6 +221,8 @@ describe("VoicesPage", () => {
     });
 
     expect(await screen.findByText("Balanced 21 yo")).toBeInTheDocument();
+    expect(screen.queryByText("Library Statistics")).not.toBeInTheDocument();
+    expect(screen.queryByText("Filter By")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Add New Voice/i })).toBeInTheDocument();
   });
 });
