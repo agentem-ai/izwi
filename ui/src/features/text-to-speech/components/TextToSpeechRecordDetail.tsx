@@ -18,17 +18,16 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { StatusBadge } from "@/components/ui/status-badge";
 import {
   formatSpeechCreatedAt,
   formatSpeechDuration,
   normalizeSpeechProcessingStatus,
-  speechProcessingStatusLabel,
 } from "@/features/text-to-speech/support";
 
 interface TextToSpeechRecordDetailProps {
   record: SpeechHistoryRecord | null;
   audioUrl: string | null;
+  voiceLabel?: string | null;
   loading?: boolean;
   error?: string | null;
   deleteError?: string | null;
@@ -37,25 +36,10 @@ interface TextToSpeechRecordDetailProps {
   onDelete?: () => Promise<void> | void;
 }
 
-function statusToneFor(
-  status: ReturnType<typeof normalizeSpeechProcessingStatus>,
-): "neutral" | "warning" | "success" | "danger" {
-  switch (status) {
-    case "pending":
-      return "neutral";
-    case "processing":
-      return "warning";
-    case "failed":
-      return "danger";
-    case "ready":
-    default:
-      return "success";
-  }
-}
-
 export function TextToSpeechRecordDetail({
   record,
   audioUrl,
+  voiceLabel = null,
   loading = false,
   error = null,
   deleteError = null,
@@ -140,17 +124,11 @@ export function TextToSpeechRecordDetail({
               <span>{formatSpeechDuration(record.audio_duration_secs)}</span>
             ) : null}
             {record?.model_id ? <span>{record.model_id}</span> : null}
-            {record?.saved_voice_id ? (
-              <span>Saved voice: {record.saved_voice_id}</span>
-            ) : null}
-            {record?.speaker ? <span>Speaker: {record.speaker}</span> : null}
+            {voiceLabel ? <span>Voice: {voiceLabel}</span> : null}
           </div>
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <StatusBadge tone={statusToneFor(processingStatus)}>
-            {speechProcessingStatusLabel(processingStatus)}
-          </StatusBadge>
           <Button
             type="button"
             variant="outline"

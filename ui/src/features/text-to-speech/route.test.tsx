@@ -105,6 +105,21 @@ function buildSummary(
   };
 }
 
+function buildSavedVoice(id: string, name: string) {
+  return {
+    id,
+    created_at: 1,
+    updated_at: 1,
+    name,
+    reference_text_preview: "preview",
+    reference_text_chars: 7,
+    audio_mime_type: "audio/wav",
+    audio_filename: "voice.wav",
+    source_route_kind: null,
+    source_record_id: null,
+  };
+}
+
 function renderRoute(initialEntry: string) {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
@@ -142,7 +157,9 @@ describe("TextToSpeechPage", () => {
     });
     apiMocks.textToSpeechRecordAudioUrl.mockReturnValue("/audio/tts.wav");
     apiMocks.createTextToSpeechRecord.mockResolvedValue(buildRecord());
-    apiMocks.listSavedVoices.mockResolvedValue([]);
+    apiMocks.listSavedVoices.mockResolvedValue([
+      buildSavedVoice("voice-1", "Narrator"),
+    ]);
     apiMocks.downloadAudioFile.mockResolvedValue(undefined);
     apiMocks.createTextToSpeechRecordStream.mockImplementation(
       (_request, callbacks) => {
@@ -191,6 +208,30 @@ describe("TextToSpeechPage", () => {
     expect(
       screen.getByRole("heading", { name: "No text-to-speech jobs yet" }),
     ).toBeInTheDocument();
+  });
+
+  it("hides status column and uses saved voice names in history rows", async () => {
+    apiMocks.listTextToSpeechRecords.mockResolvedValue([
+      buildSummary({
+        saved_voice_id: "voice-1",
+        speaker: null,
+      }),
+    ]);
+    apiMocks.listSavedVoices.mockResolvedValue([
+      buildSavedVoice("voice-1", "Narrator Prime"),
+    ]);
+
+    renderRoute("/text-to-speech");
+
+    await waitFor(() =>
+      expect(apiMocks.listTextToSpeechRecords).toHaveBeenCalled(),
+    );
+
+    expect(
+      screen.queryByRole("columnheader", { name: /Status/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Narrator Prime")).toBeInTheDocument();
+    expect(screen.queryByText("voice-1")).not.toBeInTheDocument();
   });
 
   it("opens the new text-to-speech modal from the header action", async () => {
@@ -280,5 +321,32 @@ describe("TextToSpeechPage", () => {
     expect(
       await screen.findByRole("heading", { name: "Text to Speech" }),
     ).toBeInTheDocument();
+  });
+
+  it("uses saved voice names on detail headers and removes header status badges", async () => {
+    apiMocks.getTextToSpeechRecord.mockResolvedValue(
+      buildRecord({
+        saved_voice_id: "voice-1",
+        speaker: null,
+        processing_status: "ready",
+        generation_time_ms: 120,
+        audio_duration_secs: 2.5,
+        rtf: 0.4,
+        tokens_generated: 120,
+      }),
+    );
+    apiMocks.listSavedVoices.mockResolvedValue([
+      buildSavedVoice("voice-1", "Narrator Prime"),
+    ]);
+
+    renderRoute("/text-to-speech/tts-1");
+
+    expect(
+      await screen.findByRole("heading", { name: "Text-to-Speech Record" }),
+    ).toBeInTheDocument();
+
+    expect(await screen.findByText("Voice: Narrator Prime")).toBeInTheDocument();
+    expect(screen.queryByText(/^READY$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Saved voice:\s*voice-1/i)).not.toBeInTheDocument();
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Settings2 } from "lucide-react";
 
@@ -18,6 +18,7 @@ import { useTextToSpeechHistory } from "@/features/text-to-speech/hooks/useTextT
 import { useTextToSpeechRecord } from "@/features/text-to-speech/hooks/useTextToSpeechRecord";
 import {
   normalizeSpeechProcessingStatus,
+  resolveSpeechVoiceLabel,
 } from "@/features/text-to-speech/support";
 
 interface TextToSpeechPageProps {
@@ -69,6 +70,9 @@ export function TextToSpeechPage({
     null,
   );
   const [recordDeletePending, setRecordDeletePending] = useState(false);
+  const [savedVoiceNameById, setSavedVoiceNameById] = useState<
+    Record<string, string>
+  >({});
   const {
     routeModels,
     resolvedSelectedModel,
@@ -115,6 +119,20 @@ export function TextToSpeechPage({
     refresh: refreshRecord,
   } = useTextToSpeechRecord(recordId);
 
+  const refreshSavedVoiceNames = useCallback(async () => {
+    try {
+      const voices = await api.listSavedVoices();
+      setSavedVoiceNameById(
+        voices.reduce<Record<string, string>>((acc, voice) => {
+          acc[voice.id] = voice.name;
+          return acc;
+        }, {}),
+      );
+    } catch {
+      setSavedVoiceNameById({});
+    }
+  }, []);
+
   useEffect(() => {
     if (appliedQueryModelRef.current || routeModels.length === 0) {
       return;
@@ -130,6 +148,10 @@ export function TextToSpeechPage({
 
     appliedQueryModelRef.current = true;
   }, [onSelect, routeModels, searchParams]);
+
+  useEffect(() => {
+    void refreshSavedVoiceNames();
+  }, [refreshSavedVoiceNames]);
 
   useEffect(() => {
     if (!recordId) {
@@ -228,6 +250,19 @@ export function TextToSpeechPage({
     }
   }, [visibleRecord]);
 
+  const visibleVoiceLabel = useMemo(
+    () =>
+      visibleRecord
+        ? resolveSpeechVoiceLabel({
+            savedVoiceId: visibleRecord.saved_voice_id,
+            speaker: visibleRecord.speaker,
+            modelId: visibleRecord.model_id,
+            savedVoiceNameById,
+          })
+        : null,
+    [savedVoiceNameById, visibleRecord],
+  );
+
   const detailAudioUrl = useMemo(
     () =>
       recordId ? api.textToSpeechRecordAudioUrl(recordId) : null,
@@ -279,6 +314,7 @@ export function TextToSpeechPage({
           <TextToSpeechRecordDetail
             record={visibleRecord}
             audioUrl={detailAudioUrl}
+            voiceLabel={visibleVoiceLabel}
             loading={recordLoading}
             error={recordError}
             deleteError={recordActionError}
@@ -318,6 +354,7 @@ export function TextToSpeechPage({
 
           <TextToSpeechHistoryTable
             records={records}
+            savedVoiceNameById={savedVoiceNameById}
             loading={historyLoading}
             error={historyError}
             onRefresh={() => void refreshHistory()}
