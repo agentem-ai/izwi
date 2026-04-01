@@ -13,7 +13,7 @@ import {
 import type { ModelInfo, SavedVoiceSummary } from "@/api";
 import { api } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
-import { VoicePicker, type VoicePickerItem } from "@/components/VoicePicker";
+import type { VoicePickerItem } from "@/components/VoicePicker";
 import {
   VOICE_ROUTE_META_COPY_CLASS,
 } from "@/components/voiceRouteTypography";
@@ -30,6 +30,7 @@ import {
 } from "@/features/models/catalog/routeModelCatalog";
 import { RouteModelModal } from "@/features/models/components/RouteModelModal";
 import { useRouteModelSelection } from "@/features/models/hooks/useRouteModelSelection";
+import { VoiceLibraryTable } from "@/features/voices/components/VoiceLibraryTable";
 import { cn } from "@/lib/utils";
 
 interface VoicesPageProps {
@@ -599,7 +600,7 @@ export function VoicesPage({
             </div>
           ) : null}
 
-          <VoicePicker
+          <VoiceLibraryTable
             items={activeItems}
             emptyTitle={
               activeTab === "all"
