@@ -2,40 +2,24 @@ import { AlertTriangle, Loader2 } from "lucide-react";
 
 import { type SpeechHistoryRecordSummary } from "@/api";
 import { Button } from "@/components/ui/button";
-import { StatusBadge } from "@/components/ui/status-badge";
 import {
   formatSpeechCreatedAt,
   formatSpeechDuration,
-  normalizeSpeechProcessingStatus,
-  speechProcessingStatusLabel,
+  resolveSpeechVoiceLabel,
 } from "@/features/text-to-speech/support";
 
 interface TextToSpeechHistoryTableProps {
   records: SpeechHistoryRecordSummary[];
+  savedVoiceNameById?: Record<string, string>;
   loading?: boolean;
   error?: string | null;
   onOpenRecord: (recordId: string) => void;
   onRefresh?: () => void;
 }
 
-function statusToneFor(
-  status: ReturnType<typeof normalizeSpeechProcessingStatus>,
-): "neutral" | "warning" | "success" | "danger" {
-  switch (status) {
-    case "pending":
-      return "neutral";
-    case "processing":
-      return "warning";
-    case "failed":
-      return "danger";
-    case "ready":
-    default:
-      return "success";
-  }
-}
-
 export function TextToSpeechHistoryTable({
   records,
+  savedVoiceNameById = {},
   loading = false,
   error = null,
   onOpenRecord,
@@ -88,7 +72,6 @@ export function TextToSpeechHistoryTable({
           <thead className="bg-[var(--bg-surface-1)] text-left text-xs uppercase tracking-[0.14em] text-[var(--text-muted)]">
             <tr>
               <th className="px-4 py-3 font-semibold sm:px-5">Created</th>
-              <th className="px-4 py-3 font-semibold">Status</th>
               <th className="px-4 py-3 font-semibold">Voice</th>
               <th className="px-4 py-3 font-semibold">Duration</th>
               <th className="px-4 py-3 font-semibold">Preview</th>
@@ -96,15 +79,12 @@ export function TextToSpeechHistoryTable({
           </thead>
           <tbody>
             {records.map((record) => {
-              const processingStatus = normalizeSpeechProcessingStatus(
-                record.processing_status,
-                record.processing_error,
-              );
-              const voiceLabel =
-                record.saved_voice_id ||
-                record.speaker ||
-                record.model_id ||
-                "Generated voice";
+              const voiceLabel = resolveSpeechVoiceLabel({
+                savedVoiceId: record.saved_voice_id,
+                speaker: record.speaker,
+                modelId: record.model_id,
+                savedVoiceNameById,
+              });
 
               return (
                 <tr
@@ -122,11 +102,6 @@ export function TextToSpeechHistoryTable({
                 >
                   <td className="px-4 py-3 align-top text-[var(--text-secondary)] sm:px-5">
                     {formatSpeechCreatedAt(record.created_at)}
-                  </td>
-                  <td className="px-4 py-3 align-top">
-                    <StatusBadge tone={statusToneFor(processingStatus)}>
-                      {speechProcessingStatusLabel(processingStatus)}
-                    </StatusBadge>
                   </td>
                   <td className="px-4 py-3 align-top">
                     <div className="font-medium text-[var(--text-primary)]">

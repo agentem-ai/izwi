@@ -64,3 +64,26 @@ export function formatSpeechDuration(durationSecs: number | null): string {
   const seconds = Math.floor(durationSecs % 60);
   return `${minutes}m ${seconds}s`;
 }
+
+export function resolveSpeechVoiceLabel({
+  savedVoiceId,
+  speaker,
+  modelId,
+  savedVoiceNameById,
+}: {
+  savedVoiceId: string | null | undefined;
+  speaker: string | null | undefined;
+  modelId: string | null | undefined;
+  savedVoiceNameById: Record<string, string>;
+}): string {
+  if (savedVoiceId) {
+    return savedVoiceNameById[savedVoiceId] || "Saved voice";
+  }
+  if (speaker) {
+    return speaker;
+  }
+  if (modelId) {
+    return modelId;
+  }
+  return "Generated voice";
+}
