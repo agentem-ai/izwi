@@ -450,7 +450,7 @@ export function VoicesPage({
         onValueChange={(value) => setActiveTab(value as VoiceLibraryTab)}
         className="w-full"
       >
-        <WorkspacePanel className="p-5 sm:p-6">
+        <WorkspacePanel className={cn("p-5 sm:p-6", embedded && "p-4 sm:p-5")}>
           <div className="flex flex-col gap-4 border-b border-[var(--border-muted)] pb-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <TabsList className="grid h-10 w-full max-w-[30rem] grid-cols-3 overflow-hidden rounded-[var(--radius-pill)] border-[var(--border-strong)] bg-[var(--bg-surface-2)] p-[2px] shadow-none">
@@ -627,6 +627,7 @@ export function VoicesPage({
                     : "Try a different built-in voice model or search term."
             }
             className="mt-5"
+            compact={embedded}
           />
         </WorkspacePanel>
       </Tabs>
