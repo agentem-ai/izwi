@@ -13,7 +13,6 @@ import {
 import type { ModelInfo, SavedVoiceSummary } from "@/api";
 import { api } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
-import type { VoicePickerItem } from "@/components/VoicePicker";
 import {
   VOICE_ROUTE_META_COPY_CLASS,
 } from "@/components/voiceRouteTypography";
@@ -31,6 +30,7 @@ import {
 import { RouteModelModal } from "@/features/models/components/RouteModelModal";
 import { useRouteModelSelection } from "@/features/models/hooks/useRouteModelSelection";
 import { VoiceLibraryTable } from "@/features/voices/components/VoiceLibraryTable";
+import { type VoiceLibraryItem } from "@/features/voices/types";
 import { cn } from "@/lib/utils";
 
 interface VoicesPageProps {
@@ -313,7 +313,7 @@ export function VoicesPage({
     }
   };
 
-  const savedVoiceItems: VoicePickerItem[] = filteredSavedVoices.map(
+  const savedVoiceItems: VoiceLibraryItem[] = filteredSavedVoices.map(
     (voice) => ({
       id: voice.id,
       name: voice.name,
@@ -359,7 +359,7 @@ export function VoicesPage({
     }),
   );
 
-  const builtInVoiceItems: VoicePickerItem[] = filteredBuiltInVoices.map(
+  const builtInVoiceItems: VoiceLibraryItem[] = filteredBuiltInVoices.map(
     (voice) => ({
       id: voice.id,
       name: voice.name,

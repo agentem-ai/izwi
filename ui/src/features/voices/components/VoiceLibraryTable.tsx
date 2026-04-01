@@ -7,20 +7,20 @@ import {
 } from "react";
 import { Loader2, Pause, Play } from "lucide-react";
 
-import { type VoicePickerItem } from "@/components/VoicePicker";
 import { StatePanel } from "@/components/ui/state-panel";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { type VoiceLibraryItem } from "@/features/voices/types";
 import { cn } from "@/lib/utils";
 
 interface VoiceLibraryTableProps {
-  items: VoicePickerItem[];
+  items: VoiceLibraryItem[];
   emptyTitle: string;
   emptyDescription: string;
   className?: string;
 }
 
 interface TablePreviewPlayerProps {
-  item: VoicePickerItem;
+  item: VoiceLibraryItem;
   activePreviewId: string | null;
   onActivePreviewChange: (id: string | null) => void;
 }
