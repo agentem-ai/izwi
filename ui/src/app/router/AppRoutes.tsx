@@ -155,6 +155,10 @@ export function AppRoutes() {
           element={withSuspense(<TextToSpeechPage {...pageProps} />)}
         />
         <Route
+          path="/text-to-speech/:recordId"
+          element={withSuspense(<TextToSpeechPage {...pageProps} />)}
+        />
+        <Route
           path="/studio"
           element={withSuspense(<StudioPage {...pageProps} />)}
         />
