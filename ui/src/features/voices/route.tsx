@@ -9,12 +9,8 @@ import {
 import type { ModelInfo, SavedVoiceSummary } from "@/api";
 import { api } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
-import {
-  VOICE_ROUTE_META_COPY_CLASS,
-} from "@/components/voiceRouteTypography";
 import { Button } from "@/components/ui/button";
 import { StatePanel } from "@/components/ui/state-panel";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { WorkspacePanel } from "@/components/ui/workspace";
 import { getSpeakerProfilesForVariant, isLfm25AudioVariant } from "@/types";
@@ -139,7 +135,6 @@ export function VoicesPage({
     isModelModalOpen,
     intentVariant,
     closeModelModal,
-    openModelManager,
     requestModel,
     handleModelSelect,
   } = useRouteModelSelection({
@@ -365,12 +360,6 @@ export function VoicesPage({
   );
 
   const totalSavedVoices = savedVoices.length;
-  const clonedVoiceCount = savedVoices.filter(
-    (voice) => voice.source_route_kind === "voice_cloning",
-  ).length;
-  const designedVoiceCount = savedVoices.filter(
-    (voice) => voice.source_route_kind === "voice_design",
-  ).length;
   const totalBuiltInVoices = builtInVoices.length;
   const allVoiceItems = [...savedVoiceItems, ...builtInVoiceItems];
   const activeItems =
@@ -379,15 +368,6 @@ export function VoicesPage({
       : activeTab === "saved"
         ? savedVoiceItems
         : builtInVoiceItems;
-  const activeResultCount =
-    activeTab === "all"
-      ? savedVoices.length + builtInVoices.length
-      : activeTab === "saved"
-        ? savedVoices.length
-        : builtInVoices.length;
-  const activeResultsLabel =
-    activeResultCount === 1 ? "1 result" : `${activeResultCount} results`;
-  const showBuiltInMeta = activeTab === "built-in" || activeTab === "all";
   const showSavedVoiceError =
     savedVoicesError && (activeTab === "saved" || activeTab === "all");
 
@@ -427,43 +407,9 @@ export function VoicesPage({
                   </span>
                 </TabsTrigger>
               </TabsList>
-
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <StatusBadge>{activeResultsLabel.toUpperCase()}</StatusBadge>
-                <StatusBadge>SAVED {totalSavedVoices}</StatusBadge>
-                <StatusBadge>CLONED {clonedVoiceCount}</StatusBadge>
-                <StatusBadge>DESIGNED {designedVoiceCount}</StatusBadge>
-                <StatusBadge>BUILT-IN {totalBuiltInVoices}</StatusBadge>
-                {showBuiltInMeta && resolvedSelectedModel ? (
-                  <StatusBadge>{resolvedSelectedModel}</StatusBadge>
-                ) : null}
-                {showBuiltInMeta ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={openModelManager}
-                    className="h-8 bg-[var(--bg-surface-1)] text-xs"
-                  >
-                    Model
-                  </Button>
-                ) : null}
-              </div>
             </div>
 
           </div>
-
-          {showBuiltInMeta ? (
-            <div
-              className={cn(
-                VOICE_ROUTE_META_COPY_CLASS,
-                "mt-3 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-2)] px-3.5 py-2.5",
-              )}
-            >
-              {selectedModelReady
-                ? `Built-in previews are using ${selectedModelInfo?.variant ?? "the selected model"}.`
-                : "Select and load a supported voice model to generate built-in previews."}
-            </div>
-          ) : null}
 
           {showSavedVoiceError ? (
             <div className="mt-4">
