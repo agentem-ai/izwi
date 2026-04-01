@@ -293,6 +293,61 @@ describe("TextToSpeechPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("navigates to /text-to-speech/:id when stream emits final without created", async () => {
+    apiMocks.getTextToSpeechRecord.mockResolvedValue(
+      buildRecord({
+        id: "tts-created-2",
+        processing_status: "processing",
+      }),
+    );
+    apiMocks.createTextToSpeechRecordStream.mockImplementation(
+      (_request, callbacks) => {
+        callbacks.onStart?.({
+          requestId: "req-1",
+          sampleRate: 24000,
+          audioFormat: "pcm_i16",
+        });
+        callbacks.onFinal?.({
+          record: buildRecord({
+            id: "tts-created-2",
+            processing_status: "processing",
+          }),
+          stats: {
+            generation_time_ms: 0,
+            audio_duration_secs: 0,
+            rtf: 0,
+            tokens_generated: 0,
+          },
+        });
+        callbacks.onDone?.();
+        return new AbortController();
+      },
+    );
+
+    renderRoute("/text-to-speech");
+
+    await waitFor(() =>
+      expect(apiMocks.listTextToSpeechRecords).toHaveBeenCalled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /New generation/i }));
+
+    fireEvent.change(screen.getByPlaceholderText("Write the text to speak..."), {
+      target: { value: "Hello from final event" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Create generation/i }));
+
+    await waitFor(() =>
+      expect(apiMocks.createTextToSpeechRecordStream).toHaveBeenCalled(),
+    );
+    await waitFor(() =>
+      expect(apiMocks.getTextToSpeechRecord).toHaveBeenCalledWith("tts-created-2"),
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Text-to-Speech Record" }),
+    ).toBeInTheDocument();
+  });
+
   it("deletes from the record detail page and navigates back to history", async () => {
     apiMocks.listTextToSpeechRecords.mockResolvedValue([buildSummary()]);
     apiMocks.getTextToSpeechRecord.mockResolvedValue(
