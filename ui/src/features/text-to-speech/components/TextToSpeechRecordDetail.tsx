@@ -116,7 +116,7 @@ export function TextToSpeechRecordDetail({
             </Button>
           ) : null}
           <h2 className="truncate text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
-            {record?.audio_filename || record?.model_id || "Speech generation"}
+            {record?.model_id || "Speech generation"}
           </h2>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
             {record ? <span>{formatSpeechCreatedAt(record.created_at)}</span> : null}
@@ -275,7 +275,7 @@ export function TextToSpeechRecordDetail({
                 history.
               </DialogDescription>
               <p className="mt-2 truncate text-xs text-[var(--text-subtle)]">
-                {record?.audio_filename || record?.model_id || record?.id || "Record"}
+                {record?.model_id || record?.id || "Record"}
               </p>
             </div>
           </div>
