@@ -195,7 +195,7 @@ describe("VoicesPage", () => {
     expect(screen.getByRole("button", { name: "Preview" })).toBeDisabled();
   });
 
-  it("removes the secondary filter/search/actions strip", async () => {
+  it("removes secondary controls, summary badges, and model guidance banner", async () => {
     render(
       <MemoryRouter>
         <VoicesPage {...baseProps} />
@@ -225,5 +225,16 @@ describe("VoicesPage", () => {
     expect(
       screen.queryByRole("button", { name: /Add New Voice/i }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "Select and load a supported voice model to generate built-in previews.",
+      ),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Model" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/RESULTS/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/SAVED\s+\d+/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/CLONED\s+\d+/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/DESIGNED\s+\d+/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/BUILT-IN\s+\d+/)).not.toBeInTheDocument();
   });
 });
