@@ -16,8 +16,8 @@ use crate::api::saved_voices::resolve_saved_voice_reference;
 use crate::api::tts_long_form::{expand_generation_requests_for_long_form, generate_long_form_tts};
 use crate::error::ApiError;
 use crate::speech_history_store::{
-    NewSpeechHistoryRecord, SpeechHistoryRecord, SpeechHistoryRecordSummary, SpeechRouteKind,
-    StoredSpeechAudio,
+    CompleteSpeechHistoryRecord, NewSpeechHistoryRecord, SpeechHistoryProcessingStatus,
+    SpeechHistoryRecord, SpeechHistoryRecordSummary, SpeechRouteKind, StoredSpeechAudio,
 };
 use crate::state::AppState;
 use izwi_core::audio::{AudioEncoder, AudioFormat};
@@ -326,21 +326,142 @@ async fn create_record(
     req = normalize_for_model_capabilities(route_kind, variant, req)?;
     state.runtime.load_model(variant).await?;
 
-    if req.stream.unwrap_or(false) {
-        if route_kind != SpeechRouteKind::TextToSpeech {
-            return Err(ApiError::bad_request(
-                "Streaming is currently supported only on text-to-speech generation resources",
-            ));
-        }
-        return stream_record_creation(state, ctx, req, route_kind, variant, model_id, input_text)
-            .await;
+    if req.stream.unwrap_or(false) && route_kind != SpeechRouteKind::TextToSpeech {
+        return Err(ApiError::bad_request(
+            "Streaming is currently supported only on text-to-speech generation resources",
+        ));
     }
 
-    let record =
-        synthesize_record_internal(&state, &ctx, req, route_kind, variant, model_id, input_text)
-            .await?;
+    if route_kind == SpeechRouteKind::TextToSpeech {
+        let placeholder = create_pending_record(
+            &state,
+            route_kind,
+            model_id.as_str(),
+            input_text.as_str(),
+            &req,
+        )
+        .await?;
+
+        if req.stream.unwrap_or(false) {
+            return stream_record_creation(
+                state,
+                ctx,
+                req,
+                route_kind,
+                variant,
+                model_id,
+                input_text,
+                placeholder,
+            )
+            .await;
+        }
+
+        spawn_record_creation_task(
+            state.clone(),
+            ctx,
+            req,
+            route_kind,
+            variant,
+            model_id,
+            input_text,
+            placeholder.id.clone(),
+        );
+
+        return Ok((StatusCode::ACCEPTED, Json(placeholder)).into_response());
+    }
+
+    let record = synthesize_record_internal(
+        &state,
+        &ctx,
+        req,
+        route_kind,
+        variant,
+        model_id,
+        input_text,
+        None,
+    )
+    .await?;
 
     Ok(Json(record).into_response())
+}
+
+async fn create_pending_record(
+    state: &AppState,
+    route_kind: SpeechRouteKind,
+    model_id: &str,
+    input_text: &str,
+    req: &CreateSpeechHistoryRecordRequest,
+) -> Result<SpeechHistoryRecord, ApiError> {
+    state
+        .speech_history_store
+        .create_record(NewSpeechHistoryRecord {
+            route_kind,
+            processing_status: SpeechHistoryProcessingStatus::Pending,
+            processing_error: None,
+            model_id: Some(model_id.to_string()),
+            speaker: req.speaker.clone(),
+            language: req.language.clone(),
+            saved_voice_id: req.saved_voice_id.clone(),
+            speed: req.speed.map(f64::from),
+            input_text: input_text.to_string(),
+            voice_description: req.voice_description.clone(),
+            reference_text: req.reference_text.clone(),
+            generation_time_ms: 0.0,
+            audio_duration_secs: None,
+            rtf: None,
+            tokens_generated: None,
+            audio_mime_type: AudioEncoder::content_type(AudioFormat::Wav).to_string(),
+            audio_filename: Some(default_audio_filename(route_kind, "wav")),
+            audio_bytes: Vec::new(),
+        })
+        .await
+        .map_err(map_store_error)
+}
+
+fn spawn_record_creation_task(
+    state: AppState,
+    ctx: RequestContext,
+    req: CreateSpeechHistoryRecordRequest,
+    route_kind: SpeechRouteKind,
+    variant: ModelVariant,
+    model_id: String,
+    input_text: String,
+    record_id: String,
+) {
+    tokio::spawn(async move {
+        let _ = state
+            .speech_history_store
+            .update_processing_status(
+                route_kind,
+                record_id.clone(),
+                SpeechHistoryProcessingStatus::Processing,
+                None,
+            )
+            .await;
+
+        if let Err(err) = synthesize_record_internal(
+            &state,
+            &ctx,
+            req,
+            route_kind,
+            variant,
+            model_id,
+            input_text,
+            Some(record_id.clone()),
+        )
+        .await
+        {
+            let _ = state
+                .speech_history_store
+                .update_processing_status(
+                    route_kind,
+                    record_id,
+                    SpeechHistoryProcessingStatus::Failed,
+                    Some(err.message),
+                )
+                .await;
+        }
+    });
 }
 
 pub(crate) async fn synthesize_record(
@@ -360,7 +481,17 @@ pub(crate) async fn synthesize_record(
     req = normalize_for_model_capabilities(route_kind, variant, req)?;
     state.runtime.load_model(variant).await?;
 
-    synthesize_record_internal(state, ctx, req, route_kind, variant, model_id, input_text).await
+    synthesize_record_internal(
+        state,
+        ctx,
+        req,
+        route_kind,
+        variant,
+        model_id,
+        input_text,
+        None,
+    )
+    .await
 }
 
 async fn synthesize_record_internal(
@@ -371,6 +502,7 @@ async fn synthesize_record_internal(
     variant: ModelVariant,
     model_id: String,
     input_text: String,
+    target_record_id: Option<String>,
 ) -> Result<SpeechHistoryRecord, ApiError> {
     let generation_request = build_generation_request(
         req.clone(),
@@ -404,10 +536,41 @@ async fn synthesize_record_internal(
             .await
             .map_err(|err| ApiError::internal(format!("Audio encoding failed: {err}")))??;
 
+    if let Some(record_id) = target_record_id {
+        return state
+            .speech_history_store
+            .complete_record(
+                route_kind,
+                record_id,
+                CompleteSpeechHistoryRecord {
+                    model_id: Some(model_id),
+                    speaker: req.speaker,
+                    language: req.language,
+                    saved_voice_id: req.saved_voice_id,
+                    speed: req.speed.map(f64::from),
+                    input_text,
+                    voice_description: req.voice_description,
+                    reference_text: req.reference_text,
+                    generation_time_ms: output.total_time_ms as f64,
+                    audio_duration_secs: Some(output.duration_secs() as f64),
+                    rtf: Some(output.rtf() as f64),
+                    tokens_generated: Some(output.total_tokens),
+                    audio_mime_type: AudioEncoder::content_type(AudioFormat::Wav).to_string(),
+                    audio_filename: Some(default_audio_filename(route_kind, "wav")),
+                    audio_bytes: encoded_audio,
+                },
+            )
+            .await
+            .map_err(map_store_error)?
+            .ok_or_else(|| ApiError::not_found("History record not found"));
+    }
+
     state
         .speech_history_store
         .create_record(NewSpeechHistoryRecord {
             route_kind,
+            processing_status: SpeechHistoryProcessingStatus::Ready,
+            processing_error: None,
             model_id: Some(model_id),
             speaker: req.speaker,
             language: req.language,
@@ -436,27 +599,59 @@ async fn stream_record_creation(
     variant: ModelVariant,
     model_id: String,
     input_text: String,
+    placeholder: SpeechHistoryRecord,
 ) -> Result<Response, ApiError> {
     let generation_request =
         build_generation_request(req.clone(), ctx.correlation_id, input_text.clone(), true);
     let planned_requests = expand_generation_requests_for_long_form(&generation_request, variant);
     let stream_request_id = generation_request.id.clone();
+    let placeholder_record_id = placeholder.id.clone();
 
     let runtime = state.runtime.clone();
     let speech_store = state.speech_history_store.clone();
     let semaphore = state.request_semaphore.clone();
 
     let (event_tx, mut event_rx) = mpsc::channel::<String>(stream_event_queue_capacity());
+    let _ = send_stream_event(
+        &event_tx,
+        SpeechStreamEvent {
+            event: "created",
+            request_id: Some(stream_request_id.clone()),
+            sequence: None,
+            audio_base64: None,
+            sample_count: None,
+            sample_rate: None,
+            audio_format: None,
+            tokens_generated: None,
+            generation_time_ms: None,
+            audio_duration_secs: None,
+            rtf: None,
+            record: Some(placeholder),
+            error: None,
+        },
+    )
+    .await;
 
     tokio::spawn(async move {
-        let _permit = match semaphore.acquire_owned().await {
-            Ok(permit) => permit,
-            Err(_) => {
+        let mark_failed = |message: String| {
+            let event_tx = event_tx.clone();
+            let speech_store = speech_store.clone();
+            let stream_request_id = stream_request_id.clone();
+            let record_id = placeholder_record_id.clone();
+            async move {
+                let _ = speech_store
+                    .update_processing_status(
+                        route_kind,
+                        record_id,
+                        SpeechHistoryProcessingStatus::Failed,
+                        Some(message.clone()),
+                    )
+                    .await;
                 let _ = send_stream_event(
                     &event_tx,
                     SpeechStreamEvent {
                         event: "error",
-                        request_id: Some(stream_request_id.clone()),
+                        request_id: Some(stream_request_id),
                         sequence: None,
                         audio_base64: None,
                         sample_count: None,
@@ -467,10 +662,17 @@ async fn stream_record_creation(
                         audio_duration_secs: None,
                         rtf: None,
                         record: None,
-                        error: Some("Server is shutting down".to_string()),
+                        error: Some(message),
                     },
                 )
                 .await;
+            }
+        };
+
+        let _permit = match semaphore.acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                mark_failed("Server is shutting down".to_string()).await;
                 let _ = send_stream_event(
                     &event_tx,
                     SpeechStreamEvent {
@@ -493,6 +695,15 @@ async fn stream_record_creation(
                 return;
             }
         };
+
+        let _ = speech_store
+            .update_processing_status(
+                route_kind,
+                placeholder_record_id.clone(),
+                SpeechHistoryProcessingStatus::Processing,
+                None,
+            )
+            .await;
 
         let sample_rate = runtime.sample_rate().await;
         if send_stream_event(
@@ -526,6 +737,7 @@ async fn stream_record_creation(
         let mut merged_samples: Vec<f32> = Vec::new();
         let mut global_sequence = 0usize;
         let mut failed = false;
+        let mut failure_message: Option<String> = None;
         for request in planned_requests {
             let (chunk_tx, mut chunk_rx) = mpsc::channel::<AudioChunk>(32);
             let generation_engine = runtime.clone();
@@ -571,6 +783,7 @@ async fn stream_record_creation(
                         )
                         .await;
                         encoding_failed = true;
+                        failure_message = Some(format!("Failed to encode stream chunk: {err}"));
                         break;
                     }
                 };
@@ -605,65 +818,33 @@ async fn stream_record_creation(
             }
 
             drop(chunk_rx);
-            let generation_outcome = generation_task.await;
-            if encoding_failed || stream_closed {
-                let _ = generation_outcome;
-                failed = true;
-                break;
-            }
-
-            match generation_outcome {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
-                    let _ = send_stream_event(
-                        &event_tx,
-                        SpeechStreamEvent {
-                            event: "error",
-                            request_id: Some(stream_request_id.clone()),
-                            sequence: None,
-                            audio_base64: None,
-                            sample_count: None,
-                            sample_rate: None,
-                            audio_format: None,
-                            tokens_generated: None,
-                            generation_time_ms: None,
-                            audio_duration_secs: None,
-                            rtf: None,
-                            record: None,
-                            error: Some(err.to_string()),
-                        },
-                    )
-                    .await;
+                let generation_outcome = generation_task.await;
+                if encoding_failed || stream_closed {
+                    let _ = generation_outcome;
                     failed = true;
                     break;
                 }
-                Err(err) => {
-                    let _ = send_stream_event(
-                        &event_tx,
-                        SpeechStreamEvent {
-                            event: "error",
-                            request_id: Some(stream_request_id.clone()),
-                            sequence: None,
-                            audio_base64: None,
-                            sample_count: None,
-                            sample_rate: None,
-                            audio_format: None,
-                            tokens_generated: None,
-                            generation_time_ms: None,
-                            audio_duration_secs: None,
-                            rtf: None,
-                            record: None,
-                            error: Some(format!("Streaming task failed: {err}")),
-                        },
-                    )
-                    .await;
-                    failed = true;
-                    break;
+
+                match generation_outcome {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        failed = true;
+                        failure_message = Some(err.to_string());
+                        break;
+                    }
+                    Err(err) => {
+                        failed = true;
+                        failure_message = Some(format!("Streaming task failed: {err}"));
+                        break;
+                    }
                 }
             }
-        }
 
-        if !failed {
+        if failed {
+            if let Some(message) = failure_message {
+                mark_failed(message).await;
+            }
+        } else {
             let generation_time_ms = stream_started.elapsed().as_secs_f32() * 1000.0;
             let audio_duration_secs = total_samples as f32 / sample_rate as f32;
             if total_tokens == 0 {
@@ -679,29 +860,32 @@ async fn stream_record_creation(
             match wav_encoder.encode(merged_samples.as_slice(), AudioFormat::Wav) {
                 Ok(wav_bytes) => {
                     let record_result = speech_store
-                        .create_record(NewSpeechHistoryRecord {
+                        .complete_record(
                             route_kind,
-                            model_id: Some(model_id),
-                            speaker: req.speaker,
-                            language: req.language,
-                            saved_voice_id: req.saved_voice_id,
-                            speed: req.speed.map(f64::from),
-                            input_text,
-                            voice_description: req.voice_description,
-                            reference_text: req.reference_text,
-                            generation_time_ms: generation_time_ms as f64,
-                            audio_duration_secs: Some(audio_duration_secs as f64),
-                            rtf: Some(rtf as f64),
-                            tokens_generated: Some(total_tokens),
-                            audio_mime_type: AudioEncoder::content_type(AudioFormat::Wav)
-                                .to_string(),
-                            audio_filename: Some(default_audio_filename(route_kind, "wav")),
-                            audio_bytes: wav_bytes,
-                        })
+                            placeholder_record_id.clone(),
+                            CompleteSpeechHistoryRecord {
+                                model_id: Some(model_id.clone()),
+                                speaker: req.speaker.clone(),
+                                language: req.language.clone(),
+                                saved_voice_id: req.saved_voice_id.clone(),
+                                speed: req.speed.map(f64::from),
+                                input_text: input_text.clone(),
+                                voice_description: req.voice_description.clone(),
+                                reference_text: req.reference_text.clone(),
+                                generation_time_ms: generation_time_ms as f64,
+                                audio_duration_secs: Some(audio_duration_secs as f64),
+                                rtf: Some(rtf as f64),
+                                tokens_generated: Some(total_tokens),
+                                audio_mime_type: AudioEncoder::content_type(AudioFormat::Wav)
+                                    .to_string(),
+                                audio_filename: Some(default_audio_filename(route_kind, "wav")),
+                                audio_bytes: wav_bytes,
+                            },
+                        )
                         .await;
 
                     match record_result {
-                        Ok(record) => {
+                        Ok(Some(record)) => {
                             let _ = send_stream_event(
                                 &event_tx,
                                 SpeechStreamEvent {
@@ -722,51 +906,17 @@ async fn stream_record_creation(
                             )
                             .await;
                         }
+                        Ok(None) => {
+                            mark_failed("History record not found".to_string()).await;
+                        }
                         Err(err) => {
-                            let _ = send_stream_event(
-                                &event_tx,
-                                SpeechStreamEvent {
-                                    event: "error",
-                                    request_id: Some(stream_request_id.clone()),
-                                    sequence: None,
-                                    audio_base64: None,
-                                    sample_count: None,
-                                    sample_rate: None,
-                                    audio_format: None,
-                                    tokens_generated: None,
-                                    generation_time_ms: None,
-                                    audio_duration_secs: None,
-                                    rtf: None,
-                                    record: None,
-                                    error: Some(format!(
-                                        "Failed to save speech history record: {err}"
-                                    )),
-                                },
-                            )
-                            .await;
+                            mark_failed(format!("Failed to save speech history record: {err}"))
+                                .await;
                         }
                     }
                 }
                 Err(err) => {
-                    let _ = send_stream_event(
-                        &event_tx,
-                        SpeechStreamEvent {
-                            event: "error",
-                            request_id: Some(stream_request_id.clone()),
-                            sequence: None,
-                            audio_base64: None,
-                            sample_count: None,
-                            sample_rate: None,
-                            audio_format: None,
-                            tokens_generated: None,
-                            generation_time_ms: None,
-                            audio_duration_secs: None,
-                            rtf: None,
-                            record: None,
-                            error: Some(format!("Failed to encode final WAV output: {err}")),
-                        },
-                    )
-                    .await;
+                    mark_failed(format!("Failed to encode final WAV output: {err}")).await;
                 }
             }
         }
