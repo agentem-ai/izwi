@@ -93,6 +93,7 @@ describe("VoicesPage", () => {
         source_record_id: "design-1",
       } satisfies SavedVoiceSummary,
     ]);
+    apiMocks.deleteSavedVoice.mockResolvedValue(undefined);
     apiMocks.generateTTSWithStats.mockImplementation(
       () => new Promise(() => {}),
     );
@@ -158,10 +159,14 @@ describe("VoicesPage", () => {
     expect(screen.getByRole("columnheader", { name: "Voice" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Type" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Preview" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("columnheader", { name: "Metadata" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByTestId("voice-row-voice-balanced")).toBeInTheDocument();
     expect(screen.queryByTestId("voice-card-voice-balanced")).not.toBeInTheDocument();
 
     expect(screen.getByText("Balanced 21 yo")).toBeInTheDocument();
+    expect(screen.getByText(/^Created /i)).toBeInTheDocument();
     expect(screen.getByText("Designed voice")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Use in TTS" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
@@ -177,7 +182,6 @@ describe("VoicesPage", () => {
     expect(screen.getByTestId("voice-row-alloy")).toBeInTheDocument();
     expect(await screen.findByText("Alloy")).toBeInTheDocument();
     expect(screen.getAllByText("Built-in voice").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("MockVoiceModel").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
 
@@ -193,6 +197,30 @@ describe("VoicesPage", () => {
       await screen.findByText("Generating a preview sample for this speaker."),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Preview" })).toBeDisabled();
+  });
+
+  it("uses a confirmation modal before deleting saved voices", async () => {
+    render(
+      <MemoryRouter>
+        <VoicesPage {...baseProps} />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(apiMocks.listSavedVoices).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: /^Delete$/i }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "Delete voice?" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete voice" }));
+
+    await waitFor(() =>
+      expect(apiMocks.deleteSavedVoice).toHaveBeenCalledWith("voice-balanced"),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId("voice-row-voice-balanced")).not.toBeInTheDocument(),
+    );
   });
 
   it("keeps only top-level model action while removing secondary strips", async () => {
@@ -223,6 +251,9 @@ describe("VoicesPage", () => {
     expect(screen.queryByRole("button", { name: /Refresh/i })).not.toBeInTheDocument();
     expect(screen.queryByText("Library Statistics")).not.toBeInTheDocument();
     expect(screen.queryByText("Filter By")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("columnheader", { name: "Metadata" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Add New Voice/i }),
     ).not.toBeInTheDocument();

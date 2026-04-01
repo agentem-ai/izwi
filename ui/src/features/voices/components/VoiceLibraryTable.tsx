@@ -315,7 +315,6 @@ export function VoiceLibraryTable({
               <th className="whitespace-nowrap px-4 py-2.5 font-semibold">Voice</th>
               <th className="whitespace-nowrap px-4 py-2.5 font-semibold">Type</th>
               <th className="whitespace-nowrap px-4 py-2.5 font-semibold">Notes</th>
-              <th className="whitespace-nowrap px-4 py-2.5 font-semibold">Metadata</th>
               <th className="whitespace-nowrap px-4 py-2.5 font-semibold">Preview</th>
               <th className="whitespace-nowrap px-4 py-2.5 font-semibold text-right">Actions</th>
             </tr>
@@ -349,6 +348,11 @@ export function VoiceLibraryTable({
                     <div className="font-semibold text-[var(--text-primary)]">
                       {item.name}
                     </div>
+                    {item.secondaryLabel ? (
+                      <p className="mt-1 text-xs text-[var(--text-muted)]">
+                        {item.secondaryLabel}
+                      </p>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3.5">
                     <span className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
@@ -360,21 +364,6 @@ export function VoiceLibraryTable({
                       {item.description ||
                         "No reference notes were saved for this voice yet."}
                     </p>
-                  </td>
-                  <td className="px-4 py-3.5 text-[var(--text-secondary)]">
-                    <div className="flex flex-wrap gap-1.5">
-                      {(item.meta ?? []).map((meta) => (
-                        <span
-                          key={`${item.id}-${meta}`}
-                          className="rounded-full border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em]"
-                        >
-                          {meta}
-                        </span>
-                      ))}
-                      {!item.meta?.length ? (
-                        <span className="text-xs text-[var(--text-muted)]">n/a</span>
-                      ) : null}
-                    </div>
                   </td>
                   <td className="px-4 py-3.5">
                     <TablePreviewPlayer
