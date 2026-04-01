@@ -17,12 +17,9 @@ vi.mock("@/features/models/components/RouteModelModal", () => ({
 }));
 
 vi.mock("@/features/voices/route", () => ({
-  VoicesPage: ({ onAddNewVoice }: { onAddNewVoice?: () => void }) => (
+  VoicesPage: () => (
     <div>
       <div data-testid="studio-library">Voice library</div>
-      <button type="button" onClick={() => onAddNewVoice?.()}>
-        Add Voice Shortcut
-      </button>
     </div>
   ),
 }));
@@ -88,13 +85,5 @@ describe("VoiceStudioPage", () => {
     expect(screen.getByRole("dialog", { name: "New Voice" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Clone Voice/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Design Voice/i })).toBeInTheDocument();
-  });
-
-  it("opens creation modal when library add shortcut is used", () => {
-    renderVoiceStudio("/voices");
-
-    fireEvent.click(screen.getByRole("button", { name: "Add Voice Shortcut" }));
-
-    expect(screen.getByRole("dialog", { name: "New Voice" })).toBeInTheDocument();
   });
 });

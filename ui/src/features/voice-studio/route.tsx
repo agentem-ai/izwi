@@ -107,7 +107,6 @@ export function VoiceStudioPage({
           onSelect={onSelect}
           onError={onError}
           embedded
-          onAddNewVoice={() => setIsCreationModalOpen(true)}
         />
       </div>
 
