@@ -38,11 +38,49 @@ impl SpeechRouteKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeechHistoryProcessingStatus {
+    Pending,
+    Processing,
+    Ready,
+    Failed,
+}
+
+impl Default for SpeechHistoryProcessingStatus {
+    fn default() -> Self {
+        Self::Ready
+    }
+}
+
+impl SpeechHistoryProcessingStatus {
+    pub const fn as_db_value(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Processing => "processing",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn from_db_value(raw: &str) -> Option<Self> {
+        match raw {
+            "pending" => Some(Self::Pending),
+            "processing" => Some(Self::Processing),
+            "ready" => Some(Self::Ready),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SpeechHistoryRecordSummary {
     pub id: String,
     pub created_at: u64,
     pub route_kind: SpeechRouteKind,
+    pub processing_status: SpeechHistoryProcessingStatus,
+    pub processing_error: Option<String>,
     pub model_id: Option<String>,
     pub speaker: Option<String>,
     pub language: Option<String>,
@@ -63,6 +101,8 @@ pub struct SpeechHistoryRecord {
     pub id: String,
     pub created_at: u64,
     pub route_kind: SpeechRouteKind,
+    pub processing_status: SpeechHistoryProcessingStatus,
+    pub processing_error: Option<String>,
     pub model_id: Option<String>,
     pub speaker: Option<String>,
     pub language: Option<String>,
@@ -89,6 +129,27 @@ pub struct StoredSpeechAudio {
 #[derive(Debug, Clone)]
 pub struct NewSpeechHistoryRecord {
     pub route_kind: SpeechRouteKind,
+    pub processing_status: SpeechHistoryProcessingStatus,
+    pub processing_error: Option<String>,
+    pub model_id: Option<String>,
+    pub speaker: Option<String>,
+    pub language: Option<String>,
+    pub saved_voice_id: Option<String>,
+    pub speed: Option<f64>,
+    pub input_text: String,
+    pub voice_description: Option<String>,
+    pub reference_text: Option<String>,
+    pub generation_time_ms: f64,
+    pub audio_duration_secs: Option<f64>,
+    pub rtf: Option<f64>,
+    pub tokens_generated: Option<usize>,
+    pub audio_mime_type: String,
+    pub audio_filename: Option<String>,
+    pub audio_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompleteSpeechHistoryRecord {
     pub model_id: Option<String>,
     pub speaker: Option<String>,
     pub language: Option<String>,
@@ -133,6 +194,8 @@ impl SpeechHistoryStore {
                 id TEXT PRIMARY KEY,
                 created_at INTEGER NOT NULL,
                 route_kind TEXT NOT NULL,
+                processing_status TEXT NOT NULL DEFAULT 'ready',
+                processing_error TEXT NULL,
                 model_id TEXT NULL,
                 speaker TEXT NULL,
                 language TEXT NULL,
@@ -158,6 +221,8 @@ impl SpeechHistoryStore {
 
         ensure_speech_history_records_saved_voice_id_column(&conn)?;
         ensure_speech_history_records_speed_column(&conn)?;
+        ensure_speech_history_records_processing_status_column(&conn)?;
+        ensure_speech_history_records_processing_error_column(&conn)?;
 
         Ok(Self {
             db_path,
@@ -180,6 +245,8 @@ impl SpeechHistoryStore {
                     id,
                     created_at,
                     route_kind,
+                    processing_status,
+                    processing_error,
                     model_id,
                     speaker,
                     language,
@@ -200,29 +267,36 @@ impl SpeechHistoryStore {
             )?;
 
             let rows = stmt.query_map(params![route_kind.as_db_value(), list_limit], |row| {
-                let input_text: String = row.get(8)?;
+                let input_text: String = row.get(10)?;
                 let route_raw: String = row.get(2)?;
                 let route_kind = SpeechRouteKind::from_db_value(route_raw.as_str())
                     .unwrap_or(SpeechRouteKind::TextToSpeech);
+                let processing_status_raw: String = row.get(3)?;
                 Ok(SpeechHistoryRecordSummary {
                     id: row.get(0)?,
                     created_at: i64_to_u64(row.get(1)?),
                     route_kind,
-                    model_id: row.get(3)?,
-                    speaker: row.get(4)?,
-                    language: row.get(5)?,
-                    saved_voice_id: row.get(6)?,
-                    speed: row.get(7)?,
+                    processing_status:
+                        SpeechHistoryProcessingStatus::from_db_value(
+                            processing_status_raw.as_str(),
+                        )
+                        .unwrap_or_default(),
+                    processing_error: row.get(4)?,
+                    model_id: row.get(5)?,
+                    speaker: row.get(6)?,
+                    language: row.get(7)?,
+                    saved_voice_id: row.get(8)?,
+                    speed: row.get(9)?,
                     input_preview: input_preview(input_text.as_str()),
                     input_chars: input_text.chars().count(),
-                    generation_time_ms: row.get(9)?,
-                    audio_duration_secs: row.get(10)?,
-                    rtf: row.get(11)?,
+                    generation_time_ms: row.get(11)?,
+                    audio_duration_secs: row.get(12)?,
+                    rtf: row.get(13)?,
                     tokens_generated: row
-                        .get::<_, Option<i64>>(12)?
+                        .get::<_, Option<i64>>(14)?
                         .and_then(|value| i64_to_usize(value)),
-                    audio_mime_type: row.get(13)?,
-                    audio_filename: row.get(14)?,
+                    audio_mime_type: row.get(15)?,
+                    audio_filename: row.get(16)?,
                 })
             })?;
 
@@ -266,7 +340,7 @@ impl SpeechHistoryStore {
                     params![route_kind.as_db_value(), record_id],
                     |row| {
                         Ok((
-                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(0)?,
                             row.get::<_, String>(1)?,
                             row.get::<_, Option<String>>(2)?,
                         ))
@@ -274,6 +348,9 @@ impl SpeechHistoryStore {
                 )
                 .optional()?;
             let Some((audio_storage_path, audio_mime_type, audio_filename)) = audio else {
+                return Ok(None);
+            };
+            let Some(audio_storage_path) = sanitize_media_path(audio_storage_path.as_deref()) else {
                 return Ok(None);
             };
 
@@ -299,6 +376,8 @@ impl SpeechHistoryStore {
             let now = now_unix_millis_i64();
             let record_id = format!("shr_{}", uuid::Uuid::new_v4().simple());
 
+            let processing_status = record.processing_status;
+            let processing_error = sanitize_optional_text(record.processing_error.as_deref(), 1_200);
             let model_id = sanitize_optional_text(record.model_id.as_deref(), 160);
             let speaker = sanitize_optional_text(record.speaker.as_deref(), 120);
             let language = sanitize_optional_text(record.language.as_deref(), 80);
@@ -328,20 +407,27 @@ impl SpeechHistoryStore {
             let audio_mime_type = sanitize_audio_mime_type(record.audio_mime_type.as_str());
             let audio_filename = sanitize_optional_text(record.audio_filename.as_deref(), 260);
 
-            if record.audio_bytes.is_empty() {
-                return Err(anyhow!("Audio payload cannot be empty"));
+            let has_audio_payload = !record.audio_bytes.is_empty();
+            if !has_audio_payload && processing_status == SpeechHistoryProcessingStatus::Ready {
+                return Err(anyhow!(
+                    "Audio payload cannot be empty for ready speech history records",
+                ));
             }
 
-            let namespace = format!("speech/{}", record.route_kind.as_db_value());
-            let audio_storage_path = storage_layout::persist_audio_file(
-                &media_root,
-                MediaGroup::Generated,
-                namespace.as_str(),
-                &record_id,
-                audio_filename.as_deref(),
-                audio_mime_type.as_str(),
-                &record.audio_bytes,
-            )?;
+            let audio_storage_path = if has_audio_payload {
+                let namespace = format!("speech/{}", record.route_kind.as_db_value());
+                Some(storage_layout::persist_audio_file(
+                    &media_root,
+                    MediaGroup::Generated,
+                    namespace.as_str(),
+                    &record_id,
+                    audio_filename.as_deref(),
+                    audio_mime_type.as_str(),
+                    &record.audio_bytes,
+                )?)
+            } else {
+                None
+            };
 
             if let Err(err) = conn.execute(
                 r#"
@@ -349,6 +435,8 @@ impl SpeechHistoryStore {
                     id,
                     created_at,
                     route_kind,
+                    processing_status,
+                    processing_error,
                     model_id,
                     speaker,
                     language,
@@ -383,13 +471,17 @@ impl SpeechHistoryStore {
                     ?15,
                     ?16,
                     ?17,
-                    ?18
+                    ?18,
+                    ?19,
+                    ?20
                 )
                 "#,
                 params![
                     &record_id,
                     now,
                     record.route_kind.as_db_value(),
+                    processing_status.as_db_value(),
+                    processing_error,
                     model_id,
                     speaker,
                     language,
@@ -404,19 +496,174 @@ impl SpeechHistoryStore {
                     tokens_generated,
                     audio_mime_type,
                     audio_filename,
-                    audio_storage_path
+                    audio_storage_path.clone().unwrap_or_default(),
                 ],
             ) {
-                let _ = storage_layout::delete_media_file(
-                    &media_root,
-                    Some(audio_storage_path.as_str()),
-                );
+                if let Some(path) = audio_storage_path.as_deref() {
+                    let _ = storage_layout::delete_media_file(&media_root, Some(path));
+                }
                 return Err(err).context("Failed to insert speech history record");
             }
 
             let created = fetch_record_without_audio(&conn, record.route_kind, &record_id)?
                 .ok_or_else(|| anyhow!("Failed to fetch created speech history record"))?;
             Ok(created)
+        })
+        .await
+    }
+
+    pub async fn update_processing_status(
+        &self,
+        route_kind: SpeechRouteKind,
+        record_id: String,
+        status: SpeechHistoryProcessingStatus,
+        processing_error: Option<String>,
+    ) -> anyhow::Result<Option<SpeechHistoryRecord>> {
+        self.run_blocking(move |db_path| {
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
+            let sanitized_error = sanitize_optional_text(processing_error.as_deref(), 1_200);
+            conn.execute(
+                r#"
+                UPDATE speech_history_records
+                SET processing_status = ?3,
+                    processing_error = ?4
+                WHERE route_kind = ?1 AND id = ?2
+                "#,
+                params![
+                    route_kind.as_db_value(),
+                    &record_id,
+                    status.as_db_value(),
+                    sanitized_error,
+                ],
+            )?;
+
+            let updated = fetch_record_without_audio(&conn, route_kind, &record_id)?;
+            Ok(updated)
+        })
+        .await
+    }
+
+    pub async fn complete_record(
+        &self,
+        route_kind: SpeechRouteKind,
+        record_id: String,
+        record: CompleteSpeechHistoryRecord,
+    ) -> anyhow::Result<Option<SpeechHistoryRecord>> {
+        let media_root = self.media_root.clone();
+        self.run_blocking(move |db_path| {
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
+            let model_id = sanitize_optional_text(record.model_id.as_deref(), 160);
+            let speaker = sanitize_optional_text(record.speaker.as_deref(), 120);
+            let language = sanitize_optional_text(record.language.as_deref(), 80);
+            let saved_voice_id = sanitize_optional_text(record.saved_voice_id.as_deref(), 160);
+            let speed = record.speed.filter(|value| value.is_finite() && *value > 0.0);
+            let input_text = sanitize_required_text(record.input_text.as_str(), 20_000);
+            let voice_description =
+                sanitize_optional_text(record.voice_description.as_deref(), 2_000);
+            let reference_text = sanitize_optional_text(record.reference_text.as_deref(), 2_000);
+            let generation_time_ms = if record.generation_time_ms.is_finite() {
+                record.generation_time_ms.max(0.0)
+            } else {
+                0.0
+            };
+            let audio_duration_secs = record
+                .audio_duration_secs
+                .filter(|value| value.is_finite() && *value >= 0.0);
+            let rtf = record.rtf.filter(|value| value.is_finite() && *value >= 0.0);
+            let tokens_generated = record
+                .tokens_generated
+                .filter(|value| *value > 0)
+                .and_then(|value| i64::try_from(value).ok());
+            let audio_mime_type = sanitize_audio_mime_type(record.audio_mime_type.as_str());
+            let audio_filename = sanitize_optional_text(record.audio_filename.as_deref(), 260);
+
+            if record.audio_bytes.is_empty() {
+                return Err(anyhow!(
+                    "Audio payload cannot be empty when completing speech history records",
+                ));
+            }
+
+            let namespace = format!("speech/{}", route_kind.as_db_value());
+            let next_audio_storage_path = storage_layout::persist_audio_file(
+                &media_root,
+                MediaGroup::Generated,
+                namespace.as_str(),
+                &record_id,
+                audio_filename.as_deref(),
+                audio_mime_type.as_str(),
+                &record.audio_bytes,
+            )?;
+
+            let previous_audio_storage_path = conn
+                .query_row(
+                    r#"
+                    SELECT audio_storage_path
+                    FROM speech_history_records
+                    WHERE route_kind = ?1 AND id = ?2
+                    "#,
+                    params![route_kind.as_db_value(), &record_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
+
+            let changed = conn.execute(
+                r#"
+                UPDATE speech_history_records
+                SET processing_status = ?3,
+                    processing_error = NULL,
+                    model_id = ?4,
+                    speaker = ?5,
+                    language = ?6,
+                    saved_voice_id = ?7,
+                    speed = ?8,
+                    input_text = ?9,
+                    voice_description = ?10,
+                    reference_text = ?11,
+                    generation_time_ms = ?12,
+                    audio_duration_secs = ?13,
+                    rtf = ?14,
+                    tokens_generated = ?15,
+                    audio_mime_type = ?16,
+                    audio_filename = ?17,
+                    audio_storage_path = ?18
+                WHERE route_kind = ?1 AND id = ?2
+                "#,
+                params![
+                    route_kind.as_db_value(),
+                    &record_id,
+                    SpeechHistoryProcessingStatus::Ready.as_db_value(),
+                    model_id,
+                    speaker,
+                    language,
+                    saved_voice_id,
+                    speed,
+                    input_text,
+                    voice_description,
+                    reference_text,
+                    generation_time_ms,
+                    audio_duration_secs,
+                    rtf,
+                    tokens_generated,
+                    audio_mime_type,
+                    audio_filename,
+                    next_audio_storage_path.as_str(),
+                ],
+            )?;
+
+            if changed == 0 {
+                let _ = storage_layout::delete_media_file(
+                    &media_root,
+                    Some(next_audio_storage_path.as_str()),
+                );
+                return Ok(None);
+            }
+
+            if let Some(previous_path) = sanitize_media_path(previous_audio_storage_path.as_deref()) {
+                let _ = storage_layout::delete_media_file(&media_root, Some(previous_path.as_str()));
+            }
+
+            fetch_record_without_audio(&conn, route_kind, &record_id)
         })
         .await
     }
@@ -443,7 +690,11 @@ impl SpeechHistoryStore {
             )?;
 
             if changed > 0 {
-                storage_layout::delete_media_file(&media_root, audio_storage_path.as_deref())?;
+                let normalized_audio_path = sanitize_media_path(audio_storage_path.as_deref());
+                storage_layout::delete_media_file(
+                    &media_root,
+                    normalized_audio_path.as_deref(),
+                )?;
             }
 
             Ok(changed > 0)
@@ -475,6 +726,8 @@ fn fetch_record_without_audio(
                 id,
                 created_at,
                 route_kind,
+                processing_status,
+                processing_error,
                 model_id,
                 speaker,
                 language,
@@ -503,27 +756,33 @@ fn map_speech_history_record(row: &Row<'_>) -> rusqlite::Result<SpeechHistoryRec
     let route_raw: String = row.get(2)?;
     let route_kind =
         SpeechRouteKind::from_db_value(route_raw.as_str()).unwrap_or(SpeechRouteKind::TextToSpeech);
+    let processing_status_raw: String = row.get(3)?;
 
     Ok(SpeechHistoryRecord {
         id: row.get(0)?,
         created_at: i64_to_u64(row.get(1)?),
         route_kind,
-        model_id: row.get(3)?,
-        speaker: row.get(4)?,
-        language: row.get(5)?,
-        saved_voice_id: row.get(6)?,
-        speed: row.get(7)?,
-        input_text: row.get(8)?,
-        voice_description: row.get(9)?,
-        reference_text: row.get(10)?,
-        generation_time_ms: row.get(11)?,
-        audio_duration_secs: row.get(12)?,
-        rtf: row.get(13)?,
+        processing_status: SpeechHistoryProcessingStatus::from_db_value(
+            processing_status_raw.as_str(),
+        )
+        .unwrap_or_default(),
+        processing_error: row.get(4)?,
+        model_id: row.get(5)?,
+        speaker: row.get(6)?,
+        language: row.get(7)?,
+        saved_voice_id: row.get(8)?,
+        speed: row.get(9)?,
+        input_text: row.get(10)?,
+        voice_description: row.get(11)?,
+        reference_text: row.get(12)?,
+        generation_time_ms: row.get(13)?,
+        audio_duration_secs: row.get(14)?,
+        rtf: row.get(15)?,
         tokens_generated: row
-            .get::<_, Option<i64>>(14)?
+            .get::<_, Option<i64>>(16)?
             .and_then(|value| i64_to_usize(value)),
-        audio_mime_type: row.get(15)?,
-        audio_filename: row.get(16)?,
+        audio_mime_type: row.get(17)?,
+        audio_filename: row.get(18)?,
     })
 }
 
@@ -550,6 +809,36 @@ fn ensure_speech_history_records_speed_column(conn: &Connection) -> anyhow::Resu
         [],
     )
     .context("Failed adding speech_history_records.speed column")?;
+    Ok(())
+}
+
+fn ensure_speech_history_records_processing_status_column(
+    conn: &Connection,
+) -> anyhow::Result<()> {
+    if speech_history_records_has_column(conn, "processing_status")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE speech_history_records ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'ready'",
+        [],
+    )
+    .context("Failed adding speech_history_records.processing_status column")?;
+    Ok(())
+}
+
+fn ensure_speech_history_records_processing_error_column(
+    conn: &Connection,
+) -> anyhow::Result<()> {
+    if speech_history_records_has_column(conn, "processing_error")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE speech_history_records ADD COLUMN processing_error TEXT NULL",
+        [],
+    )
+    .context("Failed adding speech_history_records.processing_error column")?;
     Ok(())
 }
 
@@ -612,6 +901,15 @@ fn sanitize_audio_mime_type(raw: &str) -> String {
         "audio/wav".to_string()
     } else {
         truncate_string(trimmed, 80)
+    }
+}
+
+fn sanitize_media_path(raw: Option<&str>) -> Option<String> {
+    let value = raw.unwrap_or("").trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
     }
 }
 
