@@ -16,7 +16,6 @@ import { PageHeader, PageShell } from "@/components/PageShell";
 import { VoicePicker, type VoicePickerItem } from "@/components/VoicePicker";
 import {
   VOICE_ROUTE_META_COPY_CLASS,
-  VOICE_ROUTE_PANEL_TITLE_CLASS,
 } from "@/components/voiceRouteTypography";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -450,113 +449,9 @@ export function VoicesPage({
         onValueChange={(value) => setActiveTab(value as VoiceLibraryTab)}
         className="w-full"
       >
-        <div className="grid gap-5 xl:grid-cols-[260px_minmax(0,1fr)]">
-        <aside>
-          <WorkspacePanel className="p-5">
-            <div className="flex items-start justify-between gap-3">
-              <h3 className={cn(VOICE_ROUTE_PANEL_TITLE_CLASS, "text-lg")}>
-                Library Statistics
-              </h3>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => void loadSavedVoices()}
-                disabled={savedVoicesLoading}
-                className="h-8 px-2.5 text-xs"
-              >
-                {savedVoicesLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4" />
-                )}
-              </Button>
-            </div>
-
-            <dl className="mt-4 space-y-2 text-sm text-[var(--text-secondary)]">
-              <div className="flex items-center justify-between gap-3">
-                <dt>Total Voices</dt>
-                <dd className="font-semibold text-[var(--text-primary)]">
-                  {totalSavedVoices}
-                </dd>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <dt>Cloned</dt>
-                <dd className="font-semibold text-[var(--text-primary)]">
-                  {clonedVoiceCount}
-                </dd>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <dt>Designed</dt>
-                <dd className="font-semibold text-[var(--text-primary)]">
-                  {designedVoiceCount}
-                </dd>
-              </div>
-            </dl>
-
-            <div className="mt-5 border-t border-[var(--border-muted)] pt-5">
-              <h4 className={cn(VOICE_ROUTE_PANEL_TITLE_CLASS, "text-base")}>
-                Filter By
-              </h4>
-              <div role="radiogroup" className="mt-3 space-y-2">
-                {(
-                  [
-                    ["all", "All"],
-                    ["voice_cloning", "Cloned"],
-                    ["voice_design", "Designed"],
-                  ] as const
-                ).map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    role="radio"
-                    aria-checked={savedVoiceFilter === value}
-                    onClick={() => setSavedVoiceFilter(value)}
-                    className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[var(--text-secondary)] hover:bg-[var(--bg-surface-2)]"
-                  >
-                    <span
-                      className={cn(
-                        "flex h-5 w-5 items-center justify-center rounded-md border transition-colors",
-                        savedVoiceFilter === value
-                          ? "border-[var(--text-primary)] bg-[var(--text-primary)] text-[var(--text-on-accent)]"
-                          : "border-[var(--border-strong)] bg-transparent text-transparent",
-                      )}
-                    >
-                      <Check className="h-3 w-3" />
-                    </span>
-                    <span className="text-sm font-medium">{label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="mt-5 border-t border-[var(--border-muted)] pt-5">
-              <h4 className={cn(VOICE_ROUTE_PANEL_TITLE_CLASS, "text-base")}>
-                Search
-              </h4>
-              <div className="relative mt-3">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
-                <Input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search voices by name or notes"
-                  className="pl-9"
-                />
-              </div>
-            </div>
-
-            <Button
-              onClick={handleAddNewVoice}
-              className="mt-5 h-9 w-full rounded-[var(--radius-pill)] text-sm"
-            >
-              <Plus className="h-4 w-4" />
-              Add New Voice
-            </Button>
-          </WorkspacePanel>
-        </aside>
-
         <WorkspacePanel className="p-5 sm:p-6">
           <div className="flex flex-col gap-4 border-b border-[var(--border-muted)] pb-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <TabsList className="grid h-10 w-full max-w-[30rem] grid-cols-3 overflow-hidden rounded-[var(--radius-pill)] border-[var(--border-strong)] bg-[var(--bg-surface-2)] p-[2px] shadow-none">
                 <TabsTrigger
                   value="all"
@@ -586,6 +481,10 @@ export function VoicesPage({
 
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 <StatusBadge>{activeResultsLabel.toUpperCase()}</StatusBadge>
+                <StatusBadge>SAVED {totalSavedVoices}</StatusBadge>
+                <StatusBadge>CLONED {clonedVoiceCount}</StatusBadge>
+                <StatusBadge>DESIGNED {designedVoiceCount}</StatusBadge>
+                <StatusBadge>BUILT-IN {totalBuiltInVoices}</StatusBadge>
                 {savedVoiceFilter !== "all" &&
                 (activeTab === "saved" || activeTab === "all") ? (
                   <StatusBadge>
@@ -605,6 +504,74 @@ export function VoicesPage({
                     Model
                   </Button>
                 ) : null}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              {(activeTab === "saved" || activeTab === "all") ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <div role="radiogroup" className="flex flex-wrap gap-2">
+                    {(
+                      [
+                        ["all", "All"],
+                        ["voice_cloning", "Cloned"],
+                        ["voice_design", "Designed"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        role="radio"
+                        aria-checked={savedVoiceFilter === value}
+                        onClick={() => setSavedVoiceFilter(value)}
+                        className={cn(
+                          "inline-flex h-8 items-center gap-2 rounded-full border px-3 text-xs font-semibold transition-colors",
+                          savedVoiceFilter === value
+                            ? "border-[var(--text-primary)] bg-[var(--text-primary)] text-[var(--text-on-accent)]"
+                            : "border-[var(--border-strong)] bg-[var(--bg-surface-1)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface-2)]",
+                        )}
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div />
+              )}
+
+              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                <div className="relative w-full sm:w-[20rem]">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+                  <Input
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Search voices by name or notes"
+                    className="pl-9"
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void loadSavedVoices()}
+                  disabled={savedVoicesLoading}
+                  className="h-9"
+                >
+                  {savedVoicesLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                  Refresh
+                </Button>
+                <Button
+                  onClick={handleAddNewVoice}
+                  className="h-9 rounded-[var(--radius-pill)] text-sm"
+                >
+                  <Plus className="h-4 w-4" />
+                  Add New Voice
+                </Button>
               </div>
             </div>
           </div>
@@ -661,7 +628,6 @@ export function VoicesPage({
             className="mt-5"
           />
         </WorkspacePanel>
-      </div>
       </Tabs>
     </div>
   );
