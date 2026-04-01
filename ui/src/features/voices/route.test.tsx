@@ -195,7 +195,7 @@ describe("VoicesPage", () => {
     expect(screen.getByRole("button", { name: "Preview" })).toBeDisabled();
   });
 
-  it("keeps inline filter and search controls without sidebar sections", async () => {
+  it("removes the secondary filter/search/actions strip", async () => {
     render(
       <MemoryRouter>
         <VoicesPage {...baseProps} />
@@ -212,17 +212,18 @@ describe("VoicesPage", () => {
       expect(allVoicesTab).toHaveAttribute("data-state", "active"),
     );
 
-    const designedFilter = screen.getByRole("radio", { name: "Designed" });
-    fireEvent.click(designedFilter);
-    expect(designedFilter).toHaveAttribute("aria-checked", "true");
-
-    fireEvent.change(screen.getByPlaceholderText("Search voices by name or notes"), {
-      target: { value: "balanced" },
-    });
-
     expect(await screen.findByText("Balanced 21 yo")).toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: "All" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: "Cloned" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: "Designed" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText("Search voices by name or notes"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Refresh/i })).not.toBeInTheDocument();
     expect(screen.queryByText("Library Statistics")).not.toBeInTheDocument();
     expect(screen.queryByText("Filter By")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Add New Voice/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Add New Voice/i }),
+    ).not.toBeInTheDocument();
   });
 });

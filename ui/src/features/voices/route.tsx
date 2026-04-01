@@ -1,12 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Check,
   Loader2,
   Mic2,
-  Plus,
-  RefreshCw,
-  Search,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -17,7 +13,6 @@ import {
   VOICE_ROUTE_META_COPY_CLASS,
 } from "@/components/voiceRouteTypography";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { StatePanel } from "@/components/ui/state-panel";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -55,10 +50,8 @@ interface VoicesPageProps {
   onSelect: (variant: string) => void;
   onError: (message: string) => void;
   embedded?: boolean;
-  onAddNewVoice?: () => void;
 }
 
-type SavedVoiceFilter = "all" | "voice_cloning" | "voice_design";
 type VoiceLibraryTab = "all" | "saved" | "built-in";
 
 const BUILT_IN_PREVIEW_TEXT = {
@@ -125,13 +118,9 @@ export function VoicesPage({
   onSelect,
   onError,
   embedded = false,
-  onAddNewVoice,
 }: VoicesPageProps) {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<VoiceLibraryTab>("saved");
-  const [search, setSearch] = useState("");
-  const [savedVoiceFilter, setSavedVoiceFilter] =
-    useState<SavedVoiceFilter>("all");
   const [savedVoices, setSavedVoices] = useState<SavedVoiceSummary[]>([]);
   const [savedVoicesLoading, setSavedVoicesLoading] = useState(true);
   const [savedVoicesError, setSavedVoicesError] = useState<string | null>(null);
@@ -211,39 +200,6 @@ export function VoicesPage({
     [resolvedSelectedModel],
   );
 
-  const filteredSavedVoices = useMemo(() => {
-    const normalizedQuery = search.trim().toLowerCase();
-    return savedVoices.filter((voice) => {
-      const matchesSource =
-        savedVoiceFilter === "all" ||
-        voice.source_route_kind === savedVoiceFilter;
-      if (!matchesSource) {
-        return false;
-      }
-      if (!normalizedQuery) {
-        return true;
-      }
-      return (
-        voice.name.toLowerCase().includes(normalizedQuery) ||
-        voice.reference_text_preview.toLowerCase().includes(normalizedQuery)
-      );
-    });
-  }, [savedVoices, savedVoiceFilter, search]);
-
-  const filteredBuiltInVoices = useMemo(() => {
-    const normalizedQuery = search.trim().toLowerCase();
-    return builtInVoices.filter((voice) => {
-      if (!normalizedQuery) {
-        return true;
-      }
-      return (
-        voice.name.toLowerCase().includes(normalizedQuery) ||
-        voice.language.toLowerCase().includes(normalizedQuery) ||
-        voice.description.toLowerCase().includes(normalizedQuery)
-      );
-    });
-  }, [builtInVoices, search]);
-
   const handleUseSavedVoice = (voiceId: string) => {
     navigate(`/text-to-speech?voiceId=${encodeURIComponent(voiceId)}`);
   };
@@ -313,7 +269,7 @@ export function VoicesPage({
     }
   };
 
-  const savedVoiceItems: VoiceLibraryItem[] = filteredSavedVoices.map(
+  const savedVoiceItems: VoiceLibraryItem[] = savedVoices.map(
     (voice) => ({
       id: voice.id,
       name: voice.name,
@@ -359,7 +315,7 @@ export function VoicesPage({
     }),
   );
 
-  const builtInVoiceItems: VoiceLibraryItem[] = filteredBuiltInVoices.map(
+  const builtInVoiceItems: VoiceLibraryItem[] = builtInVoices.map(
     (voice) => ({
       id: voice.id,
       name: voice.name,
@@ -425,23 +381,15 @@ export function VoicesPage({
         : builtInVoiceItems;
   const activeResultCount =
     activeTab === "all"
-      ? filteredSavedVoices.length + filteredBuiltInVoices.length
+      ? savedVoices.length + builtInVoices.length
       : activeTab === "saved"
-        ? filteredSavedVoices.length
-        : filteredBuiltInVoices.length;
+        ? savedVoices.length
+        : builtInVoices.length;
   const activeResultsLabel =
     activeResultCount === 1 ? "1 result" : `${activeResultCount} results`;
   const showBuiltInMeta = activeTab === "built-in" || activeTab === "all";
   const showSavedVoiceError =
     savedVoicesError && (activeTab === "saved" || activeTab === "all");
-
-  const handleAddNewVoice = () => {
-    if (onAddNewVoice) {
-      onAddNewVoice();
-      return;
-    }
-    navigate("/voice-design");
-  };
 
   const workspaceContent = (
     <div className="flex flex-col">
@@ -486,12 +434,6 @@ export function VoicesPage({
                 <StatusBadge>CLONED {clonedVoiceCount}</StatusBadge>
                 <StatusBadge>DESIGNED {designedVoiceCount}</StatusBadge>
                 <StatusBadge>BUILT-IN {totalBuiltInVoices}</StatusBadge>
-                {savedVoiceFilter !== "all" &&
-                (activeTab === "saved" || activeTab === "all") ? (
-                  <StatusBadge>
-                    {savedVoiceFilter === "voice_cloning" ? "CLONED" : "DESIGNED"}
-                  </StatusBadge>
-                ) : null}
                 {showBuiltInMeta && resolvedSelectedModel ? (
                   <StatusBadge>{resolvedSelectedModel}</StatusBadge>
                 ) : null}
@@ -508,73 +450,6 @@ export function VoicesPage({
               </div>
             </div>
 
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              {(activeTab === "saved" || activeTab === "all") ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <div role="radiogroup" className="flex flex-wrap gap-2">
-                    {(
-                      [
-                        ["all", "All"],
-                        ["voice_cloning", "Cloned"],
-                        ["voice_design", "Designed"],
-                      ] as const
-                    ).map(([value, label]) => (
-                      <button
-                        key={value}
-                        type="button"
-                        role="radio"
-                        aria-checked={savedVoiceFilter === value}
-                        onClick={() => setSavedVoiceFilter(value)}
-                        className={cn(
-                          "inline-flex h-8 items-center gap-2 rounded-full border px-3 text-xs font-semibold transition-colors",
-                          savedVoiceFilter === value
-                            ? "border-[var(--text-primary)] bg-[var(--text-primary)] text-[var(--text-on-accent)]"
-                            : "border-[var(--border-strong)] bg-[var(--bg-surface-1)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface-2)]",
-                        )}
-                      >
-                        <Check className="h-3.5 w-3.5" />
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div />
-              )}
-
-              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-                <div className="relative w-full sm:w-[20rem]">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
-                  <Input
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder="Search voices by name or notes"
-                    className="pl-9"
-                  />
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void loadSavedVoices()}
-                  disabled={savedVoicesLoading}
-                  className="h-9"
-                >
-                  {savedVoicesLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-4 w-4" />
-                  )}
-                  Refresh
-                </Button>
-                <Button
-                  onClick={handleAddNewVoice}
-                  className="h-9 rounded-[var(--radius-pill)] text-sm"
-                >
-                  <Plus className="h-4 w-4" />
-                  Add New Voice
-                </Button>
-              </div>
-            </div>
           </div>
 
           {showBuiltInMeta ? (
@@ -617,14 +492,14 @@ export function VoicesPage({
               activeTab === "all"
                 ? routeModels.length === 0
                   ? "Save a voice or load a supported built-in voice model to populate the library."
-                  : "Save a voice from voice cloning or voice design, or clear your search/filter to browse more voices."
+                  : "Save a voice from voice cloning or voice design to build out your library."
                 : activeTab === "saved"
                   ? savedVoicesLoading
                     ? "Fetching your reusable cloned and designed voices."
                     : "Save a result from voice cloning or voice design to build a reusable voice library."
                   : routeModels.length === 0
                     ? "Load a CustomVoice or Kokoro model to browse built-in voices."
-                    : "Try a different built-in voice model or search term."
+                    : "Try a different built-in voice model."
             }
             className="mt-5"
             compact={embedded}
