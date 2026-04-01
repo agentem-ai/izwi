@@ -17,6 +17,7 @@ interface VoiceCreationModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onUseSavedVoiceInTts?: (voiceId: string) => void;
+  onVoiceCreated?: (voiceId: string) => void;
   designModel: string | null;
   designModelReady: boolean;
   designModelOptions: Array<{
@@ -60,6 +61,7 @@ export function VoiceCreationModal({
   open,
   onOpenChange,
   onUseSavedVoiceInTts,
+  onVoiceCreated,
   designModel,
   designModelReady,
   designModelOptions,
@@ -104,6 +106,7 @@ export function VoiceCreationModal({
     setHasDraftProgress(false);
     setShowDiscardPrompt(false);
     setStep("success");
+    onVoiceCreated?.(voiceId);
   };
 
   const useCompactWidth = step === "choice" || step === "success";

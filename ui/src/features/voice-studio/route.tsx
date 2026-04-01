@@ -52,6 +52,7 @@ export function VoiceStudioPage({
 }: VoiceStudioPageProps) {
   const navigate = useNavigate();
   const [isCreationModalOpen, setIsCreationModalOpen] = useState(false);
+  const [voicesRefreshKey, setVoicesRefreshKey] = useState(0);
   const designViewConfig = VIEW_CONFIGS["voice-design"];
   const {
     routeModels: designRouteModels,
@@ -107,12 +108,16 @@ export function VoiceStudioPage({
           onSelect={onSelect}
           onError={onError}
           embedded
+          refreshKey={voicesRefreshKey}
         />
       </div>
 
       <VoiceCreationModal
         open={isCreationModalOpen}
         onOpenChange={setIsCreationModalOpen}
+        onVoiceCreated={() => {
+          setVoicesRefreshKey((current) => current + 1);
+        }}
         onUseSavedVoiceInTts={(voiceId) =>
           navigate(`/text-to-speech?voiceId=${encodeURIComponent(voiceId)}`)
         }
