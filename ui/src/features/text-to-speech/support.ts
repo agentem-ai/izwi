@@ -1,4 +1,5 @@
 import { type SpeechHistoryProcessingStatus } from "@/api";
+import { getSpeakerProfilesForVariant } from "@/types";
 
 export function normalizeSpeechProcessingStatus(
   status: SpeechHistoryProcessingStatus | null | undefined,
@@ -80,6 +81,12 @@ export function resolveSpeechVoiceLabel({
     return savedVoiceNameById[savedVoiceId] || "Saved voice";
   }
   if (speaker) {
+    const matchedSpeaker = getSpeakerProfilesForVariant(modelId ?? null).find(
+      (profile) => profile.id === speaker,
+    );
+    if (matchedSpeaker) {
+      return matchedSpeaker.name;
+    }
     return speaker;
   }
   if (modelId) {

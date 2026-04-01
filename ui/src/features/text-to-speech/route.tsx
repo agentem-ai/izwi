@@ -382,8 +382,8 @@ export function TextToSpeechPage({
         onCreated={async (createdRecord) => {
           setRecordActionError(null);
           setStreamingRecord(createdRecord);
-          await refreshHistory().catch(() => undefined);
           navigate(`/text-to-speech/${createdRecord.id}`);
+          void refreshHistory();
         }}
         onStreamingStart={() => {
           setStreamingRecord((current) =>

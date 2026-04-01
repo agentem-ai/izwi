@@ -234,6 +234,25 @@ describe("TextToSpeechPage", () => {
     expect(screen.queryByText("voice-1")).not.toBeInTheDocument();
   });
 
+  it("uses built-in speaker display names in history rows", async () => {
+    apiMocks.listTextToSpeechRecords.mockResolvedValue([
+      buildSummary({
+        saved_voice_id: null,
+        speaker: "Ono_anna",
+        model_id: "Qwen3-TTS-12Hz-1.7B-Chat",
+      }),
+    ]);
+
+    renderRoute("/text-to-speech");
+
+    await waitFor(() =>
+      expect(apiMocks.listTextToSpeechRecords).toHaveBeenCalled(),
+    );
+
+    expect(screen.getByText("Anna")).toBeInTheDocument();
+    expect(screen.queryByText("Ono_anna")).not.toBeInTheDocument();
+  });
+
   it("opens the new text-to-speech modal from the header action", async () => {
     renderRoute("/text-to-speech");
 
@@ -403,5 +422,25 @@ describe("TextToSpeechPage", () => {
     expect(await screen.findByText("Voice: Narrator Prime")).toBeInTheDocument();
     expect(screen.queryByText(/^READY$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Saved voice:\s*voice-1/i)).not.toBeInTheDocument();
+  });
+
+  it("uses built-in speaker display names on detail headers", async () => {
+    apiMocks.getTextToSpeechRecord.mockResolvedValue(
+      buildRecord({
+        saved_voice_id: null,
+        speaker: "Ono_anna",
+        model_id: "Qwen3-TTS-12Hz-1.7B-Chat",
+        processing_status: "ready",
+      }),
+    );
+
+    renderRoute("/text-to-speech/tts-1");
+
+    expect(
+      await screen.findByRole("heading", { name: "Text-to-Speech Record" }),
+    ).toBeInTheDocument();
+
+    expect(await screen.findByText("Voice: Anna")).toBeInTheDocument();
+    expect(screen.queryByText("Voice: Ono_anna")).not.toBeInTheDocument();
   });
 });
