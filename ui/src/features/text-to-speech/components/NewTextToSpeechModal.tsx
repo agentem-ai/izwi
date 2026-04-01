@@ -260,9 +260,11 @@ export function NewTextToSpeechModal({
         streamingEnabled && streamAvailable
           ? await new Promise<SpeechHistoryRecord>((resolve, reject) => {
               let settled = false;
+              let streamRecord: SpeechHistoryRecord | null = null;
 
               api.createTextToSpeechRecordStream(request, {
                 onCreated: (record) => {
+                  streamRecord = record;
                   if (settled) {
                     return;
                   }
@@ -273,7 +275,13 @@ export function NewTextToSpeechModal({
                   onStreamingStart?.();
                 },
                 onFinal: ({ record }) => {
+                  streamRecord = record;
                   onStreamingFinal?.(record);
+                  if (settled) {
+                    return;
+                  }
+                  settled = true;
+                  resolve(record);
                 },
                 onError: (message) => {
                   onStreamingError?.(message);
@@ -286,6 +294,11 @@ export function NewTextToSpeechModal({
                 onDone: () => {
                   onStreamingDone?.();
                   if (settled) {
+                    return;
+                  }
+                  if (streamRecord) {
+                    settled = true;
+                    resolve(streamRecord);
                     return;
                   }
                   settled = true;
