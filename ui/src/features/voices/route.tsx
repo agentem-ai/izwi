@@ -328,7 +328,7 @@ export function VoicesPage({
         <>
           <Button
             size="sm"
-            className="h-9 rounded-[var(--radius-pill)] px-4 text-sm"
+            className="h-8 rounded-[var(--radius-pill)] px-3.5 text-xs font-semibold"
             onClick={(event) => {
               event.stopPropagation();
               handleUseSavedVoice(voice.id);
@@ -340,7 +340,7 @@ export function VoicesPage({
           <Button
             variant="outline"
             size="sm"
-            className="h-9 rounded-[var(--radius-pill)] border-[var(--border-strong)] bg-[var(--bg-surface-1)]/72 px-4 text-sm"
+            className="h-8 rounded-[var(--radius-pill)] border-[var(--border-strong)] bg-[var(--bg-surface-1)]/72 px-3.5 text-xs font-semibold"
             onClick={(event) => {
               event.stopPropagation();
               void handleDeleteVoice(voice.id);
@@ -381,7 +381,7 @@ export function VoicesPage({
               event.stopPropagation();
               handleUseBuiltInVoice(voice.id);
             }}
-            className="h-9 rounded-[var(--radius-pill)] px-4 text-sm"
+            className="h-8 rounded-[var(--radius-pill)] px-3.5 text-xs font-semibold"
           >
             <Mic2 className="h-4 w-4" />
             Use in TTS
@@ -394,7 +394,7 @@ export function VoicesPage({
               void handlePreviewBuiltInVoice(voice.id, voice.language);
             }}
             disabled={previewLoadingVoiceId === voice.id}
-            className="h-9 rounded-[var(--radius-pill)] border-[var(--border-strong)] bg-[var(--bg-surface-1)]/72 px-4 text-sm"
+            className="h-8 rounded-[var(--radius-pill)] border-[var(--border-strong)] bg-[var(--bg-surface-1)]/72 px-3.5 text-xs font-semibold"
           >
             {previewLoadingVoiceId === voice.id ? (
               <Loader2 className="h-4 w-4 animate-spin" />
