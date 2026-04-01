@@ -30,6 +30,7 @@ export type {
   SavedVoiceCreateRequest,
   SavedVoiceSourceRouteKind,
   SavedVoiceSummary,
+  SpeechHistoryProcessingStatus,
   SpeechHistoryRecord,
   SpeechHistoryRecordCreateRequest,
   SpeechHistoryRecordStreamCallbacks,

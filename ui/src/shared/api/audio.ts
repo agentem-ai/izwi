@@ -80,10 +80,18 @@ export type SpeechHistoryRoute =
   | "voice-design"
   | "voice-cloning";
 
+export type SpeechHistoryProcessingStatus =
+  | "pending"
+  | "processing"
+  | "ready"
+  | "failed";
+
 export interface SpeechHistoryRecordSummary {
   id: string;
   created_at: number;
   route_kind: "text_to_speech" | "voice_design" | "voice_cloning";
+  processing_status: SpeechHistoryProcessingStatus;
+  processing_error?: string | null;
   model_id: string | null;
   speaker: string | null;
   language: string | null;
@@ -103,6 +111,8 @@ export interface SpeechHistoryRecord {
   id: string;
   created_at: number;
   route_kind: "text_to_speech" | "voice_design" | "voice_cloning";
+  processing_status: SpeechHistoryProcessingStatus;
+  processing_error?: string | null;
   model_id: string | null;
   speaker: string | null;
   language: string | null;
@@ -137,6 +147,10 @@ export interface SpeechHistoryRecordCreateRequest {
 
 type SpeechHistoryRecordStreamEvent =
   | {
+      event: "created";
+      record: SpeechHistoryRecord;
+    }
+  | {
       event: "start";
       request_id: string;
       sample_rate: number;
@@ -162,6 +176,7 @@ type SpeechHistoryRecordStreamEvent =
   | { event: "done"; request_id?: string };
 
 export interface SpeechHistoryRecordStreamCallbacks {
+  onCreated?: (record: SpeechHistoryRecord) => void;
   onStart?: (event: {
     requestId: string;
     sampleRate: number;
@@ -1060,6 +1075,9 @@ export class AudioApiClient {
           try {
             const event = JSON.parse(data) as SpeechHistoryRecordStreamEvent;
             switch (event.event) {
+              case "created":
+                callbacks.onCreated?.(event.record);
+                break;
               case "start":
                 callbacks.onStart?.({
                   requestId: event.request_id,

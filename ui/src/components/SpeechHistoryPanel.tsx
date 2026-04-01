@@ -119,6 +119,8 @@ function summarizeRecord(
     id: record.id,
     created_at: record.created_at,
     route_kind: routeKindFor(route),
+    processing_status: record.processing_status,
+    processing_error: record.processing_error,
     model_id: record.model_id,
     speaker: record.speaker,
     language: record.language,
