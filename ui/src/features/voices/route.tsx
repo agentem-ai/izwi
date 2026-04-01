@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
@@ -53,6 +53,7 @@ interface VoicesPageProps {
   onSelect: (variant: string) => void;
   onError: (message: string) => void;
   embedded?: boolean;
+  refreshKey?: number;
 }
 
 type VoiceLibraryTab = "all" | "saved" | "built-in";
@@ -127,6 +128,7 @@ export function VoicesPage({
   onSelect,
   onError,
   embedded = false,
+  refreshKey = 0,
 }: VoicesPageProps) {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<VoiceLibraryTab>("saved");
@@ -190,7 +192,7 @@ export function VoicesPage({
     };
   }, []);
 
-  const loadSavedVoices = async () => {
+  const loadSavedVoices = useCallback(async () => {
     setSavedVoicesLoading(true);
     setSavedVoicesError(null);
     try {
@@ -203,11 +205,11 @@ export function VoicesPage({
     } finally {
       setSavedVoicesLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     void loadSavedVoices();
-  }, []);
+  }, [loadSavedVoices, refreshKey]);
 
   const builtInVoices = useMemo(
     () => getSpeakerProfilesForVariant(resolvedSelectedModel),
@@ -236,11 +238,9 @@ export function VoicesPage({
     setDeleteConfirmError(null);
     try {
       await api.deleteSavedVoice(deleteConfirmVoiceId);
-      setSavedVoices((current) =>
-        current.filter((voice) => voice.id !== deleteConfirmVoiceId),
-      );
       setDeleteConfirmVoiceId(null);
       setDeleteConfirmError(null);
+      await loadSavedVoices();
     } catch (error) {
       setDeleteConfirmError(
         error instanceof Error

@@ -200,6 +200,24 @@ describe("VoicesPage", () => {
   });
 
   it("uses a confirmation modal before deleting saved voices", async () => {
+    apiMocks.listSavedVoices
+      .mockResolvedValueOnce([
+        {
+          id: "voice-balanced",
+          created_at: 1711000000000,
+          updated_at: 1711100000000,
+          name: "Balanced 21 yo",
+          reference_text_preview:
+            "Hello, this is Izwi. This short preview helps compare the voice.",
+          reference_text_chars: 64,
+          audio_mime_type: "audio/wav",
+          audio_filename: "balanced.wav",
+          source_route_kind: "voice_design",
+          source_record_id: "design-1",
+        } satisfies SavedVoiceSummary,
+      ])
+      .mockResolvedValueOnce([]);
+
     render(
       <MemoryRouter>
         <VoicesPage {...baseProps} />
@@ -218,6 +236,7 @@ describe("VoicesPage", () => {
     await waitFor(() =>
       expect(apiMocks.deleteSavedVoice).toHaveBeenCalledWith("voice-balanced"),
     );
+    await waitFor(() => expect(apiMocks.listSavedVoices).toHaveBeenCalledTimes(2));
     await waitFor(() =>
       expect(screen.queryByTestId("voice-row-voice-balanced")).not.toBeInTheDocument(),
     );
