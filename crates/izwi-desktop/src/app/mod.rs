@@ -51,8 +51,14 @@ pub fn run(args: DesktopArgs) -> Result<()> {
     let managed_server = Arc::new(Mutex::new(None::<Child>));
     let setup_server_handle = Arc::clone(&managed_server);
 
-    let app = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![downloads::download_audio_file])
+    let mut builder = tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![downloads::download_audio_file]);
+
+    if let Some(app_key) = resolve_aptabase_app_key() {
+        builder = builder.plugin(tauri_plugin_aptabase::Builder::new(&app_key).build());
+    }
+
+    let app = builder
         .setup(move |app| {
             if let Some(server_child) = maybe_start_local_server(app.handle(), &server_url)? {
                 let mut child_slot = setup_server_handle
@@ -89,4 +95,11 @@ pub fn run(args: DesktopArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn resolve_aptabase_app_key() -> Option<String> {
+    std::env::var("APTABASE_APP_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }

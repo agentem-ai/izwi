@@ -177,6 +177,18 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the track_event command without any pre-configured scope.",
+          "type": "string",
+          "const": "aptabase:allow-track-event",
+          "markdownDescription": "Enables the track_event command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the track_event command without any pre-configured scope.",
+          "type": "string",
+          "const": "aptabase:deny-track-event",
+          "markdownDescription": "Denies the track_event command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",
