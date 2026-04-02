@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, Settings2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import type { ModelInfo } from "@/api";
 import { PageHeader, PageShell } from "@/components/PageShell";
@@ -53,6 +53,8 @@ export function VoiceStudioPage({
   const navigate = useNavigate();
   const [isCreationModalOpen, setIsCreationModalOpen] = useState(false);
   const [voicesRefreshKey, setVoicesRefreshKey] = useState(0);
+  const [voicesModelManagerRequestKey, setVoicesModelManagerRequestKey] =
+    useState(0);
   const designViewConfig = VIEW_CONFIGS["voice-design"];
   const {
     routeModels: designRouteModels,
@@ -84,13 +86,27 @@ export function VoiceStudioPage({
         title="Voice Studio"
         description="Manage saved and built-in voices, then create new cloned or designed voices from one place."
         actions={
-          <Button
-            onClick={() => setIsCreationModalOpen(true)}
-            className="h-9 rounded-[var(--radius-pill)] px-4 text-sm"
-          >
-            <Plus className="h-4 w-4" />
-            New Voice
-          </Button>
+          <>
+            <Button
+              onClick={() => setIsCreationModalOpen(true)}
+              className="h-9 rounded-[var(--radius-pill)] px-4 text-sm"
+            >
+              <Plus className="h-4 w-4" />
+              New Voice
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9 gap-2"
+              onClick={() =>
+                setVoicesModelManagerRequestKey((current) => current + 1)
+              }
+            >
+              <Settings2 className="h-4 w-4" />
+              Models
+            </Button>
+          </>
         }
       />
 
@@ -109,6 +125,7 @@ export function VoiceStudioPage({
           onError={onError}
           embedded
           refreshKey={voicesRefreshKey}
+          openModelManagerRequestKey={voicesModelManagerRequestKey}
         />
       </div>
 

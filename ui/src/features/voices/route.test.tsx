@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -293,5 +293,131 @@ describe("VoicesPage", () => {
     expect(screen.queryByText(/CLONED\s+\d+/)).not.toBeInTheDocument();
     expect(screen.queryByText(/DESIGNED\s+\d+/)).not.toBeInTheDocument();
     expect(screen.queryByText(/BUILT-IN\s+\d+/)).not.toBeInTheDocument();
+  });
+
+  it("switches built-in model selection and updates built-in voice previews", async () => {
+    const onSelect = vi.fn();
+    const kokoroVariant = "Kokoro-82M";
+    const qwenVariant = "Qwen3-TTS-12Hz-0.6B-CustomVoice";
+    let isModelModalOpen = false;
+    const openModelManager = vi.fn(() => {
+      isModelModalOpen = true;
+    });
+    const closeModelModal = vi.fn(() => {
+      isModelModalOpen = false;
+    });
+
+    typeMocks.getSpeakerProfilesForVariant.mockImplementation((variant: string) => {
+      if (variant === kokoroVariant) {
+        return [
+          {
+            id: "bf_alice",
+            name: "Alice",
+            language: "English",
+            description: "Kokoro built-in voice",
+          },
+        ];
+      }
+      if (variant === qwenVariant) {
+        return [
+          {
+            id: "Chelsie",
+            name: "Chelsie",
+            language: "English",
+            description: "Qwen built-in voice",
+          },
+        ];
+      }
+      return [];
+    });
+
+    hookMocks.useRouteModelSelection.mockImplementation(
+      ({ selectedModel: currentSelectedModel }: { selectedModel: string | null }) => ({
+        routeModels: [
+          buildModel({ variant: kokoroVariant }),
+          buildModel({ variant: qwenVariant }),
+        ],
+        resolvedSelectedModel: currentSelectedModel ?? kokoroVariant,
+        selectedModelInfo: buildModel({
+          variant: currentSelectedModel ?? kokoroVariant,
+        }),
+        selectedModelReady: true,
+        isModelModalOpen,
+        intentVariant: null,
+        closeModelModal,
+        openModelManager,
+        requestModel: vi.fn(),
+        handleModelSelect: onSelect,
+        modelOptions: [
+          {
+            value: kokoroVariant,
+            label: kokoroVariant,
+            statusLabel: "Loaded",
+            isReady: true,
+          },
+          {
+            value: qwenVariant,
+            label: qwenVariant,
+            statusLabel: "Loaded",
+            isReady: true,
+          },
+        ],
+      }),
+    );
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <VoicesPage {...baseProps} selectedModel={kokoroVariant} onSelect={onSelect} />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(apiMocks.listSavedVoices).toHaveBeenCalled());
+
+    const builtInTab = screen.getByRole("tab", { name: /Built-in Voices/i });
+    fireEvent.mouseDown(builtInTab, { button: 0 });
+    fireEvent.click(builtInTab);
+
+    await waitFor(() =>
+      expect(builtInTab).toHaveAttribute("data-state", "active"),
+    );
+
+    expect(await screen.findByText("Alice")).toBeInTheDocument();
+    expect(screen.queryByText("Chelsie")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Models/i }));
+    expect(openModelManager).toHaveBeenCalled();
+
+    rerender(
+      <MemoryRouter>
+        <VoicesPage {...baseProps} selectedModel={kokoroVariant} onSelect={onSelect} />
+      </MemoryRouter>,
+    );
+
+    const qwenModelRow = await screen.findByTestId(
+      `route-model-row-${qwenVariant}`,
+    );
+    fireEvent.click(
+      within(qwenModelRow).getByRole("button", { name: /Use model/i }),
+    );
+    expect(onSelect).toHaveBeenCalledWith(qwenVariant);
+
+    rerender(
+      <MemoryRouter>
+        <VoicesPage {...baseProps} selectedModel={qwenVariant} onSelect={onSelect} />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Chelsie")).toBeInTheDocument();
+    expect(screen.queryByText("Alice")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    await waitFor(() =>
+      expect(apiMocks.generateTTSWithStats).toHaveBeenCalledWith({
+        model_id: qwenVariant,
+        text: "Hello. This is an Izwi built-in voice preview.",
+        speaker: "Chelsie",
+      }),
+    );
   });
 });
