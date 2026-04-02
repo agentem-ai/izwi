@@ -3,6 +3,10 @@ import { useEffect, useState } from "react";
 
 import { api } from "@/api";
 import { setAnalyticsEnabled } from "@/app/analytics/client";
+import {
+  trackAnalyticsConsentChanged,
+  trackThemePreferenceChanged,
+} from "@/app/analytics/events";
 import { useNotifications } from "@/app/providers/NotificationProvider";
 import { useTheme } from "@/app/providers/ThemeProvider";
 import { PageHeader, PageShell } from "@/components/PageShell";
@@ -40,6 +44,15 @@ export function SettingsPage() {
   const [analyticsOptIn, setAnalyticsOptIn] = useState(false);
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(true);
   const [isSavingPreference, setIsSavingPreference] = useState(false);
+
+  const handleThemePreferenceChange = (nextPreference: "system" | "light" | "dark") => {
+    if (themePreference === nextPreference) {
+      return;
+    }
+
+    setThemePreference(nextPreference);
+    void trackThemePreferenceChanged(nextPreference);
+  };
 
   useEffect(() => {
     let active = true;
@@ -89,6 +102,10 @@ export function SettingsPage() {
       const response = await api.updateAnalyticsPreference({ opt_in: nextValue });
       setAnalyticsOptIn(response.analytics_opt_in);
       setAnalyticsEnabled(response.analytics_opt_in);
+      void trackAnalyticsConsentChanged(
+        response.analytics_opt_in ? "opted_in" : "opted_out",
+        "settings",
+      );
       notify({
         title: response.analytics_opt_in
           ? "Anonymous analytics enabled"
@@ -134,7 +151,7 @@ export function SettingsPage() {
                 <button
                   key={option.id}
                   type="button"
-                  onClick={() => setThemePreference(option.id)}
+                  onClick={() => handleThemePreferenceChange(option.id)}
                   className={cn(
                     "rounded-xl border px-4 py-3 text-left transition-colors",
                     isActive

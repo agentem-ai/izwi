@@ -1,5 +1,6 @@
-import { lazy, Suspense, type ReactNode } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { routeIdFromPathname, trackRouteViewed } from "@/app/analytics/events";
 import { AppLayout } from "@/app/layouts/AppLayout";
 import { useModelCatalog } from "@/app/providers/ModelCatalogProvider";
 import { useTheme } from "@/app/providers/ThemeProvider";
@@ -83,6 +84,8 @@ function withSuspense(children: ReactNode) {
 }
 
 export function AppRoutes() {
+  const location = useLocation();
+  const hasTrackedInitialRouteRef = useRef(false);
   const { resolvedTheme, themePreference, setThemePreference } = useTheme();
   const {
     models,
@@ -141,6 +144,18 @@ export function AppRoutes() {
   const selectedModelLabel =
     models.find((model) => model.variant === selectedModel)?.variant ??
     selectedModel;
+
+  useEffect(() => {
+    if (!hasTrackedInitialRouteRef.current) {
+      hasTrackedInitialRouteRef.current = true;
+      return;
+    }
+    const routeId = routeIdFromPathname(location.pathname);
+    if (!routeId) {
+      return;
+    }
+    void trackRouteViewed(routeId);
+  }, [location.pathname]);
 
   return (
     <Routes>

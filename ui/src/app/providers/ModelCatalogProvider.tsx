@@ -9,6 +9,11 @@ import {
   type ReactNode,
 } from "react";
 import { api, type ModelInfo } from "@/api";
+import {
+  trackModelDownloadCompleted,
+  trackModelDownloadStarted,
+  trackModelLoaded,
+} from "@/app/analytics/events";
 import { useNotifications } from "@/app/providers/NotificationProvider";
 import { VIEW_CONFIGS } from "@/types";
 import type { DownloadProgressMap } from "@/app/router/types";
@@ -226,6 +231,7 @@ export function ModelCatalogProvider({
             if (previousTerminalState !== data.status) {
               lastDownloadTerminalStateRef.current[variant] = data.status;
               if (data.status === "completed") {
+                void trackModelDownloadCompleted(variant);
                 notify({
                   title: "Model download complete",
                   description: `${getModelLabel(variant)} is ready to load.`,
@@ -427,6 +433,7 @@ export function ModelCatalogProvider({
           description: `${getModelLabel(variant)} download started in the background.`,
           tone: "info",
         });
+        void trackModelDownloadStarted(variant);
 
         if (
           response.status === "started" ||
@@ -557,6 +564,7 @@ export function ModelCatalogProvider({
 
         await api.loadModel(variant);
         setSelectedModelState(variant);
+        void trackModelLoaded(variant);
         notify({
           title: "Model loaded",
           description: `${getModelLabel(variant)} is now active.`,
