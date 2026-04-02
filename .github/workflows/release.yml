@@ -35,6 +35,7 @@ jobs:
     env:
       # Kept at job scope for step conditions only.
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APTABASE_APP_KEY: ${{ secrets.APTABASE_APP_KEY }}
 
     steps:
       - name: Checkout
