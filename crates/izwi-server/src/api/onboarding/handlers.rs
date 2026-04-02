@@ -8,6 +8,7 @@ use crate::state::AppState;
 pub struct OnboardingStateResponse {
     pub completed: bool,
     pub completed_at: Option<u64>,
+    pub analytics_opt_in: bool,
 }
 
 pub async fn get_onboarding_state(
@@ -21,6 +22,7 @@ pub async fn get_onboarding_state(
     Ok(Json(OnboardingStateResponse {
         completed: stored.completed,
         completed_at: stored.completed_at,
+        analytics_opt_in: stored.analytics_opt_in,
     }))
 }
 
@@ -35,6 +37,7 @@ pub async fn complete_onboarding(
     Ok(Json(OnboardingStateResponse {
         completed: stored.completed,
         completed_at: stored.completed_at,
+        analytics_opt_in: stored.analytics_opt_in,
     }))
 }
 

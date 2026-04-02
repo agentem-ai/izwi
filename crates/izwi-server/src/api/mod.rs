@@ -8,6 +8,7 @@ pub mod internal;
 pub mod media;
 pub mod onboarding;
 pub mod openai;
+pub mod preferences;
 pub mod request_context;
 mod router;
 pub mod saved_voices;
