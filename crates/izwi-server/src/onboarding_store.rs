@@ -15,6 +15,7 @@ const ONBOARDING_STATE_ID: &str = "default";
 pub struct OnboardingState {
     pub completed: bool,
     pub completed_at: Option<u64>,
+    pub analytics_opt_in: bool,
 }
 
 #[derive(Clone)]
@@ -30,18 +31,21 @@ impl OnboardingStore {
         storage_layout::ensure_storage_dirs(&db_path, &media_root)
             .context("Failed to prepare onboarding storage layout")?;
 
-        let conn = storage_layout::open_sqlite_connection(&db_path)
-            .with_context(|| format!("Failed to open onboarding database: {}", db_path.display()))?;
+        let conn = storage_layout::open_sqlite_connection(&db_path).with_context(|| {
+            format!("Failed to open onboarding database: {}", db_path.display())
+        })?;
 
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS onboarding_state (
                 id TEXT PRIMARY KEY,
-                completed_at INTEGER NULL
+                completed_at INTEGER NULL,
+                analytics_opt_in INTEGER NOT NULL DEFAULT 0
             );
             "#,
         )
         .context("Failed to initialize onboarding database schema")?;
+        ensure_onboarding_state_analytics_opt_in_column(&conn)?;
 
         Ok(Self { db_path })
     }
@@ -49,19 +53,7 @@ impl OnboardingStore {
     pub async fn get_state(&self) -> anyhow::Result<OnboardingState> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
-            let completed_at: Option<i64> = conn
-                .query_row(
-                    r#"
-                    SELECT completed_at
-                    FROM onboarding_state
-                    WHERE id = ?1
-                    "#,
-                    params![ONBOARDING_STATE_ID],
-                    |row| row.get(0),
-                )
-                .optional()?;
-
-            Ok(to_state(completed_at))
+            read_state_from_conn(&conn)
         })
         .await
     }
@@ -80,10 +72,29 @@ impl OnboardingStore {
                 params![ONBOARDING_STATE_ID, completed_at as i64],
             )?;
 
-            Ok(OnboardingState {
-                completed: true,
-                completed_at: Some(completed_at),
-            })
+            read_state_from_conn(&conn)
+        })
+        .await
+    }
+
+    pub async fn set_analytics_opt_in(
+        &self,
+        analytics_opt_in: bool,
+    ) -> anyhow::Result<OnboardingState> {
+        self.run_blocking(move |db_path| {
+            let conn = storage_layout::open_sqlite_connection(&db_path)?;
+            let analytics_opt_in_int = bool_to_i64(analytics_opt_in);
+
+            conn.execute(
+                r#"
+                INSERT INTO onboarding_state (id, completed_at, analytics_opt_in)
+                VALUES (?1, NULL, ?2)
+                ON CONFLICT(id) DO UPDATE SET analytics_opt_in = excluded.analytics_opt_in
+                "#,
+                params![ONBOARDING_STATE_ID, analytics_opt_in_int],
+            )?;
+
+            read_state_from_conn(&conn)
         })
         .await
     }
@@ -100,12 +111,30 @@ impl OnboardingStore {
     }
 }
 
-fn to_state(completed_at: Option<i64>) -> OnboardingState {
-    let completed_at = completed_at.and_then(i64_to_u64);
-    OnboardingState {
+fn read_state_from_conn(conn: &rusqlite::Connection) -> anyhow::Result<OnboardingState> {
+    let row = conn
+        .query_row(
+            r#"
+            SELECT completed_at, analytics_opt_in
+            FROM onboarding_state
+            WHERE id = ?1
+            "#,
+            params![ONBOARDING_STATE_ID],
+            |row| {
+                let completed_at: Option<i64> = row.get(0)?;
+                let analytics_opt_in: i64 = row.get(1)?;
+                Ok((completed_at, analytics_opt_in))
+            },
+        )
+        .optional()?;
+
+    let (completed_at_raw, analytics_opt_in_raw) = row.unwrap_or((None, 0));
+    let completed_at = completed_at_raw.and_then(i64_to_u64);
+    Ok(OnboardingState {
         completed: completed_at.is_some(),
         completed_at,
-    }
+        analytics_opt_in: i64_to_bool(analytics_opt_in_raw),
+    })
 }
 
 fn i64_to_u64(value: i64) -> Option<u64> {
@@ -123,13 +152,64 @@ fn current_timestamp() -> u64 {
         .unwrap_or(0)
 }
 
+fn bool_to_i64(value: bool) -> i64 {
+    if value {
+        1
+    } else {
+        0
+    }
+}
+
+fn i64_to_bool(value: i64) -> bool {
+    value > 0
+}
+
+fn ensure_onboarding_state_analytics_opt_in_column(
+    conn: &rusqlite::Connection,
+) -> anyhow::Result<()> {
+    if onboarding_state_has_column(conn, "analytics_opt_in")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE onboarding_state ADD COLUMN analytics_opt_in INTEGER NOT NULL DEFAULT 0",
+        [],
+    )
+    .context("Failed adding onboarding_state.analytics_opt_in column")?;
+
+    Ok(())
+}
+
+fn onboarding_state_has_column(conn: &rusqlite::Connection, target: &str) -> anyhow::Result<bool> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(onboarding_state)")
+        .context("Failed to inspect onboarding_state schema")?;
+    let mut rows = stmt
+        .query([])
+        .context("Failed to query onboarding_state schema info")?;
+
+    while let Some(row) = rows
+        .next()
+        .context("Failed reading onboarding_state schema row")?
+    {
+        let name: String = row
+            .get(1)
+            .context("Failed reading onboarding_state column name")?;
+        if name == target {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::future::Future;
     use std::sync::OnceLock;
-    use tokio::sync::Mutex;
     use tempfile::TempDir;
+    use tokio::sync::Mutex;
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -163,6 +243,7 @@ mod tests {
             let state = store.get_state().await.expect("state should load");
             assert!(!state.completed);
             assert!(state.completed_at.is_none());
+            assert!(!state.analytics_opt_in);
             clear_env();
         })
         .await;
@@ -175,10 +256,44 @@ mod tests {
             let state = store.mark_completed().await.expect("state should update");
             assert!(state.completed);
             assert!(state.completed_at.is_some());
+            assert!(!state.analytics_opt_in);
 
             let reload = store.get_state().await.expect("state should reload");
             assert!(reload.completed);
             assert!(reload.completed_at.is_some());
+            assert!(!reload.analytics_opt_in);
+            clear_env();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn analytics_opt_in_updates_without_losing_completion_state() {
+        with_env_lock(async {
+            let (_temp, store) = setup_store();
+            let initial = store.get_state().await.expect("state should load");
+            assert!(!initial.analytics_opt_in);
+
+            let opted_in = store
+                .set_analytics_opt_in(true)
+                .await
+                .expect("opt-in should persist");
+            assert!(opted_in.analytics_opt_in);
+            assert!(!opted_in.completed);
+            assert!(opted_in.completed_at.is_none());
+
+            let completed = store.mark_completed().await.expect("state should complete");
+            assert!(completed.analytics_opt_in);
+            assert!(completed.completed);
+            assert!(completed.completed_at.is_some());
+
+            let opted_out = store
+                .set_analytics_opt_in(false)
+                .await
+                .expect("opt-out should persist");
+            assert!(!opted_out.analytics_opt_in);
+            assert!(opted_out.completed);
+            assert!(opted_out.completed_at.is_some());
             clear_env();
         })
         .await;
