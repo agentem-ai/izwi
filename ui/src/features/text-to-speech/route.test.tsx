@@ -319,6 +319,39 @@ describe("TextToSpeechPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows kokoro built-in voices with display names in the modal", async () => {
+    hookMocks.useRouteModelSelection.mockReturnValue({
+      routeModels: [],
+      resolvedSelectedModel: "Kokoro-82M",
+      selectedModelInfo: {
+        variant: "Kokoro-82M",
+        status: "ready",
+        speech_capabilities: {
+          supports_builtin_voices: true,
+          supports_reference_voice: false,
+          supports_voice_description: false,
+          supports_streaming: true,
+          supports_speed_control: true,
+        },
+      },
+      selectedModelReady: true,
+      isModelModalOpen: false,
+      intentVariant: null,
+      closeModelModal: vi.fn(),
+      openModelManager: vi.fn(),
+      requestModel: vi.fn(),
+    });
+
+    renderRoute("/text-to-speech?speaker=bf_alice");
+
+    expect(
+      await screen.findByRole("heading", { name: "New text-to-speech job" }),
+    ).toBeInTheDocument();
+
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+    expect(screen.queryByText("bf_alice")).not.toBeInTheDocument();
+  });
+
   it("navigates to /text-to-speech/:id after stream created event", async () => {
     apiMocks.getTextToSpeechRecord.mockResolvedValue(
       buildRecord({
