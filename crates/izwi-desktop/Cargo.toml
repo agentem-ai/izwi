@@ -18,5 +18,6 @@ clap = { version = "4.5", features = ["derive"] }
 anyhow = { workspace = true }
 url = "2.5"
 tauri = { version = "2.10.2", features = [] }
+tauri-plugin-aptabase = "1.0.0"
 dirs = { workspace = true }
 reqwest = { workspace = true }
