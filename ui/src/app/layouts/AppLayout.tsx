@@ -15,6 +15,7 @@ import {
   Sun,
   Moon,
   FileAudio,
+  Settings,
 } from "lucide-react";
 import {
   APP_ICON_URL,
@@ -144,6 +145,13 @@ const BOTTOM_NAV_ITEMS: NavItem[] = [
     description: "Manage your downloaded models",
     icon: Box,
     path: "/models",
+  },
+  {
+    id: "settings",
+    label: "Settings",
+    description: "Preferences and privacy controls",
+    icon: Settings,
+    path: "/settings",
   },
 ];
 
