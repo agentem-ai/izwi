@@ -10,6 +10,11 @@ import {
 
 import { api, type ModelInfo } from "@/api";
 import { setAnalyticsEnabled } from "@/app/analytics/client";
+import {
+  trackAnalyticsConsentChanged,
+  trackOnboardingCompleted,
+  trackOnboardingViewed,
+} from "@/app/analytics/events";
 import { useModelCatalog } from "@/app/providers/ModelCatalogProvider";
 import { useNotifications } from "@/app/providers/NotificationProvider";
 import { Button } from "@/components/ui/button";
@@ -202,6 +207,7 @@ export function FirstRunOnboarding() {
   );
   const [isApplying, setIsApplying] = useState(false);
   const hasCompletedRef = useRef(false);
+  const hasTrackedOnboardingViewRef = useRef(false);
 
   const stepCopy = STEP_COPY[Math.min(step, STEP_COPY.length - 1)];
 
@@ -282,6 +288,10 @@ export function FirstRunOnboarding() {
           setSetupMode("quick");
           setAnalyticsOptIn(Boolean(state.analytics_opt_in));
           setAnalyticsEnabled(Boolean(state.analytics_opt_in));
+          if (!hasTrackedOnboardingViewRef.current) {
+            hasTrackedOnboardingViewRef.current = true;
+            void trackOnboardingViewed();
+          }
           setIsOpen(true);
         } else {
           setAnalyticsEnabled(Boolean(state.analytics_opt_in));
@@ -318,6 +328,10 @@ export function FirstRunOnboarding() {
     try {
       await api.updateAnalyticsPreference({ opt_in: analyticsOptIn });
       setAnalyticsEnabled(analyticsOptIn);
+      await trackAnalyticsConsentChanged(
+        analyticsOptIn ? "opted_in" : "opted_out",
+        "onboarding",
+      );
     } catch (err) {
       console.error("Failed to persist analytics preference:", err);
       notify({
@@ -332,6 +346,7 @@ export function FirstRunOnboarding() {
   const handleSkip = useCallback(async () => {
     await persistAnalyticsPreference();
     await markCompleted();
+    await trackOnboardingCompleted("skip");
     setIsOpen(false);
   }, [markCompleted, persistAnalyticsPreference]);
 
@@ -375,6 +390,7 @@ export function FirstRunOnboarding() {
     } finally {
       await persistAnalyticsPreference();
       await markCompleted();
+      await trackOnboardingCompleted(setupMode);
       setStep(2);
       setIsApplying(false);
     }

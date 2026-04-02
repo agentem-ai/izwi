@@ -22,6 +22,7 @@ import {
   APP_VERSION,
   VOICE_STUDIO_ENABLED,
 } from "@/shared/config/runtime";
+import { trackThemePreferenceChanged } from "@/app/analytics/events";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { FirstRunOnboarding } from "@/app/onboarding/FirstRunOnboarding";
@@ -183,7 +184,9 @@ export function AppLayout({
       : "No models loaded";
 
   const switchTheme = () => {
-    onThemePreferenceChange(resolvedTheme === "dark" ? "light" : "dark");
+    const nextThemePreference = resolvedTheme === "dark" ? "light" : "dark";
+    onThemePreferenceChange(nextThemePreference);
+    void trackThemePreferenceChanged(nextThemePreference);
   };
 
   const handleNavClick = (path: string) => {
