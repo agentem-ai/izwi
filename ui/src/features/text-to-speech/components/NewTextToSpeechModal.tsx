@@ -43,7 +43,11 @@ interface NewTextToSpeechModalProps {
   onStreamingDone?: () => void;
 }
 
-type VoiceMode = "built_in" | "saved";
+type EffectiveVoiceWorkflow =
+  | "saved_voice"
+  | "built_in_voice"
+  | "voice_description"
+  | "unsupported";
 
 function savedVoiceLabel(voice: SavedVoiceSummary): string {
   const source =
@@ -71,9 +75,6 @@ export function NewTextToSpeechModal({
   onStreamingDone,
 }: NewTextToSpeechModalProps) {
   const [text, setText] = useState("");
-  const [voiceMode, setVoiceMode] = useState<VoiceMode>(
-    initialSavedVoiceId ? "saved" : "built_in",
-  );
   const [speaker, setSpeaker] = useState(initialSpeaker || "Vivian");
   const [savedVoiceId, setSavedVoiceId] = useState(initialSavedVoiceId || "");
   const [voiceDescription, setVoiceDescription] = useState("");
@@ -93,18 +94,25 @@ export function NewTextToSpeechModal({
     capabilities?.supports_voice_description ?? false;
   const supportsStreaming = capabilities?.supports_streaming ?? false;
   const supportsSpeedControl = capabilities?.supports_speed_control ?? false;
-  const supportsVoiceSelection =
-    supportsBuiltInVoices || supportsReferenceVoices;
-  const requiresVoiceDescriptionOnly =
-    supportsVoiceDescription && !supportsVoiceSelection;
+  const effectiveVoiceWorkflow: EffectiveVoiceWorkflow = supportsReferenceVoices
+    ? "saved_voice"
+    : supportsBuiltInVoices
+      ? "built_in_voice"
+      : supportsVoiceDescription
+        ? "voice_description"
+        : "unsupported";
+  const usesSavedVoiceSelection = effectiveVoiceWorkflow === "saved_voice";
+  const usesBuiltInVoiceSelection =
+    effectiveVoiceWorkflow === "built_in_voice";
+  const usesVoiceDescription = effectiveVoiceWorkflow === "voice_description";
   const streamAvailable = supportsStreaming;
 
   const speakerOptions = useMemo(
     () =>
-      supportsBuiltInVoices
+      usesBuiltInVoiceSelection
         ? getSpeakerProfilesForVariant(selectedModel).map((profile) => profile.id)
         : [],
-    [selectedModel, supportsBuiltInVoices],
+    [selectedModel, usesBuiltInVoiceSelection],
   );
 
   useEffect(() => {
@@ -112,7 +120,6 @@ export function NewTextToSpeechModal({
       return;
     }
 
-    setVoiceMode(initialSavedVoiceId ? "saved" : "built_in");
     if (initialSavedVoiceId) {
       setSavedVoiceId(initialSavedVoiceId);
     }
@@ -122,26 +129,7 @@ export function NewTextToSpeechModal({
   }, [initialSavedVoiceId, initialSpeaker, isOpen]);
 
   useEffect(() => {
-    if (!supportsVoiceSelection) {
-      return;
-    }
-
-    if (voiceMode === "saved" && !supportsReferenceVoices) {
-      setVoiceMode("built_in");
-      return;
-    }
-    if (voiceMode === "built_in" && !supportsBuiltInVoices && supportsReferenceVoices) {
-      setVoiceMode("saved");
-    }
-  }, [
-    supportsBuiltInVoices,
-    supportsReferenceVoices,
-    supportsVoiceSelection,
-    voiceMode,
-  ]);
-
-  useEffect(() => {
-    if (!supportsBuiltInVoices) {
+    if (!usesBuiltInVoiceSelection) {
       return;
     }
     if (!speakerOptions.length) {
@@ -151,10 +139,10 @@ export function NewTextToSpeechModal({
       return;
     }
     setSpeaker(speakerOptions[0]);
-  }, [speaker, speakerOptions, supportsBuiltInVoices]);
+  }, [speaker, speakerOptions, usesBuiltInVoiceSelection]);
 
   useEffect(() => {
-    if (!isOpen || !supportsReferenceVoices) {
+    if (!isOpen || !usesSavedVoiceSelection) {
       return;
     }
 
@@ -187,7 +175,7 @@ export function NewTextToSpeechModal({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, supportsReferenceVoices]);
+  }, [isOpen, usesSavedVoiceSelection]);
 
   const submitGeneration = useCallback(async () => {
     if (!selectedModel || !selectedModelReady) {
@@ -202,34 +190,26 @@ export function NewTextToSpeechModal({
       return;
     }
 
-    if (!supportsVoiceSelection && !supportsVoiceDescription) {
+    if (effectiveVoiceWorkflow === "unsupported") {
       setError(
         "The selected model does not expose built-in voices, saved voices, or voice direction prompts.",
       );
       return;
     }
 
-    if (requiresVoiceDescriptionOnly && !voiceDescription.trim()) {
+    const trimmedVoiceDescription = voiceDescription.trim();
+
+    if (usesVoiceDescription && !trimmedVoiceDescription) {
       setError("Add voice direction before creating this generation.");
       return;
     }
 
-    if (
-      supportsVoiceSelection &&
-      !requiresVoiceDescriptionOnly &&
-      voiceMode === "saved" &&
-      !savedVoiceId
-    ) {
+    if (usesSavedVoiceSelection && !savedVoiceId) {
       setError("Select a saved voice before starting generation.");
       return;
     }
 
-    if (
-      supportsVoiceSelection &&
-      !requiresVoiceDescriptionOnly &&
-      voiceMode === "built_in" &&
-      !speaker
-    ) {
+    if (usesBuiltInVoiceSelection && !speaker) {
       setError("Select a built-in voice before starting generation.");
       return;
     }
@@ -237,18 +217,9 @@ export function NewTextToSpeechModal({
     const request: SpeechHistoryRecordCreateRequest = {
       model_id: selectedModel,
       text: trimmedText,
-      speaker:
-        !requiresVoiceDescriptionOnly && voiceMode === "built_in"
-          ? speaker
-          : undefined,
-      saved_voice_id:
-        !requiresVoiceDescriptionOnly && voiceMode === "saved"
-          ? savedVoiceId
-          : undefined,
-      voice_description:
-        supportsVoiceDescription && voiceDescription.trim()
-          ? voiceDescription.trim()
-          : undefined,
+      speaker: usesBuiltInVoiceSelection ? speaker : undefined,
+      saved_voice_id: usesSavedVoiceSelection ? savedVoiceId : undefined,
+      voice_description: usesVoiceDescription ? trimmedVoiceDescription : undefined,
       speed: supportsSpeedControl ? speed : undefined,
     };
 
@@ -329,7 +300,7 @@ export function NewTextToSpeechModal({
     onStreamingError,
     onStreamingFinal,
     onStreamingStart,
-    requiresVoiceDescriptionOnly,
+    effectiveVoiceWorkflow,
     savedVoiceId,
     selectedModel,
     selectedModelReady,
@@ -338,11 +309,11 @@ export function NewTextToSpeechModal({
     streamAvailable,
     streamingEnabled,
     supportsSpeedControl,
-    supportsVoiceDescription,
-    supportsVoiceSelection,
     text,
     voiceDescription,
-    voiceMode,
+    usesBuiltInVoiceSelection,
+    usesSavedVoiceSelection,
+    usesVoiceDescription,
   ]);
 
   const modelStatus = selectedModelReady ? "ready" : "not_ready";
@@ -434,83 +405,67 @@ export function NewTextToSpeechModal({
                 </div>
               </div>
 
-              {supportsVoiceSelection ? (
+              {usesBuiltInVoiceSelection ? (
                 <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3.5">
                   <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">
-                    Voice source
+                    Built-in voice
                   </div>
-                  <div className="mb-2 grid grid-cols-2 gap-2">
-                    <Button
-                      type="button"
-                      variant={voiceMode === "built_in" ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setVoiceMode("built_in")}
-                      disabled={!supportsBuiltInVoices || isSubmitting}
-                    >
-                      Built-in
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={voiceMode === "saved" ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setVoiceMode("saved")}
-                      disabled={!supportsReferenceVoices || isSubmitting}
-                    >
-                      Saved
-                    </Button>
-                  </div>
+                  <Select
+                    value={speaker}
+                    onValueChange={setSpeaker}
+                    disabled={isSubmitting}
+                  >
+                    <SelectTrigger className="h-10 w-full rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] text-sm">
+                      <SelectValue placeholder="Select built-in voice" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {speakerOptions.map((option) => (
+                        <SelectItem key={option} value={option}>
+                          {option}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
 
-                  {voiceMode === "built_in" ? (
+              {usesSavedVoiceSelection ? (
+                <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3.5">
+                  <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                    Saved voice
+                  </div>
+                  <div className="space-y-2">
                     <Select
-                      value={speaker}
-                      onValueChange={setSpeaker}
-                      disabled={!supportsBuiltInVoices || isSubmitting}
+                      value={savedVoiceId}
+                      onValueChange={setSavedVoiceId}
+                      disabled={isSubmitting || savedVoicesLoading}
                     >
                       <SelectTrigger className="h-10 w-full rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] text-sm">
-                        <SelectValue placeholder="Select built-in voice" />
+                        <SelectValue placeholder="Select saved voice" />
                       </SelectTrigger>
                       <SelectContent>
-                        {speakerOptions.map((option) => (
-                          <SelectItem key={option} value={option}>
-                            {option}
+                        {savedVoices.map((voice) => (
+                          <SelectItem key={voice.id} value={voice.id}>
+                            {savedVoiceLabel(voice)}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                  ) : (
-                    <div className="space-y-2">
-                      <Select
-                        value={savedVoiceId}
-                        onValueChange={setSavedVoiceId}
-                        disabled={isSubmitting || savedVoicesLoading}
-                      >
-                        <SelectTrigger className="h-10 w-full rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] text-sm">
-                          <SelectValue placeholder="Select saved voice" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {savedVoices.map((voice) => (
-                            <SelectItem key={voice.id} value={voice.id}>
-                              {savedVoiceLabel(voice)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      {savedVoicesLoading ? (
-                        <div className="text-xs text-[var(--text-muted)]">
-                          Loading saved voices...
-                        </div>
-                      ) : null}
-                      {savedVoicesError ? (
-                        <div className="text-xs text-[var(--danger-text)]">
-                          {savedVoicesError}
-                        </div>
-                      ) : null}
-                    </div>
-                  )}
+                    {savedVoicesLoading ? (
+                      <div className="text-xs text-[var(--text-muted)]">
+                        Loading saved voices...
+                      </div>
+                    ) : null}
+                    {savedVoicesError ? (
+                      <div className="text-xs text-[var(--danger-text)]">
+                        {savedVoicesError}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
 
-              {supportsVoiceDescription ? (
+              {usesVoiceDescription ? (
                 <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3.5">
                   <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">
                     Voice direction

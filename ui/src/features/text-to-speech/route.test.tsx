@@ -267,6 +267,56 @@ describe("TextToSpeechPage", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Enter text for generation")).toBeInTheDocument();
     expect(screen.getByText("Review settings")).toBeInTheDocument();
+    expect(screen.getByText("Built-in voice")).toBeInTheDocument();
+    expect(screen.getByText("Vivian")).toBeInTheDocument();
+    expect(screen.queryByText("Saved voice")).not.toBeInTheDocument();
+    expect(screen.queryByText("Voice direction")).not.toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText("Optional style guidance"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows only saved voice controls for clone-capable models", async () => {
+    hookMocks.useRouteModelSelection.mockReturnValue({
+      routeModels: [],
+      resolvedSelectedModel: "Qwen3-TTS-12Hz-1.7B-Base",
+      selectedModelInfo: {
+        variant: "Qwen3-TTS-12Hz-1.7B-Base",
+        status: "ready",
+        speech_capabilities: {
+          supports_builtin_voices: false,
+          supports_reference_voice: true,
+          supports_voice_description: false,
+          supports_streaming: true,
+          supports_speed_control: true,
+        },
+      },
+      selectedModelReady: true,
+      isModelModalOpen: false,
+      intentVariant: null,
+      closeModelModal: vi.fn(),
+      openModelManager: vi.fn(),
+      requestModel: vi.fn(),
+    });
+
+    renderRoute("/text-to-speech");
+
+    await waitFor(() =>
+      expect(apiMocks.listTextToSpeechRecords).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New generation/i }));
+
+    expect(
+      await screen.findByRole("heading", { name: "New text-to-speech job" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Saved voice")).toBeInTheDocument();
+    expect(screen.getByText("Select saved voice")).toBeInTheDocument();
+    expect(screen.queryByText("Built-in voice")).not.toBeInTheDocument();
+    expect(screen.queryByText("Voice direction")).not.toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText("Optional style guidance"),
+    ).not.toBeInTheDocument();
   });
 
   it("navigates to /text-to-speech/:id after stream created event", async () => {
