@@ -107,6 +107,25 @@ IZWI_ASR_CHUNK_OVERLAP_SECS=3
 
 ---
 
+## Anonymous Analytics (Desktop)
+
+Izwi desktop supports optional, opt-in anonymous usage analytics powered by Aptabase.
+
+- Disabled by default until users explicitly opt in.
+- Can be enabled during onboarding or later in **Settings**.
+- Users can opt out at any time.
+- No prompts, transcripts, audio payloads, local paths, or personal identifiers are sent.
+
+To enable analytics transport in the desktop shell, set the app key in the runtime environment:
+
+```bash
+APTABASE_APP_KEY=A-XXXXXXXXXXXXXXX
+```
+
+Without this variable, analytics calls are treated as no-op events.
+
+---
+
 ## Supported Models
 
 | Category | Models |
