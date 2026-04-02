@@ -8,6 +8,10 @@ const hookMocks = vi.hoisted(() => ({
   useRouteModelSelection: vi.fn(),
 }));
 
+const componentMocks = vi.hoisted(() => ({
+  voicesPage: vi.fn(),
+}));
+
 vi.mock("@/features/models/hooks/useRouteModelSelection", () => ({
   useRouteModelSelection: hookMocks.useRouteModelSelection,
 }));
@@ -17,11 +21,14 @@ vi.mock("@/features/models/components/RouteModelModal", () => ({
 }));
 
 vi.mock("@/features/voices/route", () => ({
-  VoicesPage: () => (
-    <div>
-      <div data-testid="studio-library">Voice library</div>
-    </div>
-  ),
+  VoicesPage: (props: Record<string, unknown>) => {
+    componentMocks.voicesPage(props);
+    return (
+      <div>
+        <div data-testid="studio-library">Voice library</div>
+      </div>
+    );
+  },
 }));
 
 const baseProps = {
@@ -51,6 +58,7 @@ function renderVoiceStudio(initialEntry: string) {
 describe("VoiceStudioPage", () => {
   beforeEach(() => {
     hookMocks.useRouteModelSelection.mockReset();
+    componentMocks.voicesPage.mockReset();
     hookMocks.useRouteModelSelection.mockReturnValue({
       routeModels: [],
       resolvedSelectedModel: null,
@@ -85,5 +93,27 @@ describe("VoiceStudioPage", () => {
     expect(screen.getByRole("dialog", { name: "New Voice" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Clone Voice/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Design Voice/i })).toBeInTheDocument();
+  });
+
+  it("forwards a models-button trigger to the embedded voices workspace", () => {
+    renderVoiceStudio("/voices");
+
+    const initialCall =
+      componentMocks.voicesPage.mock.calls[
+        componentMocks.voicesPage.mock.calls.length - 1
+      ]?.[0] as
+      | { openModelManagerRequestKey?: number }
+      | undefined;
+    expect(initialCall?.openModelManagerRequestKey).toBe(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Models" }));
+
+    const afterClickCall =
+      componentMocks.voicesPage.mock.calls[
+        componentMocks.voicesPage.mock.calls.length - 1
+      ]?.[0] as
+      | { openModelManagerRequestKey?: number }
+      | undefined;
+    expect(afterClickCall?.openModelManagerRequestKey).toBe(1);
   });
 });

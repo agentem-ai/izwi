@@ -54,6 +54,7 @@ interface VoicesPageProps {
   onError: (message: string) => void;
   embedded?: boolean;
   refreshKey?: number;
+  openModelManagerRequestKey?: number;
 }
 
 type VoiceLibraryTab = "all" | "saved" | "built-in";
@@ -129,6 +130,7 @@ export function VoicesPage({
   onError,
   embedded = false,
   refreshKey = 0,
+  openModelManagerRequestKey,
 }: VoicesPageProps) {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<VoiceLibraryTab>("saved");
@@ -147,6 +149,10 @@ export function VoicesPage({
   >(null);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
   const previewUrlsRef = useRef<Record<string, string>>({});
+  const selectedBuiltInModelRef = useRef<string | null>(null);
+  const previousOpenModelManagerRequestKeyRef = useRef<
+    number | undefined
+  >(openModelManagerRequestKey);
 
   const {
     routeModels,
@@ -181,6 +187,26 @@ export function VoicesPage({
   useEffect(() => {
     previewUrlsRef.current = previewUrls;
   }, [previewUrls]);
+
+  useEffect(() => {
+    selectedBuiltInModelRef.current = resolvedSelectedModel;
+  }, [resolvedSelectedModel]);
+
+  useEffect(() => {
+    if (openModelManagerRequestKey === undefined) {
+      return;
+    }
+    if (previousOpenModelManagerRequestKeyRef.current === openModelManagerRequestKey) {
+      return;
+    }
+    previousOpenModelManagerRequestKeyRef.current = openModelManagerRequestKey;
+    openModelManager();
+  }, [openModelManager, openModelManagerRequestKey]);
+
+  const buildPreviewKey = useCallback(
+    (modelId: string | null, voiceId: string) => `${modelId ?? "__none__"}::${voiceId}`,
+    [],
+  );
 
   useEffect(() => {
     return () => {
@@ -261,7 +287,10 @@ export function VoicesPage({
       onError("Select and load a built-in voice model to generate previews.");
       return;
     }
-    if (previewUrls[voiceId]) {
+    const requestModelId = resolvedSelectedModel;
+    const previewKey = buildPreviewKey(requestModelId, voiceId);
+
+    if (previewUrls[previewKey]) {
       return;
     }
     if (!selectedModelReady) {
@@ -270,15 +299,18 @@ export function VoicesPage({
       return;
     }
 
-    setPreviewLoadingVoiceId(voiceId);
+    setPreviewLoadingVoiceId(previewKey);
     try {
       const result = await api.generateTTSWithStats({
-        model_id: resolvedSelectedModel,
+        model_id: requestModelId,
         text: previewTextForLanguage(language),
         speaker: voiceId,
       });
+      if (selectedBuiltInModelRef.current !== requestModelId) {
+        return;
+      }
       const url = URL.createObjectURL(result.audioBlob);
-      setPreviewUrls((current) => ({ ...current, [voiceId]: url }));
+      setPreviewUrls((current) => ({ ...current, [previewKey]: url }));
     } catch (error) {
       onError(
         error instanceof Error
@@ -286,7 +318,9 @@ export function VoicesPage({
           : "Failed to generate built-in voice preview.",
       );
     } finally {
-      setPreviewLoadingVoiceId(null);
+      setPreviewLoadingVoiceId((current) =>
+        current === previewKey ? null : current,
+      );
     }
   };
   const tableActionButtonClass =
@@ -345,54 +379,59 @@ export function VoicesPage({
   );
 
   const builtInVoiceItems: VoiceLibraryItem[] = builtInVoices.map(
-    (voice) => ({
-      id: voice.id,
-      name: voice.name,
-      categoryLabel: "Built-in voice",
-      description: voice.description,
-      previewUrl: previewUrls[voice.id] ?? null,
-      previewLoading: previewLoadingVoiceId === voice.id,
-      previewMessage: previewUrls[voice.id]
-        ? null
-        : previewLoadingVoiceId === voice.id
-          ? "Generating a preview sample for this speaker."
-          : "Generate a preview sample to audition this built-in voice.",
-      actions: (
-        <>
-          <Button
-            size="sm"
-            onClick={(event) => {
-              event.stopPropagation();
-              handleUseBuiltInVoice(voice.id);
-            }}
-            className={tableActionButtonClass}
-          >
-            <Mic2 className="h-4 w-4" />
-            Use in TTS
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={(event) => {
-              event.stopPropagation();
-              void handlePreviewBuiltInVoice(voice.id, voice.language);
-            }}
-            disabled={previewLoadingVoiceId === voice.id}
-            className={cn(
-              tableActionButtonClass,
-              "border-[var(--border-strong)] bg-[var(--bg-surface-1)]/72",
-            )}
-          >
-            {previewLoadingVoiceId === voice.id ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Sparkles className="h-4 w-4" />
-            )}
-            Preview
-          </Button>
-        </>
-      ),
-    }),
+    (voice) => {
+      const previewKey = buildPreviewKey(resolvedSelectedModel, voice.id);
+      const previewUrl = previewUrls[previewKey] ?? null;
+      const isPreviewLoading = previewLoadingVoiceId === previewKey;
+      return {
+        id: voice.id,
+        name: voice.name,
+        categoryLabel: "Built-in voice",
+        description: voice.description,
+        previewUrl,
+        previewLoading: isPreviewLoading,
+        previewMessage: previewUrl
+          ? null
+          : isPreviewLoading
+            ? "Generating a preview sample for this speaker."
+            : "Generate a preview sample to audition this built-in voice.",
+        actions: (
+          <>
+            <Button
+              size="sm"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleUseBuiltInVoice(voice.id);
+              }}
+              className={tableActionButtonClass}
+            >
+              <Mic2 className="h-4 w-4" />
+              Use in TTS
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={(event) => {
+                event.stopPropagation();
+                void handlePreviewBuiltInVoice(voice.id, voice.language);
+              }}
+              disabled={isPreviewLoading}
+              className={cn(
+                tableActionButtonClass,
+                "border-[var(--border-strong)] bg-[var(--bg-surface-1)]/72",
+              )}
+            >
+              {isPreviewLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4" />
+              )}
+              Preview
+            </Button>
+          </>
+        ),
+      };
+    },
   );
 
   const totalSavedVoices = savedVoices.length;
@@ -443,6 +482,7 @@ export function VoicesPage({
                   </span>
                 </TabsTrigger>
               </TabsList>
+
             </div>
 
           </div>
