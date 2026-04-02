@@ -108,3 +108,7 @@ export type {
 } from "@/shared/api/voice";
 
 export type { OnboardingStateResponse } from "@/shared/api/onboarding";
+export type {
+  UpdateAnalyticsPreferenceRequest,
+  UserPreferencesResponse,
+} from "@/shared/api/preferences";

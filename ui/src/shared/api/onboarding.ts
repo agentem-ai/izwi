@@ -3,6 +3,7 @@ import { ApiHttpClient } from "@/shared/api/http";
 export interface OnboardingStateResponse {
   completed: boolean;
   completed_at: number | null;
+  analytics_opt_in: boolean;
 }
 
 export class OnboardingApiClient {
