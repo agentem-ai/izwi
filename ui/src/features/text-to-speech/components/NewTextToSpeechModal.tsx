@@ -110,7 +110,10 @@ export function NewTextToSpeechModal({
   const speakerOptions = useMemo(
     () =>
       usesBuiltInVoiceSelection
-        ? getSpeakerProfilesForVariant(selectedModel).map((profile) => profile.id)
+        ? getSpeakerProfilesForVariant(selectedModel).map((profile) => ({
+            id: profile.id,
+            label: profile.name,
+          }))
         : [],
     [selectedModel, usesBuiltInVoiceSelection],
   );
@@ -135,10 +138,10 @@ export function NewTextToSpeechModal({
     if (!speakerOptions.length) {
       return;
     }
-    if (speakerOptions.includes(speaker)) {
+    if (speakerOptions.some((option) => option.id === speaker)) {
       return;
     }
-    setSpeaker(speakerOptions[0]);
+    setSpeaker(speakerOptions[0].id);
   }, [speaker, speakerOptions, usesBuiltInVoiceSelection]);
 
   useEffect(() => {
@@ -420,8 +423,8 @@ export function NewTextToSpeechModal({
                     </SelectTrigger>
                     <SelectContent>
                       {speakerOptions.map((option) => (
-                        <SelectItem key={option} value={option}>
-                          {option}
+                        <SelectItem key={option.id} value={option.id}>
+                          {option.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
