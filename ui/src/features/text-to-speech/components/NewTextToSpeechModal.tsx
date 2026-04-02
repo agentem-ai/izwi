@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, Loader2, Sparkles } from "lucide-react";
 
 import {
@@ -85,6 +85,7 @@ export function NewTextToSpeechModal({
   const [savedVoices, setSavedVoices] = useState<SavedVoiceSummary[]>([]);
   const [savedVoicesLoading, setSavedVoicesLoading] = useState(false);
   const [savedVoicesError, setSavedVoicesError] = useState<string | null>(null);
+  const wasOpenRef = useRef(false);
 
   const capabilities = selectedModelInfo?.speech_capabilities ?? null;
   const supportsBuiltInVoices = capabilities?.supports_builtin_voices ?? false;
@@ -118,18 +119,27 @@ export function NewTextToSpeechModal({
     [selectedModel, usesBuiltInVoiceSelection],
   );
 
-  useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
+  const resetModalState = useCallback(() => {
+    setText("");
+    setSpeaker(initialSpeaker || "Vivian");
+    setSavedVoiceId(initialSavedVoiceId || "");
+    setVoiceDescription("");
+    setSpeed(1);
+    setStreamingEnabled(true);
+    setIsSubmitting(false);
+    setError(null);
+    setSavedVoices([]);
+    setSavedVoicesLoading(false);
+    setSavedVoicesError(null);
+  }, [initialSavedVoiceId, initialSpeaker]);
 
-    if (initialSavedVoiceId) {
-      setSavedVoiceId(initialSavedVoiceId);
+  useEffect(() => {
+    const wasOpen = wasOpenRef.current;
+    if ((isOpen && !wasOpen) || (!isOpen && wasOpen)) {
+      resetModalState();
     }
-    if (initialSpeaker) {
-      setSpeaker(initialSpeaker);
-    }
-  }, [initialSavedVoiceId, initialSpeaker, isOpen]);
+    wasOpenRef.current = isOpen;
+  }, [isOpen, resetModalState]);
 
   useEffect(() => {
     if (!usesBuiltInVoiceSelection) {

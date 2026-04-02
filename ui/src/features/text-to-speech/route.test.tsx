@@ -276,6 +276,51 @@ describe("TextToSpeechPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("resets modal state after close and reopen", async () => {
+    renderRoute("/text-to-speech");
+
+    await waitFor(() =>
+      expect(apiMocks.listTextToSpeechRecords).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New generation/i }));
+
+    expect(
+      await screen.findByRole("heading", { name: "New text-to-speech job" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Create generation/i }));
+    expect(screen.getByText("Enter text to generate speech.")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Write the text to speak..."), {
+      target: { value: "Temporary draft text" },
+    });
+
+    const streamToggle = screen.getByRole("checkbox");
+    expect(streamToggle).toBeChecked();
+    fireEvent.click(streamToggle);
+    expect(streamToggle).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Close$/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("heading", { name: "New text-to-speech job" }),
+      ).not.toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New generation/i }));
+    expect(
+      await screen.findByRole("heading", { name: "New text-to-speech job" }),
+    ).toBeInTheDocument();
+
+    expect(screen.getByPlaceholderText("Write the text to speak...")).toHaveValue("");
+    expect(screen.getByRole("checkbox")).toBeChecked();
+    expect(
+      screen.queryByText("Enter text to generate speech."),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows only saved voice controls for clone-capable models", async () => {
     hookMocks.useRouteModelSelection.mockReturnValue({
       routeModels: [],
