@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 import { api, type ModelInfo } from "@/api";
+import { setAnalyticsEnabled } from "@/app/analytics/client";
 import { useModelCatalog } from "@/app/providers/ModelCatalogProvider";
 import { useNotifications } from "@/app/providers/NotificationProvider";
 import { Button } from "@/components/ui/button";
@@ -280,8 +281,10 @@ export function FirstRunOnboarding() {
           setStep(0);
           setSetupMode("quick");
           setAnalyticsOptIn(Boolean(state.analytics_opt_in));
+          setAnalyticsEnabled(Boolean(state.analytics_opt_in));
           setIsOpen(true);
         } else {
+          setAnalyticsEnabled(Boolean(state.analytics_opt_in));
           setIsOpen(false);
         }
       })
@@ -314,6 +317,7 @@ export function FirstRunOnboarding() {
   const persistAnalyticsPreference = useCallback(async () => {
     try {
       await api.updateAnalyticsPreference({ opt_in: analyticsOptIn });
+      setAnalyticsEnabled(analyticsOptIn);
     } catch (err) {
       console.error("Failed to persist analytics preference:", err);
       notify({

@@ -65,6 +65,11 @@ const MyModelsPage = lazy(async () => {
   return { default: module.MyModelsPage };
 });
 
+const SettingsPage = lazy(async () => {
+  const module = await import("@/features/settings/route");
+  return { default: module.SettingsPage };
+});
+
 function RouteLoadingFallback() {
   return (
     <div className="flex min-h-[16rem] items-center justify-center rounded-2xl border border-border/60 bg-card/60 text-sm text-muted-foreground shadow-sm">
@@ -222,6 +227,7 @@ export function AppRoutes() {
           path="/models"
           element={withSuspense(<MyModelsPage {...modelsPageProps} />)}
         />
+        <Route path="/settings" element={withSuspense(<SettingsPage />)} />
         <Route path="/my-models" element={<Navigate to="/models" replace />} />
         <Route path="/" element={<Navigate to="/voice" replace />} />
         <Route path="*" element={<Navigate to="/voice" replace />} />
