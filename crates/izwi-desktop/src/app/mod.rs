@@ -98,8 +98,14 @@ pub fn run(args: DesktopArgs) -> Result<()> {
 }
 
 fn resolve_aptabase_app_key() -> Option<String> {
-    std::env::var("APTABASE_APP_KEY")
-        .ok()
-        .map(|value| value.trim().to_string())
+    option_env!("APTABASE_APP_KEY")
+        .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            std::env::var("APTABASE_APP_KEY")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
 }
