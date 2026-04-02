@@ -195,6 +195,7 @@ export function FirstRunOnboarding() {
   const [isOpen, setIsOpen] = useState(false);
   const [step, setStep] = useState(0);
   const [setupMode, setSetupMode] = useState<SetupMode>("quick");
+  const [analyticsOptIn, setAnalyticsOptIn] = useState(false);
   const [selectedVariants, setSelectedVariants] = useState<Set<string>>(
     new Set(),
   );
@@ -278,6 +279,7 @@ export function FirstRunOnboarding() {
         if (!state.completed) {
           setStep(0);
           setSetupMode("quick");
+          setAnalyticsOptIn(Boolean(state.analytics_opt_in));
           setIsOpen(true);
         } else {
           setIsOpen(false);
@@ -309,10 +311,25 @@ export function FirstRunOnboarding() {
     }
   }, [notify]);
 
+  const persistAnalyticsPreference = useCallback(async () => {
+    try {
+      await api.updateAnalyticsPreference({ opt_in: analyticsOptIn });
+    } catch (err) {
+      console.error("Failed to persist analytics preference:", err);
+      notify({
+        title: "Could not save analytics preference",
+        description:
+          "Your app setup will continue. You can retry later in Settings.",
+        tone: "warning",
+      });
+    }
+  }, [analyticsOptIn, notify]);
+
   const handleSkip = useCallback(async () => {
+    await persistAnalyticsPreference();
     await markCompleted();
     setIsOpen(false);
-  }, [markCompleted]);
+  }, [markCompleted, persistAnalyticsPreference]);
 
   const toggleVariant = useCallback((variant: string) => {
     setSelectedVariants((prev) => {
@@ -352,6 +369,7 @@ export function FirstRunOnboarding() {
         tone: "warning",
       });
     } finally {
+      await persistAnalyticsPreference();
       await markCompleted();
       setStep(2);
       setIsApplying(false);
@@ -364,6 +382,7 @@ export function FirstRunOnboarding() {
     quickModels,
     selectedModels,
     setupMode,
+    persistAnalyticsPreference,
   ]);
 
   const handleBack = useCallback(() => {
@@ -478,6 +497,24 @@ export function FirstRunOnboarding() {
                       </div>
                     ))}
                   </div>
+                  <label className="flex items-start gap-3 rounded-[var(--radius-md)] border border-border/70 bg-[var(--bg-surface-3)]/70 p-3">
+                    <input
+                      type="checkbox"
+                      className="app-checkbox mt-0.5 h-4 w-4"
+                      checked={analyticsOptIn}
+                      onChange={(event) =>
+                        setAnalyticsOptIn(event.target.checked)
+                      }
+                    />
+                    <span className="text-sm text-[var(--text-secondary)]">
+                      <span className="block font-semibold text-[var(--text-primary)]">
+                        Share anonymous usage data
+                      </span>
+                      Help us improve product quality and GTM priorities with
+                      anonymous feature and model usage metrics. No prompts,
+                      transcripts, audio, or personal identifiers are collected.
+                    </span>
+                  </label>
                 </div>
               </div>
             ) : null}
