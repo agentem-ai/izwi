@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::api::request_context::RequestContext;
 use crate::chat_store::ChatStore;
 use crate::error::ApiError;
+use crate::ids::new_uuid;
 use crate::state::{AppState, StoredAgentSessionRecord};
 use crate::voice_defaults::{
     DEFAULT_VOICE_AGENT_ID, DEFAULT_VOICE_AGENT_NAME, DEFAULT_VOICE_AGENT_SYSTEM_PROMPT,
@@ -95,7 +96,7 @@ pub async fn create_session(
         .map_err(map_store_error)?;
 
     let now = now_unix_millis();
-    let session_id = format!("agent_sess_{}", uuid::Uuid::new_v4().simple());
+    let session_id = new_uuid();
     let record = StoredAgentSessionRecord {
         id: session_id.clone(),
         agent_id: agent_id.clone(),
