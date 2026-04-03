@@ -4,6 +4,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use tokio::task;
 
+use crate::ids::new_uuid;
 use crate::storage_layout;
 use crate::voice_defaults::{
     DEFAULT_VOICE_AGENT_SYSTEM_PROMPT, DEFAULT_VOICE_PROFILE_ID, DEFAULT_VOICE_PROFILE_NAME,
@@ -269,7 +270,7 @@ impl VoiceStore {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let now = now_unix_millis_i64();
-            let session_id = format!("voice_sess_{}", uuid::Uuid::new_v4().simple());
+            let session_id = new_uuid();
 
             conn.execute(
                 r#"
@@ -423,7 +424,7 @@ impl VoiceStore {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let now = now_unix_millis_i64();
-            let turn_id = format!("voice_turn_{}", uuid::Uuid::new_v4().simple());
+            let turn_id = new_uuid();
             let mode = sanitize_mode(request.mode.as_str())?;
 
             conn.execute(
