@@ -20,6 +20,15 @@ export interface InstallResult {
   supportsRestartLater: boolean;
 }
 
+export interface UpdaterHealthStatus {
+  enabled: boolean;
+  disableReason: string | null;
+  requestTimeoutMs: number;
+  maxCheckAttempts: number;
+  retryBackoffMs: number;
+  forcedManifestUrl: string | null;
+}
+
 export type DownloadEvent =
   | { event: "Started"; data: { contentLength: number | null } }
   | {
@@ -57,4 +66,12 @@ export async function relaunchAfterUpdate(): Promise<void> {
   }
 
   await invoke("relaunch_after_update");
+}
+
+export async function getUpdaterHealthSnapshot(): Promise<UpdaterHealthStatus | null> {
+  if (!isTauri()) {
+    return null;
+  }
+
+  return invoke<UpdaterHealthStatus>("updater_health_snapshot");
 }

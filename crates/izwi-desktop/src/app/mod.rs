@@ -59,6 +59,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
             updater::check_for_beta_update,
             updater::install_beta_update,
             updater::relaunch_after_update,
+            updater::updater_health_snapshot,
         ])
         .manage(updater::UpdaterState::new());
 
