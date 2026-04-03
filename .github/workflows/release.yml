@@ -342,6 +342,33 @@ jobs:
         run: |
           jq -e '.version and .platforms.linux.url and .platforms.linux.signature and .platforms.macos.url and .platforms.macos.signature and .platforms.windows.url and .platforms.windows.signature' dist/latest-beta.json > /dev/null
 
+      - name: Enforce updater asset matrix consistency
+        if: startsWith(github.ref_name, 'v0.1.0-beta-')
+        run: |
+          version="$(jq -r '.version' dist/latest-beta.json)"
+          if [ "$version" != "${{ github.ref_name }}" ]; then
+            echo "::error::latest-beta.json version ($version) does not match tag (${{ github.ref_name }})."
+            exit 1
+          fi
+
+          jq -r '.platforms | to_entries[] | [.key, .value.url, .value.signature] | @tsv' dist/latest-beta.json | \
+          while IFS=$'\t' read -r platform_key asset_url signature; do
+            if [ -z "$signature" ] || [ "$signature" = "null" ]; then
+              echo "::error::Missing signature for platform $platform_key."
+              exit 1
+            fi
+            if [ "${#signature}" -lt 64 ]; then
+              echo "::error::Signature for platform $platform_key looks too short."
+              exit 1
+            fi
+
+            asset_name="$(basename "$asset_url")"
+            if [ ! -f "dist/$asset_name" ]; then
+              echo "::error::Manifest points to missing asset dist/$asset_name for platform $platform_key."
+              exit 1
+            fi
+          done
+
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
