@@ -7,6 +7,7 @@ use url::Url;
 pub mod downloads;
 pub mod install;
 pub mod server;
+pub mod updater_contract;
 pub mod window;
 
 use self::server::{maybe_start_local_server, server_host_port, shutdown_child};
