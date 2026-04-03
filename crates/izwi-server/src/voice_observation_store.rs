@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use tokio::task;
 
-use crate::storage_layout;
+use crate::{ids::new_uuid, storage_layout};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct VoiceObservation {
@@ -180,7 +180,7 @@ impl VoiceObservationStore {
                     fetch_observation(&tx, &existing_id)?
                         .ok_or_else(|| anyhow!("Updated observation not found"))?
                 } else {
-                    let observation_id = format!("voice_obs_{}", uuid::Uuid::new_v4().simple());
+                    let observation_id = new_uuid();
                     tx.execute(
                         r#"
                         INSERT INTO voice_observations (

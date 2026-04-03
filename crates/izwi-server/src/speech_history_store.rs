@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task;
 
-use crate::storage_layout::{self, MediaGroup};
+use crate::{
+    ids::new_uuid,
+    storage_layout::{self, MediaGroup},
+};
 
 const DEFAULT_LIST_LIMIT: usize = 200;
 
@@ -276,11 +279,10 @@ impl SpeechHistoryStore {
                     id: row.get(0)?,
                     created_at: i64_to_u64(row.get(1)?),
                     route_kind,
-                    processing_status:
-                        SpeechHistoryProcessingStatus::from_db_value(
-                            processing_status_raw.as_str(),
-                        )
-                        .unwrap_or_default(),
+                    processing_status: SpeechHistoryProcessingStatus::from_db_value(
+                        processing_status_raw.as_str(),
+                    )
+                    .unwrap_or_default(),
                     processing_error: row.get(4)?,
                     model_id: row.get(5)?,
                     speaker: row.get(6)?,
@@ -350,7 +352,8 @@ impl SpeechHistoryStore {
             let Some((audio_storage_path, audio_mime_type, audio_filename)) = audio else {
                 return Ok(None);
             };
-            let Some(audio_storage_path) = sanitize_media_path(audio_storage_path.as_deref()) else {
+            let Some(audio_storage_path) = sanitize_media_path(audio_storage_path.as_deref())
+            else {
                 return Ok(None);
             };
 
@@ -374,10 +377,11 @@ impl SpeechHistoryStore {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let now = now_unix_millis_i64();
-            let record_id = format!("shr_{}", uuid::Uuid::new_v4().simple());
+            let record_id = new_uuid();
 
             let processing_status = record.processing_status;
-            let processing_error = sanitize_optional_text(record.processing_error.as_deref(), 1_200);
+            let processing_error =
+                sanitize_optional_text(record.processing_error.as_deref(), 1_200);
             let model_id = sanitize_optional_text(record.model_id.as_deref(), 160);
             let speaker = sanitize_optional_text(record.speaker.as_deref(), 120);
             let language = sanitize_optional_text(record.language.as_deref(), 80);
@@ -556,7 +560,9 @@ impl SpeechHistoryStore {
             let speaker = sanitize_optional_text(record.speaker.as_deref(), 120);
             let language = sanitize_optional_text(record.language.as_deref(), 80);
             let saved_voice_id = sanitize_optional_text(record.saved_voice_id.as_deref(), 160);
-            let speed = record.speed.filter(|value| value.is_finite() && *value > 0.0);
+            let speed = record
+                .speed
+                .filter(|value| value.is_finite() && *value > 0.0);
             let input_text = sanitize_required_text(record.input_text.as_str(), 20_000);
             let voice_description =
                 sanitize_optional_text(record.voice_description.as_deref(), 2_000);
@@ -569,7 +575,9 @@ impl SpeechHistoryStore {
             let audio_duration_secs = record
                 .audio_duration_secs
                 .filter(|value| value.is_finite() && *value >= 0.0);
-            let rtf = record.rtf.filter(|value| value.is_finite() && *value >= 0.0);
+            let rtf = record
+                .rtf
+                .filter(|value| value.is_finite() && *value >= 0.0);
             let tokens_generated = record
                 .tokens_generated
                 .filter(|value| *value > 0)
@@ -659,8 +667,10 @@ impl SpeechHistoryStore {
                 return Ok(None);
             }
 
-            if let Some(previous_path) = sanitize_media_path(previous_audio_storage_path.as_deref()) {
-                let _ = storage_layout::delete_media_file(&media_root, Some(previous_path.as_str()));
+            if let Some(previous_path) = sanitize_media_path(previous_audio_storage_path.as_deref())
+            {
+                let _ =
+                    storage_layout::delete_media_file(&media_root, Some(previous_path.as_str()));
             }
 
             fetch_record_without_audio(&conn, route_kind, &record_id)
@@ -812,9 +822,7 @@ fn ensure_speech_history_records_speed_column(conn: &Connection) -> anyhow::Resu
     Ok(())
 }
 
-fn ensure_speech_history_records_processing_status_column(
-    conn: &Connection,
-) -> anyhow::Result<()> {
+fn ensure_speech_history_records_processing_status_column(conn: &Connection) -> anyhow::Result<()> {
     if speech_history_records_has_column(conn, "processing_status")? {
         return Ok(());
     }
@@ -827,9 +835,7 @@ fn ensure_speech_history_records_processing_status_column(
     Ok(())
 }
 
-fn ensure_speech_history_records_processing_error_column(
-    conn: &Connection,
-) -> anyhow::Result<()> {
+fn ensure_speech_history_records_processing_error_column(conn: &Connection) -> anyhow::Result<()> {
     if speech_history_records_has_column(conn, "processing_error")? {
         return Ok(());
     }

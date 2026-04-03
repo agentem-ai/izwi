@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task;
 
-use crate::storage_layout::{self, MediaGroup};
+use crate::{
+    ids::new_uuid,
+    storage_layout::{self, MediaGroup},
+};
 
 const DEFAULT_LIST_LIMIT: usize = 200;
 
@@ -285,12 +288,10 @@ impl TranscriptionStore {
             )?;
 
             let rows = stmt.query_map(params![list_limit], |row| {
-                let processing_status =
-                    parse_processing_status(row.get::<_, Option<String>>(4)?);
+                let processing_status = parse_processing_status(row.get::<_, Option<String>>(4)?);
                 let processing_error: Option<String> = row.get(5)?;
                 let transcription: String = row.get(11)?;
-                let summary_status =
-                    parse_summary_status(row.get::<_, Option<String>>(12)?);
+                let summary_status = parse_summary_status(row.get::<_, Option<String>>(12)?);
                 let summary_text: Option<String> = row.get(13)?;
                 Ok(TranscriptionRecordSummary {
                     id: row.get(0)?,
@@ -312,7 +313,10 @@ impl TranscriptionStore {
                     transcription_chars: transcription.chars().count(),
                     summary_status,
                     summary_preview: summary_preview(summary_text.as_deref()),
-                    summary_chars: summary_text.as_ref().map(|text| text.chars().count()).unwrap_or(0),
+                    summary_chars: summary_text
+                        .as_ref()
+                        .map(|text| text.chars().count())
+                        .unwrap_or(0),
                 })
             })?;
 
@@ -386,7 +390,7 @@ impl TranscriptionStore {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let now = now_unix_millis_i64();
-            let record_id = format!("txr_{}", uuid::Uuid::new_v4().simple());
+            let record_id = new_uuid();
 
             let model_id = sanitize_optional_text(record.model_id.as_deref(), 160);
             let aligner_model_id = sanitize_optional_text(record.aligner_model_id.as_deref(), 160);
@@ -526,8 +530,8 @@ impl TranscriptionStore {
                 summary_text.as_deref(),
                 summary_error.as_deref(),
             );
-            let summary_updated_at = normalize_optional_timestamp_i64(update.updated_at)
-                .or_else(|| {
+            let summary_updated_at =
+                normalize_optional_timestamp_i64(update.updated_at).or_else(|| {
                     if summary_status == TranscriptionSummaryStatus::NotRequested {
                         None
                     } else {
@@ -585,11 +589,7 @@ impl TranscriptionStore {
                     processing_error = ?3
                 WHERE id = ?1
                 "#,
-                params![
-                    record_id,
-                    processing_status.as_db_value(),
-                    processing_error,
-                ],
+                params![record_id, processing_status.as_db_value(), processing_error,],
             )?;
 
             if changed == 0 {
@@ -1250,7 +1250,10 @@ mod tests {
             created.aligner_model_id.as_deref(),
             Some("Qwen3-ForcedAligner-0.6B")
         );
-        assert_eq!(created.processing_status, TranscriptionProcessingStatus::Ready);
+        assert_eq!(
+            created.processing_status,
+            TranscriptionProcessingStatus::Ready
+        );
         assert_eq!(created.words.len(), 4);
         assert_eq!(created.segments.len(), 2);
         assert_eq!(created.summary_status, TranscriptionSummaryStatus::Ready);
@@ -1332,7 +1335,10 @@ mod tests {
             .create_record(record)
             .await
             .expect("pending record should be created");
-        assert_eq!(created.processing_status, TranscriptionProcessingStatus::Pending);
+        assert_eq!(
+            created.processing_status,
+            TranscriptionProcessingStatus::Pending
+        );
         assert_eq!(created.transcription, "");
 
         let processing = store
@@ -1383,9 +1389,15 @@ mod tests {
             .expect("completion should succeed")
             .expect("record should exist");
 
-        assert_eq!(completed.processing_status, TranscriptionProcessingStatus::Ready);
+        assert_eq!(
+            completed.processing_status,
+            TranscriptionProcessingStatus::Ready
+        );
         assert!(completed.processing_error.is_none());
-        assert_eq!(completed.summary_status, TranscriptionSummaryStatus::Pending);
+        assert_eq!(
+            completed.summary_status,
+            TranscriptionSummaryStatus::Pending
+        );
         assert_eq!(completed.transcription, "Hello there. General Kenobi.");
 
         std::fs::remove_dir_all(root).expect("test temp dir should be removable");
@@ -1420,11 +1432,20 @@ mod tests {
             .expect("failed status update should succeed")
             .expect("record should exist");
 
-        assert_eq!(failed.processing_status, TranscriptionProcessingStatus::Failed);
-        assert_eq!(failed.processing_error.as_deref(), Some("Runtime unavailable"));
+        assert_eq!(
+            failed.processing_status,
+            TranscriptionProcessingStatus::Failed
+        );
+        assert_eq!(
+            failed.processing_error.as_deref(),
+            Some("Runtime unavailable")
+        );
 
         let summaries = store.list_records(10).await.expect("list should succeed");
-        assert_eq!(summaries[0].processing_status, TranscriptionProcessingStatus::Failed);
+        assert_eq!(
+            summaries[0].processing_status,
+            TranscriptionProcessingStatus::Failed
+        );
         assert_eq!(summaries[0].transcription_preview, "Runtime unavailable");
 
         std::fs::remove_dir_all(root).expect("test temp dir should be removable");

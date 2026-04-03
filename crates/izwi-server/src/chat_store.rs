@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task;
 
-use crate::storage_layout;
+use crate::{ids::new_uuid, storage_layout};
 
 const DEFAULT_THREAD_TITLE: &str = "New chat";
 
@@ -140,7 +140,7 @@ impl ChatStore {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let now = now_unix_millis_i64();
-            let thread_id = format!("thread_{}", uuid::Uuid::new_v4().simple());
+            let thread_id = new_uuid();
             let resolved_title = sanitize_thread_title(title.as_deref());
 
             conn.execute(
@@ -256,7 +256,7 @@ impl ChatStore {
             }
 
             let now = now_unix_millis_i64();
-            let message_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
+            let message_id = new_uuid();
             let tokens_i64 = opt_usize_to_i64(tokens_generated)?;
             let serialized_content_parts = content_parts
                 .as_ref()

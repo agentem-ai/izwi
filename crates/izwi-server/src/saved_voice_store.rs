@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task;
 
-use crate::storage_layout::{self, MediaGroup};
+use crate::{
+    ids::new_uuid,
+    storage_layout::{self, MediaGroup},
+};
 
 const DEFAULT_LIST_LIMIT: usize = 500;
 
@@ -235,7 +238,7 @@ impl SavedVoiceStore {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
 
             let now = now_unix_millis_i64();
-            let voice_id = format!("sv_{}", uuid::Uuid::new_v4().simple());
+            let voice_id = new_uuid();
 
             let name = sanitize_required_text(voice.name.as_str(), 120, "name")?;
             let reference_text =

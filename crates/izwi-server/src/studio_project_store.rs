@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task;
 
-use crate::storage_layout::{self};
+use crate::{
+    ids::new_uuid,
+    storage_layout::{self},
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -461,7 +464,7 @@ impl StudioProjectStore {
             let tx = conn.transaction()?;
 
             let now = now_unix_millis_i64();
-            let project_id = format!("ttsp_{}", uuid::Uuid::new_v4().simple());
+            let project_id = new_uuid();
 
             tx.execute(
                 r#"
@@ -495,7 +498,7 @@ impl StudioProjectStore {
             )?;
 
             for segment in record.segments {
-                let segment_id = format!("ttss_{}", uuid::Uuid::new_v4().simple());
+                let segment_id = new_uuid();
                 tx.execute(
                     r#"
                     INSERT INTO studio_project_segments (
@@ -908,7 +911,7 @@ impl StudioProjectStore {
                 params![project_id.as_str(), insert_position],
             )?;
 
-            let new_segment_id = format!("ttss_{}", uuid::Uuid::new_v4().simple());
+            let new_segment_id = new_uuid();
             tx.execute(
                 r#"
                 INSERT INTO studio_project_segments (
@@ -1012,7 +1015,7 @@ impl StudioProjectStore {
                 params![project_id.as_str(), segment_id.as_str(), before_text, now],
             )?;
 
-            let next_segment_id = format!("ttss_{}", uuid::Uuid::new_v4().simple());
+            let next_segment_id = new_uuid();
             tx.execute(
                 r#"
                 INSERT INTO studio_project_segments (
@@ -1446,7 +1449,7 @@ impl StudioProjectStore {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let now = now_unix_millis_i64();
-            let id = format!("ttpf_{}", uuid::Uuid::new_v4().simple());
+            let id = new_uuid();
             conn.execute(
                 r#"
                 INSERT INTO studio_project_folders (id, created_at, updated_at, name, parent_id, sort_order)
@@ -1637,7 +1640,7 @@ impl StudioProjectStore {
             }
 
             let now = now_unix_millis_i64();
-            let id = format!("ttpp_{}", uuid::Uuid::new_v4().simple());
+            let id = new_uuid();
             conn.execute(
                 r#"
                 INSERT INTO studio_project_pronunciations (
@@ -1734,7 +1737,7 @@ impl StudioProjectStore {
             let payload = serde_json::to_string(&project)
                 .context("Failed to serialize project snapshot payload")?;
             let now = now_unix_millis_i64();
-            let snapshot_id = format!("ttps_{}", uuid::Uuid::new_v4().simple());
+            let snapshot_id = new_uuid();
             tx.execute(
                 r#"
                 INSERT INTO studio_project_snapshots (id, project_id, created_at, label, project_json)
@@ -1920,7 +1923,7 @@ impl StudioProjectStore {
                 return Ok(None);
             }
             let now = now_unix_millis_i64();
-            let job_id = format!("ttsj_{}", uuid::Uuid::new_v4().simple());
+            let job_id = new_uuid();
             tx.execute(
                 r#"
                 INSERT INTO studio_project_render_jobs (

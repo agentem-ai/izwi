@@ -190,3 +190,51 @@ Align `/diarization` and `/text-to-speech` with the standard row-actions pattern
 - Added delete confirmation modals on both history tables and refreshed the route-owned history after successful deletion.
 - Extended `DiarizationExportDialog` so it can open from a controlled row action instead of only a trigger child.
 - Verification: `npm run typecheck`, `npm run test -- src/features/diarization/route.test.tsx`, `npm run test -- src/features/text-to-speech/route.test.tsx`, and `npm run test -- src/components/DiarizationExportDialog.test.tsx`.
+
+# UUID Rollout Plan
+
+## Research Notes
+
+- Most persisted application records already use `TEXT` primary keys in SQLite, so new UUID-based IDs can be introduced without schema migrations.
+- The current server mostly generates prefixed IDs such as `thread_*`, `msg_*`, `txr_*`, `dir_*`, `ttsp_*`, and `agent_sess_*`.
+- Several runtime/API IDs already use plain UUIDs today, including core engine request IDs and some request-context values.
+- A few frontend-only IDs are still timestamp/random based, including render queue items, transcript entries, and toast IDs.
+- `ui/src/types.ts` contains semantic parsing for Kokoro voice IDs. Those are model identifiers, not generated record IDs, and should not be converted as part of this rollout.
+- The default voice profile ID is a fixed constant for bootstrapping existing installs. Leave it unchanged in this phase so old data remains addressable.
+
+## Phases
+
+- [x] Phase 1: Introduce shared UUID helpers and switch all newly persisted server records to plain UUIDs.
+  Scope:
+  `chat_store`, `voice_store`, `voice_observation_store`, `saved_voice_store`, `speech_history_store`, `transcription_store`, `diarization_store`, and `studio_project_store`.
+  Deliverable:
+  New rows created in storage use canonical UUID strings with no type-specific prefix, while existing rows remain readable.
+  Verification:
+  `cargo fmt --package izwi-server`, `cargo test -p izwi-server transcription_store -- --nocapture`, `cargo test -p izwi-server diarization_store -- --nocapture`, `cargo test -p izwi-server voice_store -- --nocapture`, `cargo test -p izwi-server voice_observation_store -- --nocapture`, `cargo test -p izwi-server studio_project_store -- --nocapture`, `cargo test -p izwi-server chat_store -- --nocapture`, `cargo test -p izwi-server speech_history_store -- --nocapture`, and `cargo test -p izwi-server saved_voice_store -- --nocapture`.
+  Commit:
+  `refactor(server): use uuid ids for newly persisted records`
+
+- [ ] Phase 2: Switch remaining newly created server/runtime session and API object IDs to UUIDs.
+  Scope:
+  agent session records, OpenAI-compatible chat completion IDs, OpenAI-compatible response/message/tool-call IDs, and any remaining server-generated IDs that are user-visible but not persisted in the main stores.
+  Deliverable:
+  New server-generated IDs are consistently UUIDs across storage and API surfaces.
+  Verification:
+  Run focused server tests for affected API modules.
+  Commit:
+  `refactor(server): use uuid ids for runtime and api objects`
+
+- [ ] Phase 3: Switch client-generated new record IDs to UUIDs and update tests.
+  Scope:
+  render queue item IDs, realtime transcript entry IDs, toast IDs, and any other client-generated record IDs discovered during implementation.
+  Deliverable:
+  Client-side new IDs use `crypto.randomUUID()` through a shared helper instead of timestamp/random concatenation.
+  Verification:
+  Run targeted UI tests for the affected helpers/components.
+  Commit:
+  `refactor(ui): use uuid ids for client-generated records`
+
+## Review
+
+- Phase 1 complete.
+- Added a shared server UUID helper and switched all newly persisted record IDs in the main stores from prefixed IDs to canonical UUID strings.

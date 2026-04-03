@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task;
 
-use crate::storage_layout::{self, MediaGroup};
+use crate::{
+    ids::new_uuid,
+    storage_layout::{self, MediaGroup},
+};
 
 const DEFAULT_LIST_LIMIT: usize = 200;
 
@@ -360,8 +363,7 @@ impl DiarizationStore {
                 let utterances: Vec<DiarizationUtteranceRecord> = parse_json_vec(row.get(6)?);
                 let speaker_name_overrides = parse_json_map(row.get(7)?);
                 let transcript: String = row.get(13)?;
-                let summary_status =
-                    parse_summary_status(row.get::<_, Option<String>>(14)?);
+                let summary_status = parse_summary_status(row.get::<_, Option<String>>(14)?);
                 let summary_text: Option<String> = row.get(15)?;
                 Ok(DiarizationRecordSummary {
                     id: row.get(0)?,
@@ -464,7 +466,7 @@ impl DiarizationStore {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let now = now_unix_millis_i64();
-            let record_id = format!("dir_{}", uuid::Uuid::new_v4().simple());
+            let record_id = new_uuid();
 
             let model_id = sanitize_optional_text(record.model_id.as_deref(), 160);
             let asr_model_id = sanitize_optional_text(record.asr_model_id.as_deref(), 160);
@@ -472,10 +474,8 @@ impl DiarizationStore {
             let llm_model_id = sanitize_optional_text(record.llm_model_id.as_deref(), 160);
             let processing_error =
                 sanitize_optional_text(record.processing_error.as_deref(), 1_000);
-            let processing_status = normalize_processing_status(
-                record.processing_status,
-                processing_error.as_deref(),
-            );
+            let processing_status =
+                normalize_processing_status(record.processing_status, processing_error.as_deref());
             let min_speakers = record
                 .min_speakers
                 .and_then(|value| i64::try_from(value).ok());
@@ -735,8 +735,8 @@ impl DiarizationStore {
                 summary_text.as_deref(),
                 summary_error.as_deref(),
             );
-            let summary_updated_at = normalize_optional_timestamp_i64(update.updated_at)
-                .or_else(|| {
+            let summary_updated_at =
+                normalize_optional_timestamp_i64(update.updated_at).or_else(|| {
                     if summary_status == DiarizationSummaryStatus::NotRequested {
                         None
                     } else {
@@ -794,11 +794,7 @@ impl DiarizationStore {
                     processing_error = ?3
                 WHERE id = ?1
                 "#,
-                params![
-                    record_id,
-                    processing_status.as_db_value(),
-                    processing_error,
-                ],
+                params![record_id, processing_status.as_db_value(), processing_error,],
             )?;
 
             if changed == 0 {
@@ -915,7 +911,11 @@ impl DiarizationStore {
                     max_speakers,
                     min_speech_duration_ms,
                     min_silence_duration_ms,
-                    if record.enable_llm_refinement { 1_i64 } else { 0_i64 },
+                    if record.enable_llm_refinement {
+                        1_i64
+                    } else {
+                        0_i64
+                    },
                     processing_time_ms,
                     duration_secs,
                     rtf,
@@ -1251,9 +1251,7 @@ fn ensure_diarization_records_speaker_name_overrides_column(
     Ok(())
 }
 
-fn ensure_diarization_records_processing_status_column(
-    conn: &Connection,
-) -> anyhow::Result<()> {
+fn ensure_diarization_records_processing_status_column(conn: &Connection) -> anyhow::Result<()> {
     if diarization_records_has_column(conn, "processing_status")? {
         return Ok(());
     }
@@ -1266,9 +1264,7 @@ fn ensure_diarization_records_processing_status_column(
     Ok(())
 }
 
-fn ensure_diarization_records_processing_error_column(
-    conn: &Connection,
-) -> anyhow::Result<()> {
+fn ensure_diarization_records_processing_error_column(conn: &Connection) -> anyhow::Result<()> {
     if diarization_records_has_column(conn, "processing_error")? {
         return Ok(());
     }
@@ -1333,9 +1329,7 @@ fn ensure_diarization_records_summary_error_column(conn: &Connection) -> anyhow:
     Ok(())
 }
 
-fn ensure_diarization_records_summary_updated_at_column(
-    conn: &Connection,
-) -> anyhow::Result<()> {
+fn ensure_diarization_records_summary_updated_at_column(conn: &Connection) -> anyhow::Result<()> {
     if diarization_records_has_column(conn, "summary_updated_at")? {
         return Ok(());
     }
@@ -1637,7 +1631,10 @@ mod tests {
 
         let summaries = store.list_records(10).await.expect("list should succeed");
         assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].processing_status, DiarizationProcessingStatus::Ready);
+        assert_eq!(
+            summaries[0].processing_status,
+            DiarizationProcessingStatus::Ready
+        );
         assert_eq!(summaries[0].speaker_count, 2);
         assert_eq!(summaries[0].corrected_speaker_count, 1);
         assert_eq!(summaries[0].speaker_name_override_count, 2);
@@ -1732,7 +1729,10 @@ mod tests {
             .create_record(pending)
             .await
             .expect("pending record should be created");
-        assert_eq!(created.processing_status, DiarizationProcessingStatus::Pending);
+        assert_eq!(
+            created.processing_status,
+            DiarizationProcessingStatus::Pending
+        );
 
         let processing = store
             .update_processing_status(
@@ -1785,7 +1785,10 @@ mod tests {
             .expect("completion should succeed")
             .expect("record should exist");
 
-        assert_eq!(completed.processing_status, DiarizationProcessingStatus::Ready);
+        assert_eq!(
+            completed.processing_status,
+            DiarizationProcessingStatus::Ready
+        );
         assert!(completed.processing_error.is_none());
         assert_eq!(completed.speaker_count, 2);
         assert!(!completed.transcript.trim().is_empty());
