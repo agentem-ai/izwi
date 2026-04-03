@@ -600,6 +600,7 @@ export function DiarizationPage({
             error={historyError}
             onRefresh={() => void refreshHistory()}
             onOpenRecord={handleOpenRecord}
+            onDeleteRecord={handleDeleteRecord}
           />
 
           <NewDiarizationModal

@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelInfo } from "@/api";
 
+import { NotificationProvider } from "@/app/providers/NotificationProvider";
 import { DiarizationPage } from "./route";
 
 const apiMocks = vi.hoisted(() => ({
@@ -103,15 +104,17 @@ function renderRoute(
   props: typeof baseProps = createRouteProps(),
 ) {
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <Routes>
-        <Route path="/diarization" element={<DiarizationPage {...props} />} />
-        <Route
-          path="/diarization/:recordId"
-          element={<DiarizationPage {...props} />}
-        />
-      </Routes>
-    </MemoryRouter>,
+    <NotificationProvider>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <Routes>
+          <Route path="/diarization" element={<DiarizationPage {...props} />} />
+          <Route
+            path="/diarization/:recordId"
+            element={<DiarizationPage {...props} />}
+          />
+        </Routes>
+      </MemoryRouter>
+    </NotificationProvider>,
   );
 }
 
@@ -245,6 +248,24 @@ describe("DiarizationPage routes", () => {
       screen.queryByText("diar_streaming_sortformer_4spk-v2.1"),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Hello there.")).not.toBeInTheDocument();
+  });
+
+  it("shows standard row actions from the diarization history menu", async () => {
+    apiMocks.listDiarizationRecords.mockResolvedValue([readySummaryRecord]);
+
+    renderRoute("/diarization");
+
+    expect(await screen.findByText("board-call.wav")).toBeInTheDocument();
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: /More actions for board-call\.wav/i }),
+      { button: 0, ctrlKey: false },
+    );
+
+    expect(await screen.findByRole("menuitem", { name: /Open record/i })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: /Copy transcript/i })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: /^Export$/i })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: /^Delete$/i })).toBeVisible();
   });
 
   it("opens the creation modal and routes new diarization runs to their detail page", async () => {
@@ -546,6 +567,41 @@ describe("DiarizationPage routes", () => {
     );
     expect(
       await screen.findByRole("heading", { name: "Diarization" }),
+    ).toBeInTheDocument();
+  });
+
+  it("deletes from the diarization history menu and refreshes the table", async () => {
+    apiMocks.listDiarizationRecords
+      .mockResolvedValueOnce([readySummaryRecord])
+      .mockResolvedValueOnce([]);
+    apiMocks.deleteDiarizationRecord.mockResolvedValue({
+      id: readySummaryRecord.id,
+      deleted: true,
+    });
+
+    renderRoute("/diarization");
+
+    expect(await screen.findByText("board-call.wav")).toBeInTheDocument();
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: /More actions for board-call\.wav/i }),
+      { button: 0, ctrlKey: false },
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^Delete$/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Delete diarization/i }),
+    );
+
+    await waitFor(() =>
+      expect(apiMocks.deleteDiarizationRecord).toHaveBeenCalledWith(
+        readySummaryRecord.id,
+      ),
+    );
+    await waitFor(() =>
+      expect(apiMocks.listDiarizationRecords).toHaveBeenCalledTimes(2),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "No diarization records yet" }),
     ).toBeInTheDocument();
   });
 

@@ -41,7 +41,9 @@ interface DiarizationExportDialogProps {
     | "transcript"
     | "raw_transcript"
   > | null;
-  children: React.ReactNode;
+  children?: React.ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 const FORMAT_OPTIONS: Array<{
@@ -88,10 +90,14 @@ function downloadTextFile(
 export function DiarizationExportDialog({
   record,
   children,
+  open: controlledOpen,
+  onOpenChange: controlledOnOpenChange,
 }: DiarizationExportDialogProps) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [format, setFormat] = useState<DiarizationExportFormat>("txt");
   const [includeMetadata, setIncludeMetadata] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = controlledOnOpenChange ?? setUncontrolledOpen;
 
   const selectedOption = useMemo(
     () => FORMAT_OPTIONS.find((option) => option.value === format) ?? FORMAT_OPTIONS[0],
@@ -114,7 +120,7 @@ export function DiarizationExportDialog({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{children}</DialogTrigger>
+      {children ? <DialogTrigger asChild>{children}</DialogTrigger> : null}
       <DialogContent className="max-w-lg border-[var(--border-strong)] bg-[var(--bg-surface-0)]">
         <DialogHeader>
           <DialogTitle className="text-base text-[var(--text-primary)]">

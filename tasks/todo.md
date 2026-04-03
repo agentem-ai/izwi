@@ -156,3 +156,37 @@ Add a standard row actions menu to the `/transcription` history table with a thr
 - Added a row-level delete confirmation modal and refreshed the history list after successful deletion.
 - Updated the shared dropdown primitive so interactive items show a pointer cursor.
 - Verification: `npm run typecheck` and `npm run test -- src/features/transcription/route.test.tsx`.
+
+# Diarization And TTS History Actions Plan
+
+## Goal
+
+Align `/diarization` and `/text-to-speech` with the standard row-actions pattern now used on `/transcription`, so each history row has a conventional overflow menu with only appropriate quick actions.
+
+## Planned UX
+
+- Add a trailing three-dot menu to every history row on both routes.
+- Keep row click to open the record, while preventing the menu trigger and items from accidentally opening the row.
+- Use only standard list-level actions:
+  - `/diarization`: `Open record`, `Copy transcript`, `Export`, `Delete`
+  - `/text-to-speech`: `Open record`, `Copy text`, `Download`, `Delete`
+- Keep heavier or workflow-specific actions on the detail pages, such as summary regeneration, reruns, and speaker correction.
+- Confirm deletion in a modal and refresh the history data after successful removal.
+
+## Plan
+
+- [x] Audit existing detail-page actions and shared helpers for both routes.
+- [x] Add row overflow menus and action handlers to the diarization and TTS history tables.
+- [x] Wire parent-owned delete callbacks so history refresh stays consistent after removal.
+- [x] Extend any shared dialog component needed for row-triggered export flows.
+- [x] Add focused route tests for menu items and delete-refresh behavior on both routes.
+- [x] Verify with `npm run typecheck` and focused route tests.
+
+## Review
+
+- Added a three-dot actions menu to each diarization history row with `Open record`, `Copy transcript`, `Export`, and `Delete`.
+- Added a three-dot actions menu to each text-to-speech history row with `Open record`, `Copy text`, `Download`, and `Delete`.
+- Kept heavier actions on detail pages, including diarization summary regeneration, speaker correction, and rerun controls.
+- Added delete confirmation modals on both history tables and refreshed the route-owned history after successful deletion.
+- Extended `DiarizationExportDialog` so it can open from a controlled row action instead of only a trigger child.
+- Verification: `npm run typecheck`, `npm run test -- src/features/diarization/route.test.tsx`, `npm run test -- src/features/text-to-speech/route.test.tsx`, and `npm run test -- src/components/DiarizationExportDialog.test.tsx`.

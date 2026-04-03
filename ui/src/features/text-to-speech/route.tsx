@@ -290,6 +290,23 @@ export function TextToSpeechPage({
     }
   };
 
+  const handleDeleteRecord = useCallback(
+    async (targetRecordId: string) => {
+      await api.deleteTextToSpeechRecord(targetRecordId);
+      if (streamingRecord?.id === targetRecordId) {
+        setStreamingRecord(null);
+      }
+      if (recordId === targetRecordId) {
+        setRecordActionError(null);
+      }
+      await refreshHistory();
+      if (recordId === targetRecordId) {
+        navigate("/text-to-speech", { replace: true });
+      }
+    },
+    [navigate, recordId, refreshHistory, streamingRecord?.id],
+  );
+
   return (
     <PageShell>
       {recordId ? (
@@ -361,6 +378,7 @@ export function TextToSpeechPage({
             onOpenRecord={(nextRecordId) => {
               navigate(`/text-to-speech/${nextRecordId}`);
             }}
+            onDeleteRecord={handleDeleteRecord}
           />
         </>
       )}
