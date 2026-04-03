@@ -19,5 +19,8 @@ anyhow = { workspace = true }
 url = "2.5"
 tauri = { version = "2.10.2", features = [] }
 tauri-plugin-aptabase = "1.0.0"
+# Keep the Aptabase reqwest proxy stack on a sandbox-safe macOS line.
+hyper-util = "0.1.20"
 dirs = { workspace = true }
 reqwest = { workspace = true }
+tokio = { workspace = true }
