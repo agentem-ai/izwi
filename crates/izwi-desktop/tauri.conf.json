@@ -18,10 +18,12 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": [
       "deb",
       "dmg",
-      "nsis"
+      "nsis",
+      "appimage"
     ],
     "linux": {
       "deb": {

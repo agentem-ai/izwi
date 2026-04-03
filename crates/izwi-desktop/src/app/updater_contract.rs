@@ -80,11 +80,20 @@ pub fn install_behavior_for_platform(target_os: &str) -> PlatformInstallBehavior
     }
 }
 
+pub fn updater_target_for_platform(target_os: &str) -> &'static str {
+    match target_os {
+        "windows" => "windows",
+        "macos" => "macos",
+        "linux" => "linux",
+        _ => "unknown",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         github_manifest_url, github_releases_api_url, install_behavior_for_platform,
-        parse_beta_sequence, UpdateChannel, UpdaterContract,
+        parse_beta_sequence, updater_target_for_platform, UpdateChannel, UpdaterContract,
     };
 
     #[test]
@@ -135,5 +144,13 @@ mod tests {
         let linux = install_behavior_for_platform("linux");
         assert!(!linux.app_exits_during_install);
         assert!(linux.supports_restart_later);
+    }
+
+    #[test]
+    fn maps_platform_to_custom_updater_target() {
+        assert_eq!(updater_target_for_platform("windows"), "windows");
+        assert_eq!(updater_target_for_platform("macos"), "macos");
+        assert_eq!(updater_target_for_platform("linux"), "linux");
+        assert_eq!(updater_target_for_platform("dragonfly"), "unknown");
     }
 }
