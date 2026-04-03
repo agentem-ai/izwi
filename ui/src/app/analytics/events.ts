@@ -154,10 +154,12 @@ export async function trackUpdateCheckStarted(
 export async function trackUpdateCheckCompleted(
   outcome: "update_available" | "no_update" | "failed",
   version?: string,
+  reason?: string,
 ) {
   await trackAnalyticsEvent("update_check_completed", {
     outcome,
     ...(version ? { version } : {}),
+    ...(reason ? { reason } : {}),
   });
 }
 

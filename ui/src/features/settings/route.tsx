@@ -46,6 +46,8 @@ export function SettingsPage() {
     availableUpdate,
     status: updateStatus,
     lastCheckedAt,
+    health: updaterHealth,
+    errorMessage: updateErrorMessage,
     openPrompt: openUpdatePrompt,
     checkForUpdates,
   } = useAppUpdates();
@@ -207,6 +209,17 @@ export function SettingsPage() {
                     ? `Last checked ${new Date(lastCheckedAt).toLocaleString()}`
                     : "No update check has completed yet."}
                 </span>
+                {updaterHealth && !updaterHealth.enabled ? (
+                  <span className="mt-1 block text-[var(--status-warning-text)]">
+                    Updates disabled:{" "}
+                    {updaterHealth.disableReason ?? "runtime policy"}
+                  </span>
+                ) : null}
+                {updateErrorMessage ? (
+                  <span className="mt-1 block text-[var(--status-warning-text)]">
+                    Last error: {updateErrorMessage}
+                  </span>
+                ) : null}
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -238,6 +251,16 @@ export function SettingsPage() {
                 ) : null}
               </div>
             </div>
+            {updaterHealth ? (
+              <div className="mt-3 text-[11px] leading-5 text-[var(--text-subtle)]">
+                timeout={updaterHealth.requestTimeoutMs}ms • attempts=
+                {updaterHealth.maxCheckAttempts} • backoff=
+                {updaterHealth.retryBackoffMs}ms
+                {updaterHealth.forcedManifestUrl
+                  ? ` • override=${updaterHealth.forcedManifestUrl}`
+                  : ""}
+              </div>
+            ) : null}
           </div>
         </section>
 

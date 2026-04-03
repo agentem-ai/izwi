@@ -19,9 +19,11 @@ import {
 import { useNotifications } from "@/app/providers/NotificationProvider";
 import {
   checkForBetaUpdate,
+  getUpdaterHealthSnapshot,
   installBetaUpdate,
   relaunchAfterUpdate,
   type AppUpdateMetadata,
+  type UpdaterHealthStatus,
 } from "@/app/updates/client";
 
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -41,6 +43,7 @@ interface AppUpdateContextValue {
   errorMessage: string | null;
   isPromptOpen: boolean;
   progressPercent: number | null;
+  health: UpdaterHealthStatus | null;
   checkForUpdates: (manual?: boolean) => Promise<void>;
   installUpdate: () => Promise<void>;
   restartToApply: () => Promise<void>;
@@ -64,10 +67,23 @@ export function AppUpdateProvider({ children }: AppUpdateProviderProps) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isPromptOpen, setIsPromptOpen] = useState(false);
   const [progressPercent, setProgressPercent] = useState<number | null>(null);
+  const [health, setHealth] = useState<UpdaterHealthStatus | null>(null);
 
   const checkForUpdates = useCallback(
     async (manual = false) => {
       if (!isTauri()) {
+        return;
+      }
+      if (health && !health.enabled) {
+        setStatus("error");
+        setErrorMessage(health.disableReason ?? "Updates are disabled.");
+        if (manual) {
+          notify({
+            title: "Updates are disabled",
+            description: health.disableReason ?? "Runtime policy has disabled updates.",
+            tone: "warning",
+          });
+        }
         return;
       }
       if (status === "checking" || status === "downloading") {
@@ -114,7 +130,7 @@ export function AppUpdateProvider({ children }: AppUpdateProviderProps) {
           error instanceof Error ? error.message : "Unknown update-check error.";
         setStatus("error");
         setErrorMessage(message);
-        void trackUpdateCheckCompleted("failed");
+        void trackUpdateCheckCompleted("failed", undefined, message);
         if (manual) {
           notify({
             title: "Could not check for updates",
@@ -124,7 +140,7 @@ export function AppUpdateProvider({ children }: AppUpdateProviderProps) {
         }
       }
     },
-    [notify, status],
+    [health, notify, status],
   );
 
   const installUpdate = useCallback(async () => {
@@ -218,6 +234,14 @@ export function AppUpdateProvider({ children }: AppUpdateProviderProps) {
       return;
     }
 
+    getUpdaterHealthSnapshot()
+      .then((snapshot) => {
+        setHealth(snapshot);
+      })
+      .catch(() => {
+        setHealth(null);
+      });
+
     void checkForUpdates(false);
     const timer = window.setInterval(() => {
       void checkForUpdates(false);
@@ -236,6 +260,7 @@ export function AppUpdateProvider({ children }: AppUpdateProviderProps) {
       errorMessage,
       isPromptOpen,
       progressPercent,
+      health,
       checkForUpdates,
       installUpdate,
       restartToApply,
@@ -249,6 +274,7 @@ export function AppUpdateProvider({ children }: AppUpdateProviderProps) {
       errorMessage,
       isPromptOpen,
       progressPercent,
+      health,
       checkForUpdates,
       installUpdate,
       restartToApply,

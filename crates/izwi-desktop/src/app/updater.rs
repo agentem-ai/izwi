@@ -4,6 +4,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
+use tokio::time::sleep;
 use url::Url;
 
 use super::updater_contract::{
@@ -12,6 +13,8 @@ use super::updater_contract::{
 };
 
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 20;
+const DEFAULT_MAX_CHECK_ATTEMPTS: usize = 3;
+const DEFAULT_RETRY_BACKOFF_MS: u64 = 1500;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +50,65 @@ pub struct InstallResult {
     pub supports_restart_later: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdaterHealthStatus {
+    pub enabled: bool,
+    pub disable_reason: Option<String>,
+    pub request_timeout_ms: u64,
+    pub max_check_attempts: usize,
+    pub retry_backoff_ms: u64,
+    pub forced_manifest_url: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct UpdaterRuntimeConfig {
+    enabled: bool,
+    disable_reason: Option<String>,
+    request_timeout: Duration,
+    max_check_attempts: usize,
+    retry_backoff: Duration,
+    forced_manifest_url: Option<Url>,
+}
+
+impl UpdaterRuntimeConfig {
+    fn from_env() -> Self {
+        let disable_flag = env_bool_true("IZWI_DISABLE_APP_UPDATES");
+        let request_timeout_ms = env_u64(
+            "IZWI_UPDATER_REQUEST_TIMEOUT_MS",
+            DEFAULT_REQUEST_TIMEOUT_SECONDS * 1000,
+        );
+        let max_check_attempts = env_usize("IZWI_UPDATER_MAX_CHECK_ATTEMPTS", DEFAULT_MAX_CHECK_ATTEMPTS);
+        let retry_backoff_ms = env_u64("IZWI_UPDATER_RETRY_BACKOFF_MS", DEFAULT_RETRY_BACKOFF_MS);
+        let forced_manifest_url = std::env::var("IZWI_UPDATER_FORCE_MANIFEST_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .and_then(|value| Url::parse(&value).ok());
+
+        Self {
+            enabled: !disable_flag,
+            disable_reason: disable_flag
+                .then(|| "IZWI_DISABLE_APP_UPDATES is set".to_string()),
+            request_timeout: Duration::from_millis(request_timeout_ms),
+            max_check_attempts: max_check_attempts.max(1),
+            retry_backoff: Duration::from_millis(retry_backoff_ms.max(1)),
+            forced_manifest_url,
+        }
+    }
+
+    fn health(&self) -> UpdaterHealthStatus {
+        UpdaterHealthStatus {
+            enabled: self.enabled,
+            disable_reason: self.disable_reason.clone(),
+            request_timeout_ms: self.request_timeout.as_millis() as u64,
+            max_check_attempts: self.max_check_attempts,
+            retry_backoff_ms: self.retry_backoff.as_millis() as u64,
+            forced_manifest_url: self.forced_manifest_url.as_ref().map(Url::to_string),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct UpdaterState {
     pending_update: Mutex<Option<Update>>,
@@ -70,6 +132,8 @@ pub enum UpdaterError {
     NoMatchingBetaRelease,
     #[error("there is no pending update")]
     NoPendingUpdate,
+    #[error("in-app updates are disabled by runtime policy")]
+    UpdatesDisabled,
 }
 
 impl Serialize for UpdaterError {
@@ -106,16 +170,41 @@ pub async fn check_for_beta_update(
     app: AppHandle,
     updater_state: State<'_, UpdaterState>,
 ) -> Result<Option<UpdateMetadata>> {
+    let runtime = UpdaterRuntimeConfig::from_env();
+    if !runtime.enabled {
+        return Err(UpdaterError::UpdatesDisabled);
+    }
+
     let contract = UpdaterContract::default();
-    let release = resolve_latest_release(&contract).await?;
+    let release = if let Some(forced_manifest_url) = runtime.forced_manifest_url.clone() {
+        ResolvedRelease {
+            tag_name: "forced-manifest".to_string(),
+            manifest_url: forced_manifest_url,
+        }
+    } else {
+        retry_with_backoff(runtime.max_check_attempts, runtime.retry_backoff, || {
+            resolve_latest_release(&contract, runtime.request_timeout)
+        })
+        .await?
+    };
+
     let updater_target = updater_target_for_platform(std::env::consts::OS);
-    let updater = app
-        .updater_builder()
-        .timeout(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECONDS))
-        .target(updater_target)
-        .endpoints(vec![release.manifest_url.clone()])?
-        .build()?;
-    let update = updater.check().await?;
+    let app_handle = app.clone();
+    let release_manifest_url = release.manifest_url.clone();
+    let update = retry_with_backoff(runtime.max_check_attempts, runtime.retry_backoff, || {
+        let app_handle = app_handle.clone();
+        let release_manifest_url = release_manifest_url.clone();
+        async move {
+            let updater = app_handle
+                .updater_builder()
+                .timeout(runtime.request_timeout)
+                .target(updater_target)
+                .endpoints(vec![release_manifest_url])?
+                .build()?;
+            updater.check().await.map_err(UpdaterError::from)
+        }
+    })
+    .await?;
 
     let update_metadata = update.as_ref().map(|update| {
         let platform_behavior = install_behavior_for_platform(std::env::consts::OS);
@@ -144,6 +233,11 @@ pub async fn install_beta_update(
     updater_state: State<'_, UpdaterState>,
     on_event: Channel<DownloadEvent>,
 ) -> Result<InstallResult> {
+    let runtime = UpdaterRuntimeConfig::from_env();
+    if !runtime.enabled {
+        return Err(UpdaterError::UpdatesDisabled);
+    }
+
     let update = {
         let mut pending_slot = updater_state
             .pending_update
@@ -183,9 +277,17 @@ pub fn relaunch_after_update(app: AppHandle) {
     app.restart();
 }
 
-async fn resolve_latest_release(contract: &UpdaterContract) -> Result<ResolvedRelease> {
+#[tauri::command]
+pub fn updater_health_snapshot() -> UpdaterHealthStatus {
+    UpdaterRuntimeConfig::from_env().health()
+}
+
+async fn resolve_latest_release(
+    contract: &UpdaterContract,
+    request_timeout: Duration,
+) -> Result<ResolvedRelease> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECONDS))
+        .timeout(request_timeout)
         .build()?;
     let endpoint = github_releases_api_url(contract);
 
@@ -210,6 +312,56 @@ async fn resolve_latest_release(contract: &UpdaterContract) -> Result<ResolvedRe
         tag_name: best_release.tag_name.clone(),
         manifest_url,
     })
+}
+
+async fn retry_with_backoff<T, Fut, F>(
+    max_attempts: usize,
+    retry_backoff: Duration,
+    mut operation: F,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let attempts = max_attempts.max(1);
+    let mut last_error: Option<UpdaterError> = None;
+
+    for attempt in 1..=attempts {
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt == attempts {
+                    break;
+                }
+                sleep(retry_backoff * attempt as u32).await;
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or(UpdaterError::NoMatchingBetaRelease))
+}
+
+fn env_bool_true(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn env_u64(name: &str, fallback: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(fallback)
+}
+
+fn env_usize(name: &str, fallback: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(fallback)
 }
 
 fn release_has_manifest_asset(release: &GitHubRelease, contract: &UpdaterContract) -> bool {
@@ -238,7 +390,9 @@ fn select_best_release<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        release_has_manifest_asset, select_best_release, GitHubRelease, GitHubReleaseAsset,
+        env_bool_true, env_u64, env_usize, release_has_manifest_asset, select_best_release,
+        GitHubRelease, GitHubReleaseAsset, UpdaterRuntimeConfig, DEFAULT_MAX_CHECK_ATTEMPTS,
+        DEFAULT_RETRY_BACKOFF_MS,
     };
     use crate::app::updater_contract::UpdaterContract;
 
@@ -293,5 +447,19 @@ mod tests {
             selected.map(|release| release.tag_name.as_str()),
             Some("v0.1.0-beta-11")
         );
+    }
+
+    #[test]
+    fn parses_runtime_env_helpers() {
+        assert!(!env_bool_true("IZWI_DOES_NOT_EXIST"));
+        assert_eq!(env_u64("IZWI_DOES_NOT_EXIST", 42), 42);
+        assert_eq!(env_usize("IZWI_DOES_NOT_EXIST", 5), 5);
+    }
+
+    #[test]
+    fn runtime_config_defaults_are_safe() {
+        let runtime = UpdaterRuntimeConfig::from_env();
+        assert!(runtime.max_check_attempts >= DEFAULT_MAX_CHECK_ATTEMPTS.min(1));
+        assert!(runtime.retry_backoff.as_millis() >= DEFAULT_RETRY_BACKOFF_MS.min(1) as u128);
     }
 }
