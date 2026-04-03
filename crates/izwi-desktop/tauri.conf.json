@@ -45,5 +45,16 @@
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "$IZWI_UPDATER_PUBKEY",
+      "endpoints": [
+        "https://github.com/izwi-ai/izwi/releases/latest/download/latest-beta.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

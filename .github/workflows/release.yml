@@ -146,7 +146,7 @@ jobs:
           CI: "true"
         run: |
           cargo tauri build \
-            --bundles ${{ matrix.bundle_kind }} \
+            --bundles app,${{ matrix.bundle_kind }} \
             --no-sign \
             --config crates/izwi-desktop/tauri.macos.conf.json
 
@@ -162,7 +162,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           cargo tauri build \
-            --bundles ${{ matrix.bundle_kind }} \
+            --bundles app,${{ matrix.bundle_kind }} \
             --config crates/izwi-desktop/tauri.macos.conf.json
 
       - name: Collect updater artifacts (Linux)
