@@ -97,3 +97,32 @@ Align the `/diarization` route with the current `/transcription` route UX and st
 - The safest sequence is architecture first, then navigation, then creation modal, then polish, then cleanup.
 - The main place to avoid false parity is streaming: transcription has persisted streaming creation, diarization does not.
 - The main place to avoid regressions is reruns and speaker corrections, because both currently depend on state living inside the old playground/history modal stack.
+
+# Settings Redesign Plan
+
+## Goal
+
+Redesign `/settings` to feel like a polished product surface instead of a stack of generic cards, using the OpenAI GPT-5.4 frontend guidance as the quality bar.
+
+## Design Notes From OpenAI Reference
+
+- App surfaces should default to restrained layout, strong typography, minimal chrome, and a single accent.
+- Cards should only exist when they are the interaction container; layout sections should otherwise be plain structure.
+- Utility copy should prioritize orientation, status, and action over marketing language.
+- Dense information should remain readable through spacing, alignment, and hierarchy rather than decorative treatments.
+- Motion and ornament should be restrained; product UI should avoid gradient-heavy dashboard styling.
+
+## Plan
+
+- [x] Audit the current `/settings` information hierarchy and identify where card styling can be removed.
+- [x] Rebuild the page as a cleaner settings surface with section dividers, row-based controls, and switches instead of checkboxes.
+- [x] Preserve update, theme, and analytics behavior while improving scan speed and state visibility.
+- [x] Verify the route compiles and the new UI follows existing theme tokens on desktop and mobile.
+
+## Review
+
+- Replaced the stacked card layout with a single structured settings surface that uses section dividers and row alignment for faster scanning.
+- Swapped the analytics checkbox for the shared switch control and kept the optimistic-save behavior intact.
+- Kept theme and update functionality unchanged while presenting state through tighter utility copy, badges, and inline metadata instead of boxed panels.
+- Follow-up refinement removed non-essential overview content, update diagnostics, and privacy explainer blocks to make the page calmer and denser.
+- Verification: `npm run typecheck` and `npm run build` passed in `ui/`.
