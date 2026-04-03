@@ -214,7 +214,7 @@ Align `/diarization` and `/text-to-speech` with the standard row-actions pattern
   Commit:
   `refactor(server): use uuid ids for newly persisted records`
 
-- [ ] Phase 2: Switch remaining newly created server/runtime session and API object IDs to UUIDs.
+- [x] Phase 2: Switch remaining newly created server/runtime session and API object IDs to UUIDs.
   Scope:
   agent session records, OpenAI-compatible chat completion IDs, OpenAI-compatible response/message/tool-call IDs, and any remaining server-generated IDs that are user-visible but not persisted in the main stores.
   Deliverable:
@@ -238,3 +238,15 @@ Align `/diarization` and `/text-to-speech` with the standard row-actions pattern
 
 - Phase 1 complete.
 - Added a shared server UUID helper and switched all newly persisted record IDs in the main stores from prefixed IDs to canonical UUID strings.
+- Phase 2 complete.
+- Switched agent session IDs plus OpenAI-compatible completion, response, tool-call, and assistant message IDs to canonical UUID strings.
+- Focused verification:
+  - `cargo fmt --package izwi-server`
+  - `cargo test -p izwi-server state::tests::trim_store_by_uses_updated_at_for_agent_sessions -- --nocapture`
+  - `cargo test -p izwi-server parses_qwen_tool_call_output_into_openai_shape -- --nocapture`
+  - `cargo test -p izwi-server builds_tool_call_finish_reason_when_tool_output_detected -- --nocapture`
+  - `cargo test -p izwi-server normalizes_assistant_tool_calls_into_qwen_xml -- --nocapture`
+- Broad verification note:
+  - `cargo test -p izwi-server openai -- --nocapture` still fails in pre-existing content-flattening tests unrelated to the UUID edits:
+    - `api::openai::chat::completions::tests::flattens_text_parts_content`
+    - `api::openai::responses::handlers::tests::flattens_part_content`

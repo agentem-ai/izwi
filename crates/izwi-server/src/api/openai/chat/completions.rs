@@ -19,6 +19,7 @@ use crate::app::chat_content::{
     flatten_content_parts, validate_media_inputs_for_variant, FlattenedMultimodalContent,
 };
 use crate::error::ApiError;
+use crate::ids::new_uuid;
 use crate::state::AppState;
 use izwi_core::{ChatMediaInput, ChatMessage, ChatRequestConfig, ChatRole, ModelVariant};
 
@@ -484,7 +485,7 @@ fn parse_tool_call_block(block: &str) -> Option<OpenAiOutputToolCall> {
     }
 
     Some(OpenAiOutputToolCall {
-        id: format!("call_{}", uuid::Uuid::new_v4().simple()),
+        id: new_uuid(),
         kind: "function",
         function: OpenAiOutputToolFunction {
             name: function_name.to_string(),
@@ -561,7 +562,7 @@ pub async fn completions(
 
     let generation = generate_chat(&state, execution_request).await?;
 
-    let completion_id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
+    let completion_id = new_uuid();
     let created = now_unix_secs();
     let completion_tokens = generation.tokens_generated;
     let prompt_tokens = generation.prompt_tokens;
@@ -605,7 +606,7 @@ async fn complete_stream(
         .unwrap_or(false);
     let model_id = execution_request.variant.dir_name().to_string();
 
-    let completion_id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
+    let completion_id = new_uuid();
     let created = now_unix_secs();
     let mut event_rx = spawn_chat_stream(state, execution_request);
 

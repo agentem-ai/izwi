@@ -15,6 +15,7 @@ use crate::app::chat_content::{
     flatten_content_parts, validate_media_inputs_for_variant, FlattenedMultimodalContent,
 };
 use crate::error::ApiError;
+use crate::ids::new_uuid;
 use crate::state::{AppState, StoredResponseInputItem, StoredResponseRecord};
 use izwi_core::{
     parse_chat_model_variant, ChatMediaInput, ChatMessage, ChatRequestConfig, ChatRole,
@@ -75,7 +76,7 @@ pub async fn create_response(
 
     let output = generate_chat(&state, execution_request).await?;
 
-    let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
+    let response_id = new_uuid();
     let created_at = now_unix_secs();
 
     let usage = ResponseUsage {
@@ -206,7 +207,7 @@ async fn create_streaming_response(
     execution_request: ChatExecutionRequest,
     input_items: Vec<StoredResponseInputItem>,
 ) -> Result<Response<Body>, ApiError> {
-    let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
+    let response_id = new_uuid();
     let created_at = now_unix_secs();
     let metadata = req.metadata.clone();
     let response_id_for_task = response_id.clone();
@@ -630,7 +631,7 @@ fn tool_parameter_text(value: &serde_json::Value) -> String {
 
 fn assistant_output_item(text: String) -> ResponseOutputItem {
     ResponseOutputItem {
-        id: format!("msg_{}", uuid::Uuid::new_v4().simple()),
+        id: new_uuid(),
         item_type: "message",
         role: "assistant",
         content: vec![ResponseOutputContent {
