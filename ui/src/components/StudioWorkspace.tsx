@@ -23,6 +23,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
+import { createUuid } from "@/lib/ids";
 import { cn } from "@/lib/utils";
 import {
   api,
@@ -1622,7 +1623,7 @@ export function StudioWorkspace({
           .map((segmentId) => {
             const segment = project.segments.find((entry) => entry.id === segmentId);
             return {
-              id: `rq_${project.id}_${segmentId}_${Date.now()}`,
+              id: createUuid(),
               projectId: project.id,
               segmentId,
               segmentLabel: segment

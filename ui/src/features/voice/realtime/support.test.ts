@@ -4,6 +4,7 @@ import {
   encodeVoiceRealtimeClientPcm16Frame,
   formatModelVariantLabel,
   isUnifiedAudioChatVariant,
+  makeTranscriptEntryId,
   mergeSampleChunks,
   parseFinalAnswer,
   parseVoiceRealtimeAssistantAudioBinaryChunk,
@@ -32,6 +33,13 @@ describe("voice realtime support", () => {
   it("detects the unified lfm25 audio variant", () => {
     expect(isUnifiedAudioChatVariant("LFM2.5-Audio-1.5B-GGUF")).toBe(true);
     expect(isUnifiedAudioChatVariant("Qwen3-1.7B-GGUF")).toBe(false);
+  });
+
+  it("creates uuid transcript entry ids", () => {
+    const id = makeTranscriptEntryId("user");
+    expect(id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
   });
 
   it("builds the voice realtime websocket endpoint from an api base url", () => {

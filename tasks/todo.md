@@ -224,7 +224,7 @@ Align `/diarization` and `/text-to-speech` with the standard row-actions pattern
   Commit:
   `refactor(server): use uuid ids for runtime and api objects`
 
-- [ ] Phase 3: Switch client-generated new record IDs to UUIDs and update tests.
+- [x] Phase 3: Switch client-generated new record IDs to UUIDs and update tests.
   Scope:
   render queue item IDs, realtime transcript entry IDs, toast IDs, and any other client-generated record IDs discovered during implementation.
   Deliverable:
@@ -250,3 +250,10 @@ Align `/diarization` and `/text-to-speech` with the standard row-actions pattern
   - `cargo test -p izwi-server openai -- --nocapture` still fails in pre-existing content-flattening tests unrelated to the UUID edits:
     - `api::openai::chat::completions::tests::flattens_text_parts_content`
     - `api::openai::responses::handlers::tests::flattens_part_content`
+- Phase 3 complete.
+- Switched client-generated toast IDs, realtime transcript entry IDs, and studio render-queue item IDs to shared UUID generation.
+- Focused verification:
+  - `npm run typecheck`
+  - `npm run test -- src/lib/ids.test.ts src/features/voice/realtime/support.test.ts`
+- Scope note:
+  - Remaining `Date.now()` usage in the UI is for timestamps, filenames, or visual randomness rather than application record IDs.

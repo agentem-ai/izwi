@@ -1,4 +1,5 @@
 import type { ModelInfo } from "@/api";
+import { createUuid } from "@/lib/ids";
 import { isKokoroVariant } from "@/types";
 
 export type RuntimeStatus =
@@ -437,8 +438,8 @@ export function isVoiceRealtimeServerEvent(
   );
 }
 
-export function makeTranscriptEntryId(role: "user" | "assistant"): string {
-  return `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+export function makeTranscriptEntryId(_role: "user" | "assistant"): string {
+  return createUuid();
 }
 
 export async function transcodeToWav(

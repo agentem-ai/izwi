@@ -12,6 +12,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { createUuid } from "@/lib/ids";
 import { cn } from "@/lib/utils";
 
 type NotificationTone = "info" | "success" | "warning" | "danger";
@@ -68,7 +69,7 @@ interface NotificationProviderProps {
 }
 
 function createNotificationId() {
-  return `toast-${Math.random().toString(36).slice(2, 10)}`;
+  return createUuid();
 }
 
 export function NotificationProvider({
