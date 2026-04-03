@@ -36,10 +36,25 @@ jobs:
       # Kept at job scope for step conditions only.
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       APTABASE_APP_KEY: ${{ secrets.APTABASE_APP_KEY }}
+      IZWI_UPDATER_PUBKEY: ${{ secrets.IZWI_UPDATER_PUBKEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate updater signing inputs (beta channel)
+        if: startsWith(github.ref_name, 'v0.1.0-beta-')
+        run: |
+          if [ -z "${IZWI_UPDATER_PUBKEY}" ]; then
+            echo "::error::Missing IZWI_UPDATER_PUBKEY secret."
+            exit 1
+          fi
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::error::Missing TAURI_SIGNING_PRIVATE_KEY secret."
+            exit 1
+          fi
 
       - name: Install Linux dependencies for Tauri
         if: runner.os == 'Linux'
@@ -115,7 +130,7 @@ jobs:
           CI: "true"
         run: |
           cargo tauri build \
-            --bundles ${{ matrix.bundle_kind }}
+            --bundles deb,appimage
 
       - name: Build desktop bundle (Windows)
         if: runner.os == 'Windows'
@@ -149,6 +164,70 @@ jobs:
           cargo tauri build \
             --bundles ${{ matrix.bundle_kind }} \
             --config crates/izwi-desktop/tauri.macos.conf.json
+
+      - name: Collect updater artifacts (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          appimage_path="$(
+            (
+              find target -type f -path "*/release/bundle/appimage/*.AppImage" 2>/dev/null
+              find crates/izwi-desktop/target -type f -path "*/release/bundle/appimage/*.AppImage" 2>/dev/null
+            ) | head -n 1
+          )"
+          if [ -z "$appimage_path" ]; then
+            echo "Could not find AppImage updater bundle."
+            exit 1
+          fi
+          sig_path="${appimage_path}.sig"
+          if [ ! -f "$sig_path" ]; then
+            echo "Could not find AppImage updater signature at $sig_path."
+            exit 1
+          fi
+          cp "$appimage_path" release-assets/
+          cp "$sig_path" release-assets/
+
+      - name: Collect updater artifacts (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          updater_bundle="$(
+            (
+              find target -type f -path "*/release/bundle/macos/*.app.tar.gz" 2>/dev/null
+              find crates/izwi-desktop/target -type f -path "*/release/bundle/macos/*.app.tar.gz" 2>/dev/null
+            ) | head -n 1
+          )"
+          if [ -z "$updater_bundle" ]; then
+            echo "Could not find macOS updater bundle (.app.tar.gz)."
+            exit 1
+          fi
+          sig_path="${updater_bundle}.sig"
+          if [ ! -f "$sig_path" ]; then
+            echo "Could not find macOS updater signature at $sig_path."
+            exit 1
+          fi
+          cp "$updater_bundle" release-assets/
+          cp "$sig_path" release-assets/
+
+      - name: Collect updater artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $updaterBundle = Get-ChildItem -Path "target","crates/izwi-desktop/target" -Recurse -File |
+            Where-Object {
+              $_.Name -match "-setup\\.exe$" -and
+              $_.FullName -match "\\release\\bundle\\nsis\\"
+            } |
+            Select-Object -First 1
+
+          if (-not $updaterBundle) {
+            throw "Could not find Windows updater bundle (setup.exe)."
+          }
+
+          $signaturePath = "$($updaterBundle.FullName).sig"
+          if (-not (Test-Path $signaturePath)) {
+            throw "Could not find Windows updater signature at $signaturePath."
+          }
+
+          Copy-Item $signaturePath -Destination release-assets
 
       - name: Collect desktop bundle artifact (Linux/macOS)
         if: runner.os != 'Windows'
@@ -205,6 +284,63 @@ jobs:
 
       - name: Show release files
         run: ls -lah dist
+
+      - name: Generate beta updater manifest
+        if: startsWith(github.ref_name, 'v0.1.0-beta-')
+        run: |
+          linux_bundle="$(find dist -maxdepth 1 -type f -name '*.AppImage' | head -n 1)"
+          macos_bundle="$(find dist -maxdepth 1 -type f -name '*.app.tar.gz' | head -n 1)"
+          windows_bundle="$(find dist -maxdepth 1 -type f -name '*-setup.exe' | head -n 1)"
+
+          if [ -z "$linux_bundle" ] || [ -z "$macos_bundle" ] || [ -z "$windows_bundle" ]; then
+            echo "::error::Missing updater bundles in dist/."
+            exit 1
+          fi
+
+          linux_sig="${linux_bundle}.sig"
+          macos_sig="${macos_bundle}.sig"
+          windows_sig="${windows_bundle}.sig"
+
+          if [ ! -f "$linux_sig" ] || [ ! -f "$macos_sig" ] || [ ! -f "$windows_sig" ]; then
+            echo "::error::Missing one or more updater signature files in dist/."
+            exit 1
+          fi
+
+          linux_sig_value="$(tr -d '\r\n' < "$linux_sig")"
+          macos_sig_value="$(tr -d '\r\n' < "$macos_sig")"
+          windows_sig_value="$(tr -d '\r\n' < "$windows_sig")"
+
+          linux_name="$(basename "$linux_bundle")"
+          macos_name="$(basename "$macos_bundle")"
+          windows_name="$(basename "$windows_bundle")"
+          published_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          cat > dist/latest-beta.json <<EOF
+          {
+            "version": "${{ github.ref_name }}",
+            "notes": "Izwi beta release ${{ github.ref_name }}",
+            "pub_date": "${published_at}",
+            "platforms": {
+              "linux": {
+                "url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${linux_name}",
+                "signature": "${linux_sig_value}"
+              },
+              "macos": {
+                "url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${macos_name}",
+                "signature": "${macos_sig_value}"
+              },
+              "windows": {
+                "url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${windows_name}",
+                "signature": "${windows_sig_value}"
+              }
+            }
+          }
+          EOF
+
+      - name: Validate beta updater manifest
+        if: startsWith(github.ref_name, 'v0.1.0-beta-')
+        run: |
+          jq -e '.version and .platforms.linux.url and .platforms.linux.signature and .platforms.macos.url and .platforms.macos.signature and .platforms.windows.url and .platforms.windows.signature' dist/latest-beta.json > /dev/null
 
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v2

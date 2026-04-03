@@ -8,7 +8,7 @@ use url::Url;
 
 use super::updater_contract::{
     github_manifest_url, github_releases_api_url, install_behavior_for_platform,
-    parse_beta_sequence, PlatformInstallBehavior, UpdaterContract,
+    parse_beta_sequence, updater_target_for_platform, PlatformInstallBehavior, UpdaterContract,
 };
 
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 20;
@@ -108,9 +108,11 @@ pub async fn check_for_beta_update(
 ) -> Result<Option<UpdateMetadata>> {
     let contract = UpdaterContract::default();
     let release = resolve_latest_release(&contract).await?;
+    let updater_target = updater_target_for_platform(std::env::consts::OS);
     let updater = app
         .updater_builder()
         .timeout(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECONDS))
+        .target(updater_target)
         .endpoints(vec![release.manifest_url.clone()])?
         .build()?;
     let update = updater.check().await?;
