@@ -119,8 +119,10 @@ Izwi desktop supports optional, opt-in anonymous usage analytics powered by Apta
 To enable analytics transport in the desktop shell, set the app key in the runtime environment:
 
 ```bash
-APTABASE_APP_KEY=A-XXXXXXXXXXXXXXX
+APTABASE_APP_KEY=A-US-XXXXXXXXXXXXXXX
 ```
+
+Use the exact key from Aptabase (for example `A-US-...` or `A-EU-...`).
 
 Without this variable, analytics calls are treated as no-op events.
 
