@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { NotificationProvider } from "@/app/providers/NotificationProvider";
 import { TranscriptionPage } from "./route";
 
 const apiMocks = vi.hoisted(() => ({
@@ -54,18 +55,20 @@ const baseProps = {
 
 function renderRoute(initialEntry: string) {
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <Routes>
-        <Route
-          path="/transcription"
-          element={<TranscriptionPage {...baseProps} />}
-        />
-        <Route
-          path="/transcription/:recordId"
-          element={<TranscriptionPage {...baseProps} />}
-        />
-      </Routes>
-    </MemoryRouter>,
+    <NotificationProvider>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <Routes>
+          <Route
+            path="/transcription"
+            element={<TranscriptionPage {...baseProps} />}
+          />
+          <Route
+            path="/transcription/:recordId"
+            element={<TranscriptionPage {...baseProps} />}
+          />
+        </Routes>
+      </MemoryRouter>
+    </NotificationProvider>,
   );
 }
 
@@ -178,6 +181,43 @@ describe("TranscriptionPage detail route", () => {
     expect(
       screen.getByRole("heading", { name: "No transcription jobs yet" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows standard row actions from the history menu", async () => {
+    apiMocks.listTranscriptionRecords.mockResolvedValue([
+      {
+        id: "txr-history-1",
+        created_at: 1,
+        model_id: "Parakeet-TDT-0.6B-v3",
+        language: "English",
+        duration_secs: 4,
+        processing_status: "ready",
+        processing_error: null,
+        processing_time_ms: 120,
+        rtf: 0.5,
+        audio_mime_type: "audio/wav",
+        audio_filename: "meeting.wav",
+        transcription_preview: "Hello there.",
+        transcription_chars: 12,
+        summary_status: "ready",
+        summary_preview: "Short summary",
+        summary_chars: 13,
+      },
+    ]);
+
+    renderRoute("/transcription");
+
+    expect(await screen.findByText("meeting.wav")).toBeInTheDocument();
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: /More actions for meeting\.wav/i }),
+      { button: 0, ctrlKey: false },
+    );
+
+    expect(await screen.findByRole("menuitem", { name: /Open record/i })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: /Copy transcript/i })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: /^Export$/i })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: /^Delete$/i })).toBeVisible();
   });
 
   it("opens the new transcript modal from the header action", async () => {
@@ -575,7 +615,71 @@ describe("TranscriptionPage detail route", () => {
     expect(
       await screen.findByRole("heading", { name: "Transcription" }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("meeting.wav")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Open transcription meeting.wav"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("confirms deletion from the history menu and refreshes the table", async () => {
+    apiMocks.listTranscriptionRecords
+      .mockResolvedValueOnce([
+        {
+          id: "txr-history-delete-1",
+          created_at: 1,
+          model_id: "Parakeet-TDT-0.6B-v3",
+          language: "English",
+          duration_secs: 4,
+          processing_status: "ready",
+          processing_error: null,
+          processing_time_ms: 120,
+          rtf: 0.5,
+          audio_mime_type: "audio/wav",
+          audio_filename: "meeting.wav",
+          transcription_preview: "Hello there.",
+          transcription_chars: 12,
+          summary_status: "not_requested",
+          summary_preview: null,
+          summary_chars: 0,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    renderRoute("/transcription");
+
+    expect(await screen.findByText("meeting.wav")).toBeInTheDocument();
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: /More actions for meeting\.wav/i }),
+      { button: 0, ctrlKey: false },
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^Delete$/i }));
+
+    expect(
+      await screen.findByText(
+        /This permanently removes the saved audio and transcript from history\./i,
+      ),
+    ).toBeInTheDocument();
+    expect(apiMocks.deleteTranscriptionRecord).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete transcription" }),
+    );
+
+    await waitFor(() =>
+      expect(apiMocks.deleteTranscriptionRecord).toHaveBeenCalledWith(
+        "txr-history-delete-1",
+      ),
+    );
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalledTimes(2),
+    );
+
+    expect(
+      screen.queryByLabelText("Open transcription meeting.wav"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "No transcription jobs yet" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps the current detail view visible while polling in the background", async () => {

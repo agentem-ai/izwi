@@ -126,3 +126,33 @@ Redesign `/settings` to feel like a polished product surface instead of a stack 
 - Kept theme and update functionality unchanged while presenting state through tighter utility copy, badges, and inline metadata instead of boxed panels.
 - Follow-up refinement removed non-essential overview content, update diagnostics, and privacy explainer blocks to make the page calmer and denser.
 - Verification: `npm run typecheck` and `npm run build` passed in `ui/`.
+
+
+# Transcription History Actions Plan
+
+## Goal
+
+Add a standard row actions menu to the `/transcription` history table with a three-dot trigger, appropriate quick actions, and delete confirmation that refreshes the list after removal.
+
+## Planned UX
+
+- Add a trailing overflow menu on every history row using a vertical three-dot trigger.
+- Keep row click to open the record, but stop propagation for menu interactions.
+- Include only actions that fit a history list standard: open record, copy transcript, export, and delete.
+- Keep summary regeneration on the detail page because it is a heavier, model-dependent action rather than a common list action.
+- Show delete confirmation in a modal and refresh history after successful deletion.
+
+## Plan
+
+- [x] Audit current transcription history row capabilities and detail-page actions.
+- [x] Add a row overflow menu with standard quick actions and correct interaction handling.
+- [x] Implement delete confirmation modal and refresh the history data after deletion.
+- [x] Add or update tests for row menu actions and delete refresh behavior.
+
+## Review
+
+- Added a trailing three-dot actions menu to each transcription history row with `Open record`, `Copy transcript`, `Export`, and `Delete`.
+- Kept `Regenerate summary` on the detail page because it depends on summary-model readiness and is less appropriate as a routine list action.
+- Added a row-level delete confirmation modal and refreshed the history list after successful deletion.
+- Updated the shared dropdown primitive so interactive items show a pointer cursor.
+- Verification: `npm run typecheck` and `npm run test -- src/features/transcription/route.test.tsx`.
