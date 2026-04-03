@@ -7,6 +7,7 @@ use url::Url;
 pub mod downloads;
 pub mod install;
 pub mod server;
+pub mod updater;
 pub mod updater_contract;
 pub mod window;
 
@@ -53,11 +54,25 @@ pub fn run(args: DesktopArgs) -> Result<()> {
     let setup_server_handle = Arc::clone(&managed_server);
 
     let mut builder = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![downloads::download_audio_file]);
+        .invoke_handler(tauri::generate_handler![
+            downloads::download_audio_file,
+            updater::check_for_beta_update,
+            updater::install_beta_update,
+            updater::relaunch_after_update,
+        ])
+        .manage(updater::UpdaterState::new());
 
     if let Some(app_key) = resolve_aptabase_app_key() {
         builder = builder.plugin(tauri_plugin_aptabase::Builder::new(&app_key).build());
     }
+
+    if let Some(pubkey) = resolve_updater_pubkey() {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().pubkey(pubkey).build());
+    } else {
+        eprintln!("warning: updater pubkey is not configured; in-app update checks are disabled");
+    }
+
+    builder = builder.plugin(tauri_plugin_process::init());
 
     let app = builder
         .setup(move |app| {
@@ -105,6 +120,19 @@ fn resolve_aptabase_app_key() -> Option<String> {
         .map(ToOwned::to_owned)
         .or_else(|| {
             std::env::var("APTABASE_APP_KEY")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+fn resolve_updater_pubkey() -> Option<String> {
+    option_env!("IZWI_UPDATER_PUBKEY")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            std::env::var("IZWI_UPDATER_PUBKEY")
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())

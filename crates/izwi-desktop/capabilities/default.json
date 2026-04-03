@@ -7,6 +7,8 @@
   ],
   "permissions": [
     "core:default",
-    "aptabase:allow-track-event"
+    "aptabase:allow-track-event",
+    "updater:default",
+    "process:default"
   ]
 }

@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateChannel {
     Beta010,
@@ -24,7 +26,8 @@ impl Default for UpdaterContract {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlatformInstallBehavior {
     pub app_exits_during_install: bool,
     pub supports_restart_later: bool,
@@ -44,21 +47,6 @@ pub fn parse_beta_sequence(channel: UpdateChannel, tag_name: &str) -> Option<u64
         return None;
     }
     suffix.parse::<u64>().ok()
-}
-
-pub fn is_supported_beta_tag(channel: UpdateChannel, tag_name: &str) -> bool {
-    parse_beta_sequence(channel, tag_name).is_some()
-}
-
-pub fn select_latest_beta_tag<'a, I>(channel: UpdateChannel, tag_names: I) -> Option<&'a str>
-where
-    I: IntoIterator<Item = &'a str>,
-{
-    tag_names
-        .into_iter()
-        .filter_map(|tag| parse_beta_sequence(channel, tag).map(|sequence| (sequence, tag)))
-        .max_by_key(|(sequence, _)| *sequence)
-        .map(|(_, tag)| tag)
 }
 
 pub fn github_releases_api_url(contract: &UpdaterContract) -> String {
@@ -95,9 +83,8 @@ pub fn install_behavior_for_platform(target_os: &str) -> PlatformInstallBehavior
 #[cfg(test)]
 mod tests {
     use super::{
-        UpdateChannel, UpdaterContract, github_manifest_url, github_releases_api_url,
-        install_behavior_for_platform, is_supported_beta_tag, parse_beta_sequence,
-        select_latest_beta_tag,
+        github_manifest_url, github_releases_api_url, install_behavior_for_platform,
+        parse_beta_sequence, UpdateChannel, UpdaterContract,
     };
 
     #[test]
@@ -116,25 +103,10 @@ mod tests {
     }
 
     #[test]
-    fn detects_supported_beta_tags() {
+    fn accepts_supported_beta_tags() {
         let channel = UpdateChannel::Beta010;
-        assert!(is_supported_beta_tag(channel, "v0.1.0-beta-1"));
-        assert!(!is_supported_beta_tag(channel, "v0.1.0-alpha-1"));
-    }
-
-    #[test]
-    fn selects_latest_beta_sequence() {
-        let channel = UpdateChannel::Beta010;
-        let tags = [
-            "v0.1.0-beta-1",
-            "v0.1.0-beta-10",
-            "v0.1.0-alpha-9",
-            "v0.1.0-beta-7",
-        ];
-        assert_eq!(
-            select_latest_beta_tag(channel, tags.iter().copied()),
-            Some("v0.1.0-beta-10")
-        );
+        assert_eq!(parse_beta_sequence(channel, "v0.1.0-beta-1"), Some(1));
+        assert_eq!(parse_beta_sequence(channel, "v0.1.0-alpha-1"), None);
     }
 
     #[test]
