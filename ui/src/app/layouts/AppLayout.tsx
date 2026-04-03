@@ -16,6 +16,9 @@ import {
   Moon,
   FileAudio,
   Settings,
+  Download,
+  RotateCcw,
+  X,
 } from "lucide-react";
 import {
   APP_ICON_URL,
@@ -23,6 +26,7 @@ import {
   VOICE_STUDIO_ENABLED,
 } from "@/shared/config/runtime";
 import { trackThemePreferenceChanged } from "@/app/analytics/events";
+import { useAppUpdates } from "@/app/providers/AppUpdateProvider";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { FirstRunOnboarding } from "@/app/onboarding/FirstRunOnboarding";
@@ -188,6 +192,17 @@ export function AppLayout({
     onThemePreferenceChange(nextThemePreference);
     void trackThemePreferenceChanged(nextThemePreference);
   };
+
+  const {
+    availableUpdate,
+    status: updateStatus,
+    isPromptOpen,
+    progressPercent,
+    errorMessage: updateErrorMessage,
+    dismissPrompt,
+    installUpdate,
+    restartToApply,
+  } = useAppUpdates();
 
   const handleNavClick = (path: string) => {
     setMobileMenuOpen(false);
@@ -641,6 +656,100 @@ export function AppLayout({
           <Outlet />
         </main>
       </div>
+      {isPromptOpen && availableUpdate ? (
+        <div className="fixed bottom-4 right-4 z-[70] w-[min(30rem,calc(100vw-1.5rem))] rounded-2xl border border-border/80 bg-background/92 p-4 shadow-2xl backdrop-blur-xl">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                In-App Update
+              </p>
+              <h3 className="mt-1 text-sm font-semibold text-foreground">
+                {updateStatus === "downloaded"
+                  ? "Update ready to apply"
+                  : `Update available: ${availableUpdate.version}`}
+              </h3>
+            </div>
+            <button
+              type="button"
+              className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              onClick={dismissPrompt}
+              aria-label="Dismiss update prompt"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+            {availableUpdate.platformBehavior.appExitsDuringInstall
+              ? "Windows installs close Izwi automatically and run the updater."
+              : "Install the update now and restart when you’re ready."}
+          </p>
+
+          {availableUpdate.notes ? (
+            <p className="mt-2 max-h-20 overflow-y-auto rounded-lg border border-border/70 bg-card/50 px-3 py-2 text-xs leading-5 text-muted-foreground">
+              {availableUpdate.notes}
+            </p>
+          ) : null}
+
+          {updateStatus === "downloading" ? (
+            <div className="mt-3 space-y-1">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>Downloading update…</span>
+                <span>{progressPercent !== null ? `${progressPercent}%` : "..."}</span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-muted/50">
+                <div
+                  className={cn(
+                    "h-full bg-primary transition-[width] duration-200",
+                    progressPercent === null && "w-1/2 animate-pulse",
+                  )}
+                  style={
+                    progressPercent !== null
+                      ? { width: `${progressPercent}%` }
+                      : undefined
+                  }
+                />
+              </div>
+            </div>
+          ) : null}
+
+          {updateErrorMessage ? (
+            <p className="mt-3 rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] px-3 py-2 text-xs text-[var(--status-warning-text)]">
+              {updateErrorMessage}
+            </p>
+          ) : null}
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {updateStatus === "downloaded" &&
+            availableUpdate.platformBehavior.supportsRestartLater ? (
+              <Button
+                type="button"
+                size="sm"
+                className="gap-2"
+                onClick={() => void restartToApply()}
+              >
+                <RotateCcw className="h-4 w-4" />
+                Restart Now
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                className="gap-2"
+                disabled={updateStatus === "downloading"}
+                onClick={() => void installUpdate()}
+              >
+                <Download className="h-4 w-4" />
+                {updateStatus === "downloading" ? "Installing…" : "Install Update"}
+              </Button>
+            )}
+
+            <Button type="button" size="sm" variant="ghost" onClick={dismissPrompt}>
+              Later
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
