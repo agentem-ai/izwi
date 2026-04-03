@@ -142,3 +142,39 @@ export async function trackModelLoaded(modelVariant: string) {
     model_category: modelCategoryFromVariant(modelVariant),
   });
 }
+
+export async function trackUpdateCheckStarted(
+  source: "manual" | "background",
+) {
+  await trackAnalyticsEvent("update_check_started", {
+    source,
+  });
+}
+
+export async function trackUpdateCheckCompleted(
+  outcome: "update_available" | "no_update" | "failed",
+  version?: string,
+) {
+  await trackAnalyticsEvent("update_check_completed", {
+    outcome,
+    ...(version ? { version } : {}),
+  });
+}
+
+export async function trackUpdateInstallStarted(version: string) {
+  await trackAnalyticsEvent("update_install_started", {
+    version,
+  });
+}
+
+export async function trackUpdateInstallCompleted(version: string) {
+  await trackAnalyticsEvent("update_install_completed", {
+    version,
+  });
+}
+
+export async function trackUpdateInstallFailed(reason: string) {
+  await trackAnalyticsEvent("update_install_failed", {
+    reason,
+  });
+}

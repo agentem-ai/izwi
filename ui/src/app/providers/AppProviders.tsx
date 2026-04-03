@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { AnalyticsBootstrapProvider } from "@/app/analytics/AnalyticsBootstrapProvider";
+import { AppUpdateProvider } from "@/app/providers/AppUpdateProvider";
 import { ModelCatalogProvider } from "@/app/providers/ModelCatalogProvider";
 import { NotificationProvider } from "@/app/providers/NotificationProvider";
 import { ThemeProvider } from "@/app/providers/ThemeProvider";
@@ -13,7 +14,9 @@ export function AppProviders({ children }: AppProvidersProps) {
     <AnalyticsBootstrapProvider>
       <ThemeProvider>
         <NotificationProvider>
-          <ModelCatalogProvider>{children}</ModelCatalogProvider>
+          <AppUpdateProvider>
+            <ModelCatalogProvider>{children}</ModelCatalogProvider>
+          </AppUpdateProvider>
         </NotificationProvider>
       </ThemeProvider>
     </AnalyticsBootstrapProvider>
