@@ -250,6 +250,14 @@ export function TranscriptionPage({
     }
   }, [navigate, recordDeletePending, recordId, refreshHistory]);
 
+  const handleHistoryDelete = useCallback(
+    async (targetRecordId: string) => {
+      await api.deleteTranscriptionRecord(targetRecordId);
+      await refreshHistory();
+    },
+    [refreshHistory],
+  );
+
   const handleDetailRegenerateSummary = useCallback(async () => {
     if (!recordId || recordSummaryRefreshPending) {
       return;
@@ -430,6 +438,7 @@ export function TranscriptionPage({
             loading={historyLoading}
             error={historyError}
             onRefresh={() => void refreshHistory()}
+            onDeleteRecord={handleHistoryDelete}
             onOpenRecord={(nextRecordId) => {
               navigate(`/transcription/${nextRecordId}`);
             }}

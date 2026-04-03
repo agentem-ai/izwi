@@ -1,18 +1,49 @@
-import { AlertTriangle, Loader2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  Copy,
+  Download,
+  ExternalLink,
+  Loader2,
+  MoreVertical,
+  Trash2,
+} from "lucide-react";
 
-import { type TranscriptionRecordSummary } from "@/api";
+import { api, type TranscriptionRecordSummary } from "@/api";
+import { useNotifications } from "@/app/providers/NotificationProvider";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { TranscriptionExportDialog } from "@/features/transcription/components/TranscriptionExportDialog";
 import {
   formatAudioDuration,
   formatCreatedAt,
 } from "@/features/transcription/playground/support";
+import { formatTranscriptionText } from "@/features/transcription/transcript";
+import type { ExportableTranscriptionRecord } from "@/utils/transcriptionExport";
 
 interface TranscriptionHistoryTableProps {
   records: TranscriptionRecordSummary[];
   loading?: boolean;
   error?: string | null;
   onOpenRecord: (recordId: string) => void;
+  onDeleteRecord?: (recordId: string) => Promise<void>;
   onRefresh?: () => void;
+}
+
+function rowLabel(record: TranscriptionRecordSummary): string {
+  return record.audio_filename || record.model_id || record.id;
 }
 
 export function TranscriptionHistoryTable({
@@ -20,8 +51,114 @@ export function TranscriptionHistoryTable({
   loading = false,
   error = null,
   onOpenRecord,
+  onDeleteRecord,
   onRefresh,
 }: TranscriptionHistoryTableProps) {
+  const { notify } = useNotifications();
+  const [busyRecordId, setBusyRecordId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<TranscriptionRecordSummary | null>(
+    null,
+  );
+  const [deletePending, setDeletePending] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportRecord, setExportRecord] = useState<ExportableTranscriptionRecord | null>(
+    null,
+  );
+
+  const deleteTargetLabel = useMemo(
+    () => (deleteTarget ? rowLabel(deleteTarget) : "Transcription record"),
+    [deleteTarget],
+  );
+
+  async function loadRecordForAction(recordId: string) {
+    return api.getTranscriptionRecord(recordId);
+  }
+
+  async function handleCopy(record: TranscriptionRecordSummary): Promise<void> {
+    if (busyRecordId || deletePending) {
+      return;
+    }
+
+    setBusyRecordId(record.id);
+    try {
+      const fullRecord = await loadRecordForAction(record.id);
+      const transcript = formatTranscriptionText(fullRecord);
+      if (!transcript.trim()) {
+        notify({
+          title: "Nothing to copy",
+          description: "This transcription does not have transcript text yet.",
+          tone: "warning",
+        });
+        return;
+      }
+
+      await navigator.clipboard.writeText(transcript);
+      notify({
+        title: "Transcript copied",
+        description: rowLabel(record),
+        tone: "success",
+      });
+    } catch (err) {
+      notify({
+        title: "Could not copy transcript",
+        description:
+          err instanceof Error ? err.message : "Failed to load transcription.",
+        tone: "warning",
+      });
+    } finally {
+      setBusyRecordId(null);
+    }
+  }
+
+  async function handleExport(record: TranscriptionRecordSummary): Promise<void> {
+    if (busyRecordId || deletePending) {
+      return;
+    }
+
+    setBusyRecordId(record.id);
+    try {
+      const fullRecord = await loadRecordForAction(record.id);
+      setExportRecord(fullRecord);
+      setExportDialogOpen(true);
+    } catch (err) {
+      notify({
+        title: "Could not open export",
+        description:
+          err instanceof Error ? err.message : "Failed to load transcription.",
+        tone: "warning",
+      });
+    } finally {
+      setBusyRecordId(null);
+    }
+  }
+
+  async function handleConfirmDelete(): Promise<void> {
+    if (!deleteTarget || !onDeleteRecord || deletePending) {
+      return;
+    }
+
+    setDeletePending(true);
+    setDeleteError(null);
+    try {
+      await onDeleteRecord(deleteTarget.id);
+      notify({
+        title: "Transcription deleted",
+        description: deleteTargetLabel,
+        tone: "success",
+      });
+      setDeleteTarget(null);
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error ? err.message : "Failed to delete transcription.",
+      );
+    } finally {
+      setDeletePending(false);
+    }
+  }
+
+  const activeBusyRecordId = busyRecordId;
+
   if (loading) {
     return (
       <div className="mb-6 flex min-h-[20rem] items-center justify-center rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] text-sm text-[var(--text-muted)]">
@@ -63,62 +200,222 @@ export function TranscriptionHistoryTable({
   }
 
   return (
-    <div className="mb-6 overflow-hidden rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)]">
-      <div className="overflow-x-auto">
-        <table className="min-w-full border-collapse text-sm">
-          <thead className="bg-[var(--bg-surface-1)] text-left text-xs uppercase tracking-[0.14em] text-[var(--text-muted)]">
-            <tr>
-              <th className="px-4 py-3 font-semibold sm:px-5">Created</th>
-              <th className="px-4 py-3 font-semibold">File</th>
-              <th className="px-4 py-3 font-semibold">Duration</th>
-              <th className="px-4 py-3 font-semibold">Preview</th>
-            </tr>
-          </thead>
-          <tbody>
-            {records.map((record) => {
-              return (
-                <tr
-                  key={record.id}
-                  aria-label={`Open transcription ${record.audio_filename || record.id}`}
-                  className="cursor-pointer border-t border-[var(--border-muted)] transition-colors hover:bg-[var(--bg-surface-1)]"
-                  onClick={() => onOpenRecord(record.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
+    <>
+      <div className="mb-6 overflow-hidden rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)]">
+        <div className="overflow-x-auto">
+          <table className="min-w-full border-collapse text-sm">
+            <thead className="bg-[var(--bg-surface-1)] text-left text-xs uppercase tracking-[0.14em] text-[var(--text-muted)]">
+              <tr>
+                <th className="px-4 py-3 font-semibold sm:px-5">Created</th>
+                <th className="px-4 py-3 font-semibold">File</th>
+                <th className="px-4 py-3 font-semibold">Duration</th>
+                <th className="px-4 py-3 font-semibold">Preview</th>
+                <th className="w-[56px] px-3 py-3 text-right font-semibold sm:px-4">
+                  <span className="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {records.map((record) => {
+                const isBusy = activeBusyRecordId === record.id;
+
+                return (
+                  <tr
+                    key={record.id}
+                    aria-label={`Open transcription ${rowLabel(record)}`}
+                    className="cursor-pointer border-t border-[var(--border-muted)] transition-colors hover:bg-[var(--bg-surface-1)]"
+                    onClick={(event) => {
+                      if ((event.target as HTMLElement).closest("[data-row-action]")) {
+                        return;
+                      }
                       onOpenRecord(record.id);
-                    }
-                  }}
-                  tabIndex={0}
-                >
-                  <td className="px-4 py-3 align-top text-[var(--text-secondary)] sm:px-5">
-                    {formatCreatedAt(record.created_at)}
-                  </td>
-                  <td className="px-4 py-3 align-top">
-                    <div className="font-medium text-[var(--text-primary)]">
-                      {record.audio_filename || "Audio input"}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 align-top text-[var(--text-secondary)]">
-                    {formatAudioDuration(record.duration_secs)}
-                  </td>
-                  <td className="px-4 py-3 align-top text-[var(--text-secondary)]">
-                    <div className="max-w-[34rem]">
-                      <div className="line-clamp-2 text-[var(--text-primary)]">
-                        {record.transcription_preview}
+                    }}
+                    onKeyDown={(event) => {
+                      if ((event.target as HTMLElement).closest("[data-row-action]")) {
+                        return;
+                      }
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onOpenRecord(record.id);
+                      }
+                    }}
+                    tabIndex={0}
+                  >
+                    <td className="px-4 py-3 align-top text-[var(--text-secondary)] sm:px-5">
+                      {formatCreatedAt(record.created_at)}
+                    </td>
+                    <td className="px-4 py-3 align-top">
+                      <div className="font-medium text-[var(--text-primary)]">
+                        {record.audio_filename || "Audio input"}
                       </div>
-                      {record.summary_preview ? (
-                        <div className="mt-1 line-clamp-1 text-xs text-[var(--text-muted)]">
-                          Summary: {record.summary_preview}
+                    </td>
+                    <td className="px-4 py-3 align-top text-[var(--text-secondary)]">
+                      {formatAudioDuration(record.duration_secs)}
+                    </td>
+                    <td className="px-4 py-3 align-top text-[var(--text-secondary)]">
+                      <div className="max-w-[34rem]">
+                        <div className="line-clamp-2 text-[var(--text-primary)]">
+                          {record.transcription_preview}
                         </div>
-                      ) : null}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                        {record.summary_preview ? (
+                          <div className="mt-1 line-clamp-1 text-xs text-[var(--text-muted)]">
+                            Summary: {record.summary_preview}
+                          </div>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 align-top text-right sm:px-4">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            data-row-action
+                            className="h-8 w-8 rounded-full text-[var(--text-muted)] hover:bg-[var(--bg-surface-2)] hover:text-[var(--text-primary)]"
+                            aria-label={`More actions for ${rowLabel(record)}`}
+                            onClick={(event) => event.stopPropagation()}
+                            onKeyDown={(event) => event.stopPropagation()}
+                          >
+                            {isBusy ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <MoreVertical className="h-4 w-4" />
+                            )}
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent
+                          align="end"
+                          className="w-48"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <DropdownMenuItem onSelect={() => onOpenRecord(record.id)}>
+                            <ExternalLink className="mr-2 h-4 w-4" />
+                            Open record
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={isBusy || deletePending}
+                            onSelect={() => void handleCopy(record)}
+                          >
+                            <Copy className="mr-2 h-4 w-4" />
+                            Copy transcript
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={isBusy || deletePending}
+                            onSelect={() => void handleExport(record)}
+                          >
+                            <Download className="mr-2 h-4 w-4" />
+                            Export
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            disabled={!onDeleteRecord || deletePending}
+                            onSelect={() => {
+                              setDeleteError(null);
+                              setDeleteTarget(record);
+                            }}
+                            className="text-[var(--danger-text)] focus:text-[var(--danger-text)]"
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
-    </div>
+
+      <TranscriptionExportDialog
+        record={exportRecord}
+        open={exportDialogOpen}
+        onOpenChange={(open) => {
+          setExportDialogOpen(open);
+          if (!open) {
+            setExportRecord(null);
+          }
+        }}
+      />
+
+      <Dialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!deletePending) {
+            setDeleteTarget(open ? deleteTarget : null);
+            if (!open) {
+              setDeleteError(null);
+            }
+          }
+        }}
+      >
+        <DialogContent className="max-w-md border-[var(--border-strong)] bg-[var(--bg-surface-1)] p-5">
+          <DialogTitle className="sr-only">Delete transcription?</DialogTitle>
+          {deleteTarget ? (
+            <>
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-full border border-[var(--danger-border)] bg-[var(--danger-bg)] p-2 text-[var(--danger-text)]">
+                  <AlertTriangle className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                    Delete transcription?
+                  </h3>
+                  <DialogDescription className="mt-1 text-sm text-[var(--text-muted)]">
+                    This permanently removes the saved audio and transcript from
+                    history.
+                  </DialogDescription>
+                  <p className="mt-2 truncate text-xs text-[var(--text-subtle)]">
+                    {deleteTargetLabel}
+                  </p>
+                </div>
+              </div>
+
+              {deleteError ? (
+                <div className="mt-4 rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-xs text-[var(--danger-text)]">
+                  {deleteError}
+                </div>
+              ) : null}
+
+              <div className="mt-5 flex items-center justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 border-[var(--border-muted)] bg-[var(--bg-surface-2)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface-3)]"
+                  onClick={() => {
+                    setDeleteTarget(null);
+                    setDeleteError(null);
+                  }}
+                  disabled={deletePending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  className="h-8 gap-1.5"
+                  onClick={() => void handleConfirmDelete()}
+                  disabled={deletePending}
+                >
+                  {deletePending ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Deleting
+                    </>
+                  ) : (
+                    "Delete transcription"
+                  )}
+                </Button>
+              </div>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
