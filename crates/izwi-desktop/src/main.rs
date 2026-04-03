@@ -3,6 +3,7 @@ use clap::Parser;
 
 mod app;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     app::run(app::DesktopArgs::parse())
 }
