@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { NotificationProvider } from "@/app/providers/NotificationProvider";
 import { TextToSpeechPage } from "./route";
 
 const apiMocks = vi.hoisted(() => ({
@@ -122,18 +123,20 @@ function buildSavedVoice(id: string, name: string) {
 
 function renderRoute(initialEntry: string) {
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <Routes>
-        <Route
-          path="/text-to-speech"
-          element={<TextToSpeechPage {...baseProps} />}
-        />
-        <Route
-          path="/text-to-speech/:recordId"
-          element={<TextToSpeechPage {...baseProps} />}
-        />
-      </Routes>
-    </MemoryRouter>,
+    <NotificationProvider>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <Routes>
+          <Route
+            path="/text-to-speech"
+            element={<TextToSpeechPage {...baseProps} />}
+          />
+          <Route
+            path="/text-to-speech/:recordId"
+            element={<TextToSpeechPage {...baseProps} />}
+          />
+        </Routes>
+      </MemoryRouter>
+    </NotificationProvider>,
   );
 }
 
@@ -251,6 +254,30 @@ describe("TextToSpeechPage", () => {
 
     expect(screen.getByText("Anna")).toBeInTheDocument();
     expect(screen.queryByText("Ono_anna")).not.toBeInTheDocument();
+  });
+
+  it("shows standard row actions from the text-to-speech history menu", async () => {
+    apiMocks.listTextToSpeechRecords.mockResolvedValue([
+      buildSummary({
+        id: "tts-history-1",
+        processing_status: "ready",
+        audio_filename: "voice-note.wav",
+      }),
+    ]);
+
+    renderRoute("/text-to-speech");
+
+    expect(await screen.findByText("Hello world")).toBeInTheDocument();
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: /More actions for voice-note\.wav/i }),
+      { button: 0, ctrlKey: false },
+    );
+
+    expect(await screen.findByRole("menuitem", { name: /Open record/i })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: /Copy text/i })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: /Download/i })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: /^Delete$/i })).toBeVisible();
   });
 
   it("opens the new text-to-speech modal from the header action", async () => {
@@ -522,6 +549,47 @@ describe("TextToSpeechPage", () => {
 
     expect(
       await screen.findByRole("heading", { name: "Text to Speech" }),
+    ).toBeInTheDocument();
+  });
+
+  it("deletes from the history menu and refreshes the table", async () => {
+    apiMocks.listTextToSpeechRecords
+      .mockResolvedValueOnce([
+        buildSummary({
+          id: "tts-history-1",
+          processing_status: "ready",
+          audio_filename: "voice-note.wav",
+        }),
+      ])
+      .mockResolvedValueOnce([]);
+    apiMocks.deleteTextToSpeechRecord.mockResolvedValue({
+      id: "tts-history-1",
+      deleted: true,
+    });
+
+    renderRoute("/text-to-speech");
+
+    expect(await screen.findByText("Hello world")).toBeInTheDocument();
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: /More actions for voice-note\.wav/i }),
+      { button: 0, ctrlKey: false },
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^Delete$/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Delete generation/i }),
+    );
+
+    await waitFor(() =>
+      expect(apiMocks.deleteTextToSpeechRecord).toHaveBeenCalledWith(
+        "tts-history-1",
+      ),
+    );
+    await waitFor(() =>
+      expect(apiMocks.listTextToSpeechRecords).toHaveBeenCalledTimes(2),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "No text-to-speech jobs yet" }),
     ).toBeInTheDocument();
   });
 
