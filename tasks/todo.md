@@ -303,7 +303,7 @@ Add a cross-platform status bar / tray icon experience for Izwi desktop with:
   Commit:
   `feat(desktop): add launch-at-login tray control`
 
-- [ ] Phase 5: Add troubleshooting shortcuts and hardening tests
+- [x] Phase 5: Add troubleshooting shortcuts and hardening tests
   Scope:
   Add `Copy API URL`, `Open Logs`, and `Documentation` tray actions, plus focused unit tests for the tray status formatting/helpers.
   Verification:
@@ -334,6 +334,12 @@ Add a cross-platform status bar / tray icon experience for Izwi desktop with:
 - Added autostart capability permission wiring and periodic check-state sync so the tray toggle stays aligned with runtime state.
 - Verification:
   - `cargo check -p izwi-desktop`
+- Phase 5 complete.
+- Added tray troubleshooting actions for `Copy API URL`, `Open Logs`, and `Documentation`.
+- Added focused tray helper tests for model status aggregation/formatting and API URL normalization.
+- Verification:
+  - `cargo test -p izwi-desktop`
+  - `npm run typecheck` (in `ui/`)
 
 # Transcription Nested Modal Fix
 
