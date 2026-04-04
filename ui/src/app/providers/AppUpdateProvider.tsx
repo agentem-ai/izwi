@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -68,28 +69,43 @@ export function AppUpdateProvider({ children }: AppUpdateProviderProps) {
   const [isPromptOpen, setIsPromptOpen] = useState(false);
   const [progressPercent, setProgressPercent] = useState<number | null>(null);
   const [health, setHealth] = useState<UpdaterHealthStatus | null>(null);
+  const statusRef = useRef<UpdateStatus>("idle");
+  const healthRef = useRef<UpdaterHealthStatus | null>(null);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
+  useEffect(() => {
+    healthRef.current = health;
+  }, [health]);
 
   const checkForUpdates = useCallback(
     async (manual = false) => {
       if (!isTauri()) {
         return;
       }
-      if (health && !health.enabled) {
+      const currentHealth = healthRef.current;
+      if (currentHealth && !currentHealth.enabled) {
+        statusRef.current = "error";
         setStatus("error");
-        setErrorMessage(health.disableReason ?? "Updates are disabled.");
+        setErrorMessage(currentHealth.disableReason ?? "Updates are disabled.");
         if (manual) {
           notify({
             title: "Updates are disabled",
-            description: health.disableReason ?? "Runtime policy has disabled updates.",
+            description:
+              currentHealth.disableReason ?? "Runtime policy has disabled updates.",
             tone: "warning",
           });
         }
         return;
       }
-      if (status === "checking" || status === "downloading") {
+      const currentStatus = statusRef.current;
+      if (currentStatus === "checking" || currentStatus === "downloading") {
         return;
       }
 
+      statusRef.current = "checking";
       setStatus("checking");
       setErrorMessage(null);
       setProgressPercent(null);
@@ -101,6 +117,7 @@ export function AppUpdateProvider({ children }: AppUpdateProviderProps) {
 
         if (!update) {
           setAvailableUpdate(null);
+          statusRef.current = "idle";
           setStatus("idle");
           void trackUpdateCheckCompleted("no_update");
           if (manual) {
@@ -114,6 +131,7 @@ export function AppUpdateProvider({ children }: AppUpdateProviderProps) {
         }
 
         setAvailableUpdate(update);
+        statusRef.current = "available";
         setStatus("available");
         setIsPromptOpen(true);
         void trackUpdateCheckCompleted("update_available", update.version);
@@ -128,6 +146,7 @@ export function AppUpdateProvider({ children }: AppUpdateProviderProps) {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Unknown update-check error.";
+        statusRef.current = "error";
         setStatus("error");
         setErrorMessage(message);
         void trackUpdateCheckCompleted("failed", undefined, message);
@@ -140,7 +159,7 @@ export function AppUpdateProvider({ children }: AppUpdateProviderProps) {
         }
       }
     },
-    [health, notify, status],
+    [notify],
   );
 
   const installUpdate = useCallback(async () => {
@@ -236,9 +255,11 @@ export function AppUpdateProvider({ children }: AppUpdateProviderProps) {
 
     getUpdaterHealthSnapshot()
       .then((snapshot) => {
+        healthRef.current = snapshot;
         setHealth(snapshot);
       })
       .catch(() => {
+        healthRef.current = null;
         setHealth(null);
       });
 
