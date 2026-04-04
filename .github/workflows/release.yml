@@ -56,6 +56,14 @@ jobs:
             echo "::error::Missing TAURI_SIGNING_PRIVATE_KEY secret."
             exit 1
           fi
+          if [[ "${IZWI_UPDATER_PUBKEY}" == \$* ]]; then
+            echo "::error::IZWI_UPDATER_PUBKEY looks like an unresolved placeholder ('${IZWI_UPDATER_PUBKEY}')."
+            exit 1
+          fi
+          if [[ "${TAURI_SIGNING_PRIVATE_KEY}" == \$* ]]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY looks like an unresolved placeholder."
+            exit 1
+          fi
 
       - name: Install Linux dependencies for Tauri
         if: runner.os == 'Linux'
@@ -74,6 +82,24 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: ui/package-lock.json
+
+      - name: Inject updater pubkey into Tauri config (beta channel)
+        if: startsWith(github.ref_name, 'v0.1.0-beta-')
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'crates/izwi-desktop/tauri.conf.json';
+          const pubkey = (process.env.IZWI_UPDATER_PUBKEY || '').trim();
+          if (!pubkey) {
+            throw new Error('IZWI_UPDATER_PUBKEY is empty after trimming.');
+          }
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+          config.plugins = config.plugins || {};
+          config.plugins.updater = config.plugins.updater || {};
+          config.plugins.updater.pubkey = pubkey;
+          fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+          NODE
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -146,9 +172,14 @@ jobs:
         env:
           CI: "true"
         run: |
-          cargo tauri build \
+          env -u APPLE_SIGNING_IDENTITY \
+            -u APPLE_CERTIFICATE \
+            -u APPLE_CERTIFICATE_PASSWORD \
+            -u APPLE_ID \
+            -u APPLE_PASSWORD \
+            -u APPLE_TEAM_ID \
+            cargo tauri build \
             --bundles app,${{ matrix.bundle_kind }} \
-            --no-sign \
             --config crates/izwi-desktop/tauri.macos.conf.json
 
       - name: Build desktop bundle (signed macOS)
