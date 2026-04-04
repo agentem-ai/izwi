@@ -279,7 +279,7 @@ Add a cross-platform status bar / tray icon experience for Izwi desktop with:
   Commit:
   `feat(desktop): add tray icon foundation with open/quit`
 
-- [ ] Phase 2: Add standard tray actions for settings, models, and update checks
+- [x] Phase 2: Add standard tray actions for settings, models, and update checks
   Scope:
   Add `Settings`, `Models`, and `Check for Updates` tray actions and wire desktop-to-frontend signals so actions trigger navigation and manual update checks from anywhere in the app.
   Verification:
@@ -318,6 +318,12 @@ Add a cross-platform status bar / tray icon experience for Izwi desktop with:
 - Desktop close-button behavior now hides the main window instead of exiting, enabling a real tray-resident lifecycle.
 - Verification:
   - `cargo check -p izwi-desktop`
+- Phase 2 complete.
+- Added standard tray actions for `Settings`, `Models`, and `Check for Updates`.
+- Wired desktop tray events into the React router/update provider so tray actions can navigate and trigger a manual update check from any route.
+- Verification:
+  - `cargo check -p izwi-desktop`
+  - `npm run typecheck` (in `ui/`)
 
 # Transcription Nested Modal Fix
 
