@@ -53,6 +53,9 @@ pub fn run(args: DesktopArgs) -> Result<()> {
 
     let managed_server = Arc::new(Mutex::new(None::<Child>));
     let setup_server_handle = Arc::clone(&managed_server);
+    let tray_server_handle = Arc::clone(&managed_server);
+    let tray_server_url = server_url.clone();
+    let tray_local_server_mode = server::is_local_server_host(server_host.as_str());
 
     let mut builder = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -90,7 +93,14 @@ pub fn run(args: DesktopArgs) -> Result<()> {
             }
 
             window::build_main_window(app, &window_config)?;
-            tray::build_basic_tray(app.handle())?;
+            tray::build_basic_tray(
+                app.handle(),
+                tray::TrayConfig {
+                    server_url: tray_server_url.clone(),
+                    local_server_mode: tray_local_server_mode,
+                    managed_server: Arc::clone(&tray_server_handle),
+                },
+            )?;
             Ok(())
         })
         .build(tauri::generate_context!())
