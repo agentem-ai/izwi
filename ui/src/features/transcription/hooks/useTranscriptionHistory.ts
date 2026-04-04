@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, type TranscriptionRecordSummary } from "@/api";
 import {
@@ -17,13 +17,24 @@ export function useTranscriptionHistory(): UseTranscriptionHistoryResult {
   const [records, setRecords] = useState<TranscriptionRecordSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const recordsRef = useRef<TranscriptionRecordSummary[]>([]);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  useEffect(() => {
+    recordsRef.current = records;
+  }, [records]);
+
+  const loadRecords = useCallback(async (background = false) => {
+    const hasVisibleRecords = recordsRef.current.length > 0;
+    const backgroundRefresh = background && hasVisibleRecords;
+    if (!backgroundRefresh) {
+      setLoading(true);
+      setError(null);
+    }
+
     try {
       const nextRecords = await api.listTranscriptionRecords();
       setRecords(nextRecords);
+      setError(null);
     } catch (err) {
       setError(
         err instanceof Error
@@ -34,6 +45,10 @@ export function useTranscriptionHistory(): UseTranscriptionHistoryResult {
       setLoading(false);
     }
   }, []);
+
+  const refresh = useCallback(async () => {
+    await loadRecords(false);
+  }, [loadRecords]);
 
   useEffect(() => {
     void refresh();
@@ -67,13 +82,13 @@ export function useTranscriptionHistory(): UseTranscriptionHistoryResult {
     }
 
     const intervalId = window.setInterval(() => {
-      void refresh();
+      void loadRecords(true);
     }, 2500);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [pollingRequired, refresh]);
+  }, [loadRecords, pollingRequired]);
 
   return {
     records,

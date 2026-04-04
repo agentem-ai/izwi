@@ -359,3 +359,32 @@ Add a cross-platform status bar / tray icon experience for Izwi desktop with:
 - Follow-up fix:
   - The underlying `NewTranscriptionModal` now prevents outside-dismiss interactions while the stacked model modal is open, so clicks in the top modal no longer close the transcription modal underneath.
   - The route test now verifies a click inside the stacked model modal still triggers model selection while keeping the transcription modal open.
+
+# History Polling UX Reload Fix
+
+## Goal
+
+Stop `/transcription` list view from flashing a full-screen loading state during background polling after returning from a newly created record, and enforce the same no-reload UX for `/text-to-speech` and `/diarization`.
+
+## Plan
+
+- [x] Reproduce and isolate why list pages appear to reload while jobs are still pending.
+- [x] Update route history hooks so polling uses background refresh semantics and does not toggle the table-level full loading shell on every interval.
+- [x] Apply the same fix pattern to transcription and text-to-speech; confirm diarization behavior does not regress.
+- [x] Add focused route-level regression tests proving history content stays visible during polling.
+- [x] Run targeted verification (`vitest` route tests + `typecheck`) and capture results.
+
+## Review
+
+- `useTranscriptionHistory` and `useTextToSpeechHistory` now keep existing rows visible during interval polling by using background refresh semantics when data is already on screen.
+- Foreground loading behavior is preserved for initial loads and explicit refresh actions; only polling refreshes avoid the full table loading shell.
+- Added regression tests:
+  - `ui/src/features/transcription/route.test.tsx`
+  - `ui/src/features/text-to-speech/route.test.tsx`
+  Both assert history rows remain visible while a polling refresh request is in flight.
+- `/diarization` was verified via existing route coverage and remains stable; its list route still does not poll history continuously.
+- Verification:
+  - `npm run test -- src/features/transcription/route.test.tsx`
+  - `npm run test -- src/features/text-to-speech/route.test.tsx`
+  - `npm run test -- src/features/diarization/route.test.tsx`
+  - `npm run typecheck`

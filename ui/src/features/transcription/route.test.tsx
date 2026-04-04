@@ -215,6 +215,96 @@ describe("TranscriptionPage detail route", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps history rows visible while transcription polling refreshes in the background", async () => {
+    const intervalCallbacks: Array<() => void> = [];
+    const setIntervalSpy = vi
+      .spyOn(window, "setInterval")
+      .mockImplementation((handler) => {
+        if (typeof handler === "function") {
+          intervalCallbacks.push(handler);
+        }
+        return 1 as unknown as ReturnType<typeof window.setInterval>;
+      });
+    const clearIntervalSpy = vi
+      .spyOn(window, "clearInterval")
+      .mockImplementation(() => {});
+    const backgroundRefresh =
+      deferredPromise<Awaited<ReturnType<typeof apiMocks.listTranscriptionRecords>>>();
+    apiMocks.listTranscriptionRecords
+      .mockResolvedValueOnce([
+        {
+          id: "txr-history-polling-1",
+          created_at: 1,
+          model_id: "Parakeet-TDT-0.6B-v3",
+          aligner_model_id: null,
+          language: "English",
+          processing_status: "processing",
+          processing_error: null,
+          duration_secs: null,
+          processing_time_ms: null,
+          rtf: null,
+          audio_mime_type: "audio/wav",
+          audio_filename: "meeting.wav",
+          transcription_preview: "Still transcribing...",
+          transcription_chars: 20,
+          summary_status: "pending",
+          summary_preview: null,
+          summary_chars: 0,
+          summary_model_id: "Qwen3.5-4B",
+        },
+      ])
+      .mockImplementationOnce(() => backgroundRefresh.promise);
+
+    const view = renderRoute("/transcription");
+
+    try {
+      expect(await screen.findByText("Still transcribing...")).toBeInTheDocument();
+
+      await waitFor(() => expect(setIntervalSpy).toHaveBeenCalled());
+      if (intervalCallbacks.length === 0) {
+        throw new Error("Expected transcription history polling to register an interval.");
+      }
+
+      intervalCallbacks.forEach((callback) => callback());
+
+      await waitFor(() =>
+        expect(apiMocks.listTranscriptionRecords).toHaveBeenCalledTimes(2),
+      );
+
+      expect(screen.getByText("Still transcribing...")).toBeInTheDocument();
+      expect(screen.queryByText("Loading transcriptions...")).not.toBeInTheDocument();
+
+      backgroundRefresh.resolve([
+        {
+          id: "txr-history-polling-1",
+          created_at: 1,
+          model_id: "Parakeet-TDT-0.6B-v3",
+          aligner_model_id: null,
+          language: "English",
+          processing_status: "ready",
+          processing_error: null,
+          duration_secs: 5,
+          processing_time_ms: 120,
+          rtf: 0.8,
+          audio_mime_type: "audio/wav",
+          audio_filename: "meeting.wav",
+          transcription_preview: "Transcription complete.",
+          transcription_chars: 23,
+          summary_status: "ready",
+          summary_preview: "Summary complete.",
+          summary_chars: 17,
+          summary_model_id: "Qwen3.5-4B",
+        },
+      ]);
+
+      expect(await screen.findByText("Transcription complete.")).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
   it("shows standard row actions from the history menu", async () => {
     apiMocks.listTranscriptionRecords.mockResolvedValue([
       {

@@ -140,6 +140,16 @@ function renderRoute(initialEntry: string) {
   );
 }
 
+function deferredPromise<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("TextToSpeechPage", () => {
   beforeEach(() => {
     apiMocks.listTextToSpeechRecords.mockReset();
@@ -211,6 +221,76 @@ describe("TextToSpeechPage", () => {
     expect(
       screen.getByRole("heading", { name: "No text-to-speech jobs yet" }),
     ).toBeInTheDocument();
+  });
+
+  it("keeps history rows visible while text-to-speech polling refreshes in the background", async () => {
+    const intervalCallbacks: Array<() => void> = [];
+    const setIntervalSpy = vi
+      .spyOn(window, "setInterval")
+      .mockImplementation((handler) => {
+        if (typeof handler === "function") {
+          intervalCallbacks.push(handler);
+        }
+        return 1 as unknown as ReturnType<typeof window.setInterval>;
+      });
+    const clearIntervalSpy = vi
+      .spyOn(window, "clearInterval")
+      .mockImplementation(() => {});
+    const backgroundRefresh =
+      deferredPromise<Awaited<ReturnType<typeof apiMocks.listTextToSpeechRecords>>>();
+    apiMocks.listTextToSpeechRecords
+      .mockResolvedValueOnce([
+        buildSummary({
+          id: "tts-history-polling-1",
+          processing_status: "processing",
+          audio_filename: "voice-note.wav",
+          input_preview: "Rendering still in progress",
+        }),
+      ])
+      .mockImplementationOnce(() => backgroundRefresh.promise);
+
+    const view = renderRoute("/text-to-speech");
+
+    try {
+      expect(
+        await screen.findByText("Rendering still in progress"),
+      ).toBeInTheDocument();
+
+      await waitFor(() => expect(setIntervalSpy).toHaveBeenCalled());
+      if (intervalCallbacks.length === 0) {
+        throw new Error("Expected text-to-speech history polling to register an interval.");
+      }
+
+      intervalCallbacks.forEach((callback) => callback());
+
+      await waitFor(() =>
+        expect(apiMocks.listTextToSpeechRecords).toHaveBeenCalledTimes(2),
+      );
+
+      expect(screen.getByText("Rendering still in progress")).toBeInTheDocument();
+      expect(
+        screen.queryByText("Loading text-to-speech history..."),
+      ).not.toBeInTheDocument();
+
+      backgroundRefresh.resolve([
+        buildSummary({
+          id: "tts-history-polling-1",
+          processing_status: "ready",
+          audio_filename: "voice-note.wav",
+          input_preview: "Rendering complete",
+          audio_duration_secs: 2.3,
+          generation_time_ms: 80,
+          rtf: 0.4,
+          tokens_generated: 42,
+        }),
+      ]);
+
+      expect(await screen.findByText("Rendering complete")).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
   });
 
   it("hides status column and uses saved voice names in history rows", async () => {

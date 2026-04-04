@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, type SpeechHistoryRecordSummary } from "@/api";
 import { normalizeSpeechProcessingStatus } from "@/features/text-to-speech/support";
@@ -14,13 +14,24 @@ export function useTextToSpeechHistory(): UseTextToSpeechHistoryResult {
   const [records, setRecords] = useState<SpeechHistoryRecordSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const recordsRef = useRef<SpeechHistoryRecordSummary[]>([]);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  useEffect(() => {
+    recordsRef.current = records;
+  }, [records]);
+
+  const loadRecords = useCallback(async (background = false) => {
+    const hasVisibleRecords = recordsRef.current.length > 0;
+    const backgroundRefresh = background && hasVisibleRecords;
+    if (!backgroundRefresh) {
+      setLoading(true);
+      setError(null);
+    }
+
     try {
       const nextRecords = await api.listTextToSpeechRecords();
       setRecords(nextRecords);
+      setError(null);
     } catch (err) {
       setError(
         err instanceof Error
@@ -31,6 +42,10 @@ export function useTextToSpeechHistory(): UseTextToSpeechHistoryResult {
       setLoading(false);
     }
   }, []);
+
+  const refresh = useCallback(async () => {
+    await loadRecords(false);
+  }, [loadRecords]);
 
   useEffect(() => {
     void refresh();
@@ -54,13 +69,13 @@ export function useTextToSpeechHistory(): UseTextToSpeechHistoryResult {
     }
 
     const intervalId = window.setInterval(() => {
-      void refresh();
+      void loadRecords(true);
     }, 2500);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [pollingRequired, refresh]);
+  }, [loadRecords, pollingRequired]);
 
   return {
     records,
