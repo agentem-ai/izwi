@@ -46,6 +46,7 @@ jobs:
 
       - name: Validate updater signing inputs (beta channel)
         if: startsWith(github.ref_name, 'v0.1.0-beta-')
+        shell: bash
         run: |
           if [ -z "${IZWI_UPDATER_PUBKEY}" ]; then
             echo "::error::Missing IZWI_UPDATER_PUBKEY secret."
