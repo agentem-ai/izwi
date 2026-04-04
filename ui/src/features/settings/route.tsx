@@ -511,7 +511,7 @@ export function SettingsPage() {
           <SettingsSection
             icon={<RefreshCw className="h-4 w-4" />}
             title="Updates"
-            description={`Current version v${APP_VERSION}`}
+            description="Check for new releases and install updates."
           >
             <SettingsRow
               description={
@@ -529,6 +529,12 @@ export function SettingsPage() {
               }
               action={
                 <div className="flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-[var(--bg-surface-0)] px-2.5 py-1 text-xs text-[var(--text-secondary)] whitespace-nowrap">
+                    <span>Version</span>
+                    <span className="font-mono font-semibold text-[var(--text-primary)]">
+                      v{APP_VERSION}
+                    </span>
+                  </span>
                   <StatusBadge tone={updateBadge.tone}>{updateBadge.label}</StatusBadge>
                   <Button
                     type="button"
