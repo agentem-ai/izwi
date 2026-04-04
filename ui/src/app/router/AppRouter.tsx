@@ -7,6 +7,27 @@ interface TrayRouteDetail {
   path?: unknown;
 }
 
+interface TrayApiUrlDetail {
+  url?: unknown;
+}
+
+async function copyTextToClipboard(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "absolute";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
+}
+
 function DesktopTrayBridge() {
   const navigate = useNavigate();
   const { checkForUpdates } = useAppUpdates();
@@ -23,13 +44,26 @@ function DesktopTrayBridge() {
     const onTrayCheckUpdates = () => {
       void checkForUpdates(true);
     };
+    const onTrayCopyApiUrl = (event: Event) => {
+      const apiUrlEvent = event as CustomEvent<TrayApiUrlDetail>;
+      const url = apiUrlEvent.detail?.url;
+      if (typeof url !== "string" || !url.trim()) {
+        return;
+      }
+      void copyTextToClipboard(url.trim());
+    };
 
     window.addEventListener("izwi:tray-route", onTrayRoute as EventListener);
     window.addEventListener("izwi:tray-check-updates", onTrayCheckUpdates);
+    window.addEventListener("izwi:tray-copy-api-url", onTrayCopyApiUrl as EventListener);
 
     return () => {
       window.removeEventListener("izwi:tray-route", onTrayRoute as EventListener);
       window.removeEventListener("izwi:tray-check-updates", onTrayCheckUpdates);
+      window.removeEventListener(
+        "izwi:tray-copy-api-url",
+        onTrayCopyApiUrl as EventListener,
+      );
     };
   }, [checkForUpdates, navigate]);
 
