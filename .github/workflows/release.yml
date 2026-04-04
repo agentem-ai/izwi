@@ -243,15 +243,30 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $updaterBundle = Get-ChildItem -Path "target","crates/izwi-desktop/target" -Recurse -File |
+          $preferredDirPattern = '[\\/]release[\\/]bundle[\\/]nsis[\\/]'
+          $fallbackDirPattern = '[\\/]release[\\/]bundle[\\/]nsis-updater[\\/]'
+
+          $candidates = Get-ChildItem -Path "target","crates/izwi-desktop/target" -Recurse -File |
             Where-Object {
-              $_.Name -match "-setup\\.exe$" -and
-              $_.FullName -match "\\release\\bundle\\nsis\\"
-            } |
+              $_.Name -match '-setup\.exe$' -and
+              (
+                $_.FullName -match $preferredDirPattern -or
+                $_.FullName -match $fallbackDirPattern
+              )
+            }
+
+          $updaterBundle = $candidates |
+            Sort-Object `
+              @{ Expression = { $_.FullName -match $preferredDirPattern }; Descending = $true }, `
+              @{ Expression = "LastWriteTime"; Descending = $true } |
             Select-Object -First 1
 
           if (-not $updaterBundle) {
-            throw "Could not find Windows updater bundle (setup.exe)."
+            Write-Host "Discovered setup executables:"
+            Get-ChildItem -Path "target","crates/izwi-desktop/target" -Recurse -File |
+              Where-Object { $_.Name -match '-setup\.exe$' } |
+              Select-Object -ExpandProperty FullName
+            throw "Could not find Windows updater bundle (setup.exe) in nsis/nsis-updater."
           }
 
           $signaturePath = "$($updaterBundle.FullName).sig"
@@ -282,15 +297,26 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $bundle = Get-ChildItem -Path "target","crates/izwi-desktop/target" -Recurse -File |
+          $preferredDirPattern = '[\\/]release[\\/]bundle[\\/]nsis[\\/]'
+          $fallbackDirPattern = '[\\/]release[\\/]bundle[\\/]nsis-updater[\\/]'
+
+          $bundleCandidates = Get-ChildItem -Path "target","crates/izwi-desktop/target" -Recurse -File |
             Where-Object {
-              $_.Extension -eq ".${{ matrix.bundle_ext }}" -and
-              $_.FullName -match "\\release\\bundle\\${{ matrix.bundle_kind }}\\"
-            } |
+              $_.Name -match '-setup\.exe$' -and
+              (
+                $_.FullName -match $preferredDirPattern -or
+                $_.FullName -match $fallbackDirPattern
+              )
+            }
+
+          $bundle = $bundleCandidates |
+            Sort-Object `
+              @{ Expression = { $_.FullName -match $preferredDirPattern }; Descending = $true }, `
+              @{ Expression = "LastWriteTime"; Descending = $true } |
             Select-Object -First 1
 
           if (-not $bundle) {
-            throw "Could not find desktop bundle for ${{ matrix.bundle_kind }}."
+            throw "Could not find desktop bundle for ${{ matrix.bundle_kind }} (setup.exe in nsis/nsis-updater)."
           }
 
           Copy-Item $bundle.FullName -Destination release-assets
