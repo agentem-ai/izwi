@@ -287,7 +287,7 @@ Add a cross-platform status bar / tray icon experience for Izwi desktop with:
   Commit:
   `feat(desktop): add standard tray actions`
 
-- [ ] Phase 3: Add live server/model status and restart-server tray action
+- [x] Phase 3: Add live server/model status and restart-server tray action
   Scope:
   Add live status rows in the tray menu (server health + model readiness/download activity), background polling, and a `Restart Server` action for local-server mode.
   Verification:
@@ -324,6 +324,11 @@ Add a cross-platform status bar / tray icon experience for Izwi desktop with:
 - Verification:
   - `cargo check -p izwi-desktop`
   - `npm run typecheck` (in `ui/`)
+- Phase 3 complete.
+- Added live tray status rows for `Server` and `Models` with background polling against `/v1/internal/health` and `/v1/admin/models`.
+- Added a `Restart Server` tray action that is enabled only when running in local-server mode and reuses the managed desktop server process handle.
+- Verification:
+  - `cargo check -p izwi-desktop`
 
 # Transcription Nested Modal Fix
 
