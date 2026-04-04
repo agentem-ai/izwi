@@ -19,6 +19,36 @@ const hookMocks = vi.hoisted(() => ({
   useRouteModelSelection: vi.fn(),
 }));
 
+const componentMocks = vi.hoisted(() => ({
+  routeModelModal: vi.fn(
+    ({
+      isOpen,
+      title,
+      zIndexClassName,
+      onUseModel,
+    }: {
+      isOpen: boolean;
+      title: string;
+      zIndexClassName?: string;
+      onUseModel?: (variant: string) => void;
+    }) =>
+      isOpen ? (
+        <div
+          data-testid="route-model-modal"
+          data-z-index={zIndexClassName ?? ""}
+        >
+          {title}
+          <button
+            type="button"
+            onClick={() => onUseModel?.("Parakeet-TDT-0.6B-v3")}
+          >
+            Use mocked model
+          </button>
+        </div>
+      ) : null,
+  ),
+}));
+
 vi.mock("@/api", () => ({
   api: {
     listTranscriptionRecords: apiMocks.listTranscriptionRecords,
@@ -36,7 +66,7 @@ vi.mock("@/features/models/hooks/useRouteModelSelection", () => ({
 }));
 
 vi.mock("@/features/models/components/RouteModelModal", () => ({
-  RouteModelModal: () => null,
+  RouteModelModal: componentMocks.routeModelModal,
 }));
 
 const baseProps = {
@@ -92,6 +122,8 @@ describe("TranscriptionPage detail route", () => {
     apiMocks.createTranscriptionRecord.mockReset();
     apiMocks.createTranscriptionRecordStream.mockReset();
     hookMocks.useRouteModelSelection.mockReset();
+    componentMocks.routeModelModal.mockClear();
+    baseProps.onSelect.mockReset();
 
     apiMocks.transcriptionRecordAudioUrl.mockReturnValue("/audio/transcription.wav");
     apiMocks.listTranscriptionRecords.mockResolvedValue([]);
@@ -236,6 +268,80 @@ describe("TranscriptionPage detail route", () => {
     expect(screen.getByText("Review job settings")).toBeInTheDocument();
     expect(screen.getByText("Upload audio")).toBeInTheDocument();
     expect(screen.getByText("Stream results")).toBeInTheDocument();
+  });
+
+  it("raises the model modal above the new transcript modal", async () => {
+    hookMocks.useRouteModelSelection.mockReturnValue({
+      routeModels: [],
+      resolvedSelectedModel: "Parakeet-TDT-0.6B-v3",
+      selectedModelReady: true,
+      isModelModalOpen: true,
+      intentVariant: null,
+      closeModelModal: vi.fn(),
+      openModelManager: vi.fn(),
+      requestModel: vi.fn(),
+      handleModelSelect: vi.fn(),
+      modelOptions: [],
+    });
+
+    renderRoute("/transcription");
+
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalled(),
+    );
+
+    expect(screen.getByTestId("route-model-modal")).toHaveAttribute(
+      "data-z-index",
+      "z-50",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New transcript/i }));
+
+    expect(
+      await screen.findByRole("heading", { name: "New transcript" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("route-model-modal")).toHaveAttribute(
+      "data-z-index",
+      "z-[70]",
+    );
+  });
+
+  it("keeps the new transcript modal open while interacting with the stacked model modal", async () => {
+    hookMocks.useRouteModelSelection.mockReturnValue({
+      routeModels: [],
+      resolvedSelectedModel: "Parakeet-TDT-0.6B-v3",
+      selectedModelReady: false,
+      isModelModalOpen: true,
+      intentVariant: null,
+      closeModelModal: vi.fn(),
+      openModelManager: vi.fn(),
+      requestModel: vi.fn(),
+      handleModelSelect: vi.fn(),
+      modelOptions: [],
+    });
+
+    renderRoute("/transcription");
+
+    await waitFor(() =>
+      expect(apiMocks.listTranscriptionRecords).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New transcript/i }));
+
+    expect(
+      await screen.findByRole("heading", { name: "New transcript" }),
+    ).toBeInTheDocument();
+
+    const topModalButton =
+      screen.getByTestId("route-model-modal").querySelector("button");
+    expect(topModalButton).not.toBeNull();
+
+    fireEvent.click(topModalButton!);
+
+    expect(baseProps.onSelect).toHaveBeenCalledWith("Parakeet-TDT-0.6B-v3");
+    expect(
+      screen.getByRole("heading", { name: "New transcript" }),
+    ).toBeInTheDocument();
   });
 
   it("redirects to /transcription/:id after an upload creates a record", async () => {

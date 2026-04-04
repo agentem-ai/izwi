@@ -447,6 +447,7 @@ export function TranscriptionPage({
           <NewTranscriptionModal
             isOpen={isNewTranscriptionModalOpen}
             onClose={handleCloseNewTranscriptionModal}
+            blockOutsideDismiss={isModelModalOpen}
             selectedModel={resolvedSelectedModel}
             selectedModelReady={selectedModelReady}
             timestampAlignerModelId={resolvedAlignerModel}
@@ -519,6 +520,9 @@ export function TranscriptionPage({
         sections={modelSections}
         canUseModel={(variant) =>
           transcriptionModels.some((model) => model.variant === variant)
+        }
+        zIndexClassName={
+          isNewTranscriptionModalOpen ? "z-[70]" : "z-50"
         }
       />
     </PageShell>
