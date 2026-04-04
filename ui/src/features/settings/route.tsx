@@ -1,12 +1,14 @@
 import {
   Loader2,
   Moon,
+  Power,
   RefreshCw,
   ShieldCheck,
   Sun,
   SunMoon,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 
 import { api } from "@/api";
 import { setAnalyticsEnabled } from "@/app/analytics/client";
@@ -200,6 +202,7 @@ function SettingsRow({
 
 export function SettingsPage() {
   const { notify } = useNotifications();
+  const desktopRuntime = isTauri();
   const {
     availableUpdate,
     status: updateStatus,
@@ -213,6 +216,12 @@ export function SettingsPage() {
   const [analyticsOptIn, setAnalyticsOptIn] = useState(false);
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(true);
   const [isSavingPreference, setIsSavingPreference] = useState(false);
+  const [trayIconVisible, setTrayIconVisible] = useState(true);
+  const [isLoadingTrayIconVisibility, setIsLoadingTrayIconVisibility] = useState(desktopRuntime);
+  const [isSavingTrayIconVisibility, setIsSavingTrayIconVisibility] = useState(false);
+  const [launchAtLoginEnabled, setLaunchAtLoginEnabled] = useState(false);
+  const [isLoadingLaunchAtLogin, setIsLoadingLaunchAtLogin] = useState(desktopRuntime);
+  const [isSavingLaunchAtLogin, setIsSavingLaunchAtLogin] = useState(false);
 
   const updatesEnabled = updaterHealth?.enabled ?? true;
   const updateBadge = useMemo(
@@ -266,6 +275,80 @@ export function SettingsPage() {
     };
   }, [notify]);
 
+  useEffect(() => {
+    if (!desktopRuntime) {
+      setIsLoadingLaunchAtLogin(false);
+      return;
+    }
+
+    let active = true;
+
+    invoke<boolean>("launch_at_login_enabled")
+      .then((enabled) => {
+        if (!active) {
+          return;
+        }
+        setLaunchAtLoginEnabled(enabled);
+      })
+      .catch((error) => {
+        console.error("Failed to load launch-at-login preference:", error);
+        if (!active) {
+          return;
+        }
+        notify({
+          title: "Could not load startup preference",
+          description: "Launch at login may not reflect the current OS setting.",
+          tone: "warning",
+        });
+      })
+      .finally(() => {
+        if (active) {
+          setIsLoadingLaunchAtLogin(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [desktopRuntime, notify]);
+
+  useEffect(() => {
+    if (!desktopRuntime) {
+      setIsLoadingTrayIconVisibility(false);
+      return;
+    }
+
+    let active = true;
+
+    invoke<boolean>("tray_icon_visible")
+      .then((visible) => {
+        if (!active) {
+          return;
+        }
+        setTrayIconVisible(visible);
+      })
+      .catch((error) => {
+        console.error("Failed to load tray icon visibility:", error);
+        if (!active) {
+          return;
+        }
+        notify({
+          title: "Could not load tray visibility",
+          description: "Tray icon visibility may not reflect the current app state.",
+          tone: "warning",
+        });
+      })
+      .finally(() => {
+        if (active) {
+          setIsLoadingTrayIconVisibility(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [desktopRuntime, notify]);
+
   const handleAnalyticsToggle = async (nextValue: boolean) => {
     if (isSavingPreference) {
       return;
@@ -299,6 +382,69 @@ export function SettingsPage() {
       });
     } finally {
       setIsSavingPreference(false);
+    }
+  };
+
+  const handleLaunchAtLoginToggle = async (nextValue: boolean) => {
+    if (!desktopRuntime || isLoadingLaunchAtLogin || isSavingLaunchAtLogin) {
+      return;
+    }
+
+    const previousValue = launchAtLoginEnabled;
+    setLaunchAtLoginEnabled(nextValue);
+    setIsSavingLaunchAtLogin(true);
+
+    try {
+      await invoke("set_launch_at_login_enabled", { enabled: nextValue });
+      notify({
+        title: nextValue ? "Launch at login enabled" : "Launch at login disabled",
+        tone: "success",
+      });
+    } catch (error) {
+      console.error("Failed to update launch-at-login preference:", error);
+      setLaunchAtLoginEnabled(previousValue);
+      notify({
+        title: "Could not update startup preference",
+        description: error instanceof Error ? error.message : "Please try again.",
+        tone: "warning",
+      });
+    } finally {
+      setIsSavingLaunchAtLogin(false);
+    }
+  };
+
+  const handleTrayIconVisibilityToggle = async (nextValue: boolean) => {
+    if (
+      !desktopRuntime ||
+      isLoadingTrayIconVisibility ||
+      isSavingTrayIconVisibility
+    ) {
+      return;
+    }
+
+    const previousValue = trayIconVisible;
+    setTrayIconVisible(nextValue);
+    setIsSavingTrayIconVisibility(true);
+
+    try {
+      await invoke("set_tray_icon_visible", { visible: nextValue });
+      notify({
+        title: nextValue ? "Tray icon shown" : "Tray icon hidden",
+        description: nextValue
+          ? "Izwi will keep running in the tray when the window is closed."
+          : "Closing the Izwi window now exits the app.",
+        tone: "success",
+      });
+    } catch (error) {
+      console.error("Failed to update tray icon visibility:", error);
+      setTrayIconVisible(previousValue);
+      notify({
+        title: "Could not update tray visibility",
+        description: error instanceof Error ? error.message : "Please try again.",
+        tone: "warning",
+      });
+    } finally {
+      setIsSavingTrayIconVisibility(false);
     }
   };
 
@@ -457,6 +603,98 @@ export function SettingsPage() {
               {isSavingPreference ? (
                 <p className="text-sm text-[var(--text-muted)]">
                   Saving your preference...
+                </p>
+              ) : null}
+            </SettingsRow>
+          </SettingsSection>
+
+          <SettingsSection
+            icon={<Power className="h-4 w-4" />}
+            title="System"
+            description="Startup behavior for this device."
+          >
+            <SettingsRow
+              title="Show tray icon"
+              description={
+                !desktopRuntime ? (
+                  "Available only in the desktop app."
+                ) : isLoadingTrayIconVisibility ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading tray visibility...
+                  </span>
+                ) : trayIconVisible ? (
+                  "Enabled. Closing the window keeps Izwi running in the tray."
+                ) : (
+                  "Disabled. Closing the window exits Izwi."
+                )
+              }
+              action={
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-[var(--text-secondary)]">
+                    {trayIconVisible ? "On" : "Off"}
+                  </span>
+                  <Switch
+                    checked={trayIconVisible}
+                    disabled={
+                      !desktopRuntime ||
+                      isLoadingTrayIconVisibility ||
+                      isSavingTrayIconVisibility
+                    }
+                    onCheckedChange={(checked) =>
+                      void handleTrayIconVisibilityToggle(checked)
+                    }
+                    aria-label="Show tray icon"
+                  />
+                </div>
+              }
+            >
+              {isSavingTrayIconVisibility ? (
+                <p className="text-sm text-[var(--text-muted)]">
+                  Saving tray visibility...
+                </p>
+              ) : null}
+            </SettingsRow>
+
+            <SettingsRow
+              title="Launch at login"
+              description={
+                !desktopRuntime ? (
+                  "Available only in the desktop app."
+                ) : isLoadingLaunchAtLogin ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading startup preference...
+                  </span>
+                ) : launchAtLoginEnabled ? (
+                  "Izwi opens automatically when you sign in."
+                ) : (
+                  "Izwi only opens when launched manually."
+                )
+              }
+              action={
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-[var(--text-secondary)]">
+                    {launchAtLoginEnabled ? "On" : "Off"}
+                  </span>
+                  <Switch
+                    checked={launchAtLoginEnabled}
+                    disabled={
+                      !desktopRuntime ||
+                      isLoadingLaunchAtLogin ||
+                      isSavingLaunchAtLogin
+                    }
+                    onCheckedChange={(checked) =>
+                      void handleLaunchAtLoginToggle(checked)
+                    }
+                    aria-label="Launch Izwi when signing in"
+                  />
+                </div>
+              }
+            >
+              {isSavingLaunchAtLogin ? (
+                <p className="text-sm text-[var(--text-muted)]">
+                  Saving startup preference...
                 </p>
               ) : null}
             </SettingsRow>

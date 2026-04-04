@@ -4,10 +4,12 @@ use std::process::Child;
 use std::sync::{Arc, Mutex};
 use url::Url;
 
+pub mod autostart;
 pub mod downloads;
 pub mod install;
 pub mod server;
 pub mod tray;
+pub mod tray_visibility;
 pub mod updater;
 pub mod updater_contract;
 pub mod window;
@@ -53,19 +55,21 @@ pub fn run(args: DesktopArgs) -> Result<()> {
 
     let managed_server = Arc::new(Mutex::new(None::<Child>));
     let setup_server_handle = Arc::clone(&managed_server);
-    let tray_server_handle = Arc::clone(&managed_server);
-    let tray_server_url = server_url.clone();
-    let tray_local_server_mode = server::is_local_server_host(server_host.as_str());
 
     let mut builder = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             downloads::download_audio_file,
+            autostart::launch_at_login_enabled,
+            autostart::set_launch_at_login_enabled,
+            tray_visibility::tray_icon_visible,
+            tray_visibility::set_tray_icon_visible,
             updater::check_for_beta_update,
             updater::install_beta_update,
             updater::relaunch_after_update,
             updater::updater_health_snapshot,
         ])
-        .manage(updater::UpdaterState::new());
+        .manage(updater::UpdaterState::new())
+        .manage(tray_visibility::TrayVisibilityState::new(true));
 
     if let Some(app_key) = resolve_aptabase_app_key() {
         builder = builder.plugin(tauri_plugin_aptabase::Builder::new(&app_key).build());
@@ -94,14 +98,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
             }
 
             window::build_main_window(app, &window_config)?;
-            tray::build_basic_tray(
-                app.handle(),
-                tray::TrayConfig {
-                    server_url: tray_server_url.clone(),
-                    local_server_mode: tray_local_server_mode,
-                    managed_server: Arc::clone(&tray_server_handle),
-                },
-            )?;
+            tray::build_basic_tray(app.handle())?;
             Ok(())
         })
         .build(tauri::generate_context!())
