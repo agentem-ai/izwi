@@ -257,3 +257,22 @@ Align `/diarization` and `/text-to-speech` with the standard row-actions pattern
   - `npm run test -- src/lib/ids.test.ts src/features/voice/realtime/support.test.ts`
 - Scope note:
   - Remaining `Date.now()` usage in the UI is for timestamps, filenames, or visual randomness rather than application record IDs.
+
+# Transcription Nested Modal Fix
+
+## Plan
+
+- [x] Confirm how the transcription route stacks `NewTranscriptionModal` and `RouteModelModal`.
+- [x] Raise the model modal above the new transcription modal on `/transcription`.
+- [x] Add a focused route test for opening model management from inside the new transcription modal.
+
+## Review
+
+- The transcription route now raises `RouteModelModal` to `z-[70]` while `NewTranscriptionModal` is open, so the model manager can sit above the creation dialog.
+- Added a focused route test that verifies the model modal is promoted when the new transcription modal opens.
+- Verification:
+  - `npm run test -- src/features/transcription/route.test.tsx`
+  - `npm run typecheck`
+- Follow-up fix:
+  - The underlying `NewTranscriptionModal` now prevents outside-dismiss interactions while the stacked model modal is open, so clicks in the top modal no longer close the transcription modal underneath.
+  - The route test now verifies a click inside the stacked model modal still triggers model selection while keeping the transcription modal open.

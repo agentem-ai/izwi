@@ -22,6 +22,7 @@ import {
 interface NewTranscriptionModalProps {
   isOpen: boolean;
   onClose: () => void;
+  blockOutsideDismiss?: boolean;
   selectedModel: string | null;
   selectedModelReady: boolean;
   timestampAlignerModelId: string | null;
@@ -43,6 +44,7 @@ interface SubmitAudioOptions {
 export function NewTranscriptionModal({
   isOpen,
   onClose,
+  blockOutsideDismiss = false,
   selectedModel,
   selectedModelReady,
   timestampAlignerModelId,
@@ -258,7 +260,24 @@ export function NewTranscriptionModal({
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-[46rem] overflow-hidden border-[var(--border-strong)] bg-[var(--bg-surface-0)] p-0">
+      <DialogContent
+        className="max-w-[46rem] overflow-hidden border-[var(--border-strong)] bg-[var(--bg-surface-0)] p-0"
+        onEscapeKeyDown={(event) => {
+          if (blockOutsideDismiss) {
+            event.preventDefault();
+          }
+        }}
+        onPointerDownOutside={(event) => {
+          if (blockOutsideDismiss) {
+            event.preventDefault();
+          }
+        }}
+        onInteractOutside={(event) => {
+          if (blockOutsideDismiss) {
+            event.preventDefault();
+          }
+        }}
+      >
         <div className="border-b border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-5 py-5 sm:px-6">
           <DialogTitle className="text-xl font-semibold tracking-tight text-[var(--text-primary)]">
             New transcript
