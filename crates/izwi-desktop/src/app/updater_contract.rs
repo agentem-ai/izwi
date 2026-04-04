@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn parses_beta_sequence_with_valid_tag() {
         let channel = UpdateChannel::Beta010;
-        assert_eq!(parse_beta_sequence(channel, "v0.1.0-beta-10"), Some(10));
+        assert_eq!(parse_beta_sequence(channel, "v0.1.0-beta-11"), Some(10));
     }
 
     #[test]
@@ -126,8 +126,8 @@ mod tests {
             "https://api.github.com/repos/izwi-ai/izwi/releases?per_page=50"
         );
         assert_eq!(
-            github_manifest_url(&contract, "v0.1.0-beta-10"),
-            "https://github.com/izwi-ai/izwi/releases/download/v0.1.0-beta-10/latest-beta.json"
+            github_manifest_url(&contract, "v0.1.0-beta-11"),
+            "https://github.com/izwi-ai/izwi/releases/download/v0.1.0-beta-11/latest-beta.json"
         );
     }
 

@@ -78,7 +78,10 @@ impl UpdaterRuntimeConfig {
             "IZWI_UPDATER_REQUEST_TIMEOUT_MS",
             DEFAULT_REQUEST_TIMEOUT_SECONDS * 1000,
         );
-        let max_check_attempts = env_usize("IZWI_UPDATER_MAX_CHECK_ATTEMPTS", DEFAULT_MAX_CHECK_ATTEMPTS);
+        let max_check_attempts = env_usize(
+            "IZWI_UPDATER_MAX_CHECK_ATTEMPTS",
+            DEFAULT_MAX_CHECK_ATTEMPTS,
+        );
         let retry_backoff_ms = env_u64("IZWI_UPDATER_RETRY_BACKOFF_MS", DEFAULT_RETRY_BACKOFF_MS);
         let forced_manifest_url = std::env::var("IZWI_UPDATER_FORCE_MANIFEST_URL")
             .ok()
@@ -88,8 +91,7 @@ impl UpdaterRuntimeConfig {
 
         Self {
             enabled: !disable_flag,
-            disable_reason: disable_flag
-                .then(|| "IZWI_DISABLE_APP_UPDATES is set".to_string()),
+            disable_reason: disable_flag.then(|| "IZWI_DISABLE_APP_UPDATES is set".to_string()),
             request_timeout: Duration::from_millis(request_timeout_ms),
             max_check_attempts: max_check_attempts.max(1),
             retry_backoff: Duration::from_millis(retry_backoff_ms.max(1)),
@@ -400,7 +402,7 @@ mod tests {
     fn detects_manifest_asset_on_release() {
         let contract = UpdaterContract::default();
         let release = GitHubRelease {
-            tag_name: "v0.1.0-beta-10".to_string(),
+            tag_name: "v0.1.0-beta-11".to_string(),
             draft: false,
             assets: vec![
                 GitHubReleaseAsset {
