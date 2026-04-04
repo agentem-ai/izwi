@@ -7,6 +7,7 @@ use url::Url;
 pub mod downloads;
 pub mod install;
 pub mod server;
+pub mod tray;
 pub mod updater;
 pub mod updater_contract;
 pub mod window;
@@ -89,6 +90,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
             }
 
             window::build_main_window(app, &window_config)?;
+            tray::build_basic_tray(app.handle())?;
             Ok(())
         })
         .build(tauri::generate_context!())

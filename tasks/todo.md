@@ -258,6 +258,67 @@ Align `/diarization` and `/text-to-speech` with the standard row-actions pattern
 - Scope note:
   - Remaining `Date.now()` usage in the UI is for timestamps, filenames, or visual randomness rather than application record IDs.
 
+# Desktop Status Bar / Tray Plan
+
+## Goal
+
+Add a cross-platform status bar / tray icon experience for Izwi desktop with:
+
+- standard app controls (open, settings, models, updates, quit)
+- live runtime visibility (server and model status)
+- launch-at-login control
+- troubleshooting shortcuts (copy API URL, open logs, docs)
+
+## Phases
+
+- [x] Phase 1: Add tray icon foundation and hide-on-close behavior
+  Scope:
+  Create a tray icon and minimal menu (`Open Izwi`, `Quit Izwi`) and change window-close behavior to hide the main window instead of exiting so the app can continue running in the tray.
+  Verification:
+  `cargo check -p izwi-desktop`
+  Commit:
+  `feat(desktop): add tray icon foundation with open/quit`
+
+- [ ] Phase 2: Add standard tray actions for settings, models, and update checks
+  Scope:
+  Add `Settings`, `Models`, and `Check for Updates` tray actions and wire desktop-to-frontend signals so actions trigger navigation and manual update checks from anywhere in the app.
+  Verification:
+  `cargo check -p izwi-desktop` and `npm run typecheck` (in `ui/`)
+  Commit:
+  `feat(desktop): add standard tray actions`
+
+- [ ] Phase 3: Add live server/model status and restart-server tray action
+  Scope:
+  Add live status rows in the tray menu (server health + model readiness/download activity), background polling, and a `Restart Server` action for local-server mode.
+  Verification:
+  `cargo check -p izwi-desktop`
+  Commit:
+  `feat(desktop): add live tray status and server restart`
+
+- [ ] Phase 4: Add launch-at-login control in tray
+  Scope:
+  Add launch-at-login support and expose it as a tray toggle, including capability wiring and platform-safe state syncing.
+  Verification:
+  `cargo check -p izwi-desktop`
+  Commit:
+  `feat(desktop): add launch-at-login tray control`
+
+- [ ] Phase 5: Add troubleshooting shortcuts and hardening tests
+  Scope:
+  Add `Copy API URL`, `Open Logs`, and `Documentation` tray actions, plus focused unit tests for the tray status formatting/helpers.
+  Verification:
+  `cargo test -p izwi-desktop` and `npm run typecheck` (in `ui/`)
+  Commit:
+  `feat(desktop): add tray troubleshooting shortcuts and tests`
+
+## Review
+
+- Phase 1 complete.
+- Added a new desktop tray foundation module with a minimal menu: `Open Izwi` and `Quit Izwi`.
+- Desktop close-button behavior now hides the main window instead of exiting, enabling a real tray-resident lifecycle.
+- Verification:
+  - `cargo check -p izwi-desktop`
+
 # Transcription Nested Modal Fix
 
 ## Plan
