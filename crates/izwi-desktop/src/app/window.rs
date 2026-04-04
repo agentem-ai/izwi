@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tauri::{RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 pub struct WindowConfig {
     pub server_origin: String,
@@ -37,7 +37,9 @@ pub fn handle_run_event<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>, eve
         if label == "main" {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                app_handle.exit(0);
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.hide();
+                }
             }
         }
     }
