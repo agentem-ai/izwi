@@ -1,6 +1,8 @@
 use anyhow::Result;
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
+use super::tray_visibility::TrayVisibilityState;
+
 pub struct WindowConfig {
     pub server_origin: String,
     pub window_title: String,
@@ -36,9 +38,12 @@ pub fn handle_run_event<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>, eve
     if let RunEvent::WindowEvent { label, event, .. } = event {
         if label == "main" {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.hide();
+                let should_hide = app_handle.state::<TrayVisibilityState>().is_visible();
+                if should_hide {
+                    api.prevent_close();
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.hide();
+                    }
                 }
             }
         }
