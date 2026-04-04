@@ -6,10 +6,11 @@ use std::process::Child;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     AppHandle, Manager, Runtime,
 };
+use tauri_plugin_autostart::ManagerExt as _;
 use url::Url;
 
 use super::server::{maybe_start_local_server, shutdown_child};
@@ -19,6 +20,7 @@ const TRAY_OPEN_ID: &str = "tray_open";
 const TRAY_SETTINGS_ID: &str = "tray_settings";
 const TRAY_MODELS_ID: &str = "tray_models";
 const TRAY_CHECK_UPDATES_ID: &str = "tray_check_updates";
+const TRAY_LAUNCH_AT_LOGIN_ID: &str = "tray_launch_at_login";
 const TRAY_SERVER_STATUS_ID: &str = "tray_server_status";
 const TRAY_MODELS_STATUS_ID: &str = "tray_models_status";
 const TRAY_RESTART_SERVER_ID: &str = "tray_restart_server";
@@ -26,6 +28,7 @@ const TRAY_QUIT_ID: &str = "tray_quit";
 
 const STATUS_POLL_INTERVAL: Duration = Duration::from_secs(8);
 const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const LAUNCH_AT_LOGIN_SYNC_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct TrayConfig {
@@ -72,6 +75,16 @@ pub fn build_basic_tray<R: Runtime>(app: &AppHandle<R>, config: TrayConfig) -> R
         None::<&str>,
     )
     .context("failed to build tray check updates item")?;
+    let launch_at_login_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+    let launch_at_login_item = CheckMenuItem::with_id(
+        app,
+        TRAY_LAUNCH_AT_LOGIN_ID,
+        "Launch at Login",
+        true,
+        launch_at_login_enabled,
+        None::<&str>,
+    )
+    .context("failed to build tray launch-at-login item")?;
     let section_separator =
         PredefinedMenuItem::separator(app).context("failed to build tray separator item")?;
     let server_status_item = MenuItem::with_id(
@@ -114,6 +127,7 @@ pub fn build_basic_tray<R: Runtime>(app: &AppHandle<R>, config: TrayConfig) -> R
             &settings_item,
             &models_item,
             &check_updates_item,
+            &launch_at_login_item,
             &section_separator,
             &server_status_item,
             &models_status_item,
@@ -125,6 +139,7 @@ pub fn build_basic_tray<R: Runtime>(app: &AppHandle<R>, config: TrayConfig) -> R
     .context("failed to build tray menu")?;
 
     let event_config = config.clone();
+    let launch_at_login_item_for_events = launch_at_login_item.clone();
     let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -141,6 +156,9 @@ pub fn build_basic_tray<R: Runtime>(app: &AppHandle<R>, config: TrayConfig) -> R
             TRAY_CHECK_UPDATES_ID => {
                 let _ = show_main_window(app_handle);
                 let _ = emit_tray_event(app_handle, "izwi:tray-check-updates", None);
+            }
+            TRAY_LAUNCH_AT_LOGIN_ID => {
+                let _ = toggle_launch_at_login(app_handle, &launch_at_login_item_for_events);
             }
             TRAY_RESTART_SERVER_ID => {
                 let _ = restart_local_server(app_handle, &event_config);
@@ -159,6 +177,7 @@ pub fn build_basic_tray<R: Runtime>(app: &AppHandle<R>, config: TrayConfig) -> R
         .build(app)
         .context("failed to create tray icon")?;
     spawn_status_poller(config.server_url, server_status_item, models_status_item);
+    spawn_launch_at_login_sync(app.clone(), launch_at_login_item);
 
     Ok(())
 }
@@ -232,6 +251,32 @@ fn restart_local_server<R: Runtime>(app: &AppHandle<R>, config: &TrayConfig) -> 
     Ok(())
 }
 
+fn toggle_launch_at_login<R: Runtime>(
+    app: &AppHandle<R>,
+    launch_at_login_item: &CheckMenuItem<R>,
+) -> Result<()> {
+    let manager = app.autolaunch();
+    let currently_enabled = manager.is_enabled().unwrap_or(false);
+
+    if currently_enabled {
+        manager
+            .disable()
+            .context("failed to disable launch-at-login")?;
+        launch_at_login_item
+            .set_checked(false)
+            .context("failed to update launch-at-login check state")?;
+    } else {
+        manager
+            .enable()
+            .context("failed to enable launch-at-login")?;
+        launch_at_login_item
+            .set_checked(true)
+            .context("failed to update launch-at-login check state")?;
+    }
+
+    Ok(())
+}
+
 fn spawn_status_poller<R: Runtime>(
     server_url: Url,
     server_status_item: MenuItem<R>,
@@ -252,6 +297,20 @@ fn spawn_status_poller<R: Runtime>(
             let _ = server_status_item.set_text(snapshot.server_label);
             let _ = models_status_item.set_text(snapshot.models_label);
             tokio::time::sleep(STATUS_POLL_INTERVAL).await;
+        }
+    });
+}
+
+fn spawn_launch_at_login_sync<R: Runtime>(
+    app: AppHandle<R>,
+    launch_at_login_item: CheckMenuItem<R>,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            if let Ok(enabled) = app.autolaunch().is_enabled() {
+                let _ = launch_at_login_item.set_checked(enabled);
+            }
+            tokio::time::sleep(LAUNCH_AT_LOGIN_SYNC_INTERVAL).await;
         }
     });
 }

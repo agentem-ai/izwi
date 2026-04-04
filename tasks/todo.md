@@ -295,7 +295,7 @@ Add a cross-platform status bar / tray icon experience for Izwi desktop with:
   Commit:
   `feat(desktop): add live tray status and server restart`
 
-- [ ] Phase 4: Add launch-at-login control in tray
+- [x] Phase 4: Add launch-at-login control in tray
   Scope:
   Add launch-at-login support and expose it as a tray toggle, including capability wiring and platform-safe state syncing.
   Verification:
@@ -327,6 +327,11 @@ Add a cross-platform status bar / tray icon experience for Izwi desktop with:
 - Phase 3 complete.
 - Added live tray status rows for `Server` and `Models` with background polling against `/v1/internal/health` and `/v1/admin/models`.
 - Added a `Restart Server` tray action that is enabled only when running in local-server mode and reuses the managed desktop server process handle.
+- Verification:
+  - `cargo check -p izwi-desktop`
+- Phase 4 complete.
+- Added a `Launch at Login` tray checkbox backed by `tauri-plugin-autostart`.
+- Added autostart capability permission wiring and periodic check-state sync so the tray toggle stays aligned with runtime state.
 - Verification:
   - `cargo check -p izwi-desktop`
 

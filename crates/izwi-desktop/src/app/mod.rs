@@ -77,6 +77,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
         eprintln!("warning: updater pubkey is not configured; in-app update checks are disabled");
     }
 
+    builder = builder.plugin(tauri_plugin_autostart::Builder::new().build());
     builder = builder.plugin(tauri_plugin_process::init());
 
     let app = builder
