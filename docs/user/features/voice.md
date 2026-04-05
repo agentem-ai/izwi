@@ -23,13 +23,16 @@ Download the necessary models:
 
 ```bash
 # Text-to-speech
-izwi pull qwen3-tts-0.6b-base
+izwi pull Qwen3-TTS-12Hz-0.6B-Base
 
 # Speech recognition
-izwi pull qwen3-asr-0.6b
+izwi pull Qwen3-ASR-0.6B-GGUF
 
-# Chat (optional, for smarter responses)
-izwi pull qwen3-0.6b
+# Chat
+izwi pull Qwen3-8B-GGUF
+
+# Optional unified speech model
+izwi pull LFM2.5-Audio-1.5B-GGUF
 ```
 
 ### Start Voice Mode
@@ -136,7 +139,7 @@ Use **Observational Memory** in settings to review, enable, disable, or delete t
 
 1. Speak more clearly and slowly
 2. Reduce background noise
-3. Try a larger ASR model (`qwen3-asr-1.7b`)
+3. Try a larger ASR model (`Qwen3-ASR-1.7B-GGUF`)
 
 ---
 

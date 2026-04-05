@@ -1,18 +1,18 @@
 # Chat
 
-Have text-based conversations with AI models running locally on your device.
+Have local conversations with chat models running on your own machine.
 
 ---
 
 ## Overview
 
-Izwi's chat feature provides:
+Izwi chat provides:
 
-- **Local AI** — Models run entirely on your device
-- **Privacy** — No data sent to external servers
-- **Multiple models** — Choose from available chat models
-- **Context memory** — Maintains conversation history
-- **System prompts** — Customize AI behavior
+- **Local inference** — Model execution stays on-device
+- **Multiple model families** — Qwen3, Qwen3.5, LFM2.5, and Gemma
+- **System prompts** — Shape assistant behavior
+- **Streaming output** — Incremental response tokens
+- **Multimodal support (Qwen3.5 only)** — Image inputs in chat API requests
 
 ---
 
@@ -21,18 +21,16 @@ Izwi's chat feature provides:
 ### Download a Chat Model
 
 ```bash
-izwi pull qwen3-0.6b
+izwi pull Qwen3-8B-GGUF
 ```
 
 ### Start Chatting
 
-**Command line:**
-
 ```bash
-izwi chat
+izwi chat --model Qwen3-8B-GGUF
 ```
 
-**Web UI:**
+Web UI:
 
 ```
 http://localhost:8080/chat
@@ -42,173 +40,118 @@ http://localhost:8080/chat
 
 ## Using the CLI
 
-### Interactive Mode
-
-Start an interactive chat session:
-
-```bash
-izwi chat
-```
-
-Type your messages and press Enter. Type `exit` or `quit` to end.
-
-### Options
-
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--model`, `-m` | Chat model to use | `qwen3-0.6b-4bit` |
 | `--system`, `-s` | System prompt | — |
 | `--voice`, `-v` | Voice for spoken responses | — |
 
-### Examples
+`qwen3-0.6b-4bit` remains the CLI default for backward compatibility.
+For new setups, prefer an enabled model from `izwi list`, such as `Qwen3-8B-GGUF` or `Qwen3.5-4B`.
 
-**With custom system prompt:**
+Examples:
 
 ```bash
 izwi chat --system "You are a helpful coding assistant."
-```
-
-**With specific model:**
-
-```bash
-izwi chat --model qwen3-0.6b
-```
-
-**With voice responses:**
-
-```bash
-izwi chat --voice default
+izwi chat --model Qwen3-8B-GGUF
+izwi chat --model Qwen3.5-4B
+izwi chat --model LFM2.5-1.2B-Instruct-GGUF
+izwi chat --model Gemma-3-1b-it
 ```
 
 ---
 
 ## Using the Web UI
 
-1. Navigate to **Chat** in the sidebar
-2. Type your message in the input field
-3. Press Enter or click Send
-4. View the AI response
-
-### Features
-
-- **Conversation history** — Scroll through past messages
-- **Clear chat** — Start a fresh conversation
-- **Model selection** — Switch between loaded models
-- **Copy responses** — One-click copy
+1. Open **Chat** in the sidebar
+2. Enter a prompt
+3. Send and review streamed output
+4. Switch loaded models from the model selector
 
 ---
 
 ## Using the API
 
-### Endpoint
+### Text Chat Endpoint
 
 ```
 POST /v1/chat/completions
 ```
 
-### Request
+### Text Request Example
 
 ```json
 {
-  "model": "Qwen3-0.6B",
+  "model": "Qwen3-8B-GGUF",
   "messages": [
     {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Hello!"}
+    {"role": "user", "content": "Summarize this project in three bullets."}
   ],
-  "temperature": 0.7,
-  "max_tokens": 1000
-}
-```
-
-### Response
-
-```json
-{
-  "id": "chat-123",
-  "object": "chat.completion",
-  "created": 1234567890,
-  "model": "Qwen3-0.6B",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Hello! How can I help you today?"
-      },
-      "finish_reason": "stop"
-    }
-  ]
-}
-```
-
-### Streaming
-
-For streaming responses, add `"stream": true`:
-
-```json
-{
-  "model": "Qwen3-0.6B",
-  "messages": [...],
   "stream": true
 }
 ```
 
-### Example (curl)
+### cURL Example
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Qwen3-0.6B",
+    "model": "Qwen3-8B-GGUF",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
----
+### Multimodal (Image) Example
 
-## System Prompts
+Image inputs are supported only on Qwen3.5 GGUF chat variants:
 
-Customize AI behavior with system prompts:
-
-**Coding assistant:**
-```
-You are an expert programmer. Provide clear, well-commented code examples.
-```
-
-**Writing helper:**
-```
-You are a professional editor. Help improve writing clarity and style.
-```
-
-**Concise responder:**
-```
-You are a helpful assistant. Keep responses brief and to the point.
+```json
+{
+  "model": "Qwen3.5-4B",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "input_text", "text": "What is in this image?"},
+        {"type": "input_image", "image_url": {"url": "https://example.com/cat.png"}}
+      ]
+    }
+  ]
+}
 ```
 
 ---
 
-## Available Models
+## Supported Chat Models
 
-| Model | Size | Speed | Notes |
-|-------|------|-------|-------|
-| `qwen3-0.6b` | ~1.4 GB | Fast | Compact, full-precision chat |
-| `qwen3-0.6b-4bit` | ~0.8 GB | Fastest | Compact, quantized chat |
+| Family | Models |
+|--------|--------|
+| Qwen3 | `Qwen3-0.6B-GGUF`, `Qwen3-1.7B-GGUF`, `Qwen3-4B-GGUF`, `Qwen3-8B-GGUF` |
+| Qwen3.5 | `Qwen3.5-0.8B`, `Qwen3.5-2B`, `Qwen3.5-4B`, `Qwen3.5-9B` |
+| LFM2.5 | `LFM2.5-1.2B-Instruct-GGUF`, `LFM2.5-1.2B-Thinking-GGUF` |
+| Gemma | `Gemma-3-1b-it` |
 
-More models coming soon.
+---
+
+## Multimodal Limits
+
+- Multimodal media chat is currently limited to **Qwen3.5 GGUF** models.
+- **Video inputs are not yet implemented**.
+- Non-Qwen3.5 chat variants currently support text-only requests.
 
 ---
 
 ## Tips
 
-1. **Be specific** — Clear questions get better answers
-2. **Use system prompts** — Guide the AI's behavior
-3. **Break down complex tasks** — Ask step by step
-4. **Provide context** — Include relevant background
+1. Use `izwi list` to pick a currently enabled model ID.
+2. Use stronger models (`Qwen3-8B-GGUF`, `Qwen3.5-9B`) for harder tasks.
+3. Use smaller models (`Qwen3.5-0.8B`, `LFM2.5-1.2B-*`) for low-latency usage.
 
 ---
 
 ## See Also
 
-- [Voice Mode](./voice.md) — Spoken conversations
-- [Models](../models/index.md) — Download more models
-- [CLI Reference](../cli/index.md) — Full command documentation
+- [Voice Mode](./voice.md)
+- [Models](../models/index.md)
+- [CLI Reference](../cli/index.md)

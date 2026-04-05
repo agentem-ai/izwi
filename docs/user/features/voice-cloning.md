@@ -20,7 +20,7 @@ Voice cloning creates a custom voice from a reference audio sample. Use it to:
 ### Download a Voice Cloning Model
 
 ```bash
-izwi pull qwen3-tts-0.6b-customvoice
+izwi pull Qwen3-TTS-12Hz-0.6B-Base
 ```
 
 ### Clone a Voice
@@ -56,21 +56,8 @@ izwi pull qwen3-tts-0.6b-customvoice
 
 ## Using the CLI
 
-### Generate with Reference Audio
-
-```bash
-izwi tts "Hello, this is my cloned voice" \
-  --model qwen3-tts-0.6b-customvoice \
-  --speaker /path/to/reference.wav \
-  --output cloned.wav
-```
-
-### Options
-
-| Option | Description |
-|--------|-------------|
-| `--speaker`, `-s` | Path to reference audio file |
-| `--model`, `-m` | Must use a `customvoice` model |
+Reference-audio cloning workflows are currently exposed in the Web UI and API routes.
+CLI `izwi tts` supports voice/speaker selection, but does not currently expose direct `reference_audio` + `reference_text` parameters.
 
 ---
 
@@ -82,21 +69,26 @@ izwi tts "Hello, this is my cloned voice" \
 POST /v1/audio/speech
 ```
 
-### Request (multipart/form-data)
+### Request (JSON)
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `model` | String | `qwen3-tts-0.6b-customvoice` |
+| `model` | String | Base model ID (for example `Qwen3-TTS-12Hz-0.6B-Base`) |
 | `input` | String | Text to synthesize |
-| `reference_audio` | File | Reference voice sample |
+| `reference_audio` | String | Base64-encoded reference audio |
+| `reference_text` | String | Transcript of reference audio |
 
 ### Example (curl)
 
 ```bash
 curl -X POST http://localhost:8080/v1/audio/speech \
-  -F "model=qwen3-tts-0.6b-customvoice" \
-  -F "input=Hello, this is my cloned voice" \
-  -F "reference_audio=@reference.wav" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen3-TTS-12Hz-0.6B-Base",
+    "input": "Hello, this is my cloned voice",
+    "reference_audio": "<base64-audio>",
+    "reference_text": "Hello, this is my cloned voice sample."
+  }' \
   --output cloned.wav
 ```
 
@@ -145,8 +137,8 @@ curl -X POST http://localhost:8080/v1/audio/speech \
 
 | Model | Size | Quality |
 |-------|------|---------|
-| `qwen3-tts-0.6b-customvoice` | 1.2 GB | Good |
-| `qwen3-tts-1.7b-customvoice` | 3.4 GB | Better |
+| `Qwen3-TTS-12Hz-0.6B-Base` | ~2.3 GB | Good |
+| `Qwen3-TTS-12Hz-1.7B-Base` | ~4.2 GB | Better |
 
 Larger models produce more accurate voice clones.
 

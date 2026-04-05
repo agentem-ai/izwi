@@ -17,12 +17,14 @@ Speaker diarization answers the question "who spoke when?" It segments audio by 
 
 ## Getting Started
 
-### Download an ASR Model
+### Download Diarization Pipeline Models
 
-Diarization uses ASR models with speaker detection:
+For best results, use a diarization + ASR + aligner pipeline:
 
 ```bash
-izwi pull qwen3-asr-0.6b
+izwi pull diar_streaming_sortformer_4spk-v2.1
+izwi pull Parakeet-TDT-0.6B-v3
+izwi pull Qwen3-ForcedAligner-0.6B
 ```
 
 ### Start the Server
@@ -70,7 +72,10 @@ POST /v1/audio/diarize
 | Field | Type | Description |
 |-------|------|-------------|
 | `file` | File | Audio file to analyze |
-| `model` | String | Model name |
+| `model` | String | Diarization model (for example `diar_streaming_sortformer_4spk-v2.1`) |
+| `asr_model` | String | Optional ASR model override |
+| `aligner_model` | String | Optional forced aligner model override |
+| `llm_model` | String | Optional transcript refinement model |
 | `num_speakers` | Integer | Expected speakers (optional) |
 
 ### Example (curl)
@@ -78,7 +83,9 @@ POST /v1/audio/diarize
 ```bash
 curl -X POST http://localhost:8080/v1/audio/diarize \
   -F "file=@meeting.wav" \
-  -F "model=qwen3-asr-0.6b"
+  -F "model=diar_streaming_sortformer_4spk-v2.1" \
+  -F "asr_model=Parakeet-TDT-0.6B-v3" \
+  -F "aligner_model=Qwen3-ForcedAligner-0.6B"
 ```
 
 ### Response

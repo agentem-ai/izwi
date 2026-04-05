@@ -169,7 +169,7 @@ cargo build --release --features cuda
 ```
 
 **Use smaller models:**
-- `qwen3-tts-0.6b-base` instead of `qwen3-tts-1.7b-base`
+- `Qwen3-TTS-12Hz-0.6B-Base` instead of `Qwen3-TTS-12Hz-1.7B-Base`
 - Quantized variants (`-4bit`)
 
 **Close other applications** to free memory
@@ -216,8 +216,8 @@ aplay output.wav   # Linux
 
 **Use a larger model:**
 ```bash
-izwi pull qwen3-asr-1.7b
-izwi transcribe audio.wav --model qwen3-asr-1.7b
+izwi pull Qwen3-ASR-1.7B-GGUF
+izwi transcribe audio.wav --model Qwen3-ASR-1.7B-GGUF
 ```
 
 **Specify language:**
@@ -290,12 +290,12 @@ cargo build --release --features cuda
 
 1. Download a model:
    ```bash
-   izwi pull qwen3-tts-0.6b-base
+   izwi pull Qwen3-TTS-12Hz-0.6B-Base
    ```
 
 2. Load the model:
    ```bash
-   izwi models load qwen3-tts-0.6b-base
+   izwi models load Qwen3-TTS-12Hz-0.6B-Base
    ```
 
 3. Refresh the page
@@ -307,10 +307,10 @@ Ensure required models are loaded:
 | Feature | Required Model Type |
 |---------|---------------------|
 | TTS | `*-tts-*` |
-| Transcription | `*-asr-*` |
-| Chat | `*-chat-*` |
-| Voice Cloning | `*-customvoice` |
-| Voice Design | `*-voicedesign` |
+| Transcription | `Parakeet-*`, `Whisper-*`, `Qwen3-ASR-*`, or `LFM2.5-Audio-*` |
+| Chat | `Qwen3-*`, `Qwen3.5-*`, `LFM2.5-1.2B-*`, or `Gemma-3-1b-it` |
+| Voice Cloning | `Qwen3-TTS-12Hz-*-Base*` |
+| Voice Design | `Qwen3-TTS-12Hz-1.7B-VoiceDesign*` |
 
 ---
 

@@ -21,7 +21,7 @@ Izwi's transcription feature converts spoken audio into written text. Capabiliti
 ### Download an ASR Model
 
 ```bash
-izwi pull qwen3-asr-0.6b
+izwi pull Parakeet-TDT-0.6B-v3
 ```
 
 ### Transcribe Audio
@@ -44,7 +44,7 @@ izwi transcribe <audio-file>
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--model`, `-m` | ASR model to use | `qwen3-asr-0.6b` |
+| `--model`, `-m` | ASR model to use | `parakeet-tdt-0.6b-v3` |
 | `--language`, `-l` | Language hint | auto-detect |
 | `--format`, `-f` | Output format | `text` |
 | `--output`, `-o` | Output file | stdout |
@@ -124,7 +124,7 @@ POST /v1/audio/transcriptions
 ```bash
 curl -X POST http://localhost:8080/v1/audio/transcriptions \
   -F "file=@audio.wav" \
-  -F "model=qwen3-asr-0.6b" \
+  -F "model=Parakeet-TDT-0.6B-v3" \
   -F "response_format=json"
 ```
 
@@ -172,8 +172,11 @@ curl -X POST http://localhost:8080/v1/audio/transcriptions \
 
 | Model | Size | Accuracy | Speed |
 |-------|------|----------|-------|
-| `qwen3-asr-0.6b` | 1.2 GB | Good | Fast |
-| `qwen3-asr-1.7b` | 3.4 GB | Better | Medium |
+| `Parakeet-TDT-0.6B-v3` | 9.4 GB | Strong baseline | Medium |
+| `Whisper-Large-v3-Turbo` | 1.5 GB | Strong multilingual baseline | Medium |
+| `Qwen3-ASR-0.6B-GGUF` | 1.0 GB | Good | Fast |
+| `Qwen3-ASR-1.7B-GGUF` | 2.5 GB | Better | Medium |
+| `LFM2.5-Audio-1.5B-GGUF` | 1.2 GB | Good integrated speech model | Medium |
 
 Use larger models for:
 - Noisy audio

@@ -21,7 +21,7 @@ Izwi's text-to-speech converts written text into spoken audio. Features include:
 ### Download a TTS Model
 
 ```bash
-izwi pull qwen3-tts-0.6b-base
+izwi pull Qwen3-TTS-12Hz-0.6B-Base
 ```
 
 ### Kokoro-82M Prerequisite (`espeak-ng`)
@@ -132,7 +132,7 @@ POST /v1/audio/speech
 
 ```json
 {
-  "model": "qwen3-tts-0.6b-base",
+  "model": "Qwen3-TTS-12Hz-0.6B-Base",
   "input": "Hello, this is a test.",
   "voice": "default",
   "speed": 1.0,
@@ -149,7 +149,7 @@ Binary audio data with appropriate `Content-Type` header.
 ```bash
 curl -X POST http://localhost:8080/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"model": "qwen3-tts-0.6b-base", "input": "Hello world"}' \
+  -d '{"model": "Qwen3-TTS-12Hz-0.6B-Base", "input": "Hello world"}' \
   --output speech.wav
 ```
 
@@ -160,10 +160,14 @@ curl -X POST http://localhost:8080/v1/audio/speech \
 | Model | Size | Quality | Speed |
 |-------|------|---------|-------|
 | `Kokoro-82M` | ~0.4 GB | Good | Fast |
-| `qwen3-tts-0.6b-base` | 1.2 GB | Good | Fast |
-| `qwen3-tts-1.7b-base` | 3.4 GB | Better | Medium |
+| `Qwen3-TTS-12Hz-0.6B-Base` | ~2.3 GB | Good | Fast |
+| `Qwen3-TTS-12Hz-1.7B-Base` | ~4.2 GB | Better | Medium |
+| `Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit` | ~1.6 GB | Good | Fast |
+| `Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit` | ~2.2 GB | Better | Medium |
 
-For voice cloning, use `customvoice` variants. For voice design, use `voicedesign` variants.
+For reference-audio cloning, use **Base** variants.  
+For built-in voice presets, use **CustomVoice** variants.  
+For prompt-based voice design, use **VoiceDesign** variants.
 `Kokoro-82M` requires `espeak-ng` to be installed separately.
 
 ---
