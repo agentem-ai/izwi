@@ -30,7 +30,7 @@ Transcribes audio files to text using automatic speech recognition (ASR). Suppor
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-m, --model <MODEL>` | ASR model to use | `qwen3-asr-0.6b` |
+| `-m, --model <MODEL>` | ASR model to use | `parakeet-tdt-0.6b-v3` |
 | `-l, --language <LANG>` | Language hint (e.g., `en`, `es`) | Auto-detect |
 | `-f, --format <FORMAT>` | Output format: `text`, `json`, `verbose_json` | `text` |
 | `-o, --output <PATH>` | Output file (default: stdout) | — |
@@ -74,7 +74,7 @@ izwi transcribe audio.wav --language es
 ### Use larger model
 
 ```bash
-izwi transcribe audio.wav --model qwen3-asr-1.7b
+izwi transcribe audio.wav --model Qwen3-ASR-1.7B-GGUF
 ```
 
 ---
@@ -128,8 +128,10 @@ Hello, this is a transcription test.
 
 | Model | Size | Speed | Accuracy |
 |-------|------|-------|----------|
-| `qwen3-asr-0.6b` | 1.2 GB | Fast | Good |
-| `qwen3-asr-1.7b` | 3.4 GB | Medium | Better |
+| `Parakeet-TDT-0.6B-v3` | 9.4 GB | Medium | Strong baseline (default) |
+| `Whisper-Large-v3-Turbo` | 1.5 GB | Medium | Strong multilingual baseline |
+| `Qwen3-ASR-0.6B-GGUF` | 1.0 GB | Fast | Good |
+| `Qwen3-ASR-1.7B-GGUF` | 2.5 GB | Medium | Better |
 
 ---
 

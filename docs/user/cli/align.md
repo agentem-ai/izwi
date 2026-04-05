@@ -47,7 +47,7 @@ Aligns reference text to audio, producing word-level timestamps. Useful for:
 ### Basic alignment
 
 ```bash
-izwi align audio.wav "Hello world, this is a test."
+izwi align audio.wav "Hello world, this is a test." --model Qwen3-ForcedAligner-0.6B
 ```
 
 ### Save to file
@@ -127,7 +127,9 @@ izwi align recording.wav "The quick brown fox" --format verbose_json
 
 | Model | Description |
 |-------|-------------|
-| `qwen3-forcedaligner-0.6b` | Qwen3-based forced aligner |
+| `qwen3-forcedaligner-0.6b` | CLI default alias |
+| `Qwen3-ForcedAligner-0.6B` | Canonical forced aligner model ID |
+| `Qwen3-ForcedAligner-0.6B-4bit` | Lower-memory variant |
 
 ---
 

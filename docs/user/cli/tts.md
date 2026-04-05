@@ -96,22 +96,13 @@ echo "Text from pipe" | izwi tts - --output piped.wav
 cat article.txt | izwi tts - --output article.wav
 ```
 
-### Voice cloning
+### CustomVoice speaker presets
 
 ```bash
-izwi tts "Hello in cloned voice" \
-  --model qwen3-tts-0.6b-customvoice \
-  --speaker /path/to/reference.wav \
+izwi tts "Hello from a built-in CustomVoice speaker" \
+  --model Qwen3-TTS-12Hz-0.6B-CustomVoice \
+  --speaker Aiden \
   --output cloned.wav
-```
-
-### Voice design
-
-```bash
-izwi tts "Hello in designed voice" \
-  --model qwen3-tts-0.6b-voicedesign \
-  --speaker "A warm, friendly female voice" \
-  --output designed.wav
 ```
 
 ### Streaming with playback
@@ -119,6 +110,9 @@ izwi tts "Hello in designed voice" \
 ```bash
 izwi tts "Long text for streaming" --stream --play
 ```
+
+> CLI `izwi tts` currently exposes speaker/voice selection only.
+> Reference-audio cloning and prompt-based voice design are available via Web UI/API workflows.
 
 ---
 
@@ -139,9 +133,9 @@ izwi tts "Long text for streaming" --stream --play
 | Model | Type | Description |
 |-------|------|-------------|
 | `Kokoro-82M` | Standard | Lightweight TTS (requires `espeak-ng`) |
-| `qwen3-tts-0.6b-base` | Standard | General-purpose TTS |
-| `qwen3-tts-0.6b-customvoice` | Cloning | Voice cloning support |
-| `qwen3-tts-0.6b-voicedesign` | Design | Voice from descriptions |
+| `qwen3-tts-0.6b-base` | Base | General-purpose TTS + reference-voice workflows |
+| `qwen3-tts-0.6b-customvoice` | CustomVoice | Built-in speaker presets |
+| `Qwen3-TTS-12Hz-1.7B-VoiceDesign` | Design | Voice design-capable model family |
 | `qwen3-tts-1.7b-*` | Larger | Higher quality variants |
 
 ---

@@ -84,7 +84,7 @@ izwi serve --port 9000
 
 ```bash
 izwi list
-izwi pull qwen3-tts-0.6b-base
+izwi pull Qwen3-TTS-12Hz-0.6B-Base
 izwi list --local
 ```
 
@@ -119,7 +119,7 @@ izwi align audio.wav "Hello world, this is a test."
 
 ```bash
 izwi chat
-izwi chat --model gemma-3-1b-it --system "You are a helpful assistant"
+izwi chat --model Gemma-3-1b-it --system "You are a helpful assistant"
 ```
 
 ---
