@@ -40,19 +40,19 @@ Downloads a model from the Hugging Face Hub and caches it locally. Supports resu
 ### Download a model
 
 ```bash
-izwi pull qwen3-tts-0.6b-base
+izwi pull Qwen3-TTS-12Hz-0.6B-Base
 ```
 
 ### Skip confirmation
 
 ```bash
-izwi pull qwen3-tts-0.6b-base --yes
+izwi pull Qwen3-TTS-12Hz-0.6B-Base --yes
 ```
 
 ### Force re-download
 
 ```bash
-izwi pull qwen3-tts-0.6b-base --force
+izwi pull Qwen3-TTS-12Hz-0.6B-Base --force
 ```
 
 ---
@@ -65,12 +65,15 @@ Common models:
 
 | Model | Type | Size |
 |-------|------|------|
-| `qwen3-tts-0.6b-base` | TTS | ~1.2 GB |
-| `qwen3-tts-0.6b-customvoice` | TTS (cloning) | ~1.2 GB |
-| `qwen3-tts-0.6b-voicedesign` | TTS (design) | ~1.2 GB |
-| `qwen3-asr-0.6b` | ASR | ~1.2 GB |
-| `qwen3-0.6b` | Chat | ~1.4 GB |
-| `qwen3-0.6b-4bit` | Chat | ~0.8 GB |
+| `Qwen3-TTS-12Hz-0.6B-Base` | TTS (base) | ~2.3 GB |
+| `Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit` | TTS (built-in voices) | ~1.6 GB |
+| `Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit` | TTS (voice design) | ~2.2 GB |
+| `Parakeet-TDT-0.6B-v3` | ASR (default) | ~9.4 GB |
+| `Qwen3-ASR-0.6B-GGUF` | ASR (compact) | ~1.0 GB |
+| `Qwen3-8B-GGUF` | Chat | ~5.2 GB |
+| `Qwen3.5-4B` | Chat | ~3.4 GB |
+| `LFM2.5-1.2B-Instruct-GGUF` | Chat | ~0.7 GB |
+| `Gemma-3-1b-it` | Chat | ~2.2 GB |
 
 ---
 

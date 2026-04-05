@@ -44,8 +44,8 @@ Show detailed information about a model.
 
 ```bash
 izwi models info <MODEL>
-izwi models info qwen3-tts-0.6b-base
-izwi models info qwen3-tts-0.6b-base --json
+izwi models info Qwen3-TTS-12Hz-0.6B-Base
+izwi models info Qwen3-TTS-12Hz-0.6B-Base --json
 ```
 
 ### Options
@@ -62,8 +62,8 @@ Load a model into memory for inference.
 
 ```bash
 izwi models load <MODEL>
-izwi models load qwen3-tts-0.6b-base
-izwi models load qwen3-tts-0.6b-base --wait
+izwi models load Qwen3-TTS-12Hz-0.6B-Base
+izwi models load Qwen3-TTS-12Hz-0.6B-Base --wait
 ```
 
 ### Options
@@ -80,7 +80,7 @@ Unload a model from memory.
 
 ```bash
 izwi models unload <MODEL>
-izwi models unload qwen3-tts-0.6b-base
+izwi models unload Qwen3-TTS-12Hz-0.6B-Base
 izwi models unload all --yes
 ```
 
@@ -104,7 +104,7 @@ Show download progress for active downloads.
 
 ```bash
 izwi models progress
-izwi models progress qwen3-tts-0.6b-base
+izwi models progress Qwen3-TTS-12Hz-0.6B-Base
 ```
 
 ---

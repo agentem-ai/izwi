@@ -26,6 +26,9 @@ Starts an interactive chat session with a loaded chat model. Type messages and r
 | `-s, --system <PROMPT>` | System prompt | — |
 | `-v, --voice <VOICE>` | Voice for spoken responses | — |
 
+`qwen3-0.6b-4bit` remains the CLI default for backward compatibility.
+For new setups, use an enabled catalog ID from `izwi list` (for example `Qwen3-8B-GGUF` or `Qwen3.5-4B`).
+
 ---
 
 ## Examples
@@ -45,8 +48,10 @@ izwi chat --system "You are a helpful coding assistant"
 ### With specific model
 
 ```bash
-izwi chat --model qwen3-0.6b
-izwi chat --model qwen3-0.6b-4bit
+izwi chat --model Qwen3-8B-GGUF
+izwi chat --model Qwen3.5-4B
+izwi chat --model LFM2.5-1.2B-Instruct-GGUF
+izwi chat --model Gemma-3-1b-it
 ```
 
 ### With voice responses
@@ -74,3 +79,4 @@ During a chat session:
 
 - [Chat Guide](../features/chat.md)
 - [Voice Mode](../features/voice.md)
+- [Models Guide](../models/index.md)

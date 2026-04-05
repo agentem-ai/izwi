@@ -88,7 +88,7 @@ izwi bench asr [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-m, --model <MODEL>` | Model to benchmark | `qwen3-asr-0.6b` |
+| `-m, --model <MODEL>` | Model to benchmark | `parakeet-tdt-0.6b-v3` |
 | `-i, --iterations <N>` | Number of iterations | `10` |
 | `-f, --file <PATH>` | Audio file to use | Built-in test audio |
 | `--warmup` | Enable warmup iteration | — |
@@ -96,7 +96,7 @@ izwi bench asr [OPTIONS]
 ### Example
 
 ```bash
-izwi bench asr --model qwen3-asr-0.6b --file test.wav --iterations 20
+izwi bench asr --model Parakeet-TDT-0.6B-v3 --file test.wav --iterations 20
 ```
 
 ---

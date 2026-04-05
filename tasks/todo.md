@@ -412,7 +412,7 @@ Update `docs/user` so supported models, defaults, and examples reflect the curre
   Commit:
   `docs(user): refresh supported model catalog and onboarding references`
 
-- [ ] Phase 2: Align CLI docs with current model defaults and examples
+- [x] Phase 2: Align CLI docs with current model defaults and examples
   Scope:
   Update CLI command docs under `docs/user/cli/` so defaults/examples match current code defaults and supported variants (chat/transcribe/diarize/align/bench/pull/tts/model management references).
   Verification:

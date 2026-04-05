@@ -62,9 +62,10 @@ The list shows:
 | Column | Description |
 |--------|-------------|
 | **Model** | Model variant name |
-| **Type** | TTS, ASR, Chat, etc. |
-| **Size** | Download size |
 | **Status** | Downloaded, Ready, Not Downloaded |
+| **Size** | Download size |
+| **Progress** | Download progress percentage (`--detailed`) |
+| **Path** | Local model directory (`--detailed`) |
 
 ---
 

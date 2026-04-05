@@ -35,7 +35,7 @@ Analyzes audio to identify different speakers and when they spoke. Optionally in
 | `-f, --format <FORMAT>` | Output format: `text`, `json`, `verbose_json` | `text` |
 | `-o, --output <PATH>` | Output file (default: stdout) | — |
 | `--transcribe` | Include transcription with speaker labels | — |
-| `--asr-model <MODEL>` | ASR model for transcription | `qwen3-asr-0.6b` |
+| `--asr-model <MODEL>` | ASR model for transcription | `parakeet-tdt-0.6b-v3` |
 
 ---
 
@@ -70,7 +70,7 @@ izwi diarize meeting.wav --format json --output diarization.json
 ```bash
 izwi diarize interview.wav \
   --transcribe \
-  --asr-model qwen3-asr-1.7b \
+  --asr-model Qwen3-ASR-1.7B-GGUF \
   --format verbose_json \
   --output interview_transcript.json
 ```
@@ -128,7 +128,8 @@ izwi diarize interview.wav \
 
 | Model | Description |
 |-------|-------------|
-| `sortformer-4spk` | Streaming Sortformer, up to 4 speakers |
+| `sortformer-4spk` | Alias for `diar_streaming_sortformer_4spk-v2.1` (default) |
+| `diar_streaming_sortformer_4spk-v2.1` | Canonical Sortformer model ID |
 
 ---
 
