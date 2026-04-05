@@ -1,59 +1,64 @@
 # Models
 
-Izwi uses AI models for text-to-speech, speech recognition, and chat. This guide explains how to find, download, and manage models.
+Izwi uses local models for text-to-speech, speech recognition, diarization, alignment, and chat.
 
 ---
 
-## Available Models
+## Current Model Catalog
 
-Izwi supports several model families optimized for different tasks:
+Use `izwi list` (or `GET /v1/models`) to see the live, currently enabled catalog.
+Those endpoints only show variants that are enabled for download/use.
+
+> Izwi accepts many legacy aliases (for example lowercase IDs), but the canonical IDs below match `izwi list` output.
 
 ### Text-to-Speech (TTS)
 
-| Model | Size | Description |
-|-------|------|-------------|
-| `Kokoro-82M` | ~0.4 GB | Lightweight TTS (requires `espeak-ng`) |
-| `Qwen3-TTS-12Hz-0.6B-Base` | ~2.3 GB | Fast, general-purpose TTS |
-| `Qwen3-TTS-12Hz-0.6B-CustomVoice` | ~2.3 GB | TTS with voice cloning support |
-| `Qwen3-TTS-12Hz-1.7B-Base` | ~4.2 GB | Higher quality TTS |
-| `Qwen3-TTS-12Hz-1.7B-CustomVoice` | ~4.2 GB | Higher quality with voice cloning |
-| `Qwen3-TTS-12Hz-1.7B-VoiceDesign` | ~4.2 GB | Voice design from descriptions |
+| Family | Canonical IDs |
+|--------|---------------|
+| Qwen3 Base (reference-voice cloning) | `Qwen3-TTS-12Hz-0.6B-Base`, `Qwen3-TTS-12Hz-0.6B-Base-4bit`, `Qwen3-TTS-12Hz-1.7B-Base`, `Qwen3-TTS-12Hz-1.7B-Base-4bit` |
+| Qwen3 CustomVoice (built-in speakers) | `Qwen3-TTS-12Hz-0.6B-CustomVoice`, `Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit`, `Qwen3-TTS-12Hz-1.7B-CustomVoice`, `Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit` |
+| Qwen3 VoiceDesign | `Qwen3-TTS-12Hz-1.7B-VoiceDesign`, `Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit` |
+| Kokoro | `Kokoro-82M` |
 
-> `Kokoro-82M` uses `espeak-ng` for phonemization. Install it separately before using Kokoro:
+> `Kokoro-82M` requires `espeak-ng`:
 > [macOS](../installation/macos.md#optional-install-espeak-ng-for-kokoro-82m),
 > [Linux](../installation/linux.md#optional-install-espeak-ng-for-kokoro-82m),
 > [Windows](../installation/windows.md#optional-install-espeak-ng-for-kokoro-82m)
 
 ### Speech Recognition (ASR)
 
-| Model | Size | Description |
-|-------|------|-------------|
-| `Qwen3-ASR-0.6B` | ~1.8 GB | Fast speech-to-text |
-| `Qwen3-ASR-1.7B` | ~4.4 GB | Higher accuracy transcription |
-| `Parakeet-TDT-0.6B-v3` | ~9.4 GB | NVIDIA Parakeet ASR (latest) |
+| Model | Notes |
+|-------|-------|
+| `Parakeet-TDT-0.6B-v3` | CLI default for transcription/diarization ASR |
+| `Whisper-Large-v3-Turbo` | Whisper ASR option |
+| `Qwen3-ASR-0.6B-GGUF` | Smaller Qwen3 ASR |
+| `Qwen3-ASR-1.7B-GGUF` | Higher-accuracy Qwen3 ASR |
+| `LFM2.5-Audio-1.5B-GGUF` | Unified audio model (ASR + speech generation) |
 
-### Speaker Diarization
+### Diarization and Alignment
 
-| Model | Size | Description |
-|-------|------|-------------|
-| `diar_streaming_sortformer_4spk-v2.1` | ~0.5 GB | NVIDIA Sortformer, up to 4 speakers |
+| Task | Model |
+|------|-------|
+| Speaker diarization | `diar_streaming_sortformer_4spk-v2.1` |
+| Forced alignment | `Qwen3-ForcedAligner-0.6B`, `Qwen3-ForcedAligner-0.6B-4bit` |
 
 ### Chat
 
-| Model | Size | Description |
-|-------|------|-------------|
-| `Qwen3-0.6B` | ~1.4 GB | Compact Qwen3 chat model (full precision) |
-| `Qwen3-0.6B-4bit` | ~0.8 GB | Compact Qwen3 chat model |
-| `Qwen3-1.7B` | ~3.8 GB | Larger Qwen3 chat model |
-| `Gemma-3-1b-it` | ~2.0 GB | Google Gemma 3 1B Instruct |
-| `Gemma-3-4b-it` | ~8.0 GB | Google Gemma 3 4B Instruct |
+| Family | Canonical IDs |
+|--------|---------------|
+| Qwen3 GGUF | `Qwen3-0.6B-GGUF`, `Qwen3-1.7B-GGUF`, `Qwen3-4B-GGUF`, `Qwen3-8B-GGUF` |
+| Qwen3.5 GGUF | `Qwen3.5-0.8B`, `Qwen3.5-2B`, `Qwen3.5-4B`, `Qwen3.5-9B` |
+| LFM2.5 text | `LFM2.5-1.2B-Instruct-GGUF`, `LFM2.5-1.2B-Thinking-GGUF` |
+| Gemma | `Gemma-3-1b-it` |
 
-### Specialized
+### Currently Disabled (Not Listed by `izwi list`)
 
-| Model | Size | Description |
-|-------|------|-------------|
-| `Qwen3-ForcedAligner-0.6B` | ~1.7 GB | Word-level audio alignment |
-| `Voxtral-Mini-4B-Realtime-2602` | ~7.5 GB | Mistral realtime audio (coming soon) |
+These variants exist in the catalog but are not currently enabled for standard listing/download:
+
+- Legacy Qwen3 chat IDs: `Qwen3-0.6B`, `Qwen3-0.6B-4bit`, `Qwen3-1.7B`, `Qwen3-1.7B-4bit`
+- `Qwen3-14B-GGUF`
+- `Gemma-3-4b-it`
+- `Voxtral-Mini-4B-Realtime-2602`
 
 ---
 
@@ -62,21 +67,21 @@ Izwi supports several model families optimized for different tasks:
 ### Via CLI
 
 ```bash
-# List all available models
+# List enabled catalog models
 izwi list
 
 # Download a model
-izwi pull qwen3-tts-0.6b-base
+izwi pull Qwen3-TTS-12Hz-0.6B-Base
 
-# Download with progress
-izwi pull qwen3-asr-0.6b
+# Download an ASR model
+izwi pull Qwen3-ASR-0.6B-GGUF
 ```
 
 ### Via Web UI
 
 1. Open `http://localhost:8080`
 2. Go to **Models** in the sidebar
-3. Click **Download** on any model
+3. Click **Download** on a model
 
 ---
 
@@ -91,32 +96,30 @@ izwi list --local
 ### Get Model Information
 
 ```bash
-izwi models info qwen3-tts-0.6b-base
+izwi models info Qwen3-TTS-12Hz-0.6B-Base
 ```
 
 ### Load a Model into Memory
 
 ```bash
-izwi models load qwen3-tts-0.6b-base
+izwi models load Qwen3-TTS-12Hz-0.6B-Base
 ```
 
 ### Unload a Model
 
 ```bash
-izwi models unload qwen3-tts-0.6b-base
+izwi models unload Qwen3-TTS-12Hz-0.6B-Base
 ```
 
 ### Delete a Model
 
 ```bash
-izwi rm qwen3-tts-0.6b-base
+izwi rm Qwen3-TTS-12Hz-0.6B-Base
 ```
 
 ---
 
 ## Model Storage
-
-Models are stored in your system's application data directory:
 
 | Platform | Location |
 |----------|----------|
@@ -126,13 +129,11 @@ Models are stored in your system's application data directory:
 
 ### Custom Model Directory
 
-Set a custom location:
-
 ```bash
-# Via CLI flag
+# CLI flag
 izwi serve --models-dir /path/to/models
 
-# Via environment variable
+# Environment variable
 export IZWI_MODELS_DIR=/path/to/models
 izwi serve
 ```
@@ -141,7 +142,7 @@ izwi serve
 
 ## Manual Downloads
 
-Some models require manual download from Hugging Face due to licensing:
+Some models (for example Gemma) may require manual Hugging Face access setup:
 
 - [Manual Download: Gemma 3 1B](./manual-gemma-3-1b-download.md)
 - [Manual Download Guide](./manual-download.md)
@@ -150,11 +151,9 @@ Some models require manual download from Hugging Face due to licensing:
 
 ## Model Status
 
-Models can be in several states:
-
 | Status | Description |
 |--------|-------------|
-| **not_downloaded** | Model available but not on disk |
+| **not_downloaded** | Available but not on disk |
 | **downloading** | Currently downloading |
 | **downloaded** | On disk but not loaded |
 | **loading** | Being loaded into memory |
@@ -168,15 +167,11 @@ izwi status --detailed
 
 ---
 
-## Quantized Models
+## Quantization Notes
 
-Some models offer quantized variants for reduced memory usage:
-
-- **4-bit** — Smallest size, some quality loss
-- **8-bit** — Balanced size and quality
-- **Full** — Original quality, largest size
-
-Quantized models have suffixes like `-4bit` or `-q4`.
+- `-4bit` / `-8bit` / `-bf16` are reduced-precision variants.
+- `-GGUF` variants are quantized GGUF artifacts.
+- Smaller/quantized variants reduce memory and disk use at some quality/accuracy tradeoff.
 
 ---
 

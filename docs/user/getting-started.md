@@ -65,10 +65,10 @@ izwi serve --mode web
 Izwi needs AI models to work. Download your first model:
 
 ```bash
-izwi pull qwen3-tts-0.6b-base
+izwi pull Qwen3-TTS-12Hz-0.6B-Base
 ```
 
-This downloads a compact text-to-speech model (~1.2 GB).
+This downloads a compact, general-purpose text-to-speech model.
 
 View all available models:
 
@@ -103,13 +103,13 @@ izwi tts "Hello! Welcome to Izwi." --play
 First, download an ASR model:
 
 ```bash
-izwi pull qwen3-asr-0.6b
+izwi pull Qwen3-ASR-0.6B-GGUF
 ```
 
 Then transcribe:
 
 ```bash
-izwi transcribe your-audio.wav
+izwi transcribe your-audio.wav --model Qwen3-ASR-0.6B-GGUF
 ```
 
 ---

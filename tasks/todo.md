@@ -388,3 +388,46 @@ Stop `/transcription` list view from flashing a full-screen loading state during
   - `npm run test -- src/features/text-to-speech/route.test.tsx`
   - `npm run test -- src/features/diarization/route.test.tsx`
   - `npm run typecheck`
+
+# User Docs Model Support Refresh
+
+## Goal
+
+Update `docs/user` so supported models, defaults, and examples reflect the current application catalog and behavior (including enabled model variants, family guidance, and command defaults).
+
+## Source-of-Truth Notes (Application Analysis)
+
+- Model catalog and enablement are defined in `crates/izwi-core/src/catalog/metadata.rs` (`ModelVariant`, `is_enabled`).
+- Public model listing endpoints (`/v1/admin/models`, `/v1/models`) only return enabled variants.
+- CLI defaults are defined in `crates/izwi-cli/src/app/cli.rs` (notably chat/transcribe/diarize/align/bench defaults).
+- Chat media support is currently limited to Qwen3.5 GGUF models for image inputs; video inputs are not yet implemented (`crates/izwi-server/src/app/chat_content.rs`).
+
+## Phased Plan
+
+- [x] Phase 1: Refresh core user model catalog docs
+  Scope:
+  Update high-level model pages (`docs/user/models/index.md`, onboarding/model-overview docs) to reflect currently supported families and canonical model IDs exposed by the app.
+  Verification:
+  Cross-check every listed model against `ModelVariant::is_enabled()` and list endpoint behavior.
+  Commit:
+  `docs(user): refresh supported model catalog and onboarding references`
+
+- [ ] Phase 2: Align CLI docs with current model defaults and examples
+  Scope:
+  Update CLI command docs under `docs/user/cli/` so defaults/examples match current code defaults and supported variants (chat/transcribe/diarize/align/bench/pull/tts/model management references).
+  Verification:
+  Compare all documented defaults against `crates/izwi-cli/src/app/cli.rs` and verify example models are enabled.
+  Commit:
+  `docs(cli): align model defaults and examples with current runtime`
+
+- [ ] Phase 3: Align feature and troubleshooting docs with current model support
+  Scope:
+  Update feature guides and troubleshooting pages to use current model families, supported capabilities, and accurate model recommendations.
+  Verification:
+  Validate model guidance against catalog capabilities and runtime/API constraints (chat multimodal scope, ASR/TTS/diarization model guidance).
+  Commit:
+  `docs(features): update model guidance and troubleshooting for current support`
+
+## Review
+
+- Pending implementation.
