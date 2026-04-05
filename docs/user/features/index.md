@@ -48,8 +48,9 @@ Izwi provides a comprehensive suite of audio AI capabilities. Each feature is ac
 
 3. **Download required models:**
    ```bash
-   izwi pull qwen3-tts-0.6b-base
-   izwi pull qwen3-asr-0.6b
+   izwi pull Qwen3-TTS-12Hz-0.6B-Base
+   izwi pull Qwen3-ASR-0.6B-GGUF
+   izwi pull Qwen3-8B-GGUF
    ```
 
 ---
@@ -60,15 +61,15 @@ Different features require different models:
 
 | Feature | Required Models |
 |---------|-----------------|
-| Voice | TTS + ASR + Chat model |
-| Chat | Chat model (Qwen3 or Gemma) |
+| Voice | TTS + ASR + Chat model (or unified `LFM2.5-Audio-1.5B-GGUF`) |
+| Chat | Chat model (Qwen3, Qwen3.5, LFM2.5, or Gemma) |
 | Text-to-Speech | TTS model |
 | Studio | TTS model |
-| Transcription | ASR model (Qwen3 or Parakeet) |
-| Diarization | Diarization model (Sortformer) |
-| Forced Alignment | Forced aligner model |
-| Voice Cloning | TTS CustomVoice model |
-| Voice Design | TTS VoiceDesign model |
+| Transcription | ASR model (`Parakeet-TDT-0.6B-v3` default; Qwen3/Whisper/LFM2.5 also supported) |
+| Diarization | `diar_streaming_sortformer_4spk-v2.1` (+ optional ASR and aligner models) |
+| Forced Alignment | `Qwen3-ForcedAligner-0.6B` (or `-4bit`) |
+| Voice Cloning | Qwen3 TTS Base model (`Qwen3-TTS-12Hz-*-Base*`) |
+| Voice Design | Qwen3 TTS VoiceDesign model (`Qwen3-TTS-12Hz-1.7B-VoiceDesign*`) |
 
 ---
 
