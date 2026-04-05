@@ -20,7 +20,7 @@ Voice design generates unique voices based on natural language descriptions. Des
 ### Download a Voice Design Model
 
 ```bash
-izwi pull qwen3-tts-0.6b-voicedesign
+izwi pull Qwen3-TTS-12Hz-1.7B-VoiceDesign
 ```
 
 ### Design a Voice
@@ -103,14 +103,8 @@ a storytelling quality.
 
 ## Using the CLI
 
-### Generate with Voice Description
-
-```bash
-izwi tts "Hello, this is my designed voice" \
-  --model qwen3-tts-0.6b-voicedesign \
-  --speaker "A warm, friendly female voice with a British accent" \
-  --output designed.wav
-```
+Prompt-driven voice design is available in Web UI/API workflows.
+CLI `izwi tts` currently does not expose a dedicated `voice_description`/`instructions` flag.
 
 ---
 
@@ -126,9 +120,9 @@ POST /v1/audio/speech
 
 ```json
 {
-  "model": "qwen3-tts-0.6b-voicedesign",
+  "model": "Qwen3-TTS-12Hz-1.7B-VoiceDesign",
   "input": "Hello, this is my designed voice.",
-  "voice_description": "A warm, friendly female voice with a British accent"
+  "instructions": "A warm, friendly female voice with a British accent"
 }
 ```
 
@@ -138,9 +132,9 @@ POST /v1/audio/speech
 curl -X POST http://localhost:8080/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen3-tts-0.6b-voicedesign",
+    "model": "Qwen3-TTS-12Hz-1.7B-VoiceDesign",
     "input": "Hello, this is my designed voice.",
-    "voice_description": "A warm, friendly female voice"
+    "instructions": "A warm, friendly female voice"
   }' \
   --output designed.wav
 ```
@@ -151,8 +145,8 @@ curl -X POST http://localhost:8080/v1/audio/speech \
 
 | Model | Size | Quality |
 |-------|------|---------|
-| `qwen3-tts-0.6b-voicedesign` | 1.2 GB | Good |
-| `qwen3-tts-1.7b-voicedesign` | 3.4 GB | Better |
+| `Qwen3-TTS-12Hz-1.7B-VoiceDesign` | ~4.2 GB | Better |
+| `Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit` | ~2.2 GB | Good + lower memory |
 
 Larger models better interpret complex descriptions.
 

@@ -420,7 +420,7 @@ Update `docs/user` so supported models, defaults, and examples reflect the curre
   Commit:
   `docs(cli): align model defaults and examples with current runtime`
 
-- [ ] Phase 3: Align feature and troubleshooting docs with current model support
+- [x] Phase 3: Align feature and troubleshooting docs with current model support
   Scope:
   Update feature guides and troubleshooting pages to use current model families, supported capabilities, and accurate model recommendations.
   Verification:
@@ -430,4 +430,21 @@ Update `docs/user` so supported models, defaults, and examples reflect the curre
 
 ## Review
 
-- Pending implementation.
+- Phase 1 complete.
+- Refreshed onboarding and core model catalog docs to match enabled catalog families and canonical IDs surfaced by `izwi list`/`/v1/models`.
+- Phase 2 complete.
+- Aligned CLI docs with current model defaults in `crates/izwi-cli/src/app/cli.rs`, replaced stale model examples, and corrected CLI model listing/output descriptions.
+- Phase 3 complete.
+- Updated feature and troubleshooting docs to match active model support, including:
+  - chat family coverage (Qwen3/Qwen3.5/LFM2.5/Gemma),
+  - Qwen3.5-only multimodal image support note,
+  - corrected ASR/diarization/aligner guidance,
+  - corrected Voice Cloning (Base-model) and Voice Design (`instructions`) model/API guidance.
+- Verification:
+  - Source-of-truth cross-checks against:
+    - `crates/izwi-core/src/catalog/metadata.rs`
+    - `crates/izwi-cli/src/app/cli.rs`
+    - `crates/izwi-server/src/app/chat_content.rs`
+    - `crates/izwi-server/src/api/openai/audio/speech.rs`
+    - `crates/izwi-server/src/api/openai/audio/diarizations.rs`
+  - Focused `rg` drift checks for stale model IDs and capability wording in updated docs.
