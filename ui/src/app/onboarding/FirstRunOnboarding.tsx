@@ -864,29 +864,40 @@ export function FirstRunOnboarding() {
             ) : null}
 
             {step === 2 ? (
-              <div className="flex flex-col items-center gap-4 rounded-[var(--radius-lg)] border border-border/70 bg-[var(--bg-surface-2)]/80 p-6 text-center">
-                <div className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--status-positive-border)] bg-[var(--status-positive-bg)]">
-                  <CheckCircle2 className="h-6 w-6 text-[var(--status-positive-solid)]" />
-                </div>
-                <div className="space-y-2">
-                  <div className="text-lg font-semibold">
-                    All setup, go to app
+              <div className="mx-auto w-full max-w-2xl space-y-6">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[var(--status-positive-border)] bg-[var(--status-positive-bg)]">
+                    <CheckCircle2 className="h-5 w-5 text-[var(--status-positive-solid)]" />
                   </div>
-                  <div className="text-sm text-[var(--text-muted)]">
-                    Downloads continue in the background. Open the Models page
-                    to track progress or make changes later.
+                  <div>
+                    <div className="text-lg font-semibold tracking-tight text-[var(--text-primary)]">
+                      Setup complete
+                    </div>
+                    <div className="mt-1 text-sm text-[var(--text-muted)]">
+                      You are ready to use Izwi. Downloads continue in the
+                      background.
+                    </div>
                   </div>
                 </div>
-                <div className="flex flex-wrap justify-center gap-2 text-xs uppercase tracking-[0.28em] text-[var(--text-subtle)]">
-                  <span className="rounded-full border border-border/70 px-3 py-1">
-                    Local models
-                  </span>
-                  <span className="rounded-full border border-border/70 px-3 py-1">
-                    Background downloads
-                  </span>
-                  <span className="rounded-full border border-border/70 px-3 py-1">
-                    Ready to explore
-                  </span>
+
+                <div className="grid gap-2.5">
+                  <div className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)]">
+                    <CheckCircle2 className="h-4 w-4 text-[var(--text-primary)]" />
+                    Continue to the app now
+                  </div>
+                  <div className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)]">
+                    <CheckCircle2 className="h-4 w-4 text-[var(--text-subtle)]" />
+                    Track download progress in Models
+                  </div>
+                  <div className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)]">
+                    <CheckCircle2 className="h-4 w-4 text-[var(--text-subtle)]" />
+                    Update model choices any time later
+                  </div>
+                </div>
+
+                <div className="border-t border-border/70 pt-4 text-sm text-[var(--text-muted)]">
+                  Open the Models workspace later to pause downloads, add more
+                  models, or retry any manual installs.
                 </div>
               </div>
             ) : null}
