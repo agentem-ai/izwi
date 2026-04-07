@@ -1,5 +1,10 @@
 export { createApiClient, type ApiClient } from "@/shared/api/client";
 export { api } from "@/shared/api/runtime";
+export type {
+  CursorPageResult,
+  CursorPaginationMeta,
+  CursorPaginationQuery,
+} from "@/shared/api/pagination";
 
 export type {
   ModelInfo,
