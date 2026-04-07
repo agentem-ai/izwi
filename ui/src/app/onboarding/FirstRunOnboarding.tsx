@@ -650,7 +650,7 @@ export function FirstRunOnboarding() {
                           return (
                             <div
                               key={model.variant}
-                              className="flex flex-wrap items-start justify-between gap-3 rounded-[var(--radius-md)] border border-border/70 bg-[var(--bg-surface-2)]/75 px-3.5 py-3"
+                              className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 rounded-[var(--radius-md)] border border-border/70 bg-[var(--bg-surface-2)]/75 px-3.5 py-3"
                             >
                               <div className="min-w-0">
                                 <div className="text-base font-semibold leading-5 text-[var(--text-primary)]">
@@ -660,7 +660,7 @@ export function FirstRunOnboarding() {
                                   {details?.description ?? "Recommended model"}
                                 </div>
                               </div>
-                              <div className="text-xs text-[var(--text-muted)]">
+                              <div className="whitespace-nowrap text-right text-xs text-[var(--text-muted)]">
                                 {resolveModelSizeLabel(model)}
                               </div>
                             </div>
@@ -746,11 +746,11 @@ export function FirstRunOnboarding() {
                                           disabled={isDisabled}
                                         />
                                         <div className="min-w-0 flex-1">
-                                          <div className="flex flex-wrap items-center justify-between gap-2">
+                                          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
                                             <div className="text-base font-semibold leading-5 text-[var(--text-primary)]">
                                               {metadata?.shortName ?? model.variant}
                                             </div>
-                                            <div className="text-xs text-[var(--text-muted)]">
+                                            <div className="whitespace-nowrap text-right text-xs text-[var(--text-muted)]">
                                               {resolveModelSizeLabel(model)}
                                             </div>
                                           </div>
