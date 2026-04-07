@@ -514,6 +514,12 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   Verification:
   `cargo check -p izwi-core`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, plus a quick sanity rerun of the Victoria Falls benchmark profile.
 
+- [x] Phase 6: Remove global lock contention in LFM2 token-piece detokenization
+  Scope:
+  Replace shared `Mutex` token-piece cache access with per-token `OnceLock` slots, keep decode-cache hits lock-free, and trim remaining prompt-build cloning (`ChatRole` borrow path).
+  Verification:
+  `cargo check -p izwi-core`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, and `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup`.
+
 - [x] Check-in before implementation
   Share Phase 1-2 scope and expected tradeoffs, then proceed with code changes only after signoff.
 
@@ -576,3 +582,14 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   - `cargo check -p izwi-core`
   - `cargo test -p izwi-core lfm2::chat -- --nocapture`
   - `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup` (sanity rerun; showed higher variance and lower TPS than earlier baseline, so benchmark signoff should be re-run on a controlled warm host before treating this phase as a net perf gain)
+
+## Review (Implementation: Phase 6)
+
+- Replaced `decode_piece_cache` from shared `Mutex<Vec<Option<Arc<str>>>>` to `Vec<OnceLock<Arc<str>>>` so cache hits no longer contend on a global lock each decode step.
+- Updated token-piece decode cache miss path to set per-token `OnceLock` entries and return shared `Arc<str>` pieces.
+- Removed an extra role clone in prompt assembly by passing borrowed `ChatRole` references through `append_prompt_message`.
+- Verification:
+  - `cargo fmt --package izwi-core -- crates/izwi-core/src/models/architectures/lfm2/chat.rs`
+  - `cargo check -p izwi-core`
+  - `cargo test -p izwi-core lfm2::chat -- --nocapture`
+  - `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup` (local sanity run remained noisy and slower than controlled baseline; host-to-host variance still dominates this short run)
