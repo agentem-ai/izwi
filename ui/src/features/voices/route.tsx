@@ -259,6 +259,23 @@ export function VoicesPage({
     void loadSavedVoices();
   }, [loadSavedVoices]);
 
+  useEffect(() => {
+    if (
+      savedVoicesLoading ||
+      savedVoicesError ||
+      savedVoicesPageIndex === 0 ||
+      savedVoices.length > 0
+    ) {
+      return;
+    }
+    setSavedVoicesPageIndex((current) => Math.max(0, current - 1));
+  }, [
+    savedVoices.length,
+    savedVoicesError,
+    savedVoicesLoading,
+    savedVoicesPageIndex,
+  ]);
+
   const canGoToSavedVoicesPreviousPage = savedVoicesPageIndex > 0;
   const canGoToSavedVoicesNextPage =
     savedVoicesHasMore && Boolean(savedVoicesNextCursor);

@@ -50,6 +50,13 @@ export function useDiarizationHistory(): UseDiarizationHistoryResult {
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (loading || error || pageIndex === 0 || records.length > 0) {
+      return;
+    }
+    setPageIndex((current) => Math.max(0, current - 1));
+  }, [error, loading, pageIndex, records.length]);
+
   const goToPreviousPage = useCallback(() => {
     setPageIndex((current) => Math.max(0, current - 1));
   }, []);
