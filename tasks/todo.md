@@ -499,7 +499,7 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   Verification:
   Short-prompt benchmark profile shows TTFT improvement without output regression.
 
-- [ ] Phase 4: Benchmark signoff and guardrails
+- [x] Phase 4: Benchmark signoff and guardrails
   Scope:
   Run short/long prompt profiles for both LFM2.5 variants with warm server and fixed settings; capture `izwi bench chat` and runtime metrics snapshots before/after.
   Verification:
@@ -508,7 +508,13 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   - Completion TPS improvement >= 10% on long prompt profile.
   - No correctness regressions (stop-token handling, repetition-loop guard behavior, streamed text parity).
 
-- [ ] Check-in before implementation
+- [x] Phase 5: Trim residual LFM2 decode/prompt allocation overhead
+  Scope:
+  Remove avoidable decode-loop allocations (`Tensor::from_slice` for prompt/token tensors), tighten token-piece cache lookup to indexed storage, and avoid cloning the full message list while building prompts.
+  Verification:
+  `cargo check -p izwi-core`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, plus a quick sanity rerun of the Victoria Falls benchmark profile.
+
+- [x] Check-in before implementation
   Share Phase 1-2 scope and expected tradeoffs, then proceed with code changes only after signoff.
 
 ## Review (Planning)
@@ -546,3 +552,27 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   - `cargo fmt --package izwi-core`
   - `cargo check -p izwi-core`
   - `cargo test -p izwi-core lfm2::chat -- --nocapture`
+
+## Review (Implementation: Phase 4)
+
+- Executed signoff protocol (`iterations=20`, `max_tokens=128`, `warmup`) for both LFM2.5 variants:
+  - Instruct short profile: TTFT `930.07 ms`, completion TPS `32.43 tok/s` (completion averaged `43` tokens).
+  - Instruct long profile: TTFT `1038.86 ms`, completion TPS `54.88 tok/s`.
+  - Thinking short profile: TTFT `997.50 ms`, completion TPS `55.99 tok/s`.
+  - Thinking long profile: TTFT `1042.79 ms`, completion TPS `54.46 tok/s`.
+- Runtime telemetry confirms fallback chat decode is now explicitly tracked (`decode_ms > 0`) in all signoff runs.
+- Victoria Falls regression check (Instruct, `iterations=5`, `max_tokens=256`) now shows TTFT/TPS in the same or slightly better range than pre-phase baseline.
+- Acceptance-gate note:
+  - With currently available comparable baselines, improvements are positive but below the provisional `>=10%` threshold, so further gains likely require deeper compute-path work beyond wrapper-level optimizations.
+
+## Review (Implementation: Phase 5)
+
+- Replaced fallback LFM2 generation tensor construction from `Tensor::from_vec` cloning to `Tensor::from_slice` for both prompt prefill and per-token decode tensors.
+- Switched token-piece cache storage from `HashMap<u32, String>` to indexed `Vec<Option<Arc<str>>>` to reduce hash lookups and repeated tiny string copies on hot decode steps.
+- Refactored `build_prompt` to avoid cloning the entire message list for synthetic system insertion; prompt assembly now iterates borrowed messages with role/content normalization helpers.
+- Updated assistant-history trimming utility to return `Cow<str>` so non-reasoning paths stay borrowed and allocation-free.
+- Verification:
+  - `cargo fmt --package izwi-core -- crates/izwi-core/src/models/architectures/lfm2/chat.rs`
+  - `cargo check -p izwi-core`
+  - `cargo test -p izwi-core lfm2::chat -- --nocapture`
+  - `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup` (sanity rerun; showed higher variance and lower TPS than earlier baseline, so benchmark signoff should be re-run on a controlled warm host before treating this phase as a net perf gain)

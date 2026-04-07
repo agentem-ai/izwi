@@ -1,9 +1,10 @@
 //! LFM2/LFM2.5 GGUF text-chat model loader and generation.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, IndexOp, Tensor, D};
@@ -52,7 +53,7 @@ struct ChatTokenizer {
     inner: Tokenizer,
     vocab_size: usize,
     specials: SpecialTokenIds,
-    decode_piece_cache: Mutex<HashMap<u32, String>>,
+    decode_piece_cache: Mutex<Vec<Option<Arc<str>>>>,
 }
 
 struct PromptScaffoldTokens {
@@ -126,7 +127,7 @@ impl ChatTokenizer {
                 eos,
                 eos_alt,
             },
-            decode_piece_cache: Mutex::new(HashMap::new()),
+            decode_piece_cache: Mutex::new(vec![None; vocab_size]),
         })
     }
 
@@ -143,21 +144,23 @@ impl ChatTokenizer {
         self.inner.decode(&filtered)
     }
 
-    fn decode_token_piece(&self, token_id: u32) -> Result<String> {
-        if token_id as usize >= self.vocab_size {
-            return Ok(String::new());
+    fn decode_token_piece(&self, token_id: u32) -> Result<Arc<str>> {
+        let idx = token_id as usize;
+        if idx >= self.vocab_size {
+            return Ok(Arc::from(""));
         }
-        if let Ok(cache) = self.decode_piece_cache.lock() {
-            if let Some(piece) = cache.get(&token_id) {
+        if let Ok(mut cache) = self.decode_piece_cache.lock() {
+            if let Some(piece) = cache.get(idx).and_then(|slot| slot.as_ref()) {
                 return Ok(piece.clone());
             }
+            let piece = Arc::<str>::from(self.decode_text(&[token_id])?);
+            if let Some(slot) = cache.get_mut(idx) {
+                *slot = Some(piece.clone());
+            }
+            return Ok(piece);
         }
 
-        let piece = self.decode_text(&[token_id])?;
-        if let Ok(mut cache) = self.decode_piece_cache.lock() {
-            cache.insert(token_id, piece.clone());
-        }
-        Ok(piece)
+        Ok(Arc::<str>::from(self.decode_text(&[token_id])?))
     }
 }
 
@@ -234,15 +237,13 @@ impl Lfm2ChatModel {
             .lock()
             .map_err(|_| Error::InferenceError("LFM2 GGUF model mutex poisoned".to_string()))?;
 
-        let input_ids = Tensor::from_vec(
-            prompt_ids.clone(),
-            (1, prompt_ids.len()),
-            &self.device.device,
-        )?;
+        let prompt_len = prompt_ids.len();
+        let input_ids =
+            Tensor::from_slice(prompt_ids.as_slice(), (1, prompt_len), &self.device.device)?;
         let mut logits = model
             .forward(&input_ids, 0)
             .map_err(|e| Error::InferenceError(format!("LFM2 GGUF forward failed: {e}")))?;
-        let mut position = prompt_ids.len();
+        let mut position = prompt_len;
 
         let mut generated_ids = Vec::new();
         let mut assembled = String::new();
@@ -260,15 +261,15 @@ impl Lfm2ChatModel {
             let delta = self.tokenizer.decode_token_piece(next)?;
             generated_ids.push(next);
             if !delta.is_empty() {
-                on_delta(&delta);
+                on_delta(delta.as_ref());
             }
-            assembled.push_str(&delta);
+            assembled.push_str(delta.as_ref());
 
             if has_token_repetition_loop(&generated_ids) {
                 break;
             }
 
-            let next_tensor = Tensor::from_vec(vec![next], (1, 1), &self.device.device)?;
+            let next_tensor = Tensor::from_slice(&[next], (1, 1), &self.device.device)?;
             logits = model
                 .forward(&next_tensor, position)
                 .map_err(|e| Error::InferenceError(format!("LFM2 GGUF decode failed: {e}")))?;
@@ -292,55 +293,79 @@ impl Lfm2ChatModel {
             ));
         }
 
-        let mut prompt_messages = messages.to_vec();
-        if !matches!(
-            prompt_messages.first().map(|m| &m.role),
+        let prepend_default_system = !matches!(
+            messages.first().map(|message| &message.role),
             Some(ChatRole::System)
-        ) {
-            prompt_messages.insert(
-                0,
-                ChatMessage {
-                    role: ChatRole::System,
-                    content: "You are a helpful assistant.".to_string(),
-                },
-            );
-        }
+        );
 
         let mut ids = Vec::new();
         if let Some(bos) = self.tokenizer.specials.bos {
             ids.push(bos);
         }
 
-        let last_assistant_index = prompt_messages
+        let last_assistant_index = messages
             .iter()
-            .rposition(|message| matches!(message.role, ChatRole::Assistant));
+            .rposition(|message| matches!(message.role, ChatRole::Assistant))
+            .map(|index| index + usize::from(prepend_default_system));
 
-        for (index, message) in prompt_messages.iter().enumerate() {
-            let content = if matches!(message.role, ChatRole::Assistant) {
-                if Some(index) == last_assistant_index {
-                    message.content.trim().to_string()
-                } else {
-                    strip_past_assistant_thinking(message.content.trim())
-                }
-            } else {
-                message.content.trim().to_string()
-            };
+        let mut prompt_index = 0usize;
+        if prepend_default_system {
+            self.append_prompt_message(
+                &mut ids,
+                prompt_index,
+                ChatRole::System,
+                "You are a helpful assistant.",
+                last_assistant_index,
+            )?;
+            prompt_index += 1;
+        }
 
-            if content.is_empty() {
-                continue;
-            }
-
-            ids.push(self.tokenizer.specials.im_start);
-            ids.extend_from_slice(self.prompt_scaffold.role_header(&message.role));
-            ids.extend(self.tokenizer.encode_text(&content)?);
-            ids.push(self.tokenizer.specials.im_end);
-            ids.extend_from_slice(&self.prompt_scaffold.newline);
+        for message in messages {
+            self.append_prompt_message(
+                &mut ids,
+                prompt_index,
+                message.role.clone(),
+                message.content.as_str(),
+                last_assistant_index,
+            )?;
+            prompt_index += 1;
         }
 
         ids.push(self.tokenizer.specials.im_start);
         ids.extend_from_slice(&self.prompt_scaffold.assistant_header);
 
         Ok(ids)
+    }
+
+    fn append_prompt_message(
+        &self,
+        ids: &mut Vec<u32>,
+        prompt_index: usize,
+        role: ChatRole,
+        content: &str,
+        last_assistant_index: Option<usize>,
+    ) -> Result<()> {
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+
+        let normalized =
+            if matches!(role, ChatRole::Assistant) && Some(prompt_index) != last_assistant_index {
+                strip_past_assistant_thinking(trimmed)
+            } else {
+                Cow::Borrowed(trimmed)
+            };
+        if normalized.is_empty() {
+            return Ok(());
+        }
+
+        ids.push(self.tokenizer.specials.im_start);
+        ids.extend_from_slice(self.prompt_scaffold.role_header(&role));
+        ids.extend(self.tokenizer.encode_text(normalized.as_ref())?);
+        ids.push(self.tokenizer.specials.im_end);
+        ids.extend_from_slice(&self.prompt_scaffold.newline);
+        Ok(())
     }
 }
 
@@ -373,11 +398,11 @@ fn argmax(logits: &Tensor) -> Result<u32> {
         .map_err(Error::from)
 }
 
-fn strip_past_assistant_thinking(input: &str) -> String {
+fn strip_past_assistant_thinking(input: &str) -> Cow<'_, str> {
     if let Some((_reasoning, tail)) = input.rsplit_once("</think>") {
-        tail.trim().to_string()
+        Cow::Owned(tail.trim().to_string())
     } else {
-        input.trim().to_string()
+        Cow::Borrowed(input.trim())
     }
 }
 
