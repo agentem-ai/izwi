@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AudioLines,
+  Check,
   CheckCircle2,
   FileText,
   Loader2,
@@ -518,21 +519,26 @@ export function FirstRunOnboarding() {
                     ))}
                   </div>
                   <label className="flex items-start gap-3 rounded-[var(--radius-md)] border border-border/70 bg-[var(--bg-surface-3)]/70 p-3">
-                    <input
-                      type="checkbox"
-                      className="app-checkbox mt-0.5 h-4 w-4"
-                      checked={analyticsOptIn}
-                      onChange={(event) =>
-                        setAnalyticsOptIn(event.target.checked)
-                      }
-                    />
+                    <span className="relative mt-0.5 shrink-0">
+                      <input
+                        type="checkbox"
+                        className="peer sr-only"
+                        checked={analyticsOptIn}
+                        onChange={(event) =>
+                          setAnalyticsOptIn(event.target.checked)
+                        }
+                      />
+                      <span className="flex h-5 w-5 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--checkbox-border)] bg-[var(--checkbox-bg)] transition peer-checked:border-[var(--checkbox-checked-border)] peer-checked:bg-[var(--checkbox-checked-bg)] peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-ring/45 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-background">
+                        <Check className="h-3.5 w-3.5 text-[var(--checkbox-check)] opacity-0 transition peer-checked:opacity-100" />
+                      </span>
+                    </span>
                     <span className="text-sm text-[var(--text-secondary)]">
                       <span className="block font-semibold text-[var(--text-primary)]">
                         Share anonymous usage data
                       </span>
-                      Help us improve product quality and GTM priorities with
-                      anonymous feature and model usage metrics. No prompts,
-                      transcripts, audio, or personal identifiers are collected.
+                      Help us improve Izwi with anonymous feature and model usage
+                      metrics. We never collect prompts, transcripts, audio, or
+                      personal data.
                     </span>
                   </label>
                 </div>
