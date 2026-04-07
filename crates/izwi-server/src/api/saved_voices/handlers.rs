@@ -7,9 +7,11 @@ use axum::{
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+use crate::api::pagination::{encode_cursor, CursorPagination, CursorPaginationQuery};
 use crate::error::ApiError;
 use crate::saved_voice_store::{
-    NewSavedVoice, SavedVoice, SavedVoiceSourceRouteKind, SavedVoiceSummary, StoredSavedVoiceAudio,
+    NewSavedVoice, SavedVoice, SavedVoiceListCursor, SavedVoiceSourceRouteKind, SavedVoiceSummary,
+    StoredSavedVoiceAudio,
 };
 use crate::state::AppState;
 
@@ -24,6 +26,7 @@ pub(crate) struct SavedVoiceAudioQuery {
 #[derive(Debug, Serialize)]
 pub struct SavedVoiceListResponse {
     pub voices: Vec<SavedVoiceSummary>,
+    pub pagination: CursorPagination,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,14 +55,25 @@ pub struct CreateSavedVoiceRequest {
 
 pub async fn list_saved_voices(
     State(state): State<AppState>,
+    Query(query): Query<CursorPaginationQuery>,
 ) -> Result<Json<SavedVoiceListResponse>, ApiError> {
-    let voices = state
+    let limit = query.resolved_limit(SAVED_VOICE_LIST_LIMIT, 1000);
+    let cursor = query.decode_cursor::<SavedVoiceListCursor>()?;
+    let (voices, next_cursor) = state
         .saved_voice_store
-        .list_voices(SAVED_VOICE_LIST_LIMIT)
+        .list_voices_page(limit, cursor)
         .await
         .map_err(map_store_error)?;
 
-    Ok(Json(SavedVoiceListResponse { voices }))
+    let has_more = next_cursor.is_some();
+    Ok(Json(SavedVoiceListResponse {
+        voices,
+        pagination: CursorPagination {
+            next_cursor: next_cursor.map(|value| encode_cursor(&value)),
+            has_more,
+            limit,
+        },
+    }))
 }
 
 pub async fn get_saved_voice(

@@ -49,6 +49,7 @@ const audioMethodNames = [
   "voiceCloningRecordAudioUrl",
   "deleteVoiceCloningRecord",
   "listSavedVoices",
+  "listSavedVoicePage",
   "getSavedVoice",
   "createSavedVoice",
   "savedVoiceAudioUrl",

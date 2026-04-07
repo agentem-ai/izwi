@@ -1337,10 +1337,28 @@ export class AudioApiClient {
   }
 
   async listSavedVoices(): Promise<SavedVoiceSummary[]> {
-    const payload = await this.http.request<{ voices: SavedVoiceSummary[] }>(
-      "/voices",
-    );
-    return payload.voices ?? [];
+    const page = await this.listSavedVoicePage();
+    return page.items;
+  }
+
+  async listSavedVoicePage(
+    query?: CursorPaginationQuery,
+  ): Promise<CursorPageResult<SavedVoiceSummary>> {
+    const path = `/voices${buildCursorQueryString(query)}`;
+    const payload = await this.http.request<{
+      voices: SavedVoiceSummary[];
+      pagination?: {
+        next_cursor?: string | null;
+        has_more?: boolean;
+        limit?: number;
+      };
+    }>(path);
+    const items = payload.voices ?? [];
+    const fallbackLimit = query?.limit ?? Math.max(items.length, 1);
+    return {
+      items,
+      pagination: normalizeCursorPaginationMeta(payload.pagination, fallbackLimit),
+    };
   }
 
   async getSavedVoice(voiceId: string): Promise<SavedVoice> {
