@@ -7,6 +7,7 @@ import { TextToSpeechPage } from "./route";
 
 const apiMocks = vi.hoisted(() => ({
   listTextToSpeechRecords: vi.fn(),
+  listTextToSpeechRecordPage: vi.fn(),
   getTextToSpeechRecord: vi.fn(),
   textToSpeechRecordAudioUrl: vi.fn(),
   deleteTextToSpeechRecord: vi.fn(),
@@ -23,6 +24,7 @@ const hookMocks = vi.hoisted(() => ({
 vi.mock("@/api", () => ({
   api: {
     listTextToSpeechRecords: apiMocks.listTextToSpeechRecords,
+    listTextToSpeechRecordPage: apiMocks.listTextToSpeechRecordPage,
     getTextToSpeechRecord: apiMocks.getTextToSpeechRecord,
     textToSpeechRecordAudioUrl: apiMocks.textToSpeechRecordAudioUrl,
     deleteTextToSpeechRecord: apiMocks.deleteTextToSpeechRecord,
@@ -153,6 +155,7 @@ function deferredPromise<T>() {
 describe("TextToSpeechPage", () => {
   beforeEach(() => {
     apiMocks.listTextToSpeechRecords.mockReset();
+    apiMocks.listTextToSpeechRecordPage.mockReset();
     apiMocks.getTextToSpeechRecord.mockReset();
     apiMocks.textToSpeechRecordAudioUrl.mockReset();
     apiMocks.deleteTextToSpeechRecord.mockReset();
@@ -163,6 +166,14 @@ describe("TextToSpeechPage", () => {
     hookMocks.useRouteModelSelection.mockReset();
 
     apiMocks.listTextToSpeechRecords.mockResolvedValue([]);
+    apiMocks.listTextToSpeechRecordPage.mockImplementation(async () => ({
+      items: await apiMocks.listTextToSpeechRecords(),
+      pagination: {
+        next_cursor: null,
+        has_more: false,
+        limit: 25,
+      },
+    }));
     apiMocks.getTextToSpeechRecord.mockResolvedValue(buildRecord());
     apiMocks.deleteTextToSpeechRecord.mockResolvedValue({
       id: "tts-1",
@@ -221,6 +232,73 @@ describe("TextToSpeechPage", () => {
     expect(
       screen.getByRole("heading", { name: "No text-to-speech jobs yet" }),
     ).toBeInTheDocument();
+  });
+
+  it("navigates text-to-speech history pagination controls", async () => {
+    apiMocks.listTextToSpeechRecordPage.mockReset();
+    apiMocks.listTextToSpeechRecordPage
+      .mockResolvedValueOnce({
+        items: [
+          buildSummary({
+            id: "tts-page-1",
+            audio_filename: "tts-page-one.wav",
+            input_preview: "Page one preview",
+            processing_status: "ready",
+          }),
+        ],
+        pagination: {
+          next_cursor: "tts-cursor-2",
+          has_more: true,
+          limit: 25,
+        },
+      })
+      .mockResolvedValueOnce({
+        items: [
+          buildSummary({
+            id: "tts-page-2",
+            audio_filename: "tts-page-two.wav",
+            input_preview: "Page two preview",
+            processing_status: "ready",
+          }),
+        ],
+        pagination: {
+          next_cursor: null,
+          has_more: false,
+          limit: 25,
+        },
+      })
+      .mockResolvedValueOnce({
+        items: [
+          buildSummary({
+            id: "tts-page-1",
+            audio_filename: "tts-page-one.wav",
+            input_preview: "Page one preview",
+            processing_status: "ready",
+          }),
+        ],
+        pagination: {
+          next_cursor: "tts-cursor-2",
+          has_more: true,
+          limit: 25,
+        },
+      });
+
+    renderRoute("/text-to-speech");
+
+    expect(await screen.findByText("Page one preview")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await screen.findByText("Page two preview")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    expect(await screen.findByText("Page one preview")).toBeInTheDocument();
+
+    expect(apiMocks.listTextToSpeechRecordPage).toHaveBeenNthCalledWith(1, {
+      limit: 25,
+      cursor: null,
+    });
+    expect(apiMocks.listTextToSpeechRecordPage).toHaveBeenNthCalledWith(2, {
+      limit: 25,
+      cursor: "tts-cursor-2",
+    });
   });
 
   it("keeps history rows visible while text-to-speech polling refreshes in the background", async () => {

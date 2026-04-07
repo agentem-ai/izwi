@@ -2,22 +2,24 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { TextToSpeechPage } from "./text-to-speech/route";
+import { NotificationProvider } from "@/app/providers/NotificationProvider";
 import { StudioPage } from "./studio/route";
 import { VoiceCloningPage } from "./voice-cloning/route";
-import { DiarizationPage } from "./diarization/route";
 import { TranscriptionPage } from "./transcription/route";
 
 const apiMocks = vi.hoisted(() => ({
   listSpeechHistoryRecords: vi.fn(),
+  listTextToSpeechRecordPage: vi.fn(),
   getSpeechHistoryRecord: vi.fn(),
   deleteSpeechHistoryRecord: vi.fn(),
   speechHistoryRecordAudioUrl: vi.fn(),
   listDiarizationRecords: vi.fn(),
+  listDiarizationRecordPage: vi.fn(),
   getDiarizationRecord: vi.fn(),
   deleteDiarizationRecord: vi.fn(),
   diarizationRecordAudioUrl: vi.fn(),
   listTranscriptionRecords: vi.fn(),
+  listTranscriptionRecordPage: vi.fn(),
   getTranscriptionRecord: vi.fn(),
   deleteTranscriptionRecord: vi.fn(),
   transcriptionRecordAudioUrl: vi.fn(),
@@ -28,14 +30,17 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock("@/api", () => ({
   api: {
     listSpeechHistoryRecords: apiMocks.listSpeechHistoryRecords,
+    listTextToSpeechRecordPage: apiMocks.listTextToSpeechRecordPage,
     getSpeechHistoryRecord: apiMocks.getSpeechHistoryRecord,
     deleteSpeechHistoryRecord: apiMocks.deleteSpeechHistoryRecord,
     speechHistoryRecordAudioUrl: apiMocks.speechHistoryRecordAudioUrl,
     listDiarizationRecords: apiMocks.listDiarizationRecords,
+    listDiarizationRecordPage: apiMocks.listDiarizationRecordPage,
     getDiarizationRecord: apiMocks.getDiarizationRecord,
     deleteDiarizationRecord: apiMocks.deleteDiarizationRecord,
     diarizationRecordAudioUrl: apiMocks.diarizationRecordAudioUrl,
     listTranscriptionRecords: apiMocks.listTranscriptionRecords,
+    listTranscriptionRecordPage: apiMocks.listTranscriptionRecordPage,
     getTranscriptionRecord: apiMocks.getTranscriptionRecord,
     deleteTranscriptionRecord: apiMocks.deleteTranscriptionRecord,
     transcriptionRecordAudioUrl: apiMocks.transcriptionRecordAudioUrl,
@@ -46,14 +51,17 @@ vi.mock("@/api", () => ({
 vi.mock("../api", () => ({
   api: {
     listSpeechHistoryRecords: apiMocks.listSpeechHistoryRecords,
+    listTextToSpeechRecordPage: apiMocks.listTextToSpeechRecordPage,
     getSpeechHistoryRecord: apiMocks.getSpeechHistoryRecord,
     deleteSpeechHistoryRecord: apiMocks.deleteSpeechHistoryRecord,
     speechHistoryRecordAudioUrl: apiMocks.speechHistoryRecordAudioUrl,
     listDiarizationRecords: apiMocks.listDiarizationRecords,
+    listDiarizationRecordPage: apiMocks.listDiarizationRecordPage,
     getDiarizationRecord: apiMocks.getDiarizationRecord,
     deleteDiarizationRecord: apiMocks.deleteDiarizationRecord,
     diarizationRecordAudioUrl: apiMocks.diarizationRecordAudioUrl,
     listTranscriptionRecords: apiMocks.listTranscriptionRecords,
+    listTranscriptionRecordPage: apiMocks.listTranscriptionRecordPage,
     getTranscriptionRecord: apiMocks.getTranscriptionRecord,
     deleteTranscriptionRecord: apiMocks.deleteTranscriptionRecord,
     transcriptionRecordAudioUrl: apiMocks.transcriptionRecordAudioUrl,
@@ -65,14 +73,17 @@ vi.mock("../api", () => ({
 describe("Page header history buttons", () => {
   beforeEach(() => {
     apiMocks.listSpeechHistoryRecords.mockReset();
+    apiMocks.listTextToSpeechRecordPage.mockReset();
     apiMocks.getSpeechHistoryRecord.mockReset();
     apiMocks.deleteSpeechHistoryRecord.mockReset();
     apiMocks.speechHistoryRecordAudioUrl.mockReset();
     apiMocks.listDiarizationRecords.mockReset();
+    apiMocks.listDiarizationRecordPage.mockReset();
     apiMocks.getDiarizationRecord.mockReset();
     apiMocks.deleteDiarizationRecord.mockReset();
     apiMocks.diarizationRecordAudioUrl.mockReset();
     apiMocks.listTranscriptionRecords.mockReset();
+    apiMocks.listTranscriptionRecordPage.mockReset();
     apiMocks.getTranscriptionRecord.mockReset();
     apiMocks.deleteTranscriptionRecord.mockReset();
     apiMocks.transcriptionRecordAudioUrl.mockReset();
@@ -80,8 +91,32 @@ describe("Page header history buttons", () => {
     apiMocks.listSavedVoices.mockReset();
 
     apiMocks.listSpeechHistoryRecords.mockResolvedValue([]);
+    apiMocks.listTextToSpeechRecordPage.mockImplementation(async () => ({
+      items: await apiMocks.listSpeechHistoryRecords(),
+      pagination: {
+        next_cursor: null,
+        has_more: false,
+        limit: 25,
+      },
+    }));
     apiMocks.listDiarizationRecords.mockResolvedValue([]);
+    apiMocks.listDiarizationRecordPage.mockImplementation(async () => ({
+      items: await apiMocks.listDiarizationRecords(),
+      pagination: {
+        next_cursor: null,
+        has_more: false,
+        limit: 25,
+      },
+    }));
     apiMocks.listTranscriptionRecords.mockResolvedValue([]);
+    apiMocks.listTranscriptionRecordPage.mockImplementation(async () => ({
+      items: await apiMocks.listTranscriptionRecords(),
+      pagination: {
+        next_cursor: null,
+        has_more: false,
+        limit: 25,
+      },
+    }));
     apiMocks.listStudioProjects.mockResolvedValue([]);
     apiMocks.listSavedVoices.mockResolvedValue([]);
 
@@ -103,12 +138,14 @@ describe("Page header history buttons", () => {
     onRefresh: vi.fn().mockResolvedValue(undefined),
   };
 
-  it.each([
-    ["TextToSpeechPage", <TextToSpeechPage {...baseProps} />],
-    ["VoiceCloningPage", <VoiceCloningPage {...baseProps} />],
-    ["DiarizationPage", <DiarizationPage {...baseProps} />],
-  ])("%s renders the history button in the page header slot", async (_, ui) => {
-    render(<MemoryRouter>{ui}</MemoryRouter>);
+  it("VoiceCloningPage renders the history button in the page header slot", async () => {
+    render(
+      <NotificationProvider>
+        <MemoryRouter>
+          <VoiceCloningPage {...baseProps} />
+        </MemoryRouter>
+      </NotificationProvider>,
+    );
 
     const slot = screen.getByTestId("page-header-history-slot");
 
@@ -122,9 +159,11 @@ describe("Page header history buttons", () => {
 
   it("TranscriptionPage renders new transcript and model actions in the header", async () => {
     render(
-      <MemoryRouter>
-        <TranscriptionPage {...baseProps} />
-      </MemoryRouter>,
+      <NotificationProvider>
+        <MemoryRouter>
+          <TranscriptionPage {...baseProps} />
+        </MemoryRouter>
+      </NotificationProvider>,
     );
 
     expect(
@@ -138,9 +177,11 @@ describe("Page header history buttons", () => {
 
   it("StudioPage renders project actions in the page header slot", async () => {
     render(
-      <MemoryRouter>
-        <StudioPage {...baseProps} />
-      </MemoryRouter>,
+      <NotificationProvider>
+        <MemoryRouter>
+          <StudioPage {...baseProps} />
+        </MemoryRouter>
+      </NotificationProvider>,
     );
 
     const slot = screen.getByTestId("page-header-history-slot");
@@ -187,9 +228,11 @@ describe("Page header history buttons", () => {
     };
 
     const { rerender } = render(
-      <MemoryRouter>
-        <StudioPage {...props} />
-      </MemoryRouter>,
+      <NotificationProvider>
+        <MemoryRouter>
+          <StudioPage {...props} />
+        </MemoryRouter>
+      </NotificationProvider>,
     );
 
     await waitFor(() =>
@@ -197,13 +240,15 @@ describe("Page header history buttons", () => {
     );
 
     rerender(
-      <MemoryRouter>
-        <StudioPage
-          {...props}
-          models={[studioModelReady]}
-          selectedModel={studioModelReady.variant}
-        />
-      </MemoryRouter>,
+      <NotificationProvider>
+        <MemoryRouter>
+          <StudioPage
+            {...props}
+            models={[studioModelReady]}
+            selectedModel={studioModelReady.variant}
+          />
+        </MemoryRouter>
+      </NotificationProvider>,
     );
 
     await new Promise((resolve) => window.setTimeout(resolve, 150));

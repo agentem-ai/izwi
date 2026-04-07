@@ -8,6 +8,7 @@ import { DiarizationPage } from "./route";
 
 const apiMocks = vi.hoisted(() => ({
   listDiarizationRecords: vi.fn(),
+  listDiarizationRecordPage: vi.fn(),
   getDiarizationRecord: vi.fn(),
   updateDiarizationRecord: vi.fn(),
   rerunDiarizationRecord: vi.fn(),
@@ -20,6 +21,7 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock("@/api", () => ({
   api: {
     listDiarizationRecords: apiMocks.listDiarizationRecords,
+    listDiarizationRecordPage: apiMocks.listDiarizationRecordPage,
     getDiarizationRecord: apiMocks.getDiarizationRecord,
     updateDiarizationRecord: apiMocks.updateDiarizationRecord,
     rerunDiarizationRecord: apiMocks.rerunDiarizationRecord,
@@ -196,6 +198,7 @@ describe("DiarizationPage routes", () => {
   beforeEach(() => {
     vi.useRealTimers();
     apiMocks.listDiarizationRecords.mockReset();
+    apiMocks.listDiarizationRecordPage.mockReset();
     apiMocks.getDiarizationRecord.mockReset();
     apiMocks.updateDiarizationRecord.mockReset();
     apiMocks.rerunDiarizationRecord.mockReset();
@@ -205,6 +208,14 @@ describe("DiarizationPage routes", () => {
     apiMocks.diarizationRecordAudioUrl.mockReset();
 
     apiMocks.listDiarizationRecords.mockResolvedValue([]);
+    apiMocks.listDiarizationRecordPage.mockImplementation(async () => ({
+      items: await apiMocks.listDiarizationRecords(),
+      pagination: {
+        next_cursor: null,
+        has_more: false,
+        limit: 25,
+      },
+    }));
     apiMocks.getDiarizationRecord.mockResolvedValue(fullRecord);
     apiMocks.createDiarizationRecord.mockResolvedValue(fullRecord);
     apiMocks.diarizationRecordAudioUrl.mockReturnValue("/audio/meeting.wav");
@@ -227,6 +238,52 @@ describe("DiarizationPage routes", () => {
       screen.queryByRole("heading", { name: "History" }),
     ).not.toBeInTheDocument();
     expect(screen.getByText("No diarization records yet")).toBeInTheDocument();
+  });
+
+  it("navigates diarization history pagination controls", async () => {
+    apiMocks.listDiarizationRecordPage.mockReset();
+    apiMocks.listDiarizationRecordPage
+      .mockResolvedValueOnce({
+        items: [{ ...readySummaryRecord, id: "diar-page-1", audio_filename: "page-one.wav" }],
+        pagination: {
+          next_cursor: "diar-cursor-2",
+          has_more: true,
+          limit: 25,
+        },
+      })
+      .mockResolvedValueOnce({
+        items: [{ ...readySummaryRecord, id: "diar-page-2", audio_filename: "page-two.wav" }],
+        pagination: {
+          next_cursor: null,
+          has_more: false,
+          limit: 25,
+        },
+      })
+      .mockResolvedValueOnce({
+        items: [{ ...readySummaryRecord, id: "diar-page-1", audio_filename: "page-one.wav" }],
+        pagination: {
+          next_cursor: "diar-cursor-2",
+          has_more: true,
+          limit: 25,
+        },
+      });
+
+    renderRoute("/diarization");
+
+    expect(await screen.findByText("page-one.wav")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await screen.findByText("page-two.wav")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    expect(await screen.findByText("page-one.wav")).toBeInTheDocument();
+
+    expect(apiMocks.listDiarizationRecordPage).toHaveBeenNthCalledWith(1, {
+      limit: 25,
+      cursor: null,
+    });
+    expect(apiMocks.listDiarizationRecordPage).toHaveBeenNthCalledWith(2, {
+      limit: 25,
+      cursor: "diar-cursor-2",
+    });
   });
 
   it("shows summaries in the diarization history table", async () => {

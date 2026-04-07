@@ -11,6 +11,7 @@ import {
 
 import { api, type TranscriptionRecordSummary } from "@/api";
 import { useNotifications } from "@/app/providers/NotificationProvider";
+import { CursorPaginationControls } from "@/components/CursorPaginationControls";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -37,6 +38,13 @@ interface TranscriptionHistoryTableProps {
   records: TranscriptionRecordSummary[];
   loading?: boolean;
   error?: string | null;
+  pagination?: {
+    page: number;
+    canPrevious: boolean;
+    canNext: boolean;
+    onPrevious: () => void;
+    onNext: () => void;
+  };
   onOpenRecord: (recordId: string) => void;
   onDeleteRecord?: (recordId: string) => Promise<void>;
   onRefresh?: () => void;
@@ -50,6 +58,7 @@ export function TranscriptionHistoryTable({
   records,
   loading = false,
   error = null,
+  pagination,
   onOpenRecord,
   onDeleteRecord,
   onRefresh,
@@ -195,6 +204,18 @@ export function TranscriptionHistoryTable({
         <p className="mt-2 text-sm text-[var(--text-muted)]">
           Queued, processing, and completed jobs will appear here.
         </p>
+        {pagination?.canPrevious ? (
+          <div className="mt-5">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={pagination.onPrevious}
+            >
+              Previous page
+            </Button>
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -328,6 +349,16 @@ export function TranscriptionHistoryTable({
             </tbody>
           </table>
         </div>
+        {pagination ? (
+          <CursorPaginationControls
+            page={pagination.page}
+            canPrevious={pagination.canPrevious}
+            canNext={pagination.canNext}
+            loading={loading}
+            onPrevious={pagination.onPrevious}
+            onNext={pagination.onNext}
+          />
+        ) : null}
       </div>
 
       <TranscriptionExportDialog

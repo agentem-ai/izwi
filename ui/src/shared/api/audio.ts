@@ -3,6 +3,12 @@ import {
   consumeDataStream,
   isAbortError,
 } from "@/shared/api/http";
+import {
+  buildCursorQueryString,
+  normalizeCursorPaginationMeta,
+  type CursorPageResult,
+  type CursorPaginationQuery,
+} from "@/shared/api/pagination";
 
 export interface TTSRequest {
   text: string;
@@ -1001,10 +1007,29 @@ export class AudioApiClient {
   async listSpeechHistoryRecords(
     route: SpeechHistoryRoute,
   ): Promise<SpeechHistoryRecordSummary[]> {
+    const page = await this.listSpeechHistoryRecordPage(route);
+    return page.items;
+  }
+
+  async listSpeechHistoryRecordPage(
+    route: SpeechHistoryRoute,
+    query?: CursorPaginationQuery,
+  ): Promise<CursorPageResult<SpeechHistoryRecordSummary>> {
+    const path = `${this.speechHistoryCollectionPath(route)}${buildCursorQueryString(query)}`;
     const payload = await this.http.request<{
       records: SpeechHistoryRecordSummary[];
-    }>(this.speechHistoryCollectionPath(route));
-    return payload.records ?? [];
+      pagination?: {
+        next_cursor?: string | null;
+        has_more?: boolean;
+        limit?: number;
+      };
+    }>(path);
+    const items = payload.records ?? [];
+    const fallbackLimit = query?.limit ?? Math.max(items.length, 1);
+    return {
+      items,
+      pagination: normalizeCursorPaginationMeta(payload.pagination, fallbackLimit),
+    };
   }
 
   async getSpeechHistoryRecord(
@@ -1205,6 +1230,12 @@ export class AudioApiClient {
     return this.listSpeechHistoryRecords("text-to-speech");
   }
 
+  async listTextToSpeechRecordPage(
+    query?: CursorPaginationQuery,
+  ): Promise<CursorPageResult<SpeechHistoryRecordSummary>> {
+    return this.listSpeechHistoryRecordPage("text-to-speech", query);
+  }
+
   async getTextToSpeechRecord(recordId: string): Promise<SpeechHistoryRecord> {
     return this.getSpeechHistoryRecord("text-to-speech", recordId);
   }
@@ -1243,6 +1274,12 @@ export class AudioApiClient {
     return this.listSpeechHistoryRecords("voice-design");
   }
 
+  async listVoiceDesignRecordPage(
+    query?: CursorPaginationQuery,
+  ): Promise<CursorPageResult<SpeechHistoryRecordSummary>> {
+    return this.listSpeechHistoryRecordPage("voice-design", query);
+  }
+
   async getVoiceDesignRecord(recordId: string): Promise<SpeechHistoryRecord> {
     return this.getSpeechHistoryRecord("voice-design", recordId);
   }
@@ -1268,6 +1305,12 @@ export class AudioApiClient {
 
   async listVoiceCloningRecords(): Promise<SpeechHistoryRecordSummary[]> {
     return this.listSpeechHistoryRecords("voice-cloning");
+  }
+
+  async listVoiceCloningRecordPage(
+    query?: CursorPaginationQuery,
+  ): Promise<CursorPageResult<SpeechHistoryRecordSummary>> {
+    return this.listSpeechHistoryRecordPage("voice-cloning", query);
   }
 
   async getVoiceCloningRecord(recordId: string): Promise<SpeechHistoryRecord> {
@@ -1672,10 +1715,28 @@ export class AudioApiClient {
   }
 
   async listTranscriptionRecords(): Promise<TranscriptionRecordSummary[]> {
+    const page = await this.listTranscriptionRecordPage();
+    return page.items;
+  }
+
+  async listTranscriptionRecordPage(
+    query?: CursorPaginationQuery,
+  ): Promise<CursorPageResult<TranscriptionRecordSummary>> {
+    const path = `${this.transcriptionCollectionPath()}${buildCursorQueryString(query)}`;
     const payload = await this.http.request<{
       records: TranscriptionRecordSummary[];
-    }>(this.transcriptionCollectionPath());
-    return payload.records ?? [];
+      pagination?: {
+        next_cursor?: string | null;
+        has_more?: boolean;
+        limit?: number;
+      };
+    }>(path);
+    const items = payload.records ?? [];
+    const fallbackLimit = query?.limit ?? Math.max(items.length, 1);
+    return {
+      items,
+      pagination: normalizeCursorPaginationMeta(payload.pagination, fallbackLimit),
+    };
   }
 
   async getTranscriptionRecord(recordId: string): Promise<TranscriptionRecord> {
@@ -1837,10 +1898,28 @@ export class AudioApiClient {
   }
 
   async listDiarizationRecords(): Promise<DiarizationRecordSummary[]> {
+    const page = await this.listDiarizationRecordPage();
+    return page.items;
+  }
+
+  async listDiarizationRecordPage(
+    query?: CursorPaginationQuery,
+  ): Promise<CursorPageResult<DiarizationRecordSummary>> {
+    const path = `${this.diarizationCollectionPath()}${buildCursorQueryString(query)}`;
     const payload = await this.http.request<{
       records: DiarizationRecordSummary[];
-    }>(this.diarizationCollectionPath());
-    return payload.records ?? [];
+      pagination?: {
+        next_cursor?: string | null;
+        has_more?: boolean;
+        limit?: number;
+      };
+    }>(path);
+    const items = payload.records ?? [];
+    const fallbackLimit = query?.limit ?? Math.max(items.length, 1);
+    return {
+      items,
+      pagination: normalizeCursorPaginationMeta(payload.pagination, fallbackLimit),
+    };
   }
 
   async getDiarizationRecord(recordId: string): Promise<DiarizationRecord> {
