@@ -114,6 +114,7 @@ interface StudioRenderQueueItem {
 
 const STUDIO_RENDER_QUEUE_STORAGE_KEY = "izwi.studio.render.queue.v1";
 const STUDIO_SEGMENT_ADD_END_TARGET = "__end__";
+const STUDIO_PROJECT_LIBRARY_PAGE_LIMIT = 24;
 
 const SAVED_VOICE_RENDERER_PREFERRED_MODELS = [
   ...VOICE_CLONING_PREFERRED_MODELS,
@@ -161,6 +162,14 @@ export function StudioWorkspace({
   onError,
 }: StudioWorkspaceProps) {
   const [projects, setProjects] = useState<StudioProjectSummary[]>([]);
+  const [projectsPageIndex, setProjectsPageIndex] = useState(0);
+  const [projectsPageCursors, setProjectsPageCursors] = useState<
+    Array<string | null>
+  >([null]);
+  const [projectsNextCursor, setProjectsNextCursor] = useState<string | null>(
+    null,
+  );
+  const [projectsHasMore, setProjectsHasMore] = useState(false);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectMetaById, setProjectMetaById] = useState<
     Record<string, StudioProjectMetaRecord>
@@ -266,6 +275,7 @@ export function StudioWorkspace({
   } = useDownloadIndicator();
   const selectedProjectId =
     activeProjectId !== undefined ? activeProjectId : selectedProjectIdState;
+  const currentProjectsCursor = projectsPageCursors[projectsPageIndex] ?? null;
   const setSelectedProjectId = useCallback(
     (nextProjectId: string | null | ((current: string | null) => string | null)) => {
       if (activeProjectId !== undefined) {
@@ -413,15 +423,15 @@ export function StudioWorkspace({
   const loadProjects = useCallback(async () => {
     setProjectsLoading(true);
     try {
-      const records = await api.listStudioProjects();
+      const page = await api.listStudioProjectPage({
+        limit: STUDIO_PROJECT_LIBRARY_PAGE_LIMIT,
+        cursor: currentProjectsCursor,
+      });
+      const records = page.items;
       setProjects(records);
+      setProjectsNextCursor(page.pagination.next_cursor);
+      setProjectsHasMore(page.pagination.has_more);
       if (activeProjectId !== undefined) {
-        if (
-          activeProjectId &&
-          !records.some((project) => project.id === activeProjectId)
-        ) {
-          onNavigateProject?.(null);
-        }
         return;
       }
       setSelectedProjectId((current) => {
@@ -438,7 +448,12 @@ export function StudioWorkspace({
     } finally {
       setProjectsLoading(false);
     }
-  }, [activeProjectId, onError, onNavigateProject, setSelectedProjectId]);
+  }, [
+    activeProjectId,
+    currentProjectsCursor,
+    onError,
+    setSelectedProjectId,
+  ]);
 
   const loadSavedVoices = useCallback(async () => {
     setSavedVoicesLoading(true);
@@ -453,6 +468,24 @@ export function StudioWorkspace({
       setSavedVoicesLoading(false);
     }
   }, []);
+
+  const canGoToPreviousProjectsPage = projectsPageIndex > 0;
+  const canGoToNextProjectsPage =
+    projectsHasMore && Boolean(projectsNextCursor);
+  const handlePreviousProjectsPage = useCallback(() => {
+    setProjectsPageIndex((current) => Math.max(0, current - 1));
+  }, []);
+  const handleNextProjectsPage = useCallback(() => {
+    if (!projectsNextCursor || !projectsHasMore) {
+      return;
+    }
+    setProjectsPageCursors((current) => {
+      const next = [...current];
+      next[projectsPageIndex + 1] = projectsNextCursor;
+      return next;
+    });
+    setProjectsPageIndex((current) => current + 1);
+  }, [projectsHasMore, projectsNextCursor, projectsPageIndex]);
 
   const loadProjectMeta = useCallback(async (records: StudioProjectSummary[]) => {
     if (records.length === 0) {
@@ -2170,6 +2203,7 @@ export function StudioWorkspace({
       ) : null}
     </div>
   );
+  const projectLibraryCountLabel = `${projects.length}${projectsHasMore ? "+" : ""}`;
 
   const projectLibraryFilters = (
     <Card className="rounded-2xl border-0 bg-[var(--bg-surface-0)] p-0 shadow-none">
@@ -2179,7 +2213,7 @@ export function StudioWorkspace({
             Project Library
           </div>
           <div className="mt-1 text-base font-semibold text-[var(--text-primary)]">
-            {projects.length} project{projects.length === 1 ? "" : "s"}
+            {projectLibraryCountLabel} project{projects.length === 1 ? "" : "s"}
           </div>
         </div>
         <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-2 text-[var(--text-muted)]">
@@ -2897,6 +2931,36 @@ export function StudioWorkspace({
                 })}
               </div>
             )}
+
+            {projects.length > 0 ||
+            canGoToPreviousProjectsPage ||
+            canGoToNextProjectsPage ? (
+              <div className="flex items-center justify-between rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-2">
+                <p className="text-xs font-medium text-[var(--text-muted)]">
+                  Library page {projectsPageIndex + 1}
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handlePreviousProjectsPage}
+                    disabled={projectsLoading || !canGoToPreviousProjectsPage}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleNextProjectsPage}
+                    disabled={projectsLoading || !canGoToNextProjectsPage}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : !selectedProject ? (
           <Card className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-6 shadow-none">

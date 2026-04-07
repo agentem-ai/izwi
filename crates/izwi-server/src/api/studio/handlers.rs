@@ -7,6 +7,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+use crate::api::pagination::{encode_cursor, CursorPagination, CursorPaginationQuery};
 use crate::api::request_context::RequestContext;
 use crate::api::speech_history::{synthesize_record, CreateSpeechHistoryRecordRequest};
 use crate::error::ApiError;
@@ -15,11 +16,11 @@ use crate::state::AppState;
 use crate::studio_project_store::{
     NewStudioProjectFolderRecord, NewStudioProjectPronunciationRecord, NewStudioProjectRecord,
     NewStudioProjectRenderJobRecord, NewStudioProjectSegment, NewStudioProjectSnapshotRecord,
-    StudioProjectExportFormat, StudioProjectFolderRecord, StudioProjectMetaRecord,
-    StudioProjectPronunciationRecord, StudioProjectRecord, StudioProjectRenderJobRecord,
-    StudioProjectRenderJobStatus, StudioProjectSegmentRecord, StudioProjectSnapshotRecord,
-    StudioProjectSummary, StudioProjectVoiceMode, UpdateStudioProjectRecord,
-    UpdateStudioProjectRenderJobRecord, UpsertStudioProjectMetaRecord,
+    StudioProjectExportFormat, StudioProjectFolderRecord, StudioProjectListCursor,
+    StudioProjectMetaRecord, StudioProjectPronunciationRecord, StudioProjectRecord,
+    StudioProjectRenderJobRecord, StudioProjectRenderJobStatus, StudioProjectSegmentRecord,
+    StudioProjectSnapshotRecord, StudioProjectSummary, StudioProjectVoiceMode,
+    UpdateStudioProjectRecord, UpdateStudioProjectRenderJobRecord, UpsertStudioProjectMetaRecord,
 };
 use izwi_core::audio::{AudioEncoder, AudioFormat};
 use izwi_core::parse_tts_model_variant;
@@ -39,6 +40,7 @@ pub(crate) struct ProjectAudioQuery {
 #[derive(Debug, Serialize)]
 pub struct StudioProjectListResponse {
     pub projects: Vec<StudioProjectSummary>,
+    pub pagination: CursorPagination,
 }
 
 #[derive(Debug, Serialize)]
@@ -197,13 +199,24 @@ pub struct UpdateStudioProjectRenderJobRequest {
 
 pub async fn list_studio_projects(
     State(state): State<AppState>,
+    Query(query): Query<CursorPaginationQuery>,
 ) -> Result<Json<StudioProjectListResponse>, ApiError> {
-    let projects = state
+    let limit = query.resolved_limit(PROJECT_LIST_LIMIT, 500);
+    let cursor = query.decode_cursor::<StudioProjectListCursor>()?;
+    let (projects, next_cursor) = state
         .studio_store
-        .list_projects(PROJECT_LIST_LIMIT)
+        .list_projects_page(limit, cursor)
         .await
         .map_err(map_store_error)?;
-    Ok(Json(StudioProjectListResponse { projects }))
+    let has_more = next_cursor.is_some();
+    Ok(Json(StudioProjectListResponse {
+        projects,
+        pagination: CursorPagination {
+            next_cursor: next_cursor.map(|value| encode_cursor(&value)),
+            has_more,
+            limit,
+        },
+    }))
 }
 
 pub async fn list_studio_project_folders(

@@ -55,6 +55,7 @@ const audioMethodNames = [
   "savedVoiceAudioUrl",
   "deleteSavedVoice",
   "listStudioProjects",
+  "listStudioProjectPage",
   "createStudioProject",
   "getStudioProject",
   "updateStudioProject",
