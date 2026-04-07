@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AudioLines,
-  Check,
   CheckCircle2,
   FileText,
   Loader2,
@@ -26,6 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Switch } from "@/components/ui/switch";
 import {
   MODEL_DETAILS,
   type ModelDetail,
@@ -81,6 +81,12 @@ const STEP_COPY = [
       "You can always adjust models later from the Models workspace.",
   },
 ];
+
+const GETTING_STARTED_ITEMS = [
+  "Review the feature list",
+  "Choose quick or custom setup",
+  "Start using Izwi",
+] as const;
 
 type SetupMode = "quick" | "custom";
 type OnboardingCategoryKey =
@@ -437,9 +443,8 @@ export function FirstRunOnboarding() {
         onInteractOutside={(event) => event.preventDefault()}
       >
         <div className="flex flex-col">
-          <div className="relative overflow-hidden border-b border-border/70 bg-[var(--bg-surface-1)] px-6 py-4 sm:px-8 sm:py-5">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.06),_transparent_60%)]" />
-            <div className="relative z-10 flex flex-col gap-3">
+          <div className="overflow-hidden border-b border-border/70 bg-[var(--bg-surface-1)] px-6 py-4 sm:px-8 sm:py-5">
+            <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="relative h-10 w-10 overflow-hidden rounded-[var(--radius-md)] border border-border/70 bg-[var(--bg-surface-2)] shadow-[var(--shadow-soft)]">
@@ -465,24 +470,29 @@ export function FirstRunOnboarding() {
 
           <div className="space-y-6 px-6 py-6 sm:px-8 sm:py-8">
             {step === 0 ? (
-              <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+              <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
                 <div className="space-y-4">
-                  <div className="text-xs uppercase tracking-[0.3em] text-[var(--text-subtle)]">
-                    Core capabilities
+                  <div>
+                    <div className="text-lg font-semibold tracking-tight">
+                      Core capabilities
+                    </div>
+                    <div className="mt-1 text-sm text-[var(--text-muted)]">
+                      Everything below is available locally with full control.
+                    </div>
                   </div>
-                  <div className="grid gap-3">
+                  <div className="grid gap-2.5">
                     {FEATURE_ITEMS.map((feature) => {
                       const Icon = feature.icon;
                       return (
                         <div
                           key={feature.title}
-                          className="flex items-start gap-3 rounded-[var(--radius-md)] border border-border/70 bg-[var(--bg-surface-2)]/70 p-3"
+                          className="flex items-start gap-3 rounded-[var(--radius-md)] border border-border/70 bg-[var(--bg-surface-2)]/75 px-3.5 py-3"
                         >
-                          <div className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-border/70 bg-[var(--bg-surface-3)]">
+                          <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-border/70 bg-[var(--bg-surface-3)]">
                             <Icon className="h-4 w-4 text-[var(--text-primary)]" />
                           </div>
-                          <div>
-                            <div className="text-sm font-semibold">
+                          <div className="min-w-0">
+                            <div className="text-base font-semibold leading-5 text-[var(--text-primary)]">
                               {feature.title}
                             </div>
                             <div className="mt-1 text-sm text-[var(--text-muted)]">
@@ -494,53 +504,66 @@ export function FirstRunOnboarding() {
                     })}
                   </div>
                 </div>
-                <div className="flex h-full flex-col justify-between gap-4 rounded-[var(--radius-lg)] border border-border/70 bg-[var(--bg-surface-2)]/80 p-5">
-                  <div className="space-y-3">
-                    <div className="text-sm font-semibold">
-                      What happens next
-                    </div>
-                    <div className="text-sm text-[var(--text-muted)]">
-                      Pick a starter pack or curate your own models. You can
-                      adjust everything later.
-                    </div>
-                  </div>
-                  <div className="space-y-2 text-sm">
-                    {[
-                      "1. Review the feature list",
-                      "2. Choose quick or custom setup",
-                      "3. Start using Izwi",
-                    ].map((item) => (
-                      <div
-                        key={item}
-                        className="rounded-[var(--radius-sm)] border border-border/70 bg-[var(--bg-surface-3)]/70 px-3 py-2 text-[var(--text-secondary)]"
-                      >
-                        {item}
+
+                <div className="border-t border-border/70 pt-6 lg:border-l lg:border-t-0 lg:pl-8">
+                  <div className="space-y-5">
+                    <div>
+                      <div className="text-lg font-semibold tracking-tight">
+                        Getting started
                       </div>
-                    ))}
+                      <div className="mt-1 text-sm text-[var(--text-muted)]">
+                        Setup takes a minute and can be changed later.
+                      </div>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {GETTING_STARTED_ITEMS.map((item, index) => (
+                        <div key={item} className="flex items-center gap-2.5 text-sm">
+                          <CheckCircle2
+                            className={cn(
+                              "h-4 w-4 shrink-0",
+                              index === 0
+                                ? "text-[var(--text-primary)]"
+                                : "text-[var(--text-subtle)]",
+                            )}
+                          />
+                          <span
+                            className={cn(
+                              index === 0
+                                ? "text-[var(--text-primary)]"
+                                : "text-[var(--text-secondary)]",
+                            )}
+                          >
+                            {item}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="border-t border-border/70 pt-4">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <span className="whitespace-nowrap text-base font-semibold leading-5 text-[var(--text-primary)]">
+                          Share anonymous usage data
+                        </span>
+                        <div className="flex items-center gap-2 self-start sm:self-auto">
+                          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-muted)]">
+                            {analyticsOptIn ? "On" : "Off"}
+                          </span>
+                          <Switch
+                            checked={analyticsOptIn}
+                            onCheckedChange={setAnalyticsOptIn}
+                            aria-label="Share anonymous usage data"
+                            className="border-border/70 data-[state=checked]:bg-[var(--checkbox-checked-bg)] data-[state=unchecked]:bg-[var(--bg-surface-3)]"
+                          />
+                        </div>
+                      </div>
+                      <div className="mt-2 text-sm leading-6 text-[var(--text-muted)]">
+                        Help us improve Izwi with anonymous feature and model
+                        usage metrics. We never collect prompts, transcripts,
+                        audio, or personal data.
+                      </div>
+                    </div>
                   </div>
-                  <label className="flex items-start gap-3 rounded-[var(--radius-md)] border border-border/70 bg-[var(--bg-surface-3)]/70 p-3">
-                    <span className="relative mt-0.5 shrink-0">
-                      <input
-                        type="checkbox"
-                        className="peer sr-only"
-                        checked={analyticsOptIn}
-                        onChange={(event) =>
-                          setAnalyticsOptIn(event.target.checked)
-                        }
-                      />
-                      <span className="flex h-5 w-5 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--checkbox-border)] bg-[var(--checkbox-bg)] transition peer-checked:border-[var(--checkbox-checked-border)] peer-checked:bg-[var(--checkbox-checked-bg)] peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-ring/45 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-background">
-                        <Check className="h-3.5 w-3.5 text-[var(--checkbox-check)] opacity-0 transition peer-checked:opacity-100" />
-                      </span>
-                    </span>
-                    <span className="text-sm text-[var(--text-secondary)]">
-                      <span className="block font-semibold text-[var(--text-primary)]">
-                        Share anonymous usage data
-                      </span>
-                      Help us improve Izwi with anonymous feature and model usage
-                      metrics. We never collect prompts, transcripts, audio, or
-                      personal data.
-                    </span>
-                  </label>
                 </div>
               </div>
             ) : null}
