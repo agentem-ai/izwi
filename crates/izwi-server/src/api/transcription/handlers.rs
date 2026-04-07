@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use axum::{
     body::Body,
-    extract::{Extension, Multipart, Path, Request, State},
+    extract::{Extension, Multipart, Path, Query, Request, State},
     http::{header, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -16,14 +16,15 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::api::pagination::{encode_cursor, CursorPagination, CursorPaginationQuery};
 use crate::api::request_context::RequestContext;
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::transcription_store::{
     CompleteTranscriptionRecord, NewTranscriptionRecord, StoredTranscriptionAudio,
-    TranscriptionProcessingStatus, TranscriptionRecord, TranscriptionRecordSummary,
-    TranscriptionSegmentRecord, TranscriptionStore, TranscriptionSummaryStatus,
-    TranscriptionWordRecord, UpdateTranscriptionSummary,
+    TranscriptionProcessingStatus, TranscriptionRecord, TranscriptionRecordListCursor,
+    TranscriptionRecordSummary, TranscriptionSegmentRecord, TranscriptionStore,
+    TranscriptionSummaryStatus, TranscriptionWordRecord, UpdateTranscriptionSummary,
 };
 use izwi_core::{
     parse_chat_model_variant, ChatMessage, ChatRole, GenerationParams, RuntimeService,
@@ -42,6 +43,7 @@ const SEGMENT_GAP_BREAK_SECS: f32 = 0.85;
 #[derive(Debug, Serialize)]
 pub struct TranscriptionRecordListResponse {
     pub records: Vec<TranscriptionRecordSummary>,
+    pub pagination: CursorPagination,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,14 +129,25 @@ struct GeneratedTranscriptionArtifacts {
 
 pub async fn list_records(
     State(state): State<AppState>,
+    Query(query): Query<CursorPaginationQuery>,
 ) -> Result<Json<TranscriptionRecordListResponse>, ApiError> {
-    let records = state
+    let limit = query.resolved_limit(HISTORY_LIST_LIMIT, 500);
+    let cursor = query.decode_cursor::<TranscriptionRecordListCursor>()?;
+    let (records, next_cursor) = state
         .transcription_store
-        .list_records(HISTORY_LIST_LIMIT)
+        .list_records_page(limit, cursor)
         .await
         .map_err(map_store_error)?;
 
-    Ok(Json(TranscriptionRecordListResponse { records }))
+    let has_more = next_cursor.is_some();
+    Ok(Json(TranscriptionRecordListResponse {
+        records,
+        pagination: CursorPagination {
+            next_cursor: next_cursor.map(|value| encode_cursor(&value)),
+            has_more,
+            limit,
+        },
+    }))
 }
 
 pub async fn get_record(
@@ -360,8 +373,7 @@ fn spawn_transcription_processing_task(
                     .unwrap_or_default(),
                 );
                 send_event(
-                    serde_json::to_string(&StreamDoneEvent { event: "done" })
-                        .unwrap_or_default(),
+                    serde_json::to_string(&StreamDoneEvent { event: "done" }).unwrap_or_default(),
                 );
                 return;
             }
@@ -374,9 +386,7 @@ fn spawn_transcription_processing_task(
                 None,
             )
             .await;
-        send_event(
-            serde_json::to_string(&StreamStartEvent { event: "start" }).unwrap_or_default(),
-        );
+        send_event(serde_json::to_string(&StreamStartEvent { event: "start" }).unwrap_or_default());
 
         let delta_tx = event_tx.clone();
         let timeout = Duration::from_secs(request_timeout_secs);
@@ -472,9 +482,7 @@ fn spawn_transcription_processing_task(
                         );
                     }
                     Err(err) => {
-                        let message = format!(
-                            "Failed to save transcription record: {err}"
-                        );
+                        let message = format!("Failed to save transcription record: {err}");
                         let _ = transcription_store
                             .update_processing_status(
                                 record_id.clone(),
@@ -527,9 +535,7 @@ fn spawn_transcription_processing_task(
             }
         }
 
-        send_event(
-            serde_json::to_string(&StreamDoneEvent { event: "done" }).unwrap_or_default(),
-        );
+        send_event(serde_json::to_string(&StreamDoneEvent { event: "done" }).unwrap_or_default());
     });
 }
 

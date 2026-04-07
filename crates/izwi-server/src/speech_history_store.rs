@@ -99,6 +99,12 @@ pub struct SpeechHistoryRecordSummary {
     pub audio_filename: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpeechHistoryRecordListCursor {
+    pub created_at: u64,
+    pub id: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SpeechHistoryRecord {
     pub id: String,
@@ -238,75 +244,181 @@ impl SpeechHistoryStore {
         route_kind: SpeechRouteKind,
         limit: usize,
     ) -> anyhow::Result<Vec<SpeechHistoryRecordSummary>> {
+        let (records, _) = self.list_records_page(route_kind, limit, None).await?;
+        Ok(records)
+    }
+
+    pub async fn list_records_page(
+        &self,
+        route_kind: SpeechRouteKind,
+        limit: usize,
+        cursor: Option<SpeechHistoryRecordListCursor>,
+    ) -> anyhow::Result<(
+        Vec<SpeechHistoryRecordSummary>,
+        Option<SpeechHistoryRecordListCursor>,
+    )> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let list_limit = i64::try_from(limit.clamp(1, 500).max(1)).unwrap_or(200);
-
-            let mut stmt = conn.prepare(
-                r#"
-                SELECT
-                    id,
-                    created_at,
-                    route_kind,
-                    processing_status,
-                    processing_error,
-                    model_id,
-                    speaker,
-                    language,
-                    saved_voice_id,
-                    speed,
-                    input_text,
-                    generation_time_ms,
-                    audio_duration_secs,
-                    rtf,
-                    tokens_generated,
-                    audio_mime_type,
-                    audio_filename
-                FROM speech_history_records
-                WHERE route_kind = ?1
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?2
-                "#,
-            )?;
-
-            let rows = stmt.query_map(params![route_kind.as_db_value(), list_limit], |row| {
-                let input_text: String = row.get(10)?;
-                let route_raw: String = row.get(2)?;
-                let route_kind = SpeechRouteKind::from_db_value(route_raw.as_str())
-                    .unwrap_or(SpeechRouteKind::TextToSpeech);
-                let processing_status_raw: String = row.get(3)?;
-                Ok(SpeechHistoryRecordSummary {
-                    id: row.get(0)?,
-                    created_at: i64_to_u64(row.get(1)?),
-                    route_kind,
-                    processing_status: SpeechHistoryProcessingStatus::from_db_value(
-                        processing_status_raw.as_str(),
-                    )
-                    .unwrap_or_default(),
-                    processing_error: row.get(4)?,
-                    model_id: row.get(5)?,
-                    speaker: row.get(6)?,
-                    language: row.get(7)?,
-                    saved_voice_id: row.get(8)?,
-                    speed: row.get(9)?,
-                    input_preview: input_preview(input_text.as_str()),
-                    input_chars: input_text.chars().count(),
-                    generation_time_ms: row.get(11)?,
-                    audio_duration_secs: row.get(12)?,
-                    rtf: row.get(13)?,
-                    tokens_generated: row
-                        .get::<_, Option<i64>>(14)?
-                        .and_then(|value| i64_to_usize(value)),
-                    audio_mime_type: row.get(15)?,
-                    audio_filename: row.get(16)?,
-                })
-            })?;
-
             let mut records = Vec::new();
-            for row in rows {
-                records.push(row?);
+            let fetch_limit = list_limit.saturating_add(1);
+
+            if let Some(cursor) = cursor {
+                let cursor_created_at = i64::try_from(cursor.created_at).unwrap_or(i64::MAX);
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT
+                        id,
+                        created_at,
+                        route_kind,
+                        processing_status,
+                        processing_error,
+                        model_id,
+                        speaker,
+                        language,
+                        saved_voice_id,
+                        speed,
+                        input_text,
+                        generation_time_ms,
+                        audio_duration_secs,
+                        rtf,
+                        tokens_generated,
+                        audio_mime_type,
+                        audio_filename
+                    FROM speech_history_records
+                    WHERE route_kind = ?1
+                        AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?4
+                    "#,
+                )?;
+
+                let rows = stmt.query_map(
+                    params![
+                        route_kind.as_db_value(),
+                        cursor_created_at,
+                        cursor.id,
+                        fetch_limit
+                    ],
+                    |row| {
+                        let input_text: String = row.get(10)?;
+                        let route_raw: String = row.get(2)?;
+                        let route_kind = SpeechRouteKind::from_db_value(route_raw.as_str())
+                            .unwrap_or(SpeechRouteKind::TextToSpeech);
+                        let processing_status_raw: String = row.get(3)?;
+                        Ok(SpeechHistoryRecordSummary {
+                            id: row.get(0)?,
+                            created_at: i64_to_u64(row.get(1)?),
+                            route_kind,
+                            processing_status: SpeechHistoryProcessingStatus::from_db_value(
+                                processing_status_raw.as_str(),
+                            )
+                            .unwrap_or_default(),
+                            processing_error: row.get(4)?,
+                            model_id: row.get(5)?,
+                            speaker: row.get(6)?,
+                            language: row.get(7)?,
+                            saved_voice_id: row.get(8)?,
+                            speed: row.get(9)?,
+                            input_preview: input_preview(input_text.as_str()),
+                            input_chars: input_text.chars().count(),
+                            generation_time_ms: row.get(11)?,
+                            audio_duration_secs: row.get(12)?,
+                            rtf: row.get(13)?,
+                            tokens_generated: row
+                                .get::<_, Option<i64>>(14)?
+                                .and_then(|value| i64_to_usize(value)),
+                            audio_mime_type: row.get(15)?,
+                            audio_filename: row.get(16)?,
+                        })
+                    },
+                )?;
+
+                for row in rows {
+                    records.push(row?);
+                }
+            } else {
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT
+                        id,
+                        created_at,
+                        route_kind,
+                        processing_status,
+                        processing_error,
+                        model_id,
+                        speaker,
+                        language,
+                        saved_voice_id,
+                        speed,
+                        input_text,
+                        generation_time_ms,
+                        audio_duration_secs,
+                        rtf,
+                        tokens_generated,
+                        audio_mime_type,
+                        audio_filename
+                    FROM speech_history_records
+                    WHERE route_kind = ?1
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?2
+                    "#,
+                )?;
+
+                let rows =
+                    stmt.query_map(params![route_kind.as_db_value(), fetch_limit], |row| {
+                        let input_text: String = row.get(10)?;
+                        let route_raw: String = row.get(2)?;
+                        let route_kind = SpeechRouteKind::from_db_value(route_raw.as_str())
+                            .unwrap_or(SpeechRouteKind::TextToSpeech);
+                        let processing_status_raw: String = row.get(3)?;
+                        Ok(SpeechHistoryRecordSummary {
+                            id: row.get(0)?,
+                            created_at: i64_to_u64(row.get(1)?),
+                            route_kind,
+                            processing_status: SpeechHistoryProcessingStatus::from_db_value(
+                                processing_status_raw.as_str(),
+                            )
+                            .unwrap_or_default(),
+                            processing_error: row.get(4)?,
+                            model_id: row.get(5)?,
+                            speaker: row.get(6)?,
+                            language: row.get(7)?,
+                            saved_voice_id: row.get(8)?,
+                            speed: row.get(9)?,
+                            input_preview: input_preview(input_text.as_str()),
+                            input_chars: input_text.chars().count(),
+                            generation_time_ms: row.get(11)?,
+                            audio_duration_secs: row.get(12)?,
+                            rtf: row.get(13)?,
+                            tokens_generated: row
+                                .get::<_, Option<i64>>(14)?
+                                .and_then(|value| i64_to_usize(value)),
+                            audio_mime_type: row.get(15)?,
+                            audio_filename: row.get(16)?,
+                        })
+                    })?;
+
+                for row in rows {
+                    records.push(row?);
+                }
             }
-            Ok(records)
+
+            let page_limit = usize::try_from(list_limit).unwrap_or(200);
+            let has_more = records.len() > page_limit;
+            if has_more {
+                records.truncate(page_limit);
+            }
+            let next_cursor = if has_more {
+                records.last().map(|record| SpeechHistoryRecordListCursor {
+                    created_at: record.created_at,
+                    id: record.id.clone(),
+                })
+            } else {
+                None
+            };
+
+            Ok((records, next_cursor))
         })
         .await
     }

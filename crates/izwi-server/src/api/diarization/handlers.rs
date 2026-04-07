@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{Extension, Multipart, Path, Request, State},
+    extract::{Extension, Multipart, Path, Query, Request, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json, RequestExt,
@@ -11,11 +11,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::api::pagination::{encode_cursor, CursorPagination, CursorPaginationQuery};
 use crate::api::request_context::RequestContext;
 use crate::diarization_store::{
     CompleteDiarizationRecord, DiarizationProcessingStatus, DiarizationRecord,
-    DiarizationRecordSummary, DiarizationSegmentRecord, DiarizationSummaryStatus,
-    DiarizationUtteranceRecord, DiarizationWordRecord, DiarizationStore,
+    DiarizationRecordListCursor, DiarizationRecordSummary, DiarizationSegmentRecord,
+    DiarizationStore, DiarizationSummaryStatus, DiarizationUtteranceRecord, DiarizationWordRecord,
     NewDiarizationRecord, StoredDiarizationAudio, UpdateDiarizationSummary,
 };
 use crate::error::ApiError;
@@ -33,6 +34,7 @@ const DIARIZATION_SUMMARY_SYSTEM_PROMPT: &str = "You summarize diarized transcri
 #[derive(Debug, Serialize)]
 pub struct DiarizationRecordListResponse {
     pub records: Vec<DiarizationRecordSummary>,
+    pub pagination: CursorPagination,
 }
 
 #[derive(Debug, Serialize)]
@@ -109,14 +111,25 @@ struct JsonCreateRequest {
 
 pub async fn list_records(
     State(state): State<AppState>,
+    Query(query): Query<CursorPaginationQuery>,
 ) -> Result<Json<DiarizationRecordListResponse>, ApiError> {
-    let records = state
+    let limit = query.resolved_limit(HISTORY_LIST_LIMIT, 500);
+    let cursor = query.decode_cursor::<DiarizationRecordListCursor>()?;
+    let (records, next_cursor) = state
         .diarization_store
-        .list_records(HISTORY_LIST_LIMIT)
+        .list_records_page(limit, cursor)
         .await
         .map_err(map_store_error)?;
 
-    Ok(Json(DiarizationRecordListResponse { records }))
+    let has_more = next_cursor.is_some();
+    Ok(Json(DiarizationRecordListResponse {
+        records,
+        pagination: CursorPagination {
+            next_cursor: next_cursor.map(|value| encode_cursor(&value)),
+            has_more,
+            limit,
+        },
+    }))
 }
 
 pub async fn get_record(
@@ -728,9 +741,10 @@ async fn generate_diarization_summary(
     transcript: &str,
     correlation_id: Option<&str>,
 ) -> Result<String, String> {
-    let variant = parse_chat_model_variant(Some(DEFAULT_DIARIZATION_SUMMARY_MODEL)).map_err(
-        |err| format!("Invalid summary model '{DEFAULT_DIARIZATION_SUMMARY_MODEL}': {err}"),
-    )?;
+    let variant =
+        parse_chat_model_variant(Some(DEFAULT_DIARIZATION_SUMMARY_MODEL)).map_err(|err| {
+            format!("Invalid summary model '{DEFAULT_DIARIZATION_SUMMARY_MODEL}': {err}")
+        })?;
     let mut params = GenerationParams::default();
     params.max_tokens = DEFAULT_DIARIZATION_SUMMARY_MAX_TOKENS;
     params.temperature = 0.2;
@@ -1185,7 +1199,10 @@ mod tests {
     #[test]
     fn sanitizes_summary_output_for_display_and_storage() {
         let raw = "<think>reasoning</think>\n```text\nSummary text.\n```\n";
-        assert_eq!(sanitize_summary_output(raw).as_deref(), Some("Summary text."));
+        assert_eq!(
+            sanitize_summary_output(raw).as_deref(),
+            Some("Summary text.")
+        );
     }
 }
 

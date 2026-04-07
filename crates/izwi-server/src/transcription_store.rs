@@ -102,6 +102,12 @@ pub struct TranscriptionRecordSummary {
     pub summary_chars: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TranscriptionRecordListCursor {
+    pub created_at: u64,
+    pub id: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TranscriptionRecord {
     pub id: String,
@@ -260,71 +266,167 @@ impl TranscriptionStore {
         &self,
         limit: usize,
     ) -> anyhow::Result<Vec<TranscriptionRecordSummary>> {
+        let (records, _) = self.list_records_page(limit, None).await?;
+        Ok(records)
+    }
+
+    pub async fn list_records_page(
+        &self,
+        limit: usize,
+        cursor: Option<TranscriptionRecordListCursor>,
+    ) -> anyhow::Result<(
+        Vec<TranscriptionRecordSummary>,
+        Option<TranscriptionRecordListCursor>,
+    )> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let list_limit = i64::try_from(limit.clamp(1, 500).max(1)).unwrap_or(200);
-
-            let mut stmt = conn.prepare(
-                r#"
-                SELECT
-                    id,
-                    created_at,
-                    model_id,
-                    language,
-                    processing_status,
-                    processing_error,
-                    duration_secs,
-                    processing_time_ms,
-                    rtf,
-                    audio_mime_type,
-                    audio_filename,
-                    transcription,
-                    summary_status,
-                    summary_text
-                FROM transcription_records
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?1
-                "#,
-            )?;
-
-            let rows = stmt.query_map(params![list_limit], |row| {
-                let processing_status = parse_processing_status(row.get::<_, Option<String>>(4)?);
-                let processing_error: Option<String> = row.get(5)?;
-                let transcription: String = row.get(11)?;
-                let summary_status = parse_summary_status(row.get::<_, Option<String>>(12)?);
-                let summary_text: Option<String> = row.get(13)?;
-                Ok(TranscriptionRecordSummary {
-                    id: row.get(0)?,
-                    created_at: i64_to_u64(row.get(1)?),
-                    model_id: row.get(2)?,
-                    language: row.get(3)?,
-                    processing_status,
-                    processing_error: processing_error.clone(),
-                    duration_secs: row.get(6)?,
-                    processing_time_ms: row.get(7)?,
-                    rtf: row.get(8)?,
-                    audio_mime_type: row.get(9)?,
-                    audio_filename: row.get(10)?,
-                    transcription_preview: transcription_preview(
-                        processing_status,
-                        processing_error.as_deref(),
-                        &transcription,
-                    ),
-                    transcription_chars: transcription.chars().count(),
-                    summary_status,
-                    summary_preview: summary_preview(summary_text.as_deref()),
-                    summary_chars: summary_text
-                        .as_ref()
-                        .map(|text| text.chars().count())
-                        .unwrap_or(0),
-                })
-            })?;
+            let fetch_limit = list_limit.saturating_add(1);
 
             let mut records = Vec::new();
-            for row in rows {
-                records.push(row?);
+            if let Some(cursor) = cursor {
+                let cursor_created_at = i64::try_from(cursor.created_at).unwrap_or(i64::MAX);
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT
+                        id,
+                        created_at,
+                        model_id,
+                        language,
+                        processing_status,
+                        processing_error,
+                        duration_secs,
+                        processing_time_ms,
+                        rtf,
+                        audio_mime_type,
+                        audio_filename,
+                        transcription,
+                        summary_status,
+                        summary_text
+                    FROM transcription_records
+                    WHERE created_at < ?1 OR (created_at = ?1 AND id < ?2)
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?3
+                    "#,
+                )?;
+
+                let rows =
+                    stmt.query_map(params![cursor_created_at, cursor.id, fetch_limit], |row| {
+                        let processing_status =
+                            parse_processing_status(row.get::<_, Option<String>>(4)?);
+                        let processing_error: Option<String> = row.get(5)?;
+                        let transcription: String = row.get(11)?;
+                        let summary_status =
+                            parse_summary_status(row.get::<_, Option<String>>(12)?);
+                        let summary_text: Option<String> = row.get(13)?;
+                        Ok(TranscriptionRecordSummary {
+                            id: row.get(0)?,
+                            created_at: i64_to_u64(row.get(1)?),
+                            model_id: row.get(2)?,
+                            language: row.get(3)?,
+                            processing_status,
+                            processing_error: processing_error.clone(),
+                            duration_secs: row.get(6)?,
+                            processing_time_ms: row.get(7)?,
+                            rtf: row.get(8)?,
+                            audio_mime_type: row.get(9)?,
+                            audio_filename: row.get(10)?,
+                            transcription_preview: transcription_preview(
+                                processing_status,
+                                processing_error.as_deref(),
+                                &transcription,
+                            ),
+                            transcription_chars: transcription.chars().count(),
+                            summary_status,
+                            summary_preview: summary_preview(summary_text.as_deref()),
+                            summary_chars: summary_text
+                                .as_ref()
+                                .map(|text| text.chars().count())
+                                .unwrap_or(0),
+                        })
+                    })?;
+
+                for row in rows {
+                    records.push(row?);
+                }
+            } else {
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT
+                        id,
+                        created_at,
+                        model_id,
+                        language,
+                        processing_status,
+                        processing_error,
+                        duration_secs,
+                        processing_time_ms,
+                        rtf,
+                        audio_mime_type,
+                        audio_filename,
+                        transcription,
+                        summary_status,
+                        summary_text
+                    FROM transcription_records
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?1
+                    "#,
+                )?;
+
+                let rows = stmt.query_map(params![fetch_limit], |row| {
+                    let processing_status =
+                        parse_processing_status(row.get::<_, Option<String>>(4)?);
+                    let processing_error: Option<String> = row.get(5)?;
+                    let transcription: String = row.get(11)?;
+                    let summary_status = parse_summary_status(row.get::<_, Option<String>>(12)?);
+                    let summary_text: Option<String> = row.get(13)?;
+                    Ok(TranscriptionRecordSummary {
+                        id: row.get(0)?,
+                        created_at: i64_to_u64(row.get(1)?),
+                        model_id: row.get(2)?,
+                        language: row.get(3)?,
+                        processing_status,
+                        processing_error: processing_error.clone(),
+                        duration_secs: row.get(6)?,
+                        processing_time_ms: row.get(7)?,
+                        rtf: row.get(8)?,
+                        audio_mime_type: row.get(9)?,
+                        audio_filename: row.get(10)?,
+                        transcription_preview: transcription_preview(
+                            processing_status,
+                            processing_error.as_deref(),
+                            &transcription,
+                        ),
+                        transcription_chars: transcription.chars().count(),
+                        summary_status,
+                        summary_preview: summary_preview(summary_text.as_deref()),
+                        summary_chars: summary_text
+                            .as_ref()
+                            .map(|text| text.chars().count())
+                            .unwrap_or(0),
+                    })
+                })?;
+
+                for row in rows {
+                    records.push(row?);
+                }
             }
-            Ok(records)
+
+            let page_limit = usize::try_from(list_limit).unwrap_or(200);
+            let has_more = records.len() > page_limit;
+            if has_more {
+                records.truncate(page_limit);
+            }
+            let next_cursor = if has_more {
+                records.last().map(|record| TranscriptionRecordListCursor {
+                    created_at: record.created_at,
+                    id: record.id.clone(),
+                })
+            } else {
+                None
+            };
+
+            Ok((records, next_cursor))
         })
         .await
     }

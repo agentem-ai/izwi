@@ -117,6 +117,12 @@ pub struct DiarizationRecordSummary {
     pub summary_chars: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiarizationRecordListCursor {
+    pub created_at: u64,
+    pub id: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DiarizationRecord {
     pub id: String,
@@ -326,85 +332,194 @@ impl DiarizationStore {
         &self,
         limit: usize,
     ) -> anyhow::Result<Vec<DiarizationRecordSummary>> {
+        let (records, _) = self.list_records_page(limit, None).await?;
+        Ok(records)
+    }
+
+    pub async fn list_records_page(
+        &self,
+        limit: usize,
+        cursor: Option<DiarizationRecordListCursor>,
+    ) -> anyhow::Result<(
+        Vec<DiarizationRecordSummary>,
+        Option<DiarizationRecordListCursor>,
+    )> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let list_limit = i64::try_from(limit.clamp(1, 500).max(1)).unwrap_or(200);
-
-            let mut stmt = conn.prepare(
-                r#"
-                SELECT
-                    id,
-                    created_at,
-                    model_id,
-                    processing_status,
-                    processing_error,
-                    speaker_count,
-                    utterances_json,
-                    speaker_name_overrides_json,
-                    duration_secs,
-                    processing_time_ms,
-                    rtf,
-                    audio_mime_type,
-                    audio_filename,
-                    transcript,
-                    summary_status,
-                    summary_text
-                FROM diarization_records
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?1
-                "#,
-            )?;
-
-            let rows = stmt.query_map(params![list_limit], |row| {
-                let speaker_count = row
-                    .get::<_, Option<i64>>(5)?
-                    .and_then(i64_to_usize)
-                    .unwrap_or(0);
-                let utterances: Vec<DiarizationUtteranceRecord> = parse_json_vec(row.get(6)?);
-                let speaker_name_overrides = parse_json_map(row.get(7)?);
-                let transcript: String = row.get(13)?;
-                let summary_status = parse_summary_status(row.get::<_, Option<String>>(14)?);
-                let summary_text: Option<String> = row.get(15)?;
-                Ok(DiarizationRecordSummary {
-                    id: row.get(0)?,
-                    created_at: i64_to_u64(row.get(1)?),
-                    model_id: row.get(2)?,
-                    processing_status: parse_processing_status(row.get(3)?),
-                    processing_error: row.get(4)?,
-                    speaker_count,
-                    corrected_speaker_count: corrected_speaker_count_from_parts(
-                        speaker_count,
-                        &[],
-                        &[],
-                        &utterances,
-                        &speaker_name_overrides,
-                    ),
-                    speaker_name_override_count: speaker_name_overrides.len(),
-                    duration_secs: row.get(8)?,
-                    processing_time_ms: row.get(9)?,
-                    rtf: row.get(10)?,
-                    audio_mime_type: row.get(11)?,
-                    audio_filename: row.get(12)?,
-                    transcript_preview: transcript_preview_with_utterances(
-                        &utterances,
-                        &speaker_name_overrides,
-                        transcript.as_str(),
-                    ),
-                    transcript_chars: transcript.chars().count(),
-                    summary_status,
-                    summary_preview: summary_preview(summary_text.as_deref()),
-                    summary_chars: summary_text
-                        .as_ref()
-                        .map(|text| text.chars().count())
-                        .unwrap_or(0),
-                })
-            })?;
-
             let mut records = Vec::new();
-            for row in rows {
-                records.push(row?);
+            let fetch_limit = list_limit.saturating_add(1);
+
+            if let Some(cursor) = cursor {
+                let cursor_created_at = i64::try_from(cursor.created_at).unwrap_or(i64::MAX);
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT
+                        id,
+                        created_at,
+                        model_id,
+                        processing_status,
+                        processing_error,
+                        speaker_count,
+                        utterances_json,
+                        speaker_name_overrides_json,
+                        duration_secs,
+                        processing_time_ms,
+                        rtf,
+                        audio_mime_type,
+                        audio_filename,
+                        transcript,
+                        summary_status,
+                        summary_text
+                    FROM diarization_records
+                    WHERE created_at < ?1 OR (created_at = ?1 AND id < ?2)
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?3
+                    "#,
+                )?;
+
+                let rows =
+                    stmt.query_map(params![cursor_created_at, cursor.id, fetch_limit], |row| {
+                        let speaker_count = row
+                            .get::<_, Option<i64>>(5)?
+                            .and_then(i64_to_usize)
+                            .unwrap_or(0);
+                        let utterances: Vec<DiarizationUtteranceRecord> =
+                            parse_json_vec(row.get(6)?);
+                        let speaker_name_overrides = parse_json_map(row.get(7)?);
+                        let transcript: String = row.get(13)?;
+                        let summary_status =
+                            parse_summary_status(row.get::<_, Option<String>>(14)?);
+                        let summary_text: Option<String> = row.get(15)?;
+                        Ok(DiarizationRecordSummary {
+                            id: row.get(0)?,
+                            created_at: i64_to_u64(row.get(1)?),
+                            model_id: row.get(2)?,
+                            processing_status: parse_processing_status(row.get(3)?),
+                            processing_error: row.get(4)?,
+                            speaker_count,
+                            corrected_speaker_count: corrected_speaker_count_from_parts(
+                                speaker_count,
+                                &[],
+                                &[],
+                                &utterances,
+                                &speaker_name_overrides,
+                            ),
+                            speaker_name_override_count: speaker_name_overrides.len(),
+                            duration_secs: row.get(8)?,
+                            processing_time_ms: row.get(9)?,
+                            rtf: row.get(10)?,
+                            audio_mime_type: row.get(11)?,
+                            audio_filename: row.get(12)?,
+                            transcript_preview: transcript_preview_with_utterances(
+                                &utterances,
+                                &speaker_name_overrides,
+                                transcript.as_str(),
+                            ),
+                            transcript_chars: transcript.chars().count(),
+                            summary_status,
+                            summary_preview: summary_preview(summary_text.as_deref()),
+                            summary_chars: summary_text
+                                .as_ref()
+                                .map(|text| text.chars().count())
+                                .unwrap_or(0),
+                        })
+                    })?;
+
+                for row in rows {
+                    records.push(row?);
+                }
+            } else {
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT
+                        id,
+                        created_at,
+                        model_id,
+                        processing_status,
+                        processing_error,
+                        speaker_count,
+                        utterances_json,
+                        speaker_name_overrides_json,
+                        duration_secs,
+                        processing_time_ms,
+                        rtf,
+                        audio_mime_type,
+                        audio_filename,
+                        transcript,
+                        summary_status,
+                        summary_text
+                    FROM diarization_records
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?1
+                    "#,
+                )?;
+
+                let rows = stmt.query_map(params![fetch_limit], |row| {
+                    let speaker_count = row
+                        .get::<_, Option<i64>>(5)?
+                        .and_then(i64_to_usize)
+                        .unwrap_or(0);
+                    let utterances: Vec<DiarizationUtteranceRecord> = parse_json_vec(row.get(6)?);
+                    let speaker_name_overrides = parse_json_map(row.get(7)?);
+                    let transcript: String = row.get(13)?;
+                    let summary_status = parse_summary_status(row.get::<_, Option<String>>(14)?);
+                    let summary_text: Option<String> = row.get(15)?;
+                    Ok(DiarizationRecordSummary {
+                        id: row.get(0)?,
+                        created_at: i64_to_u64(row.get(1)?),
+                        model_id: row.get(2)?,
+                        processing_status: parse_processing_status(row.get(3)?),
+                        processing_error: row.get(4)?,
+                        speaker_count,
+                        corrected_speaker_count: corrected_speaker_count_from_parts(
+                            speaker_count,
+                            &[],
+                            &[],
+                            &utterances,
+                            &speaker_name_overrides,
+                        ),
+                        speaker_name_override_count: speaker_name_overrides.len(),
+                        duration_secs: row.get(8)?,
+                        processing_time_ms: row.get(9)?,
+                        rtf: row.get(10)?,
+                        audio_mime_type: row.get(11)?,
+                        audio_filename: row.get(12)?,
+                        transcript_preview: transcript_preview_with_utterances(
+                            &utterances,
+                            &speaker_name_overrides,
+                            transcript.as_str(),
+                        ),
+                        transcript_chars: transcript.chars().count(),
+                        summary_status,
+                        summary_preview: summary_preview(summary_text.as_deref()),
+                        summary_chars: summary_text
+                            .as_ref()
+                            .map(|text| text.chars().count())
+                            .unwrap_or(0),
+                    })
+                })?;
+
+                for row in rows {
+                    records.push(row?);
+                }
             }
-            Ok(records)
+
+            let page_limit = usize::try_from(list_limit).unwrap_or(200);
+            let has_more = records.len() > page_limit;
+            if has_more {
+                records.truncate(page_limit);
+            }
+            let next_cursor = if has_more {
+                records.last().map(|record| DiarizationRecordListCursor {
+                    created_at: record.created_at,
+                    id: record.id.clone(),
+                })
+            } else {
+                None
+            };
+
+            Ok((records, next_cursor))
         })
         .await
     }
