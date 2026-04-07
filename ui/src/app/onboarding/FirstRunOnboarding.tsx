@@ -281,6 +281,34 @@ export function FirstRunOnboarding() {
       .filter((model): model is ModelInfo => Boolean(model));
   }, [modelLookup, selectedVariants]);
 
+  const selectedDownloadTargets = useMemo(() => {
+    return selectedModels.filter(
+      (model) =>
+        isDownloadable(model) && !MANUAL_DOWNLOAD_VARIANTS.has(model.variant),
+    );
+  }, [selectedModels]);
+
+  const selectedTotalBytes = useMemo(() => {
+    return selectedModels.reduce((total, model) => {
+      return total + resolveModelSizeBytes(model);
+    }, 0);
+  }, [selectedModels]);
+
+  const selectedManualTargets = useMemo(() => {
+    return selectedModels.filter((model) =>
+      MANUAL_DOWNLOAD_VARIANTS.has(model.variant),
+    );
+  }, [selectedModels]);
+
+  const activeModelCount =
+    setupMode === "quick" ? quickModels.length : selectedModels.length;
+  const activeDownloadCount =
+    setupMode === "quick"
+      ? quickDownloadTargets.length
+      : selectedDownloadTargets.length;
+  const activeTotalBytes =
+    setupMode === "quick" ? quickTotalBytes : selectedTotalBytes;
+
   useEffect(() => {
     let active = true;
 
@@ -569,107 +597,123 @@ export function FirstRunOnboarding() {
             ) : null}
 
             {step === 1 ? (
-              <div className="space-y-6">
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant={setupMode === "quick" ? "default" : "outline"}
-                    onClick={() => setSetupMode("quick")}
-                  >
-                    Quick setup
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={setupMode === "custom" ? "default" : "outline"}
-                    onClick={() => setSetupMode("custom")}
-                  >
-                    Custom setup
-                  </Button>
-                </div>
+              <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+                <div className="space-y-4">
+                  <div>
+                    <div className="text-lg font-semibold tracking-tight">
+                      Choose model setup
+                    </div>
+                    <div className="mt-1 text-sm text-[var(--text-muted)]">
+                      Start with a recommended pack or handpick models by
+                      category.
+                    </div>
+                  </div>
 
-                {setupMode === "quick" ? (
-                  <div className="rounded-[var(--radius-lg)] border border-border/70 bg-[var(--bg-surface-2)]/80 p-5">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex items-center gap-2">
-                        <Sparkles className="h-4 w-4 text-[var(--text-primary)]" />
-                        <div className="text-sm font-semibold">
+                  <div className="inline-flex items-center gap-2 rounded-[var(--radius-pill)] border border-border/70 bg-[var(--bg-surface-2)]/70 p-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-8 px-3"
+                      variant={setupMode === "quick" ? "default" : "ghost"}
+                      onClick={() => setSetupMode("quick")}
+                    >
+                      Quick setup
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-8 px-3"
+                      variant={setupMode === "custom" ? "default" : "ghost"}
+                      onClick={() => setSetupMode("custom")}
+                    >
+                      Custom setup
+                    </Button>
+                  </div>
+
+                  {setupMode === "quick" ? (
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 text-base font-semibold leading-5 text-[var(--text-primary)]">
+                          <Sparkles className="h-4 w-4 text-[var(--text-primary)]" />
                           Recommended starter pack
                         </div>
+                        <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-subtle)]">
+                          {quickTotalBytes > 0
+                            ? `~${formatBytes(quickTotalBytes)}`
+                            : "Size varies"}
+                        </div>
                       </div>
-                      <div className="text-xs uppercase tracking-[0.28em] text-[var(--text-subtle)]">
-                        {quickTotalBytes > 0
-                          ? `~${formatBytes(quickTotalBytes)}`
-                          : "Size varies"}
-                      </div>
-                    </div>
-                    <div className="mt-4 grid gap-2">
-                      {quickModels.map((model) => {
-                        const details = MODEL_DETAILS[model.variant];
-                        return (
-                          <div
-                            key={model.variant}
-                            className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-border/70 bg-[var(--bg-surface-3)]/70 px-3 py-2 text-sm"
-                          >
-                            <div>
-                              <div className="font-semibold">
-                                {details?.shortName ?? model.variant}
+
+                      <div className="grid gap-2.5">
+                        {quickModels.map((model) => {
+                          const details = MODEL_DETAILS[model.variant];
+                          return (
+                            <div
+                              key={model.variant}
+                              className="flex flex-wrap items-start justify-between gap-3 rounded-[var(--radius-md)] border border-border/70 bg-[var(--bg-surface-2)]/75 px-3.5 py-3"
+                            >
+                              <div className="min-w-0">
+                                <div className="text-base font-semibold leading-5 text-[var(--text-primary)]">
+                                  {details?.shortName ?? model.variant}
+                                </div>
+                                <div className="mt-1 text-sm text-[var(--text-muted)]">
+                                  {details?.description ?? "Recommended model"}
+                                </div>
                               </div>
                               <div className="text-xs text-[var(--text-muted)]">
-                                {details?.description ?? "Recommended model"}
+                                {resolveModelSizeLabel(model)}
                               </div>
                             </div>
-                            <div className="text-xs text-[var(--text-muted)]">
-                              {resolveModelSizeLabel(model)}
-                            </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
+
                       {quickModels.length === 0 ? (
-                        <div className="rounded-[var(--radius-md)] border border-dashed border-border/70 bg-[var(--bg-surface-3)]/60 px-3 py-4 text-sm text-[var(--text-muted)]">
+                        <div className="rounded-[var(--radius-md)] border border-dashed border-border/70 bg-[var(--bg-surface-2)]/60 px-3 py-4 text-sm text-[var(--text-muted)]">
                           No recommended models are available yet.
                         </div>
                       ) : null}
-                    </div>
-                    <div className="mt-4 text-sm text-[var(--text-muted)]">
-                      Downloads run in the background. You can manage models at
-                      any time from Models.
-                    </div>
-                    {quickDownloadTargets.length === 0 &&
-                    quickModels.length > 0 ? (
-                      <div className="mt-3 flex items-center gap-2 text-xs text-[var(--status-positive-text)]">
-                        <CheckCircle2 className="h-4 w-4" />
-                        Starter models already downloaded.
+
+                      <div className="text-sm text-[var(--text-muted)]">
+                        Downloads run in the background. You can manage models
+                        at any time from Models.
                       </div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <div className="rounded-[var(--radius-lg)] border border-border/70 bg-[var(--bg-surface-2)]/80 p-5">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold">
-                          Choose your models
+
+                      {quickDownloadTargets.length === 0 &&
+                      quickModels.length > 0 ? (
+                        <div className="flex items-center gap-2 text-sm text-[var(--status-positive-text)]">
+                          <CheckCircle2 className="h-4 w-4" />
+                          Starter models already downloaded.
                         </div>
-                        <div className="text-sm text-[var(--text-muted)]">
-                          Select as many as you want. You can change later.
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="text-base font-semibold leading-5">
+                            Choose your models
+                          </div>
+                          <div className="mt-1 text-sm text-[var(--text-muted)]">
+                            Select as many as you want. You can change later.
+                          </div>
+                        </div>
+                        <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-subtle)]">
+                          {selectedVariants.size} selected
                         </div>
                       </div>
-                      <div className="text-xs uppercase tracking-[0.28em] text-[var(--text-subtle)]">
-                        {selectedVariants.size} selected
-                      </div>
-                    </div>
-                    <div className="mt-4">
+
                       <ScrollArea className="h-[min(46vh,360px)] pr-2">
                         <div className="space-y-5">
                           {CATEGORY_CONFIGS.map((category) => {
-                            const modelsForCategory =
-                              categorizedModels[category.key];
+                            const modelsForCategory = categorizedModels[category.key];
                             if (!modelsForCategory || modelsForCategory.length === 0) {
                               return null;
                             }
                             return (
                               <div key={category.key} className="space-y-3">
                                 <div>
-                                  <div className="text-xs uppercase tracking-[0.3em] text-[var(--text-subtle)]">
+                                  <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-subtle)]">
                                     {category.title}
                                   </div>
                                   <div className="text-sm text-[var(--text-muted)]">
@@ -690,7 +734,7 @@ export function FirstRunOnboarding() {
                                       <label
                                         key={model.variant}
                                         className={cn(
-                                          "flex gap-3 rounded-[var(--radius-md)] border border-border/70 bg-[var(--bg-surface-3)]/70 p-3",
+                                          "flex gap-3 rounded-[var(--radius-md)] border border-border/70 bg-[var(--bg-surface-2)]/75 p-3",
                                           isDisabled && "opacity-60",
                                         )}
                                       >
@@ -703,7 +747,7 @@ export function FirstRunOnboarding() {
                                         />
                                         <div className="min-w-0 flex-1">
                                           <div className="flex flex-wrap items-center justify-between gap-2">
-                                            <div className="text-sm font-semibold">
+                                            <div className="text-base font-semibold leading-5 text-[var(--text-primary)]">
                                               {metadata?.shortName ?? model.variant}
                                             </div>
                                             <div className="text-xs text-[var(--text-muted)]">
@@ -713,7 +757,7 @@ export function FirstRunOnboarding() {
                                           <div className="mt-1 text-sm text-[var(--text-muted)]">
                                             {metadata?.description ?? "Model option"}
                                           </div>
-                                          <div className="mt-2 text-xs uppercase tracking-[0.28em] text-[var(--text-subtle)]">
+                                          <div className="mt-2 text-xs uppercase tracking-[0.2em] text-[var(--text-subtle)]">
                                             {isManual
                                               ? "Manual download"
                                               : statusLabel}
@@ -728,15 +772,94 @@ export function FirstRunOnboarding() {
                           })}
                         </div>
                       </ScrollArea>
+
+                      {loading ? (
+                        <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Loading model catalog...
+                        </div>
+                      ) : null}
                     </div>
-                    {loading ? (
-                      <div className="mt-3 flex items-center gap-2 text-sm text-[var(--text-muted)]">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Loading model catalog...
+                  )}
+                </div>
+
+                <div className="border-t border-border/70 pt-6 lg:border-l lg:border-t-0 lg:pl-8">
+                  <div className="space-y-5">
+                    <div>
+                      <div className="text-lg font-semibold tracking-tight">
+                        Setup summary
+                      </div>
+                      <div className="mt-1 text-sm text-[var(--text-muted)]">
+                        Review your selection before starting downloads.
+                      </div>
+                    </div>
+
+                    <div className="grid gap-2">
+                      <div className="flex items-center justify-between rounded-[var(--radius-sm)] border border-border/70 bg-[var(--bg-surface-2)]/70 px-3 py-2 text-sm">
+                        <span className="text-[var(--text-muted)]">Mode</span>
+                        <span className="font-semibold text-[var(--text-primary)]">
+                          {setupMode === "quick" ? "Quick setup" : "Custom setup"}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between rounded-[var(--radius-sm)] border border-border/70 bg-[var(--bg-surface-2)]/70 px-3 py-2 text-sm">
+                        <span className="text-[var(--text-muted)]">Models</span>
+                        <span className="font-semibold text-[var(--text-primary)]">
+                          {activeModelCount}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between rounded-[var(--radius-sm)] border border-border/70 bg-[var(--bg-surface-2)]/70 px-3 py-2 text-sm">
+                        <span className="text-[var(--text-muted)]">
+                          To download
+                        </span>
+                        <span className="font-semibold text-[var(--text-primary)]">
+                          {activeDownloadCount}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between rounded-[var(--radius-sm)] border border-border/70 bg-[var(--bg-surface-2)]/70 px-3 py-2 text-sm">
+                        <span className="text-[var(--text-muted)]">
+                          Estimated size
+                        </span>
+                        <span className="font-semibold text-[var(--text-primary)]">
+                          {activeTotalBytes > 0
+                            ? formatBytes(activeTotalBytes)
+                            : "Size varies"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-border/70 pt-4">
+                      <div className="space-y-2.5 text-sm">
+                        <div className="flex items-center gap-2.5 text-[var(--text-secondary)]">
+                          <CheckCircle2 className="h-4 w-4 text-[var(--text-primary)]" />
+                          Review your model selections
+                        </div>
+                        <div className="flex items-center gap-2.5 text-[var(--text-secondary)]">
+                          <CheckCircle2 className="h-4 w-4 text-[var(--text-subtle)]" />
+                          Start downloads in the background
+                        </div>
+                        <div className="flex items-center gap-2.5 text-[var(--text-secondary)]">
+                          <CheckCircle2 className="h-4 w-4 text-[var(--text-subtle)]" />
+                          Continue to the app while setup completes
+                        </div>
+                      </div>
+                    </div>
+
+                    {setupMode === "custom" && selectedVariants.size === 0 ? (
+                      <div className="rounded-[var(--radius-sm)] border border-border/70 bg-[var(--bg-surface-2)]/70 px-3 py-2 text-sm text-[var(--text-muted)]">
+                        Select at least one model to queue downloads from custom
+                        setup.
+                      </div>
+                    ) : null}
+
+                    {setupMode === "custom" && selectedManualTargets.length > 0 ? (
+                      <div className="rounded-[var(--radius-sm)] border border-border/70 bg-[var(--bg-surface-2)]/70 px-3 py-2 text-sm text-[var(--text-muted)]">
+                        {selectedManualTargets.length} selected model
+                        {selectedManualTargets.length === 1 ? "" : "s"} require
+                        manual download from the Models page.
                       </div>
                     ) : null}
                   </div>
-                )}
+                </div>
               </div>
             ) : null}
 
