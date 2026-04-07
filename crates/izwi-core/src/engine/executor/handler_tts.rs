@@ -235,6 +235,7 @@ impl NativeExecutor {
                 tokens_processed,
                 tokens_generated: total_tokens_generated,
                 finished,
+                phase_timing_override: None,
                 error: None,
             })
         })

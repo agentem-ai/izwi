@@ -142,6 +142,7 @@ impl NativeExecutor {
             tokens_processed: output.prompt_tokens,
             tokens_generated: output.tokens_generated.max(1),
             finished: true,
+            phase_timing_override: None,
             error: None,
         })
     }

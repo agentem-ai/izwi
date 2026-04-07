@@ -95,6 +95,7 @@ impl NativeExecutor {
                                 tokens_processed: request.num_prompt_tokens(),
                                 tokens_generated: (samples_len / 256).max(1),
                                 finished: true,
+                                phase_timing_override: None,
                                 error: None,
                             });
                         }
@@ -199,6 +200,7 @@ impl NativeExecutor {
                         tokens_processed,
                         tokens_generated: total_tokens_generated,
                         finished,
+                        phase_timing_override: None,
                         error: None,
                     });
                 }
@@ -321,6 +323,7 @@ impl NativeExecutor {
             tokens_processed: request.num_prompt_tokens(),
             tokens_generated: (samples_len / 256).max(1),
             finished: true,
+            phase_timing_override: None,
             error: None,
         })
     }

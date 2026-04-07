@@ -236,6 +236,7 @@ impl EngineCore {
             tokens_processed,
             tokens_generated,
             finished,
+            phase_timing_override,
             error,
         } = current;
 
@@ -249,6 +250,7 @@ impl EngineCore {
         merged.tokens_processed = merged.tokens_processed.saturating_add(tokens_processed);
         merged.tokens_generated = merged.tokens_generated.saturating_add(tokens_generated);
         merged.finished |= finished;
+        merged.phase_timing_override = phase_timing_override.or(merged.phase_timing_override);
         if error.is_some() {
             merged.error = error;
         }
@@ -617,6 +619,7 @@ impl EngineCore {
                 .get(&request_id)
                 .map(|t| t.elapsed())
                 .unwrap_or_default();
+            let generation_time_ms = generation_time.as_secs_f64() * 1000.0;
 
             // Get sequence ID from scheduler
             let sequence_id = self.scheduler.get_sequence_id(&request_id).unwrap_or(0);
@@ -634,6 +637,27 @@ impl EngineCore {
                 Vec::new(),
                 step_time_ms,
             );
+
+            if let Some(override_timing) = exec_output.phase_timing_override.as_ref() {
+                let phase = self
+                    .request_phase_timings
+                    .entry(request_id.clone())
+                    .or_default();
+                phase.prefill_ms = override_timing.prefill_ms.max(0.0);
+                phase.decode_ms = override_timing.decode_ms.max(0.0);
+                phase.prefill_steps = override_timing.prefill_steps;
+                phase.decode_steps = override_timing.decode_steps;
+                if let Some(first_output_ms_since_start) =
+                    override_timing.first_output_ms_since_start
+                {
+                    let request_relative_first_output = (phase.queue_wait_ms
+                        + first_output_ms_since_start.max(0.0))
+                    .min(generation_time_ms);
+                    phase
+                        .first_output_ms
+                        .get_or_insert(request_relative_first_output);
+                }
+            }
 
             // Process output
             let mut engine_output =
@@ -653,9 +677,7 @@ impl EngineCore {
             }
             if Self::has_user_visible_output(&exec_output) {
                 if let Some(phase) = self.request_phase_timings.get_mut(&request_id) {
-                    phase
-                        .first_output_ms
-                        .get_or_insert_with(|| generation_time.as_secs_f64() * 1000.0);
+                    phase.first_output_ms.get_or_insert(generation_time_ms);
                 }
             }
             if let Some(phase) = self.request_phase_timings.get(&request_id).cloned() {
@@ -671,7 +693,7 @@ impl EngineCore {
                     prefill_ms: phase.prefill_ms,
                     decode_ms: phase.decode_ms,
                     ttft_ms: phase.first_output_ms,
-                    total_ms: generation_time.as_secs_f64() * 1000.0,
+                    total_ms: generation_time_ms,
                     prefill_steps: phase.prefill_steps,
                     decode_steps: phase.decode_steps,
                 });
@@ -841,6 +863,7 @@ mod tests {
                     tokens_processed: entry.num_tokens.max(1),
                     tokens_generated: usize::from(!entry.is_prefill),
                     finished: false,
+                    phase_timing_override: None,
                     error: None,
                 })
                 .collect()
@@ -911,6 +934,7 @@ mod tests {
                     tokens_processed: entry.num_tokens.max(1),
                     tokens_generated: 0,
                     finished: false,
+                    phase_timing_override: None,
                     error: None,
                 })
                 .collect())
@@ -939,6 +963,7 @@ mod tests {
                     tokens_processed: entry.num_tokens.max(1),
                     tokens_generated: entry.num_tokens.max(1),
                     finished: false,
+                    phase_timing_override: None,
                     error: None,
                 })
                 .collect())
@@ -975,6 +1000,7 @@ mod tests {
                     tokens_processed: entry.num_tokens.max(1),
                     tokens_generated: 1,
                     finished: true,
+                    phase_timing_override: None,
                     error: None,
                 })
                 .collect())
@@ -1106,6 +1132,7 @@ mod tests {
             tokens_processed: 1,
             tokens_generated: 1,
             finished: false,
+            phase_timing_override: None,
             error: None,
         };
         let second = ExecutorOutput {
@@ -1116,6 +1143,7 @@ mod tests {
             tokens_processed: 1,
             tokens_generated: 1,
             finished: true,
+            phase_timing_override: None,
             error: None,
         };
 
