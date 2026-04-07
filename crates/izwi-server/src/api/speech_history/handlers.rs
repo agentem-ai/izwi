@@ -11,13 +11,15 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::api::pagination::{encode_cursor, CursorPagination, CursorPaginationQuery};
 use crate::api::request_context::RequestContext;
 use crate::api::saved_voices::resolve_saved_voice_reference;
 use crate::api::tts_long_form::{expand_generation_requests_for_long_form, generate_long_form_tts};
 use crate::error::ApiError;
 use crate::speech_history_store::{
     CompleteSpeechHistoryRecord, NewSpeechHistoryRecord, SpeechHistoryProcessingStatus,
-    SpeechHistoryRecord, SpeechHistoryRecordSummary, SpeechRouteKind, StoredSpeechAudio,
+    SpeechHistoryRecord, SpeechHistoryRecordListCursor, SpeechHistoryRecordSummary,
+    SpeechRouteKind, StoredSpeechAudio,
 };
 use crate::state::AppState;
 use izwi_core::audio::{AudioEncoder, AudioFormat};
@@ -37,6 +39,7 @@ pub(crate) struct RecordAudioQuery {
 #[derive(Debug, Serialize)]
 pub struct SpeechHistoryRecordListResponse {
     pub records: Vec<SpeechHistoryRecordSummary>,
+    pub pagination: CursorPagination,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,20 +126,23 @@ async fn send_stream_event(
 
 pub async fn list_text_to_speech_records(
     State(state): State<AppState>,
+    Query(query): Query<CursorPaginationQuery>,
 ) -> Result<Json<SpeechHistoryRecordListResponse>, ApiError> {
-    list_records(state, SpeechRouteKind::TextToSpeech).await
+    list_records(state, SpeechRouteKind::TextToSpeech, query).await
 }
 
 pub async fn list_voice_design_records(
     State(state): State<AppState>,
+    Query(query): Query<CursorPaginationQuery>,
 ) -> Result<Json<SpeechHistoryRecordListResponse>, ApiError> {
-    list_records(state, SpeechRouteKind::VoiceDesign).await
+    list_records(state, SpeechRouteKind::VoiceDesign, query).await
 }
 
 pub async fn list_voice_cloning_records(
     State(state): State<AppState>,
+    Query(query): Query<CursorPaginationQuery>,
 ) -> Result<Json<SpeechHistoryRecordListResponse>, ApiError> {
-    list_records(state, SpeechRouteKind::VoiceCloning).await
+    list_records(state, SpeechRouteKind::VoiceCloning, query).await
 }
 
 pub async fn get_text_to_speech_record(
@@ -250,13 +256,24 @@ pub async fn create_voice_cloning_record(
 async fn list_records(
     state: AppState,
     route_kind: SpeechRouteKind,
+    query: CursorPaginationQuery,
 ) -> Result<Json<SpeechHistoryRecordListResponse>, ApiError> {
-    let records = state
+    let limit = query.resolved_limit(HISTORY_LIST_LIMIT, 500);
+    let cursor = query.decode_cursor::<SpeechHistoryRecordListCursor>()?;
+    let (records, next_cursor) = state
         .speech_history_store
-        .list_records(route_kind, HISTORY_LIST_LIMIT)
+        .list_records_page(route_kind, limit, cursor)
         .await
         .map_err(map_store_error)?;
-    Ok(Json(SpeechHistoryRecordListResponse { records }))
+    let has_more = next_cursor.is_some();
+    Ok(Json(SpeechHistoryRecordListResponse {
+        records,
+        pagination: CursorPagination {
+            next_cursor: next_cursor.map(|value| encode_cursor(&value)),
+            has_more,
+            limit,
+        },
+    }))
 }
 
 async fn get_record(
@@ -371,14 +388,7 @@ async fn create_record(
     }
 
     let record = synthesize_record_internal(
-        &state,
-        &ctx,
-        req,
-        route_kind,
-        variant,
-        model_id,
-        input_text,
-        None,
+        &state, &ctx, req, route_kind, variant, model_id, input_text, None,
     )
     .await?;
 
@@ -482,14 +492,7 @@ pub(crate) async fn synthesize_record(
     state.runtime.load_model(variant).await?;
 
     synthesize_record_internal(
-        state,
-        ctx,
-        req,
-        route_kind,
-        variant,
-        model_id,
-        input_text,
-        None,
+        state, ctx, req, route_kind, variant, model_id, input_text, None,
     )
     .await
 }
@@ -818,27 +821,27 @@ async fn stream_record_creation(
             }
 
             drop(chunk_rx);
-                let generation_outcome = generation_task.await;
-                if encoding_failed || stream_closed {
-                    let _ = generation_outcome;
+            let generation_outcome = generation_task.await;
+            if encoding_failed || stream_closed {
+                let _ = generation_outcome;
+                failed = true;
+                break;
+            }
+
+            match generation_outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
                     failed = true;
+                    failure_message = Some(err.to_string());
                     break;
                 }
-
-                match generation_outcome {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => {
-                        failed = true;
-                        failure_message = Some(err.to_string());
-                        break;
-                    }
-                    Err(err) => {
-                        failed = true;
-                        failure_message = Some(format!("Streaming task failed: {err}"));
-                        break;
-                    }
+                Err(err) => {
+                    failed = true;
+                    failure_message = Some(format!("Streaming task failed: {err}"));
+                    break;
                 }
             }
+        }
 
         if failed {
             if let Some(message) = failure_message {

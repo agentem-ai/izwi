@@ -1,4 +1,3 @@
-use axum::extract::Query;
 use base64::Engine;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -48,8 +47,4 @@ pub fn decode_cursor<T: DeserializeOwned>(cursor: &str) -> Result<T, ApiError> {
         .map_err(|_| ApiError::bad_request("Invalid pagination cursor"))?;
     serde_json::from_slice::<T>(bytes.as_slice())
         .map_err(|_| ApiError::bad_request("Invalid pagination cursor"))
-}
-
-pub fn resolve_cursor_query(Query(query): Query<CursorPaginationQuery>) -> CursorPaginationQuery {
-    query
 }
