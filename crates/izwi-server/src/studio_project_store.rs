@@ -164,6 +164,12 @@ pub struct StudioProjectSummary {
     pub total_chars: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StudioProjectListCursor {
+    pub updated_at: u64,
+    pub id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StudioProjectSegmentRecord {
     pub id: String,
@@ -397,49 +403,122 @@ impl StudioProjectStore {
     }
 
     pub async fn list_projects(&self, limit: usize) -> anyhow::Result<Vec<StudioProjectSummary>> {
+        let (projects, _) = self.list_projects_page(limit, None).await?;
+        Ok(projects)
+    }
+
+    pub async fn list_projects_page(
+        &self,
+        limit: usize,
+        cursor: Option<StudioProjectListCursor>,
+    ) -> anyhow::Result<(Vec<StudioProjectSummary>, Option<StudioProjectListCursor>)> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let list_limit = i64::try_from(limit.clamp(1, 200).max(1)).unwrap_or(100);
-            let mut stmt = conn.prepare(
-                r#"
-                SELECT
-                    p.id,
-                    p.created_at,
-                    p.updated_at,
-                    p.name,
-                    p.source_filename,
-                    p.model_id,
-                    p.voice_mode,
-                    p.speaker,
-                    p.saved_voice_id,
-                    p.speed,
-                    COUNT(s.id) AS segment_count,
-                    COALESCE(SUM(CASE WHEN s.speech_record_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS rendered_segment_count,
-                    COALESCE(SUM(LENGTH(s.text)), 0) AS total_chars
-                FROM studio_projects p
-                LEFT JOIN studio_project_segments s ON s.project_id = p.id
-                GROUP BY
-                    p.id,
-                    p.created_at,
-                    p.updated_at,
-                    p.name,
-                    p.source_filename,
-                    p.model_id,
-                    p.voice_mode,
-                    p.speaker,
-                    p.saved_voice_id,
-                    p.speed
-                ORDER BY p.updated_at DESC, p.id DESC
-                LIMIT ?1
-                "#,
-            )?;
+            let page_size = usize::try_from(list_limit).unwrap_or(100);
+            let fetch_limit = list_limit.saturating_add(1);
 
-            let rows = stmt.query_map(params![list_limit], map_project_summary_row)?;
             let mut projects = Vec::new();
-            for row in rows {
-                projects.push(row?);
+            if let Some(cursor) = cursor {
+                let cursor_updated_at = i64::try_from(cursor.updated_at).unwrap_or(i64::MAX);
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT
+                        p.id,
+                        p.created_at,
+                        p.updated_at,
+                        p.name,
+                        p.source_filename,
+                        p.model_id,
+                        p.voice_mode,
+                        p.speaker,
+                        p.saved_voice_id,
+                        p.speed,
+                        COUNT(s.id) AS segment_count,
+                        COALESCE(SUM(CASE WHEN s.speech_record_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS rendered_segment_count,
+                        COALESCE(SUM(LENGTH(s.text)), 0) AS total_chars
+                    FROM studio_projects p
+                    LEFT JOIN studio_project_segments s ON s.project_id = p.id
+                    WHERE p.updated_at < ?1 OR (p.updated_at = ?1 AND p.id < ?2)
+                    GROUP BY
+                        p.id,
+                        p.created_at,
+                        p.updated_at,
+                        p.name,
+                        p.source_filename,
+                        p.model_id,
+                        p.voice_mode,
+                        p.speaker,
+                        p.saved_voice_id,
+                        p.speed
+                    ORDER BY p.updated_at DESC, p.id DESC
+                    LIMIT ?3
+                    "#,
+                )?;
+
+                let rows = stmt.query_map(
+                    params![cursor_updated_at, cursor.id, fetch_limit],
+                    map_project_summary_row,
+                )?;
+                for row in rows {
+                    projects.push(row?);
+                }
+            } else {
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT
+                        p.id,
+                        p.created_at,
+                        p.updated_at,
+                        p.name,
+                        p.source_filename,
+                        p.model_id,
+                        p.voice_mode,
+                        p.speaker,
+                        p.saved_voice_id,
+                        p.speed,
+                        COUNT(s.id) AS segment_count,
+                        COALESCE(SUM(CASE WHEN s.speech_record_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS rendered_segment_count,
+                        COALESCE(SUM(LENGTH(s.text)), 0) AS total_chars
+                    FROM studio_projects p
+                    LEFT JOIN studio_project_segments s ON s.project_id = p.id
+                    GROUP BY
+                        p.id,
+                        p.created_at,
+                        p.updated_at,
+                        p.name,
+                        p.source_filename,
+                        p.model_id,
+                        p.voice_mode,
+                        p.speaker,
+                        p.saved_voice_id,
+                        p.speed
+                    ORDER BY p.updated_at DESC, p.id DESC
+                    LIMIT ?1
+                    "#,
+                )?;
+
+                let rows = stmt.query_map(params![fetch_limit], map_project_summary_row)?;
+                for row in rows {
+                    projects.push(row?);
+                }
             }
-            Ok(projects)
+
+            let has_more = projects.len() > page_size;
+            if has_more {
+                projects.truncate(page_size);
+            }
+
+            let next_cursor = if has_more {
+                projects.last().map(|project| StudioProjectListCursor {
+                    updated_at: project.updated_at,
+                    id: project.id.clone(),
+                })
+            } else {
+                None
+            };
+
+            Ok((projects, next_cursor))
         })
         .await
     }

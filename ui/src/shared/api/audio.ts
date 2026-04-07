@@ -1409,10 +1409,28 @@ export class AudioApiClient {
   }
 
   async listStudioProjects(): Promise<StudioProjectSummary[]> {
-    const payload = await this.http.request<{ projects: StudioProjectSummary[] }>(
-      this.studioProjectsCollectionPath(),
-    );
-    return payload.projects ?? [];
+    const page = await this.listStudioProjectPage();
+    return page.items;
+  }
+
+  async listStudioProjectPage(
+    query?: CursorPaginationQuery,
+  ): Promise<CursorPageResult<StudioProjectSummary>> {
+    const path = `${this.studioProjectsCollectionPath()}${buildCursorQueryString(query)}`;
+    const payload = await this.http.request<{
+      projects: StudioProjectSummary[];
+      pagination?: {
+        next_cursor?: string | null;
+        has_more?: boolean;
+        limit?: number;
+      };
+    }>(path);
+    const items = payload.projects ?? [];
+    const fallbackLimit = query?.limit ?? Math.max(items.length, 1);
+    return {
+      items,
+      pagination: normalizeCursorPaginationMeta(payload.pagination, fallbackLimit),
+    };
   }
 
   async createStudioProject(

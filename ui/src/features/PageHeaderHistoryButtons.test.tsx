@@ -24,6 +24,7 @@ const apiMocks = vi.hoisted(() => ({
   deleteTranscriptionRecord: vi.fn(),
   transcriptionRecordAudioUrl: vi.fn(),
   listStudioProjects: vi.fn(),
+  listStudioProjectPage: vi.fn(),
   listSavedVoices: vi.fn(),
 }));
 
@@ -45,6 +46,7 @@ vi.mock("@/api", () => ({
     deleteTranscriptionRecord: apiMocks.deleteTranscriptionRecord,
     transcriptionRecordAudioUrl: apiMocks.transcriptionRecordAudioUrl,
     listStudioProjects: apiMocks.listStudioProjects,
+    listStudioProjectPage: apiMocks.listStudioProjectPage,
     listSavedVoices: apiMocks.listSavedVoices,
   },
 }));
@@ -66,6 +68,7 @@ vi.mock("../api", () => ({
     deleteTranscriptionRecord: apiMocks.deleteTranscriptionRecord,
     transcriptionRecordAudioUrl: apiMocks.transcriptionRecordAudioUrl,
     listStudioProjects: apiMocks.listStudioProjects,
+    listStudioProjectPage: apiMocks.listStudioProjectPage,
     listSavedVoices: apiMocks.listSavedVoices,
   },
 }));
@@ -88,6 +91,7 @@ describe("Page header history buttons", () => {
     apiMocks.deleteTranscriptionRecord.mockReset();
     apiMocks.transcriptionRecordAudioUrl.mockReset();
     apiMocks.listStudioProjects.mockReset();
+    apiMocks.listStudioProjectPage.mockReset();
     apiMocks.listSavedVoices.mockReset();
 
     apiMocks.listSpeechHistoryRecords.mockResolvedValue([]);
@@ -118,6 +122,14 @@ describe("Page header history buttons", () => {
       },
     }));
     apiMocks.listStudioProjects.mockResolvedValue([]);
+    apiMocks.listStudioProjectPage.mockImplementation(async () => ({
+      items: await apiMocks.listStudioProjects(),
+      pagination: {
+        next_cursor: null,
+        has_more: false,
+        limit: 24,
+      },
+    }));
     apiMocks.listSavedVoices.mockResolvedValue([]);
 
     HTMLElement.prototype.scrollIntoView = vi.fn();
