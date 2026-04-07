@@ -16,11 +16,14 @@ interface PageHeaderProps {
 
 export function PageShell({ children, className }: PageShellProps) {
   return (
-    <div
-      className={cn("w-full max-w-[1460px] mx-auto h-full flex-1", className)}
+    <section
+      className={cn(
+        "flow-root w-full max-w-[1460px] mx-auto flex-1",
+        className,
+      )}
     >
       {children}
-    </div>
+    </section>
   );
 }
 
@@ -32,7 +35,7 @@ export function PageHeader({
   titleClassName,
 }: PageHeaderProps) {
   return (
-    <div
+    <header
       className={cn(
         "mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between",
         className,
@@ -56,6 +59,6 @@ export function PageHeader({
       {actions ? (
         <div className="flex shrink-0 items-center gap-3 pt-1">{actions}</div>
       ) : null}
-    </div>
+    </header>
   );
 }
