@@ -448,3 +448,87 @@ Update `docs/user` so supported models, defaults, and examples reflect the curre
     - `crates/izwi-server/src/api/openai/audio/speech.rs`
     - `crates/izwi-server/src/api/openai/audio/diarizations.rs`
   - Focused `rg` drift checks for stale model IDs and capability wording in updated docs.
+
+# LFM2.5 Chat TTFT/TPS Improvement Plan
+
+## Goal
+
+Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency and throughput with a low-risk pass focused on hot-path overhead and observability correctness.
+
+## Baseline (2026-04-07)
+
+- Instruct benchmark sample (`iterations=5`, `max_tokens=256`, `concurrent=1`, warm):
+  - TTFT: ~`883 ms`
+  - End-to-end: ~`2379 ms`
+  - Completion TPS: ~`67 tok/s`
+- Runtime delta currently reports `prefill ~= total` and `decode ~= 0` for LFM2.5.
+- Key diagnosis: LFM2.5 runs through non-incremental chat fallback (`supports_incremental_decode=false`), so current runtime phase telemetry is not trustworthy for decode-path tuning.
+
+## Qwen3.5 Optimization Analysis (What Transfers This Pass)
+
+- Portable now (apply to LFM2.5 chat wrapper):
+  - `qwen35/chat` Phase A/C/E style optimizations:
+    - token-piece decode instead of full-history decode per step,
+    - remove O(n^2) `decode_text(&generated_ids)` + `text_delta` loop,
+    - avoid unnecessary per-step allocations/bookkeeping in greedy defaults.
+  - Stream deltas in token-sized chunks (not per-character callbacks).
+  - Bench/telemetry discipline from kernel signoff work (`04e6494`, `38aee5b`): fixed protocol and clear counters.
+- Not portable in this pass (requires native LFM2 runtime internals, not current Candle `quantized_lfm2` wrapper):
+  - Qwen3.5 dense-vs-paged decode routing.
+  - Fused SDPA/flash-gated attention paths.
+  - RoPE kernel path switching and full-attention sequence batching in native Qwen layers.
+  - Block fusion, tiled recurrence, and Qwen3.5-specific buffer pool wiring.
+
+## Plan
+
+- [x] Phase 1: Fix LFM2.5 observability so TTFT/TPS tuning is measurable
+  Scope:
+  Add explicit non-incremental phase timing capture for LFM2.5 fallback chat execution (prefill, first-token, decode, total), and surface it through existing runtime telemetry/bench output paths so decode is no longer reported as `0`.
+  Verification:
+  Run fixed chat benchmark protocol and confirm runtime decode metrics are non-zero and consistent with streamed timing.
+
+- [x] Phase 2: Port Qwen3.5 chat hot-path decode optimizations to LFM2.5
+  Scope:
+  Introduce token-piece decode caching in LFM2 tokenizer, append assembled text incrementally per token, remove repeated full-history decode/delta diffing, and emit per-token deltas (no per-char callback loop).
+  Verification:
+  Unit tests for token-piece decode correctness; benchmark diff showing completion TPS gain on both Instruct and Thinking variants.
+
+- [ ] Phase 3: Reduce prompt-side overhead that impacts TTFT
+  Scope:
+  Cache static prompt scaffolding token IDs (`im_start`, role headers, line breaks, assistant prefix) and avoid repeated tiny tokenization calls in `build_prompt`.
+  Verification:
+  Short-prompt benchmark profile shows TTFT improvement without output regression.
+
+- [ ] Phase 4: Benchmark signoff and guardrails
+  Scope:
+  Run short/long prompt profiles for both LFM2.5 variants with warm server and fixed settings; capture `izwi bench chat` and runtime metrics snapshots before/after.
+  Verification:
+  Meet minimum acceptance targets:
+  - TTFT improvement >= 10% on short prompt profile.
+  - Completion TPS improvement >= 10% on long prompt profile.
+  - No correctness regressions (stop-token handling, repetition-loop guard behavior, streamed text parity).
+
+- [ ] Check-in before implementation
+  Share Phase 1-2 scope and expected tradeoffs, then proceed with code changes only after signoff.
+
+## Review (Planning)
+
+- This pass intentionally targets changes that are architecture-compatible with current `quantized_lfm2` usage.
+- Qwen3.5 kernel-level attention optimizations are explicitly deferred because LFM2.5 currently does not use that native attention stack.
+- Observability correction is first to avoid optimizing against misleading decode telemetry.
+
+## Review (Implementation: Phase 1-2)
+
+- Added executor-to-engine phase timing overrides for non-incremental chat fallback paths:
+  - fallback chat execution now records prefill time, decode time, and first-output timing in the executor,
+  - engine core applies the override to request-phase telemetry before building latency breakdowns.
+- Resulting runtime metrics now have a non-zero decode path for fallback chat requests instead of attributing all work to prefill.
+- Ported Qwen3.5-style chat assembly optimizations to LFM2.5:
+  - added token-piece decode cache in `ChatTokenizer`,
+  - replaced per-step full-history decode + `text_delta` diffing with incremental string append,
+  - switched callback emission from per-character to per-token-piece deltas.
+- Verification:
+  - `cargo check -p izwi-core`
+  - `cargo test -p izwi-core --no-run`
+  - `cargo test -p izwi-core lfm2::chat -- --nocapture`
+  - `cargo test -p izwi-core engine::core::tests::test_merge_executor_output_replaces_cumulative_audio_snapshots -- --nocapture`

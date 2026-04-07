@@ -52,6 +52,7 @@ struct ChatTokenizer {
     inner: Tokenizer,
     vocab_size: usize,
     specials: SpecialTokenIds,
+    decode_piece_cache: Mutex<HashMap<u32, String>>,
 }
 
 impl ChatTokenizer {
@@ -99,6 +100,7 @@ impl ChatTokenizer {
                 eos,
                 eos_alt,
             },
+            decode_piece_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -113,6 +115,23 @@ impl ChatTokenizer {
             .filter(|id| (*id as usize) < self.vocab_size)
             .collect();
         self.inner.decode(&filtered)
+    }
+
+    fn decode_token_piece(&self, token_id: u32) -> Result<String> {
+        if token_id as usize >= self.vocab_size {
+            return Ok(String::new());
+        }
+        if let Ok(cache) = self.decode_piece_cache.lock() {
+            if let Some(piece) = cache.get(&token_id) {
+                return Ok(piece.clone());
+            }
+        }
+
+        let piece = self.decode_text(&[token_id])?;
+        if let Ok(mut cache) = self.decode_piece_cache.lock() {
+            cache.insert(token_id, piece.clone());
+        }
+        Ok(piece)
     }
 }
 
@@ -209,16 +228,12 @@ impl Lfm2ChatModel {
                 break;
             }
 
+            let delta = self.tokenizer.decode_token_piece(next)?;
             generated_ids.push(next);
-            let decoded = self.tokenizer.decode_text(&generated_ids)?;
-            let delta = text_delta(&assembled, &decoded);
             if !delta.is_empty() {
-                for ch in delta.chars() {
-                    let mut buf = [0u8; 4];
-                    on_delta(ch.encode_utf8(&mut buf));
-                }
+                on_delta(&delta);
             }
-            assembled = decoded;
+            assembled.push_str(&delta);
 
             if has_token_repetition_loop(&generated_ids) {
                 break;
@@ -330,18 +345,6 @@ fn argmax(logits: &Tensor) -> Result<u32> {
     idx.to_dtype(DType::U32)?
         .to_scalar::<u32>()
         .map_err(Error::from)
-}
-
-fn text_delta(previous: &str, current: &str) -> String {
-    if let Some(delta) = current.strip_prefix(previous) {
-        return delta.to_string();
-    }
-    let common = previous
-        .chars()
-        .zip(current.chars())
-        .take_while(|(a, b)| a == b)
-        .count();
-    current.chars().skip(common).collect()
 }
 
 fn strip_past_assistant_thinking(input: &str) -> String {
