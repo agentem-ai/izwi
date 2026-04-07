@@ -182,8 +182,24 @@ pub struct ExecutorOutput {
     pub tokens_generated: usize,
     /// Whether generation is complete
     pub finished: bool,
+    /// Optional per-request phase timing override from model-specific execution paths.
+    pub phase_timing_override: Option<ExecutorPhaseTiming>,
     /// Error if any
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecutorPhaseTiming {
+    /// Prefill phase duration in milliseconds.
+    pub prefill_ms: f64,
+    /// Decode phase duration in milliseconds.
+    pub decode_ms: f64,
+    /// Time to first user-visible output in milliseconds since model execution start.
+    pub first_output_ms_since_start: Option<f64>,
+    /// Number of prefill steps attributed to this request.
+    pub prefill_steps: u32,
+    /// Number of decode steps attributed to this request.
+    pub decode_steps: u32,
 }
 
 impl ExecutorOutput {
@@ -196,6 +212,7 @@ impl ExecutorOutput {
             tokens_processed: 0,
             tokens_generated: 0,
             finished: true,
+            phase_timing_override: None,
             error: Some(error.into()),
         }
     }

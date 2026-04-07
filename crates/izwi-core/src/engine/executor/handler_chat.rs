@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crate::error::{Error, Result};
 use crate::models::shared::chat::ChatGenerationConfig;
 use crate::models::shared::chat::ChatMessage;
@@ -6,7 +8,7 @@ use super::super::request::EngineCoreRequest;
 use super::super::scheduler::ScheduledRequest;
 use super::super::types::AudioOutput;
 use super::state::ActiveChatDecode;
-use super::{ExecutorOutput, NativeExecutor};
+use super::{ExecutorOutput, ExecutorPhaseTiming, NativeExecutor};
 
 impl NativeExecutor {
     fn chat_generation_config(request: &EngineCoreRequest) -> ChatGenerationConfig {
@@ -60,11 +62,19 @@ impl NativeExecutor {
 
         // Fallback path for chat backends that do not expose incremental decode state.
         if !model.supports_incremental_decode() {
+            let mut phase_timing_override: Option<ExecutorPhaseTiming> = None;
             let output = Self::run_blocking(|| {
-                if let Some(tx) = stream_tx.as_ref() {
-                    let mut sequence = 0usize;
-                    let mut stream_err: Option<Error> = None;
-                    let mut emit = |delta: &str| {
+                let generation_started = Instant::now();
+                let mut first_output_ms_since_start: Option<f64> = None;
+                let mut sequence = 0usize;
+                let mut stream_err: Option<Error> = None;
+
+                let mut emit = |delta: &str| {
+                    if first_output_ms_since_start.is_none() && !delta.is_empty() {
+                        first_output_ms_since_start =
+                            Some(generation_started.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    if let Some(tx) = stream_tx.as_ref() {
                         if stream_err.is_none() {
                             if let Err(err) =
                                 Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
@@ -72,21 +82,40 @@ impl NativeExecutor {
                                 stream_err = Some(err);
                             }
                         }
-                    };
-                    let output = model.generate_with_callback_and_config(
-                        messages,
-                        max_new_tokens,
-                        &generation_config,
-                        &mut emit,
-                    )?;
-                    if let Some(err) = stream_err {
-                        return Err(err);
                     }
-                    Self::stream_final_marker(tx, &request.id, &mut sequence)?;
-                    Ok(output)
-                } else {
-                    model.generate_with_config(messages, max_new_tokens, &generation_config)
+                };
+
+                let output = model.generate_with_callback_and_config(
+                    messages,
+                    max_new_tokens,
+                    &generation_config,
+                    &mut emit,
+                )?;
+
+                if let Some(err) = stream_err {
+                    return Err(err);
                 }
+                if let Some(tx) = stream_tx.as_ref() {
+                    Self::stream_final_marker(tx, &request.id, &mut sequence)?;
+                }
+
+                let total_ms = generation_started.elapsed().as_secs_f64() * 1000.0;
+                let prefill_ms = first_output_ms_since_start.unwrap_or(total_ms);
+                let decode_ms = (total_ms - prefill_ms).max(0.0);
+                let decode_steps = if decode_ms > 0.0 {
+                    u32::try_from(output.tokens_generated.max(1)).unwrap_or(u32::MAX)
+                } else {
+                    0
+                };
+                phase_timing_override = Some(ExecutorPhaseTiming {
+                    prefill_ms: prefill_ms.max(0.0),
+                    decode_ms,
+                    first_output_ms_since_start,
+                    prefill_steps: 1,
+                    decode_steps,
+                });
+
+                Ok(output)
             })?;
 
             return Ok(ExecutorOutput {
@@ -97,6 +126,7 @@ impl NativeExecutor {
                 tokens_processed: request.num_prompt_tokens(),
                 tokens_generated: output.tokens_generated.max(1),
                 finished: true,
+                phase_timing_override,
                 error: None,
             });
         }
@@ -202,6 +232,7 @@ impl NativeExecutor {
             tokens_processed,
             tokens_generated: total_tokens_generated,
             finished,
+            phase_timing_override: None,
             error: None,
         })
     }
