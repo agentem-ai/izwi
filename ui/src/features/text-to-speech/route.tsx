@@ -110,6 +110,11 @@ export function TextToSpeechPage({
     records,
     loading: historyLoading,
     error: historyError,
+    currentPage,
+    canGoPreviousPage,
+    canGoNextPage,
+    goToPreviousPage,
+    goToNextPage,
     refresh: refreshHistory,
   } = useTextToSpeechHistory();
   const {
@@ -374,6 +379,13 @@ export function TextToSpeechPage({
             savedVoiceNameById={savedVoiceNameById}
             loading={historyLoading}
             error={historyError}
+            pagination={{
+              page: currentPage,
+              canPrevious: canGoPreviousPage,
+              canNext: canGoNextPage,
+              onPrevious: goToPreviousPage,
+              onNext: goToNextPage,
+            }}
             onRefresh={() => void refreshHistory()}
             onOpenRecord={(nextRecordId) => {
               navigate(`/text-to-speech/${nextRecordId}`);

@@ -184,6 +184,11 @@ export function TranscriptionPage({
     records,
     loading: historyLoading,
     error: historyError,
+    currentPage,
+    canGoPreviousPage,
+    canGoNextPage,
+    goToPreviousPage,
+    goToNextPage,
     refresh: refreshHistory,
   } = useTranscriptionHistory();
   const {
@@ -437,6 +442,13 @@ export function TranscriptionPage({
             records={records}
             loading={historyLoading}
             error={historyError}
+            pagination={{
+              page: currentPage,
+              canPrevious: canGoPreviousPage,
+              canNext: canGoNextPage,
+              onPrevious: goToPreviousPage,
+              onNext: goToNextPage,
+            }}
             onRefresh={() => void refreshHistory()}
             onDeleteRecord={handleHistoryDelete}
             onOpenRecord={(nextRecordId) => {

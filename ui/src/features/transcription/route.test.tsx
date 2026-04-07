@@ -7,6 +7,7 @@ import { TranscriptionPage } from "./route";
 
 const apiMocks = vi.hoisted(() => ({
   listTranscriptionRecords: vi.fn(),
+  listTranscriptionRecordPage: vi.fn(),
   getTranscriptionRecord: vi.fn(),
   transcriptionRecordAudioUrl: vi.fn(),
   deleteTranscriptionRecord: vi.fn(),
@@ -52,6 +53,7 @@ const componentMocks = vi.hoisted(() => ({
 vi.mock("@/api", () => ({
   api: {
     listTranscriptionRecords: apiMocks.listTranscriptionRecords,
+    listTranscriptionRecordPage: apiMocks.listTranscriptionRecordPage,
     getTranscriptionRecord: apiMocks.getTranscriptionRecord,
     transcriptionRecordAudioUrl: apiMocks.transcriptionRecordAudioUrl,
     deleteTranscriptionRecord: apiMocks.deleteTranscriptionRecord,
@@ -116,6 +118,7 @@ describe("TranscriptionPage detail route", () => {
   beforeEach(() => {
     apiMocks.getTranscriptionRecord.mockReset();
     apiMocks.listTranscriptionRecords.mockReset();
+    apiMocks.listTranscriptionRecordPage.mockReset();
     apiMocks.transcriptionRecordAudioUrl.mockReset();
     apiMocks.deleteTranscriptionRecord.mockReset();
     apiMocks.regenerateTranscriptionSummary.mockReset();
@@ -127,6 +130,14 @@ describe("TranscriptionPage detail route", () => {
 
     apiMocks.transcriptionRecordAudioUrl.mockReturnValue("/audio/transcription.wav");
     apiMocks.listTranscriptionRecords.mockResolvedValue([]);
+    apiMocks.listTranscriptionRecordPage.mockImplementation(async () => ({
+      items: await apiMocks.listTranscriptionRecords(),
+      pagination: {
+        next_cursor: null,
+        has_more: false,
+        limit: 25,
+      },
+    }));
     apiMocks.deleteTranscriptionRecord.mockResolvedValue(undefined);
     apiMocks.createTranscriptionRecord.mockResolvedValue({
       id: "txr-created-1",
@@ -213,6 +224,112 @@ describe("TranscriptionPage detail route", () => {
     expect(
       screen.getByRole("heading", { name: "No transcription jobs yet" }),
     ).toBeInTheDocument();
+  });
+
+  it("navigates transcription history pagination controls", async () => {
+    apiMocks.listTranscriptionRecordPage.mockReset();
+    apiMocks.listTranscriptionRecordPage
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "txr-page-1",
+            created_at: 1,
+            model_id: "Parakeet-TDT-0.6B-v3",
+            aligner_model_id: null,
+            language: "English",
+            processing_status: "ready",
+            processing_error: null,
+            duration_secs: 4,
+            processing_time_ms: 120,
+            rtf: 0.5,
+            audio_mime_type: "audio/wav",
+            audio_filename: "page-one.wav",
+            transcription_preview: "Page one preview.",
+            transcription_chars: 17,
+            summary_status: "not_requested",
+            summary_preview: null,
+            summary_chars: 0,
+          },
+        ],
+        pagination: {
+          next_cursor: "txr-cursor-2",
+          has_more: true,
+          limit: 25,
+        },
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "txr-page-2",
+            created_at: 2,
+            model_id: "Parakeet-TDT-0.6B-v3",
+            aligner_model_id: null,
+            language: "English",
+            processing_status: "ready",
+            processing_error: null,
+            duration_secs: 5,
+            processing_time_ms: 100,
+            rtf: 0.4,
+            audio_mime_type: "audio/wav",
+            audio_filename: "page-two.wav",
+            transcription_preview: "Page two preview.",
+            transcription_chars: 17,
+            summary_status: "not_requested",
+            summary_preview: null,
+            summary_chars: 0,
+          },
+        ],
+        pagination: {
+          next_cursor: null,
+          has_more: false,
+          limit: 25,
+        },
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "txr-page-1",
+            created_at: 1,
+            model_id: "Parakeet-TDT-0.6B-v3",
+            aligner_model_id: null,
+            language: "English",
+            processing_status: "ready",
+            processing_error: null,
+            duration_secs: 4,
+            processing_time_ms: 120,
+            rtf: 0.5,
+            audio_mime_type: "audio/wav",
+            audio_filename: "page-one.wav",
+            transcription_preview: "Page one preview.",
+            transcription_chars: 17,
+            summary_status: "not_requested",
+            summary_preview: null,
+            summary_chars: 0,
+          },
+        ],
+        pagination: {
+          next_cursor: "txr-cursor-2",
+          has_more: true,
+          limit: 25,
+        },
+      });
+
+    renderRoute("/transcription");
+
+    expect(await screen.findByText("page-one.wav")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await screen.findByText("page-two.wav")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    expect(await screen.findByText("page-one.wav")).toBeInTheDocument();
+
+    expect(apiMocks.listTranscriptionRecordPage).toHaveBeenNthCalledWith(1, {
+      limit: 25,
+      cursor: null,
+    });
+    expect(apiMocks.listTranscriptionRecordPage).toHaveBeenNthCalledWith(2, {
+      limit: 25,
+      cursor: "txr-cursor-2",
+    });
   });
 
   it("keeps history rows visible while transcription polling refreshes in the background", async () => {
