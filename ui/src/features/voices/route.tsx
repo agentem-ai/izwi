@@ -31,6 +31,8 @@ import { VoiceLibraryTable } from "@/features/voices/components/VoiceLibraryTabl
 import { type VoiceLibraryItem } from "@/features/voices/types";
 import { cn } from "@/lib/utils";
 
+const SAVED_VOICES_PAGE_LIMIT = 25;
+
 interface VoicesPageProps {
   models: ModelInfo[];
   selectedModel: string | null;
@@ -137,6 +139,14 @@ export function VoicesPage({
   const [savedVoices, setSavedVoices] = useState<SavedVoiceSummary[]>([]);
   const [savedVoicesLoading, setSavedVoicesLoading] = useState(true);
   const [savedVoicesError, setSavedVoicesError] = useState<string | null>(null);
+  const [savedVoicesPageIndex, setSavedVoicesPageIndex] = useState(0);
+  const [savedVoicesPageCursors, setSavedVoicesPageCursors] = useState<
+    Array<string | null>
+  >([null]);
+  const [savedVoicesNextCursor, setSavedVoicesNextCursor] = useState<
+    string | null
+  >(null);
+  const [savedVoicesHasMore, setSavedVoicesHasMore] = useState(false);
   const [deletingVoiceId, setDeletingVoiceId] = useState<string | null>(null);
   const [deleteConfirmVoiceId, setDeleteConfirmVoiceId] = useState<string | null>(
     null,
@@ -207,6 +217,8 @@ export function VoicesPage({
     (modelId: string | null, voiceId: string) => `${modelId ?? "__none__"}::${voiceId}`,
     [],
   );
+  const currentSavedVoicesCursor =
+    savedVoicesPageCursors[savedVoicesPageIndex] ?? null;
 
   useEffect(() => {
     return () => {
@@ -222,8 +234,13 @@ export function VoicesPage({
     setSavedVoicesLoading(true);
     setSavedVoicesError(null);
     try {
-      const records = await api.listSavedVoices();
-      setSavedVoices(records);
+      const page = await api.listSavedVoicePage({
+        limit: SAVED_VOICES_PAGE_LIMIT,
+        cursor: currentSavedVoicesCursor,
+      });
+      setSavedVoices(page.items);
+      setSavedVoicesNextCursor(page.pagination.next_cursor);
+      setSavedVoicesHasMore(page.pagination.has_more);
     } catch (error) {
       setSavedVoicesError(
         error instanceof Error ? error.message : "Failed to load saved voices.",
@@ -231,11 +248,34 @@ export function VoicesPage({
     } finally {
       setSavedVoicesLoading(false);
     }
-  }, []);
+  }, [currentSavedVoicesCursor]);
+
+  useEffect(() => {
+    setSavedVoicesPageIndex(0);
+    setSavedVoicesPageCursors([null]);
+  }, [refreshKey]);
 
   useEffect(() => {
     void loadSavedVoices();
-  }, [loadSavedVoices, refreshKey]);
+  }, [loadSavedVoices]);
+
+  const canGoToSavedVoicesPreviousPage = savedVoicesPageIndex > 0;
+  const canGoToSavedVoicesNextPage =
+    savedVoicesHasMore && Boolean(savedVoicesNextCursor);
+  const handlePreviousSavedVoicesPage = useCallback(() => {
+    setSavedVoicesPageIndex((current) => Math.max(0, current - 1));
+  }, []);
+  const handleNextSavedVoicesPage = useCallback(() => {
+    if (!savedVoicesNextCursor || !savedVoicesHasMore) {
+      return;
+    }
+    setSavedVoicesPageCursors((current) => {
+      const next = [...current];
+      next[savedVoicesPageIndex + 1] = savedVoicesNextCursor;
+      return next;
+    });
+    setSavedVoicesPageIndex((current) => current + 1);
+  }, [savedVoicesHasMore, savedVoicesNextCursor, savedVoicesPageIndex]);
 
   const builtInVoices = useMemo(
     () => getSpeakerProfilesForVariant(resolvedSelectedModel),
@@ -443,6 +483,9 @@ export function VoicesPage({
       : activeTab === "saved"
         ? savedVoiceItems
         : builtInVoiceItems;
+  const showSavedVoicePaginationControls =
+    (activeTab === "saved" || activeTab === "all") &&
+    (savedVoices.length > 0 || canGoToSavedVoicesPreviousPage);
   const showSavedVoiceError =
     savedVoicesError && (activeTab === "saved" || activeTab === "all");
 
@@ -526,6 +569,34 @@ export function VoicesPage({
             className="mt-5"
             compact={embedded}
           />
+
+          {showSavedVoicePaginationControls ? (
+            <div className="mt-3 flex items-center justify-between rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-2">
+              <p className="text-xs font-medium text-[var(--text-muted)]">
+                Saved voices page {savedVoicesPageIndex + 1}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePreviousSavedVoicesPage}
+                  disabled={savedVoicesLoading || !canGoToSavedVoicesPreviousPage}
+                >
+                  Previous
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleNextSavedVoicesPage}
+                  disabled={savedVoicesLoading || !canGoToSavedVoicesNextPage}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </div>
       </Tabs>
     </div>

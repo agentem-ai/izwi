@@ -65,6 +65,13 @@ pub struct SavedVoice {
     pub source_record_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SavedVoiceListCursor {
+    pub updated_at: u64,
+    pub created_at: u64,
+    pub id: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct StoredSavedVoiceAudio {
     pub audio_bytes: Vec<u8>,
@@ -132,53 +139,100 @@ impl SavedVoiceStore {
     }
 
     pub async fn list_voices(&self, limit: usize) -> anyhow::Result<Vec<SavedVoiceSummary>> {
+        let (voices, _) = self.list_voices_page(limit, None).await?;
+        Ok(voices)
+    }
+
+    pub async fn list_voices_page(
+        &self,
+        limit: usize,
+        cursor: Option<SavedVoiceListCursor>,
+    ) -> anyhow::Result<(Vec<SavedVoiceSummary>, Option<SavedVoiceListCursor>)> {
         self.run_blocking(move |db_path| {
             let conn = storage_layout::open_sqlite_connection(&db_path)?;
             let list_limit = i64::try_from(limit.clamp(1, 2000).max(1)).unwrap_or(500);
-
-            let mut stmt = conn.prepare(
-                r#"
-                SELECT
-                    id,
-                    created_at,
-                    updated_at,
-                    name,
-                    reference_text,
-                    audio_mime_type,
-                    audio_filename,
-                    source_route_kind,
-                    source_record_id
-                FROM saved_voices
-                ORDER BY updated_at DESC, created_at DESC, id DESC
-                LIMIT ?1
-                "#,
-            )?;
-
-            let rows = stmt.query_map(params![list_limit], |row| {
-                let reference_text: String = row.get(4)?;
-                let source_route_raw: Option<String> = row.get(7)?;
-
-                Ok(SavedVoiceSummary {
-                    id: row.get(0)?,
-                    created_at: i64_to_u64(row.get(1)?),
-                    updated_at: i64_to_u64(row.get(2)?),
-                    name: row.get(3)?,
-                    reference_text_preview: reference_text_preview(reference_text.as_str()),
-                    reference_text_chars: reference_text.chars().count(),
-                    audio_mime_type: row.get(5)?,
-                    audio_filename: row.get(6)?,
-                    source_route_kind: source_route_raw
-                        .as_deref()
-                        .and_then(SavedVoiceSourceRouteKind::from_db_value),
-                    source_record_id: row.get(8)?,
-                })
-            })?;
+            let page_size = usize::try_from(list_limit).unwrap_or(500);
+            let fetch_limit = list_limit.saturating_add(1);
 
             let mut records = Vec::new();
-            for row in rows {
-                records.push(row?);
+            if let Some(cursor) = cursor {
+                let cursor_updated_at = i64::try_from(cursor.updated_at).unwrap_or(i64::MAX);
+                let cursor_created_at = i64::try_from(cursor.created_at).unwrap_or(i64::MAX);
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT
+                        id,
+                        created_at,
+                        updated_at,
+                        name,
+                        reference_text,
+                        audio_mime_type,
+                        audio_filename,
+                        source_route_kind,
+                        source_record_id
+                    FROM saved_voices
+                    WHERE
+                        updated_at < ?1
+                        OR (
+                            updated_at = ?1
+                            AND (
+                                created_at < ?2
+                                OR (created_at = ?2 AND id < ?3)
+                            )
+                        )
+                    ORDER BY updated_at DESC, created_at DESC, id DESC
+                    LIMIT ?4
+                    "#,
+                )?;
+
+                let rows = stmt.query_map(
+                    params![cursor_updated_at, cursor_created_at, cursor.id, fetch_limit],
+                    map_saved_voice_summary,
+                )?;
+                for row in rows {
+                    records.push(row?);
+                }
+            } else {
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT
+                        id,
+                        created_at,
+                        updated_at,
+                        name,
+                        reference_text,
+                        audio_mime_type,
+                        audio_filename,
+                        source_route_kind,
+                        source_record_id
+                    FROM saved_voices
+                    ORDER BY updated_at DESC, created_at DESC, id DESC
+                    LIMIT ?1
+                    "#,
+                )?;
+
+                let rows = stmt.query_map(params![fetch_limit], map_saved_voice_summary)?;
+                for row in rows {
+                    records.push(row?);
+                }
             }
-            Ok(records)
+
+            let has_more = records.len() > page_size;
+            if has_more {
+                records.truncate(page_size);
+            }
+
+            let next_cursor = if has_more {
+                records.last().map(|record| SavedVoiceListCursor {
+                    updated_at: record.updated_at,
+                    created_at: record.created_at,
+                    id: record.id.clone(),
+                })
+            } else {
+                None
+            };
+
+            Ok((records, next_cursor))
         })
         .await
     }
@@ -378,6 +432,26 @@ fn map_saved_voice(row: &Row<'_>) -> rusqlite::Result<SavedVoice> {
         updated_at: i64_to_u64(row.get(2)?),
         name: row.get(3)?,
         reference_text: row.get(4)?,
+        audio_mime_type: row.get(5)?,
+        audio_filename: row.get(6)?,
+        source_route_kind: source_route_raw
+            .as_deref()
+            .and_then(SavedVoiceSourceRouteKind::from_db_value),
+        source_record_id: row.get(8)?,
+    })
+}
+
+fn map_saved_voice_summary(row: &Row<'_>) -> rusqlite::Result<SavedVoiceSummary> {
+    let reference_text: String = row.get(4)?;
+    let source_route_raw: Option<String> = row.get(7)?;
+
+    Ok(SavedVoiceSummary {
+        id: row.get(0)?,
+        created_at: i64_to_u64(row.get(1)?),
+        updated_at: i64_to_u64(row.get(2)?),
+        name: row.get(3)?,
+        reference_text_preview: reference_text_preview(reference_text.as_str()),
+        reference_text_chars: reference_text.chars().count(),
         audio_mime_type: row.get(5)?,
         audio_filename: row.get(6)?,
         source_route_kind: source_route_raw

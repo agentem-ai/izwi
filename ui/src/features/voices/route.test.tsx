@@ -8,6 +8,7 @@ import { VoicesPage } from "./route";
 
 const apiMocks = vi.hoisted(() => ({
   listSavedVoices: vi.fn(),
+  listSavedVoicePage: vi.fn(),
   deleteSavedVoice: vi.fn(),
   savedVoiceAudioUrl: vi.fn(),
   generateTTSWithStats: vi.fn(),
@@ -25,6 +26,7 @@ const typeMocks = vi.hoisted(() => ({
 vi.mock("@/api", () => ({
   api: {
     listSavedVoices: apiMocks.listSavedVoices,
+    listSavedVoicePage: apiMocks.listSavedVoicePage,
     deleteSavedVoice: apiMocks.deleteSavedVoice,
     savedVoiceAudioUrl: apiMocks.savedVoiceAudioUrl,
     generateTTSWithStats: apiMocks.generateTTSWithStats,
@@ -68,6 +70,7 @@ function buildModel(overrides: Partial<ModelInfo> = {}): ModelInfo {
 describe("VoicesPage", () => {
   beforeEach(() => {
     apiMocks.listSavedVoices.mockReset();
+    apiMocks.listSavedVoicePage.mockReset();
     apiMocks.deleteSavedVoice.mockReset();
     apiMocks.savedVoiceAudioUrl.mockReset();
     apiMocks.generateTTSWithStats.mockReset();
@@ -94,6 +97,14 @@ describe("VoicesPage", () => {
       } satisfies SavedVoiceSummary,
     ]);
     apiMocks.deleteSavedVoice.mockResolvedValue(undefined);
+    apiMocks.listSavedVoicePage.mockImplementation(async () => ({
+      items: await apiMocks.listSavedVoices(),
+      pagination: {
+        next_cursor: null,
+        has_more: false,
+        limit: 25,
+      },
+    }));
     apiMocks.generateTTSWithStats.mockImplementation(
       () => new Promise(() => {}),
     );
@@ -197,6 +208,95 @@ describe("VoicesPage", () => {
       await screen.findByText("Generating a preview sample for this speaker."),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Preview" })).toBeDisabled();
+  });
+
+  it("navigates saved voice pagination controls", async () => {
+    apiMocks.listSavedVoicePage.mockReset();
+    apiMocks.listSavedVoicePage
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "voice-page-1",
+            created_at: 1711000000000,
+            updated_at: 1711100000000,
+            name: "Page One Voice",
+            reference_text_preview: "Page one",
+            reference_text_chars: 8,
+            audio_mime_type: "audio/wav",
+            audio_filename: "page-one.wav",
+            source_route_kind: "voice_design",
+            source_record_id: "design-1",
+          } satisfies SavedVoiceSummary,
+        ],
+        pagination: {
+          next_cursor: "voice-cursor-2",
+          has_more: true,
+          limit: 25,
+        },
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "voice-page-2",
+            created_at: 1712000000000,
+            updated_at: 1712100000000,
+            name: "Page Two Voice",
+            reference_text_preview: "Page two",
+            reference_text_chars: 8,
+            audio_mime_type: "audio/wav",
+            audio_filename: "page-two.wav",
+            source_route_kind: "voice_cloning",
+            source_record_id: "clone-2",
+          } satisfies SavedVoiceSummary,
+        ],
+        pagination: {
+          next_cursor: null,
+          has_more: false,
+          limit: 25,
+        },
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "voice-page-1",
+            created_at: 1711000000000,
+            updated_at: 1711100000000,
+            name: "Page One Voice",
+            reference_text_preview: "Page one",
+            reference_text_chars: 8,
+            audio_mime_type: "audio/wav",
+            audio_filename: "page-one.wav",
+            source_route_kind: "voice_design",
+            source_record_id: "design-1",
+          } satisfies SavedVoiceSummary,
+        ],
+        pagination: {
+          next_cursor: "voice-cursor-2",
+          has_more: true,
+          limit: 25,
+        },
+      });
+
+    render(
+      <MemoryRouter>
+        <VoicesPage {...baseProps} />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Page One Voice")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(await screen.findByText("Page Two Voice")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Previous" }));
+    expect(await screen.findByText("Page One Voice")).toBeInTheDocument();
+
+    expect(apiMocks.listSavedVoicePage).toHaveBeenNthCalledWith(1, {
+      limit: 25,
+      cursor: null,
+    });
+    expect(apiMocks.listSavedVoicePage).toHaveBeenNthCalledWith(2, {
+      limit: 25,
+      cursor: "voice-cursor-2",
+    });
   });
 
   it("uses a confirmation modal before deleting saved voices", async () => {
