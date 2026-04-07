@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, IndexOp, Tensor, D};
@@ -53,7 +53,7 @@ struct ChatTokenizer {
     inner: Tokenizer,
     vocab_size: usize,
     specials: SpecialTokenIds,
-    decode_piece_cache: Mutex<Vec<Option<Arc<str>>>>,
+    decode_piece_cache: Vec<OnceLock<Arc<str>>>,
 }
 
 struct PromptScaffoldTokens {
@@ -127,7 +127,7 @@ impl ChatTokenizer {
                 eos,
                 eos_alt,
             },
-            decode_piece_cache: Mutex::new(vec![None; vocab_size]),
+            decode_piece_cache: (0..vocab_size).map(|_| OnceLock::new()).collect(),
         })
     }
 
@@ -149,18 +149,13 @@ impl ChatTokenizer {
         if idx >= self.vocab_size {
             return Ok(Arc::from(""));
         }
-        if let Ok(mut cache) = self.decode_piece_cache.lock() {
-            if let Some(piece) = cache.get(idx).and_then(|slot| slot.as_ref()) {
-                return Ok(piece.clone());
-            }
-            let piece = Arc::<str>::from(self.decode_text(&[token_id])?);
-            if let Some(slot) = cache.get_mut(idx) {
-                *slot = Some(piece.clone());
-            }
-            return Ok(piece);
+        if let Some(piece) = self.decode_piece_cache[idx].get() {
+            return Ok(piece.clone());
         }
+        let piece = Arc::<str>::from(self.inner.decode(&[token_id])?);
+        let _ = self.decode_piece_cache[idx].set(piece.clone());
 
-        Ok(Arc::<str>::from(self.decode_text(&[token_id])?))
+        Ok(piece)
     }
 }
 
@@ -313,7 +308,7 @@ impl Lfm2ChatModel {
             self.append_prompt_message(
                 &mut ids,
                 prompt_index,
-                ChatRole::System,
+                &ChatRole::System,
                 "You are a helpful assistant.",
                 last_assistant_index,
             )?;
@@ -324,7 +319,7 @@ impl Lfm2ChatModel {
             self.append_prompt_message(
                 &mut ids,
                 prompt_index,
-                message.role.clone(),
+                &message.role,
                 message.content.as_str(),
                 last_assistant_index,
             )?;
@@ -341,7 +336,7 @@ impl Lfm2ChatModel {
         &self,
         ids: &mut Vec<u32>,
         prompt_index: usize,
-        role: ChatRole,
+        role: &ChatRole,
         content: &str,
         last_assistant_index: Option<usize>,
     ) -> Result<()> {
@@ -361,7 +356,7 @@ impl Lfm2ChatModel {
         }
 
         ids.push(self.tokenizer.specials.im_start);
-        ids.extend_from_slice(self.prompt_scaffold.role_header(&role));
+        ids.extend_from_slice(self.prompt_scaffold.role_header(role));
         ids.extend(self.tokenizer.encode_text(normalized.as_ref())?);
         ids.push(self.tokenizer.specials.im_end);
         ids.extend_from_slice(&self.prompt_scaffold.newline);
