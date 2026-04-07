@@ -557,6 +557,18 @@ export function StudioWorkspace({
   }, [loadProjects, loadSavedVoices]);
 
   useEffect(() => {
+    if (
+      projectsLoading ||
+      projectsPageIndex === 0 ||
+      projects.length > 0 ||
+      activeProjectId
+    ) {
+      return;
+    }
+    setProjectsPageIndex((current) => Math.max(0, current - 1));
+  }, [activeProjectId, projects.length, projectsLoading, projectsPageIndex]);
+
+  useEffect(() => {
     void loadProjectMeta(projects);
   }, [loadProjectMeta, projects]);
 
