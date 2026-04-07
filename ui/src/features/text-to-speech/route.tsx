@@ -109,12 +109,10 @@ export function TextToSpeechPage({
   const {
     records,
     loading: historyLoading,
+    loadingMore: historyLoadingMore,
     error: historyError,
-    currentPage,
-    canGoPreviousPage,
-    canGoNextPage,
-    goToPreviousPage,
-    goToNextPage,
+    hasMoreRecords,
+    loadMoreRecords,
     refresh: refreshHistory,
   } = useTextToSpeechHistory();
   const {
@@ -379,12 +377,12 @@ export function TextToSpeechPage({
             savedVoiceNameById={savedVoiceNameById}
             loading={historyLoading}
             error={historyError}
-            pagination={{
-              page: currentPage,
-              canPrevious: canGoPreviousPage,
-              canNext: canGoNextPage,
-              onPrevious: goToPreviousPage,
-              onNext: goToNextPage,
+            loadMore={{
+              canLoadMore: hasMoreRecords,
+              loading: historyLoadingMore,
+              onLoadMore: () => {
+                void loadMoreRecords();
+              },
             }}
             onRefresh={() => void refreshHistory()}
             onOpenRecord={(nextRecordId) => {

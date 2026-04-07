@@ -240,7 +240,7 @@ describe("DiarizationPage routes", () => {
     expect(screen.getByText("No diarization records yet")).toBeInTheDocument();
   });
 
-  it("navigates diarization history pagination controls", async () => {
+  it("loads more diarization history rows", async () => {
     apiMocks.listDiarizationRecordPage.mockReset();
     apiMocks.listDiarizationRecordPage
       .mockResolvedValueOnce({
@@ -258,22 +258,13 @@ describe("DiarizationPage routes", () => {
           has_more: false,
           limit: 25,
         },
-      })
-      .mockResolvedValueOnce({
-        items: [{ ...readySummaryRecord, id: "diar-page-1", audio_filename: "page-one.wav" }],
-        pagination: {
-          next_cursor: "diar-cursor-2",
-          has_more: true,
-          limit: 25,
-        },
       });
 
     renderRoute("/diarization");
 
     expect(await screen.findByText("page-one.wav")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     expect(await screen.findByText("page-two.wav")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
     expect(await screen.findByText("page-one.wav")).toBeInTheDocument();
 
     expect(apiMocks.listDiarizationRecordPage).toHaveBeenNthCalledWith(1, {

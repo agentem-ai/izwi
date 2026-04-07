@@ -162,15 +162,12 @@ export function StudioWorkspace({
   onError,
 }: StudioWorkspaceProps) {
   const [projects, setProjects] = useState<StudioProjectSummary[]>([]);
-  const [projectsPageIndex, setProjectsPageIndex] = useState(0);
-  const [projectsPageCursors, setProjectsPageCursors] = useState<
-    Array<string | null>
-  >([null]);
   const [projectsNextCursor, setProjectsNextCursor] = useState<string | null>(
     null,
   );
   const [projectsHasMore, setProjectsHasMore] = useState(false);
   const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectsLoadingMore, setProjectsLoadingMore] = useState(false);
   const [projectMetaById, setProjectMetaById] = useState<
     Record<string, StudioProjectMetaRecord>
   >({});
@@ -275,7 +272,6 @@ export function StudioWorkspace({
   } = useDownloadIndicator();
   const selectedProjectId =
     activeProjectId !== undefined ? activeProjectId : selectedProjectIdState;
-  const currentProjectsCursor = projectsPageCursors[projectsPageIndex] ?? null;
   const setSelectedProjectId = useCallback(
     (nextProjectId: string | null | ((current: string | null) => string | null)) => {
       if (activeProjectId !== undefined) {
@@ -425,7 +421,7 @@ export function StudioWorkspace({
     try {
       const page = await api.listStudioProjectPage({
         limit: STUDIO_PROJECT_LIBRARY_PAGE_LIMIT,
-        cursor: currentProjectsCursor,
+        cursor: null,
       });
       const records = page.items;
       setProjects(records);
@@ -450,9 +446,46 @@ export function StudioWorkspace({
     }
   }, [
     activeProjectId,
-    currentProjectsCursor,
     onError,
     setSelectedProjectId,
+  ]);
+
+  const loadMoreProjects = useCallback(async () => {
+    if (
+      projectsLoading ||
+      projectsLoadingMore ||
+      !projectsHasMore ||
+      !projectsNextCursor
+    ) {
+      return;
+    }
+    setProjectsLoadingMore(true);
+    try {
+      const page = await api.listStudioProjectPage({
+        limit: STUDIO_PROJECT_LIBRARY_PAGE_LIMIT,
+        cursor: projectsNextCursor,
+      });
+      setProjects((current) => {
+        const seen = new Set(current.map((project) => project.id));
+        const nextItems = page.items.filter((project) => !seen.has(project.id));
+        return [...current, ...nextItems];
+      });
+      setProjectsNextCursor(page.pagination.next_cursor);
+      setProjectsHasMore(page.pagination.has_more);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to load more Studio projects.";
+      setWorkspaceError(message);
+      onError(message);
+    } finally {
+      setProjectsLoadingMore(false);
+    }
+  }, [
+    onError,
+    projectsHasMore,
+    projectsLoading,
+    projectsLoadingMore,
+    projectsNextCursor,
   ]);
 
   const loadSavedVoices = useCallback(async () => {
@@ -468,24 +501,6 @@ export function StudioWorkspace({
       setSavedVoicesLoading(false);
     }
   }, []);
-
-  const canGoToPreviousProjectsPage = projectsPageIndex > 0;
-  const canGoToNextProjectsPage =
-    projectsHasMore && Boolean(projectsNextCursor);
-  const handlePreviousProjectsPage = useCallback(() => {
-    setProjectsPageIndex((current) => Math.max(0, current - 1));
-  }, []);
-  const handleNextProjectsPage = useCallback(() => {
-    if (!projectsNextCursor || !projectsHasMore) {
-      return;
-    }
-    setProjectsPageCursors((current) => {
-      const next = [...current];
-      next[projectsPageIndex + 1] = projectsNextCursor;
-      return next;
-    });
-    setProjectsPageIndex((current) => current + 1);
-  }, [projectsHasMore, projectsNextCursor, projectsPageIndex]);
 
   const loadProjectMeta = useCallback(async (records: StudioProjectSummary[]) => {
     if (records.length === 0) {
@@ -555,18 +570,6 @@ export function StudioWorkspace({
     void loadProjects();
     void loadSavedVoices();
   }, [loadProjects, loadSavedVoices]);
-
-  useEffect(() => {
-    if (
-      projectsLoading ||
-      projectsPageIndex === 0 ||
-      projects.length > 0 ||
-      activeProjectId
-    ) {
-      return;
-    }
-    setProjectsPageIndex((current) => Math.max(0, current - 1));
-  }, [activeProjectId, projects.length, projectsLoading, projectsPageIndex]);
 
   useEffect(() => {
     void loadProjectMeta(projects);
@@ -2944,33 +2947,23 @@ export function StudioWorkspace({
               </div>
             )}
 
-            {projects.length > 0 ||
-            canGoToPreviousProjectsPage ||
-            canGoToNextProjectsPage ? (
-              <div className="flex items-center justify-between rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-2">
-                <p className="text-xs font-medium text-[var(--text-muted)]">
-                  Library page {projectsPageIndex + 1}
-                </p>
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handlePreviousProjectsPage}
-                    disabled={projectsLoading || !canGoToPreviousProjectsPage}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handleNextProjectsPage}
-                    disabled={projectsLoading || !canGoToNextProjectsPage}
-                  >
-                    Next
-                  </Button>
-                </div>
+            {projects.length > 0 &&
+            projectsHasMore &&
+            Boolean(projectsNextCursor) ? (
+              <div className="flex justify-center rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9 gap-2"
+                  onClick={() => void loadMoreProjects()}
+                  disabled={projectsLoadingMore}
+                >
+                  {projectsLoadingMore ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : null}
+                  Load more
+                </Button>
               </div>
             ) : null}
           </div>

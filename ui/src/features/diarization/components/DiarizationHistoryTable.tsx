@@ -12,7 +12,6 @@ import {
 import { api, type DiarizationRecordSummary } from "@/api";
 import { useNotifications } from "@/app/providers/NotificationProvider";
 import { DiarizationExportDialog } from "@/components/DiarizationExportDialog";
-import { CursorPaginationControls } from "@/components/CursorPaginationControls";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -69,12 +68,10 @@ interface DiarizationHistoryTableProps {
   records: DiarizationRecordSummary[];
   loading?: boolean;
   error?: string | null;
-  pagination?: {
-    page: number;
-    canPrevious: boolean;
-    canNext: boolean;
-    onPrevious: () => void;
-    onNext: () => void;
+  loadMore?: {
+    canLoadMore: boolean;
+    loading: boolean;
+    onLoadMore: () => void;
   };
   onOpenRecord: (recordId: string) => void;
   onDeleteRecord?: (recordId: string) => Promise<void>;
@@ -89,7 +86,7 @@ export function DiarizationHistoryTable({
   records,
   loading = false,
   error = null,
-  pagination,
+  loadMore,
   onOpenRecord,
   onDeleteRecord,
   onRefresh,
@@ -235,18 +232,6 @@ export function DiarizationHistoryTable({
         <p className="mt-2 text-sm text-[var(--text-muted)]">
           Saved speaker-separated transcripts will appear here.
         </p>
-        {pagination?.canPrevious ? (
-          <div className="mt-5">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={pagination.onPrevious}
-            >
-              Previous page
-            </Button>
-          </div>
-        ) : null}
       </div>
     );
   }
@@ -394,15 +379,20 @@ export function DiarizationHistoryTable({
             </tbody>
           </table>
         </div>
-        {pagination ? (
-          <CursorPaginationControls
-            page={pagination.page}
-            canPrevious={pagination.canPrevious}
-            canNext={pagination.canNext}
-            loading={loading}
-            onPrevious={pagination.onPrevious}
-            onNext={pagination.onNext}
-          />
+        {loadMore?.canLoadMore ? (
+          <div className="flex justify-center border-t border-[var(--border-muted)] px-4 py-3 sm:px-5">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9 gap-2"
+              onClick={loadMore.onLoadMore}
+              disabled={loadMore.loading}
+            >
+              {loadMore.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Load more
+            </Button>
+          </div>
         ) : null}
       </div>
 
