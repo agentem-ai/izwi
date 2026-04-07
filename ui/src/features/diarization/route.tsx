@@ -308,12 +308,10 @@ export function DiarizationPage({
   const {
     records,
     loading: historyLoading,
+    loadingMore: historyLoadingMore,
     error: historyError,
-    currentPage,
-    canGoPreviousPage,
-    canGoNextPage,
-    goToPreviousPage,
-    goToNextPage,
+    hasMoreRecords,
+    loadMoreRecords,
     refresh: refreshHistory,
   } = useDiarizationHistory();
   const {
@@ -603,12 +601,12 @@ export function DiarizationPage({
             records={visibleHistoryRecords}
             loading={historyLoading}
             error={historyError}
-            pagination={{
-              page: currentPage,
-              canPrevious: canGoPreviousPage,
-              canNext: canGoNextPage,
-              onPrevious: goToPreviousPage,
-              onNext: goToNextPage,
+            loadMore={{
+              canLoadMore: hasMoreRecords,
+              loading: historyLoadingMore,
+              onLoadMore: () => {
+                void loadMoreRecords();
+              },
             }}
             onRefresh={() => void refreshHistory()}
             onOpenRecord={handleOpenRecord}

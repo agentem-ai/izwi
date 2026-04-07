@@ -7,24 +7,20 @@ const HISTORY_PAGE_LIMIT = 25;
 export interface UseDiarizationHistoryResult {
   records: DiarizationRecordSummary[];
   loading: boolean;
+  loadingMore: boolean;
   error: string | null;
-  currentPage: number;
-  canGoPreviousPage: boolean;
-  canGoNextPage: boolean;
-  goToPreviousPage: () => void;
-  goToNextPage: () => void;
+  hasMoreRecords: boolean;
+  loadMoreRecords: () => Promise<void>;
   refresh: () => Promise<void>;
 }
 
 export function useDiarizationHistory(): UseDiarizationHistoryResult {
   const [records, setRecords] = useState<DiarizationRecordSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pageIndex, setPageIndex] = useState(0);
-  const [pageCursors, setPageCursors] = useState<Array<string | null>>([null]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
-  const currentCursor = pageCursors[pageIndex] ?? null;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -32,7 +28,7 @@ export function useDiarizationHistory(): UseDiarizationHistoryResult {
     try {
       const page = await api.listDiarizationRecordPage({
         limit: HISTORY_PAGE_LIMIT,
-        cursor: currentCursor,
+        cursor: null,
       });
       setRecords(page.items);
       setNextCursor(page.pagination.next_cursor);
@@ -44,45 +40,48 @@ export function useDiarizationHistory(): UseDiarizationHistoryResult {
     } finally {
       setLoading(false);
     }
-  }, [currentCursor]);
+  }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  useEffect(() => {
-    if (loading || error || pageIndex === 0 || records.length > 0) {
+  const loadMoreRecords = useCallback(async () => {
+    if (loading || loadingMore || !nextCursor || !hasMore) {
       return;
     }
-    setPageIndex((current) => Math.max(0, current - 1));
-  }, [error, loading, pageIndex, records.length]);
-
-  const goToPreviousPage = useCallback(() => {
-    setPageIndex((current) => Math.max(0, current - 1));
-  }, []);
-
-  const canGoNextPage = hasMore && Boolean(nextCursor);
-  const goToNextPage = useCallback(() => {
-    if (!nextCursor || !hasMore) {
-      return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const page = await api.listDiarizationRecordPage({
+        limit: HISTORY_PAGE_LIMIT,
+        cursor: nextCursor,
+      });
+      setRecords((current) => {
+        const seen = new Set(current.map((record) => record.id));
+        const nextItems = page.items.filter((record) => !seen.has(record.id));
+        return [...current, ...nextItems];
+      });
+      setNextCursor(page.pagination.next_cursor);
+      setHasMore(page.pagination.has_more);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to load more diarization history.",
+      );
+    } finally {
+      setLoadingMore(false);
     }
-    setPageCursors((current) => {
-      const next = [...current];
-      next[pageIndex + 1] = nextCursor;
-      return next;
-    });
-    setPageIndex((current) => current + 1);
-  }, [hasMore, nextCursor, pageIndex]);
+  }, [hasMore, loading, loadingMore, nextCursor]);
 
   return {
     records,
     loading,
+    loadingMore,
     error,
-    currentPage: pageIndex + 1,
-    canGoPreviousPage: pageIndex > 0,
-    canGoNextPage,
-    goToPreviousPage,
-    goToNextPage,
+    hasMoreRecords: hasMore && Boolean(nextCursor),
+    loadMoreRecords,
     refresh,
   };
 }

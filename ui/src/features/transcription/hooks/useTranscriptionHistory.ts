@@ -11,32 +11,28 @@ const HISTORY_PAGE_LIMIT = 25;
 export interface UseTranscriptionHistoryResult {
   records: TranscriptionRecordSummary[];
   loading: boolean;
+  loadingMore: boolean;
   error: string | null;
-  currentPage: number;
-  canGoPreviousPage: boolean;
-  canGoNextPage: boolean;
-  goToPreviousPage: () => void;
-  goToNextPage: () => void;
+  hasMoreRecords: boolean;
+  loadMoreRecords: () => Promise<void>;
   refresh: () => Promise<void>;
 }
 
 export function useTranscriptionHistory(): UseTranscriptionHistoryResult {
   const [records, setRecords] = useState<TranscriptionRecordSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pageIndex, setPageIndex] = useState(0);
-  const [pageCursors, setPageCursors] = useState<Array<string | null>>([null]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const recordsRef = useRef<TranscriptionRecordSummary[]>([]);
-  const currentCursor = pageCursors[pageIndex] ?? null;
 
   useEffect(() => {
     recordsRef.current = records;
   }, [records]);
 
-  const loadRecords = useCallback(
-    async (background = false, cursor: string | null = null) => {
+  const loadFirstPage = useCallback(
+    async (background = false) => {
       const hasVisibleRecords = recordsRef.current.length > 0;
       const backgroundRefresh = background && hasVisibleRecords;
       if (!backgroundRefresh) {
@@ -47,7 +43,7 @@ export function useTranscriptionHistory(): UseTranscriptionHistoryResult {
       try {
         const page = await api.listTranscriptionRecordPage({
           limit: HISTORY_PAGE_LIMIT,
-          cursor,
+          cursor: null,
         });
         setRecords(page.items);
         setNextCursor(page.pagination.next_cursor);
@@ -67,8 +63,8 @@ export function useTranscriptionHistory(): UseTranscriptionHistoryResult {
   );
 
   const refresh = useCallback(async () => {
-    await loadRecords(false, currentCursor);
-  }, [currentCursor, loadRecords]);
+    await loadFirstPage(false);
+  }, [loadFirstPage]);
 
   useEffect(() => {
     void refresh();
@@ -96,53 +92,58 @@ export function useTranscriptionHistory(): UseTranscriptionHistoryResult {
     [records],
   );
 
+  const pollingEnabled = records.length <= HISTORY_PAGE_LIMIT;
+
   useEffect(() => {
-    if (!pollingRequired || pageIndex !== 0) {
+    if (!pollingRequired || !pollingEnabled) {
       return;
     }
 
     const intervalId = window.setInterval(() => {
-      void loadRecords(true, currentCursor);
+      void loadFirstPage(true);
     }, 2500);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [currentCursor, loadRecords, pageIndex, pollingRequired]);
+  }, [loadFirstPage, pollingEnabled, pollingRequired]);
 
-  useEffect(() => {
-    if (loading || error || pageIndex === 0 || records.length > 0) {
+  const loadMoreRecords = useCallback(async () => {
+    if (loading || loadingMore || !nextCursor || !hasMore) {
       return;
     }
-    setPageIndex((current) => Math.max(0, current - 1));
-  }, [error, loading, pageIndex, records.length]);
-
-  const goToPreviousPage = useCallback(() => {
-    setPageIndex((current) => Math.max(0, current - 1));
-  }, []);
-
-  const canGoNextPage = hasMore && Boolean(nextCursor);
-  const goToNextPage = useCallback(() => {
-    if (!nextCursor || !hasMore) {
-      return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const page = await api.listTranscriptionRecordPage({
+        limit: HISTORY_PAGE_LIMIT,
+        cursor: nextCursor,
+      });
+      setRecords((current) => {
+        const seen = new Set(current.map((record) => record.id));
+        const nextItems = page.items.filter((record) => !seen.has(record.id));
+        return [...current, ...nextItems];
+      });
+      setNextCursor(page.pagination.next_cursor);
+      setHasMore(page.pagination.has_more);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to load more transcription history.",
+      );
+    } finally {
+      setLoadingMore(false);
     }
-    setPageCursors((current) => {
-      const next = [...current];
-      next[pageIndex + 1] = nextCursor;
-      return next;
-    });
-    setPageIndex((current) => current + 1);
-  }, [hasMore, nextCursor, pageIndex]);
+  }, [hasMore, loading, loadingMore, nextCursor]);
 
   return {
     records,
     loading,
+    loadingMore,
     error,
-    currentPage: pageIndex + 1,
-    canGoPreviousPage: pageIndex > 0,
-    canGoNextPage,
-    goToPreviousPage,
-    goToNextPage,
+    hasMoreRecords: hasMore && Boolean(nextCursor),
+    loadMoreRecords,
     refresh,
   };
 }

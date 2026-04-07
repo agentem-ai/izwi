@@ -226,7 +226,7 @@ describe("TranscriptionPage detail route", () => {
     ).toBeInTheDocument();
   });
 
-  it("navigates transcription history pagination controls", async () => {
+  it("loads more transcription history rows", async () => {
     apiMocks.listTranscriptionRecordPage.mockReset();
     apiMocks.listTranscriptionRecordPage
       .mockResolvedValueOnce({
@@ -284,42 +284,13 @@ describe("TranscriptionPage detail route", () => {
           has_more: false,
           limit: 25,
         },
-      })
-      .mockResolvedValueOnce({
-        items: [
-          {
-            id: "txr-page-1",
-            created_at: 1,
-            model_id: "Parakeet-TDT-0.6B-v3",
-            aligner_model_id: null,
-            language: "English",
-            processing_status: "ready",
-            processing_error: null,
-            duration_secs: 4,
-            processing_time_ms: 120,
-            rtf: 0.5,
-            audio_mime_type: "audio/wav",
-            audio_filename: "page-one.wav",
-            transcription_preview: "Page one preview.",
-            transcription_chars: 17,
-            summary_status: "not_requested",
-            summary_preview: null,
-            summary_chars: 0,
-          },
-        ],
-        pagination: {
-          next_cursor: "txr-cursor-2",
-          has_more: true,
-          limit: 25,
-        },
       });
 
     renderRoute("/transcription");
 
     expect(await screen.findByText("page-one.wav")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     expect(await screen.findByText("page-two.wav")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
     expect(await screen.findByText("page-one.wav")).toBeInTheDocument();
 
     expect(apiMocks.listTranscriptionRecordPage).toHaveBeenNthCalledWith(1, {

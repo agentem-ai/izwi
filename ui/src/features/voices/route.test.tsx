@@ -210,7 +210,7 @@ describe("VoicesPage", () => {
     expect(screen.getByRole("button", { name: "Preview" })).toBeDisabled();
   });
 
-  it("navigates saved voice pagination controls", async () => {
+  it("loads more saved voices", async () => {
     apiMocks.listSavedVoicePage.mockReset();
     apiMocks.listSavedVoicePage
       .mockResolvedValueOnce({
@@ -254,27 +254,6 @@ describe("VoicesPage", () => {
           has_more: false,
           limit: 25,
         },
-      })
-      .mockResolvedValueOnce({
-        items: [
-          {
-            id: "voice-page-1",
-            created_at: 1711000000000,
-            updated_at: 1711100000000,
-            name: "Page One Voice",
-            reference_text_preview: "Page one",
-            reference_text_chars: 8,
-            audio_mime_type: "audio/wav",
-            audio_filename: "page-one.wav",
-            source_route_kind: "voice_design",
-            source_record_id: "design-1",
-          } satisfies SavedVoiceSummary,
-        ],
-        pagination: {
-          next_cursor: "voice-cursor-2",
-          has_more: true,
-          limit: 25,
-        },
       });
 
     render(
@@ -284,9 +263,8 @@ describe("VoicesPage", () => {
     );
 
     expect(await screen.findByText("Page One Voice")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     expect(await screen.findByText("Page Two Voice")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Previous" }));
     expect(await screen.findByText("Page One Voice")).toBeInTheDocument();
 
     expect(apiMocks.listSavedVoicePage).toHaveBeenNthCalledWith(1, {

@@ -138,11 +138,8 @@ export function VoicesPage({
   const [activeTab, setActiveTab] = useState<VoiceLibraryTab>("saved");
   const [savedVoices, setSavedVoices] = useState<SavedVoiceSummary[]>([]);
   const [savedVoicesLoading, setSavedVoicesLoading] = useState(true);
+  const [savedVoicesLoadingMore, setSavedVoicesLoadingMore] = useState(false);
   const [savedVoicesError, setSavedVoicesError] = useState<string | null>(null);
-  const [savedVoicesPageIndex, setSavedVoicesPageIndex] = useState(0);
-  const [savedVoicesPageCursors, setSavedVoicesPageCursors] = useState<
-    Array<string | null>
-  >([null]);
   const [savedVoicesNextCursor, setSavedVoicesNextCursor] = useState<
     string | null
   >(null);
@@ -217,8 +214,6 @@ export function VoicesPage({
     (modelId: string | null, voiceId: string) => `${modelId ?? "__none__"}::${voiceId}`,
     [],
   );
-  const currentSavedVoicesCursor =
-    savedVoicesPageCursors[savedVoicesPageIndex] ?? null;
 
   useEffect(() => {
     return () => {
@@ -236,7 +231,7 @@ export function VoicesPage({
     try {
       const page = await api.listSavedVoicePage({
         limit: SAVED_VOICES_PAGE_LIMIT,
-        cursor: currentSavedVoicesCursor,
+        cursor: null,
       });
       setSavedVoices(page.items);
       setSavedVoicesNextCursor(page.pagination.next_cursor);
@@ -248,51 +243,53 @@ export function VoicesPage({
     } finally {
       setSavedVoicesLoading(false);
     }
-  }, [currentSavedVoicesCursor]);
+  }, []);
 
-  useEffect(() => {
-    setSavedVoicesPageIndex(0);
-    setSavedVoicesPageCursors([null]);
-  }, [refreshKey]);
-
-  useEffect(() => {
-    void loadSavedVoices();
-  }, [loadSavedVoices]);
-
-  useEffect(() => {
+  const loadMoreSavedVoices = useCallback(async () => {
     if (
       savedVoicesLoading ||
-      savedVoicesError ||
-      savedVoicesPageIndex === 0 ||
-      savedVoices.length > 0
+      savedVoicesLoadingMore ||
+      !savedVoicesHasMore ||
+      !savedVoicesNextCursor
     ) {
       return;
     }
-    setSavedVoicesPageIndex((current) => Math.max(0, current - 1));
+    setSavedVoicesLoadingMore(true);
+    setSavedVoicesError(null);
+    try {
+      const page = await api.listSavedVoicePage({
+        limit: SAVED_VOICES_PAGE_LIMIT,
+        cursor: savedVoicesNextCursor,
+      });
+      setSavedVoices((current) => {
+        const seen = new Set(current.map((voice) => voice.id));
+        const nextItems = page.items.filter((voice) => !seen.has(voice.id));
+        return [...current, ...nextItems];
+      });
+      setSavedVoicesNextCursor(page.pagination.next_cursor);
+      setSavedVoicesHasMore(page.pagination.has_more);
+    } catch (error) {
+      setSavedVoicesError(
+        error instanceof Error ? error.message : "Failed to load saved voices.",
+      );
+    } finally {
+      setSavedVoicesLoadingMore(false);
+    }
   }, [
-    savedVoices.length,
-    savedVoicesError,
+    savedVoicesHasMore,
     savedVoicesLoading,
-    savedVoicesPageIndex,
+    savedVoicesLoadingMore,
+    savedVoicesNextCursor,
   ]);
 
-  const canGoToSavedVoicesPreviousPage = savedVoicesPageIndex > 0;
-  const canGoToSavedVoicesNextPage =
-    savedVoicesHasMore && Boolean(savedVoicesNextCursor);
-  const handlePreviousSavedVoicesPage = useCallback(() => {
-    setSavedVoicesPageIndex((current) => Math.max(0, current - 1));
-  }, []);
-  const handleNextSavedVoicesPage = useCallback(() => {
-    if (!savedVoicesNextCursor || !savedVoicesHasMore) {
-      return;
-    }
-    setSavedVoicesPageCursors((current) => {
-      const next = [...current];
-      next[savedVoicesPageIndex + 1] = savedVoicesNextCursor;
-      return next;
-    });
-    setSavedVoicesPageIndex((current) => current + 1);
-  }, [savedVoicesHasMore, savedVoicesNextCursor, savedVoicesPageIndex]);
+  useEffect(() => {
+    setSavedVoices([]);
+    setSavedVoicesNextCursor(null);
+    setSavedVoicesHasMore(false);
+    setSavedVoicesError(null);
+    setSavedVoicesLoading(true);
+    void loadSavedVoices();
+  }, [loadSavedVoices, refreshKey]);
 
   const builtInVoices = useMemo(
     () => getSpeakerProfilesForVariant(resolvedSelectedModel),
@@ -500,9 +497,11 @@ export function VoicesPage({
       : activeTab === "saved"
         ? savedVoiceItems
         : builtInVoiceItems;
-  const showSavedVoicePaginationControls =
+  const showSavedVoiceLoadMore =
     (activeTab === "saved" || activeTab === "all") &&
-    (savedVoices.length > 0 || canGoToSavedVoicesPreviousPage);
+    savedVoices.length > 0 &&
+    savedVoicesHasMore &&
+    Boolean(savedVoicesNextCursor);
   const showSavedVoiceError =
     savedVoicesError && (activeTab === "saved" || activeTab === "all");
 
@@ -587,31 +586,21 @@ export function VoicesPage({
             compact={embedded}
           />
 
-          {showSavedVoicePaginationControls ? (
-            <div className="mt-3 flex items-center justify-between rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-2">
-              <p className="text-xs font-medium text-[var(--text-muted)]">
-                Saved voices page {savedVoicesPageIndex + 1}
-              </p>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handlePreviousSavedVoicesPage}
-                  disabled={savedVoicesLoading || !canGoToSavedVoicesPreviousPage}
-                >
-                  Previous
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleNextSavedVoicesPage}
-                  disabled={savedVoicesLoading || !canGoToSavedVoicesNextPage}
-                >
-                  Next
-                </Button>
-              </div>
+          {showSavedVoiceLoadMore ? (
+            <div className="mt-3 flex justify-center rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 gap-2"
+                onClick={() => void loadMoreSavedVoices()}
+                disabled={savedVoicesLoadingMore}
+              >
+                {savedVoicesLoadingMore ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : null}
+                Load more
+              </Button>
             </div>
           ) : null}
         </div>

@@ -234,7 +234,7 @@ describe("TextToSpeechPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("navigates text-to-speech history pagination controls", async () => {
+  it("loads more text-to-speech history rows", async () => {
     apiMocks.listTextToSpeechRecordPage.mockReset();
     apiMocks.listTextToSpeechRecordPage
       .mockResolvedValueOnce({
@@ -266,29 +266,13 @@ describe("TextToSpeechPage", () => {
           has_more: false,
           limit: 25,
         },
-      })
-      .mockResolvedValueOnce({
-        items: [
-          buildSummary({
-            id: "tts-page-1",
-            audio_filename: "tts-page-one.wav",
-            input_preview: "Page one preview",
-            processing_status: "ready",
-          }),
-        ],
-        pagination: {
-          next_cursor: "tts-cursor-2",
-          has_more: true,
-          limit: 25,
-        },
       });
 
     renderRoute("/text-to-speech");
 
     expect(await screen.findByText("Page one preview")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     expect(await screen.findByText("Page two preview")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
     expect(await screen.findByText("Page one preview")).toBeInTheDocument();
 
     expect(apiMocks.listTextToSpeechRecordPage).toHaveBeenNthCalledWith(1, {
