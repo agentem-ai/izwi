@@ -55,6 +55,32 @@ struct ChatTokenizer {
     decode_piece_cache: Mutex<HashMap<u32, String>>,
 }
 
+struct PromptScaffoldTokens {
+    system_header: Vec<u32>,
+    user_header: Vec<u32>,
+    assistant_header: Vec<u32>,
+    newline: Vec<u32>,
+}
+
+impl PromptScaffoldTokens {
+    fn load(tokenizer: &ChatTokenizer) -> Result<Self> {
+        Ok(Self {
+            system_header: tokenizer.encode_text("system\n")?,
+            user_header: tokenizer.encode_text("user\n")?,
+            assistant_header: tokenizer.encode_text("assistant\n")?,
+            newline: tokenizer.encode_text("\n")?,
+        })
+    }
+
+    fn role_header(&self, role: &ChatRole) -> &[u32] {
+        match role {
+            ChatRole::System => &self.system_header,
+            ChatRole::User => &self.user_header,
+            ChatRole::Assistant => &self.assistant_header,
+        }
+    }
+}
+
 impl ChatTokenizer {
     fn load(model_dir: &Path) -> Result<Self> {
         let inner = Tokenizer::from_path(model_dir)?;
@@ -138,6 +164,7 @@ impl ChatTokenizer {
 pub struct Lfm2ChatModel {
     device: DeviceProfile,
     tokenizer: ChatTokenizer,
+    prompt_scaffold: PromptScaffoldTokens,
     text_model: Mutex<QuantizedLfm2Model>,
 }
 
@@ -166,6 +193,7 @@ impl Lfm2ChatModel {
             .map_err(|e| Error::ModelLoadError(format!("Failed to parse GGUF header: {e}")))?;
         let text_model = QuantizedLfm2Model::from_gguf(content, &mut reader, &device.device)
             .map_err(|e| Error::ModelLoadError(format!("Failed to load LFM2 GGUF model: {e}")))?;
+        let prompt_scaffold = PromptScaffoldTokens::load(&tokenizer)?;
 
         info!(
             "Loaded LFM2 GGUF chat model on {:?} from {}",
@@ -176,6 +204,7 @@ impl Lfm2ChatModel {
         Ok(Self {
             device,
             tokenizer,
+            prompt_scaffold,
             text_model: Mutex::new(text_model),
         })
     }
@@ -302,17 +331,14 @@ impl Lfm2ChatModel {
             }
 
             ids.push(self.tokenizer.specials.im_start);
-            ids.extend(
-                self.tokenizer
-                    .encode_text(&format!("{}\n", message.role.as_prompt_role()))?,
-            );
+            ids.extend_from_slice(self.prompt_scaffold.role_header(&message.role));
             ids.extend(self.tokenizer.encode_text(&content)?);
             ids.push(self.tokenizer.specials.im_end);
-            ids.extend(self.tokenizer.encode_text("\n")?);
+            ids.extend_from_slice(&self.prompt_scaffold.newline);
         }
 
         ids.push(self.tokenizer.specials.im_start);
-        ids.extend(self.tokenizer.encode_text("assistant\n")?);
+        ids.extend_from_slice(&self.prompt_scaffold.assistant_header);
 
         Ok(ids)
     }

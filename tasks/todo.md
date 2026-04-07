@@ -493,7 +493,7 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   Verification:
   Unit tests for token-piece decode correctness; benchmark diff showing completion TPS gain on both Instruct and Thinking variants.
 
-- [ ] Phase 3: Reduce prompt-side overhead that impacts TTFT
+- [x] Phase 3: Reduce prompt-side overhead that impacts TTFT
   Scope:
   Cache static prompt scaffolding token IDs (`im_start`, role headers, line breaks, assistant prefix) and avoid repeated tiny tokenization calls in `build_prompt`.
   Verification:
@@ -532,3 +532,17 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   - `cargo test -p izwi-core --no-run`
   - `cargo test -p izwi-core lfm2::chat -- --nocapture`
   - `cargo test -p izwi-core engine::core::tests::test_merge_executor_output_replaces_cumulative_audio_snapshots -- --nocapture`
+
+## Review (Implementation: Phase 3)
+
+- Added `PromptScaffoldTokens` to LFM2 chat model initialization to pre-tokenize static chat scaffolding once:
+  - `system\n`
+  - `user\n`
+  - `assistant\n`
+  - `\n`
+- Updated `build_prompt` to reuse cached role header and newline token spans instead of re-tokenizing formatted strings for every message.
+- Kept dynamic content tokenization unchanged and preserved existing assistant-thinking handling.
+- Verification:
+  - `cargo fmt --package izwi-core`
+  - `cargo check -p izwi-core`
+  - `cargo test -p izwi-core lfm2::chat -- --nocapture`
