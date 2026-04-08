@@ -13,7 +13,6 @@ import {
   ChevronLeft,
   CheckCircle2,
   Download,
-  FileAudio,
   FilePlus2,
   Library,
   Loader2,
@@ -77,6 +76,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { StudioSegmentEditor } from "@/features/studio/components/StudioSegmentEditor";
+import { StudioProjectHistoryTable } from "@/features/studio/components/StudioProjectHistoryTable";
 import { StudioWorkspaceScaffold } from "@/features/studio/components/StudioWorkspaceScaffold";
 import { useDownloadIndicator } from "@/utils/useDownloadIndicator";
 import { getSpeakerProfilesForVariant } from "@/types";
@@ -171,13 +171,6 @@ export function StudioWorkspace({
   const [projectMetaById, setProjectMetaById] = useState<
     Record<string, StudioProjectMetaRecord>
   >({});
-  const [projectSearch, setProjectSearch] = useState("");
-  const [projectStatusFilter, setProjectStatusFilter] = useState<
-    "all" | "in_progress" | "ready"
-  >("all");
-  const [projectSort, setProjectSort] = useState<"recent" | "name" | "progress">(
-    "recent",
-  );
   const [selectedProjectIdState, setSelectedProjectIdState] = useState<
     string | null
   >(null);
@@ -348,48 +341,10 @@ export function StudioWorkspace({
     [projects, selectedProjectId],
   );
 
-  const visibleProjects = useMemo(() => {
-    const search = projectSearch.trim().toLowerCase();
-    const filtered = projects.filter((project) => {
-      const meta = projectMetaById[project.id];
-      const tags = meta?.tags ?? [];
-      const completionReady =
-        project.segment_count > 0 &&
-        project.rendered_segment_count === project.segment_count;
-      const statusMatch =
-        projectStatusFilter === "all" ||
-        (projectStatusFilter === "ready" && completionReady) ||
-        (projectStatusFilter === "in_progress" && !completionReady);
-      const searchMatch =
-        !search ||
-        project.name.toLowerCase().includes(search) ||
-        project.model_id?.toLowerCase().includes(search) ||
-        tags.some((tag) => tag.toLowerCase().includes(search));
-      return statusMatch && searchMatch;
-    });
-
-    const sorted = [...filtered];
-    if (projectSort === "name") {
-      sorted.sort((left, right) => left.name.localeCompare(right.name));
-      return sorted;
-    }
-    if (projectSort === "progress") {
-      sorted.sort((left, right) => {
-        const leftRatio =
-          left.segment_count > 0
-            ? left.rendered_segment_count / left.segment_count
-            : 0;
-        const rightRatio =
-          right.segment_count > 0
-            ? right.rendered_segment_count / right.segment_count
-            : 0;
-        return rightRatio - leftRatio || right.updated_at - left.updated_at;
-      });
-      return sorted;
-    }
-    sorted.sort((left, right) => right.updated_at - left.updated_at);
-    return sorted;
-  }, [projectMetaById, projectSearch, projectSort, projectStatusFilter, projects]);
+  const visibleProjects = useMemo(
+    () => [...projects].sort((left, right) => right.updated_at - left.updated_at),
+    [projects],
+  );
 
   const projectDirty = useMemo(() => {
     if (!selectedProject) {
@@ -2220,7 +2175,7 @@ export function StudioWorkspace({
   );
   const projectLibraryCountLabel = `${projects.length}${projectsHasMore ? "+" : ""}`;
 
-  const projectLibraryFilters = (
+  const projectLibrarySummary = (
     <Card className="rounded-2xl border-0 bg-[var(--bg-surface-0)] p-0 shadow-none">
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -2233,46 +2188,6 @@ export function StudioWorkspace({
         </div>
         <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-2 text-[var(--text-muted)]">
           <Library className="h-4 w-4" />
-        </div>
-      </div>
-      <div className="mt-4 space-y-2 rounded-xl bg-[var(--bg-surface-1)] p-3">
-        <Input
-          value={projectSearch}
-          onChange={(event) => setProjectSearch(event.target.value)}
-          placeholder="Search projects, models, or tags"
-          className="bg-[var(--bg-surface-0)]"
-        />
-        <div className="grid gap-2 sm:grid-cols-2">
-          <Select
-            value={projectStatusFilter}
-            onValueChange={(value) =>
-              setProjectStatusFilter(value as "all" | "in_progress" | "ready")
-            }
-          >
-            <SelectTrigger className="h-9 bg-[var(--bg-surface-0)] px-2 text-xs">
-              <SelectValue placeholder="All statuses" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              <SelectItem value="in_progress">In progress</SelectItem>
-              <SelectItem value="ready">Ready to export</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select
-            value={projectSort}
-            onValueChange={(value) =>
-              setProjectSort(value as "recent" | "name" | "progress")
-            }
-          >
-            <SelectTrigger className="h-9 bg-[var(--bg-surface-0)] px-2 text-xs">
-              <SelectValue placeholder="Sort: Recent" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="recent">Sort: Recent</SelectItem>
-              <SelectItem value="name">Sort: Name</SelectItem>
-              <SelectItem value="progress">Sort: Progress</SelectItem>
-            </SelectContent>
-          </Select>
         </div>
       </div>
     </Card>
@@ -2813,159 +2728,31 @@ export function StudioWorkspace({
 
         {!activeProjectId ? (
           <div className="space-y-5">
-            {projectLibraryFilters}
-
-            {projectsLoading ? (
-              <div className="flex items-center gap-2 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-3 py-2 text-xs text-[var(--text-muted)]">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Loading projects...
-              </div>
-            ) : projects.length === 0 ? (
-              <div className="bg-[var(--bg-surface-0)] p-8 sm:p-10">
-                <div className="flex min-h-[420px] flex-col items-center justify-center gap-6 text-center">
-                  <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-4">
-                    <FileAudio className="h-6 w-6 text-[var(--text-muted)]" />
-                  </div>
-                  <div className="space-y-2">
-                    <p className="text-xl font-semibold text-[var(--text-primary)]">
-                      Create your first Studio project
-                    </p>
-                    <p className="max-w-xl text-sm leading-relaxed text-[var(--text-secondary)]">
-                      Projects keep script segments, voice settings, render progress,
-                      and export workflow in one place.
-                    </p>
-                  </div>
-                  <Button onClick={openCreateProjectDialog}>
-                    <FilePlus2 className="h-4 w-4" />
-                    New project
-                  </Button>
-                </div>
-              </div>
-            ) : visibleProjects.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-[var(--border-muted)] bg-[var(--bg-surface-1)] px-4 py-4 text-sm text-[var(--text-muted)]">
-                No projects match the current search or filters.
-              </div>
-            ) : (
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                {visibleProjects.map((project) => {
-                  const meta = projectMetaById[project.id];
-                  const progressPercent =
-                    project.segment_count > 0
-                      ? Math.round(
-                          (project.rendered_segment_count / project.segment_count) * 100,
-                        )
-                      : 0;
-                  const completionLabel = `${project.rendered_segment_count}/${project.segment_count} rendered`;
-                  const projectStatus =
-                    progressPercent >= 100
-                      ? "Ready"
-                      : project.rendered_segment_count > 0
-                        ? "In progress"
-                        : "Not rendered";
-                  return (
-                    <Card
-                      key={project.id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => {
-                        setSelectedProjectId(project.id);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.currentTarget !== event.target) {
-                          return;
-                        }
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          setSelectedProjectId(project.id);
-                        }
-                      }}
-                      className="group rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-4 text-left shadow-none transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface-1)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <h3 className="truncate text-base font-semibold text-[var(--text-primary)]">
-                          {project.name}
-                        </h3>
-                        <button
-                          type="button"
-                          onPointerDown={(event) => {
-                            event.stopPropagation();
-                          }}
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            openDeleteProjectConfirm(project.id, project.name);
-                          }}
-                          className="app-sidebar-delete-btn"
-                          title="Delete project"
-                          aria-label={`Delete project ${project.name}`}
-                          disabled={deletingProject}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.12em]">
-                        <span
-                          className={cn(
-                            "rounded-full border px-2 py-0.5",
-                            progressPercent >= 100
-                              ? "border-[var(--status-positive-border)] bg-[var(--status-positive-bg)] text-[var(--status-positive-text)]"
-                              : "border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] text-[var(--status-warning-text)]",
-                          )}
-                        >
-                          {projectStatus}
-                        </span>
-                      </div>
-
-                      <div className="mt-3 flex items-center gap-2">
-                        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--bg-surface-3)]">
-                          <div
-                            className="h-full rounded-full bg-[var(--accent-solid)] transition-[width] duration-300"
-                            style={{ width: `${progressPercent}%` }}
-                          />
-                        </div>
-                        <span className="text-[11px] text-[var(--text-muted)]">
-                          {progressPercent}%
-                        </span>
-                      </div>
-
-                      <div className="mt-2 flex items-center justify-between text-xs text-[var(--text-muted)]">
-                        <span>{completionLabel}</span>
-                        <span>{project.total_chars} chars</span>
-                      </div>
-
-                      <p className="mt-2 line-clamp-2 text-xs text-[var(--text-secondary)]">
-                        {project.model_id || "No model selected"}
-                        {meta?.tags?.length ? ` · ${meta.tags.slice(0, 2).join(" · ")}` : ""}
-                      </p>
-                      <div className="mt-3 text-[11px] text-[var(--text-muted)]">
-                        Updated {formatRelativeDate(project.updated_at)}
-                      </div>
-                    </Card>
-                  );
-                })}
-              </div>
-            )}
-
-            {projects.length > 0 &&
-            projectsHasMore &&
-            Boolean(projectsNextCursor) ? (
-              <div className="flex justify-center rounded-xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-3 py-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-9 gap-2"
-                  onClick={() => void loadMoreProjects()}
-                  disabled={projectsLoadingMore}
-                >
-                  {projectsLoadingMore ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : null}
-                  Load more
-                </Button>
-              </div>
-            ) : null}
+            {projectLibrarySummary}
+            <StudioProjectHistoryTable
+              projects={visibleProjects}
+              projectMetaById={projectMetaById}
+              loading={projectsLoading}
+              error={projects.length === 0 ? workspaceError : null}
+              deletePending={deletingProject}
+              loadMore={{
+                canLoadMore: projectsHasMore && Boolean(projectsNextCursor),
+                loading: projectsLoadingMore,
+                onLoadMore: () => {
+                  void loadMoreProjects();
+                },
+              }}
+              onRefresh={() => {
+                void loadProjects();
+              }}
+              onCreateProject={openCreateProjectDialog}
+              onOpenProject={(projectId) => {
+                setSelectedProjectId(projectId);
+              }}
+              onRequestDeleteProject={(project) => {
+                openDeleteProjectConfirm(project.id, project.name);
+              }}
+            />
           </div>
         ) : !selectedProject ? (
           <Card className="rounded-2xl border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-6 shadow-none">
