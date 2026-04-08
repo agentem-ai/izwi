@@ -10,6 +10,50 @@ use super::super::types::AudioOutput;
 use super::state::ActiveChatDecode;
 use super::{ExecutorOutput, ExecutorPhaseTiming, NativeExecutor};
 
+const FALLBACK_CHAT_STREAM_BATCH_PIECES: usize = 4;
+const FALLBACK_CHAT_STREAM_BATCH_BYTES: usize = 32;
+
+#[derive(Debug, Default)]
+struct StreamDeltaBatch {
+    emitted_first: bool,
+    pending: String,
+    pending_pieces: usize,
+}
+
+impl StreamDeltaBatch {
+    fn push(&mut self, delta: &str) -> Option<String> {
+        if delta.is_empty() {
+            return None;
+        }
+        if !self.emitted_first {
+            self.emitted_first = true;
+            return Some(delta.to_string());
+        }
+
+        self.pending.push_str(delta);
+        self.pending_pieces += 1;
+        if self.pending_pieces >= FALLBACK_CHAT_STREAM_BATCH_PIECES
+            || self.pending.len() >= FALLBACK_CHAT_STREAM_BATCH_BYTES
+            || delta.ends_with('\n')
+        {
+            return self.take_pending();
+        }
+        None
+    }
+
+    fn finish(&mut self) -> Option<String> {
+        self.take_pending()
+    }
+
+    fn take_pending(&mut self) -> Option<String> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        self.pending_pieces = 0;
+        Some(std::mem::take(&mut self.pending))
+    }
+}
+
 impl NativeExecutor {
     fn chat_generation_config(request: &EngineCoreRequest) -> ChatGenerationConfig {
         ChatGenerationConfig {
@@ -68,6 +112,7 @@ impl NativeExecutor {
                 let mut first_output_ms_since_start: Option<f64> = None;
                 let mut sequence = 0usize;
                 let mut stream_err: Option<Error> = None;
+                let mut stream_batch = StreamDeltaBatch::default();
 
                 let mut emit = |delta: &str| {
                     if first_output_ms_since_start.is_none() && !delta.is_empty() {
@@ -76,10 +121,12 @@ impl NativeExecutor {
                     }
                     if let Some(tx) = stream_tx.as_ref() {
                         if stream_err.is_none() {
-                            if let Err(err) =
-                                Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
-                            {
-                                stream_err = Some(err);
+                            if let Some(chunk) = stream_batch.push(delta) {
+                                if let Err(err) =
+                                    Self::stream_text(tx, &request.id, &mut sequence, chunk)
+                                {
+                                    stream_err = Some(err);
+                                }
                             }
                         }
                     }
@@ -92,6 +139,17 @@ impl NativeExecutor {
                     &mut emit,
                 )?;
 
+                if let Some(tx) = stream_tx.as_ref() {
+                    if stream_err.is_none() {
+                        if let Some(chunk) = stream_batch.finish() {
+                            if let Err(err) =
+                                Self::stream_text(tx, &request.id, &mut sequence, chunk)
+                            {
+                                stream_err = Some(err);
+                            }
+                        }
+                    }
+                }
                 if let Some(err) = stream_err {
                     return Err(err);
                 }
@@ -283,5 +341,36 @@ mod tests {
 
         assert_eq!(first, second);
         assert_ne!(first, other);
+    }
+
+    #[test]
+    fn stream_delta_batch_emits_first_delta_immediately_then_batches() {
+        let mut batch = StreamDeltaBatch::default();
+
+        assert_eq!(batch.push("A"), Some("A".to_string()));
+        assert_eq!(batch.push("b"), None);
+        assert_eq!(batch.push("c"), None);
+        assert_eq!(batch.push("d"), None);
+        assert_eq!(batch.push("e"), Some("bcde".to_string()));
+    }
+
+    #[test]
+    fn stream_delta_batch_flushes_pending_on_finish() {
+        let mut batch = StreamDeltaBatch::default();
+
+        assert_eq!(batch.push("hello"), Some("hello".to_string()));
+        assert_eq!(batch.push(" "), None);
+        assert_eq!(batch.push("world"), None);
+        assert_eq!(batch.finish(), Some(" world".to_string()));
+        assert_eq!(batch.finish(), None);
+    }
+
+    #[test]
+    fn stream_delta_batch_flushes_on_newline_boundary() {
+        let mut batch = StreamDeltaBatch::default();
+
+        assert_eq!(batch.push("intro"), Some("intro".to_string()));
+        assert_eq!(batch.push(" line"), None);
+        assert_eq!(batch.push("\n"), Some(" line\n".to_string()));
     }
 }
