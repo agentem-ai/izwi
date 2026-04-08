@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, IndexOp, Tensor, D};
@@ -53,7 +53,7 @@ struct ChatTokenizer {
     inner: Tokenizer,
     vocab_size: usize,
     specials: SpecialTokenIds,
-    decode_piece_cache: Vec<OnceLock<Arc<str>>>,
+    decode_piece_cache: Vec<OnceLock<String>>,
 }
 
 struct PromptScaffoldTokens {
@@ -144,18 +144,20 @@ impl ChatTokenizer {
         self.inner.decode(&filtered)
     }
 
-    fn decode_token_piece(&self, token_id: u32) -> Result<Arc<str>> {
+    fn decode_token_piece(&self, token_id: u32) -> Result<&str> {
         let idx = token_id as usize;
         if idx >= self.vocab_size {
-            return Ok(Arc::from(""));
+            return Ok("");
         }
         if let Some(piece) = self.decode_piece_cache[idx].get() {
-            return Ok(piece.clone());
+            return Ok(piece.as_str());
         }
-        let piece = Arc::<str>::from(self.inner.decode(&[token_id])?);
-        let _ = self.decode_piece_cache[idx].set(piece.clone());
-
-        Ok(piece)
+        let decoded = self.inner.decode(&[token_id])?;
+        let _ = self.decode_piece_cache[idx].set(decoded);
+        Ok(self.decode_piece_cache[idx]
+            .get()
+            .map(String::as_str)
+            .unwrap_or(""))
     }
 }
 
@@ -240,9 +242,9 @@ impl Lfm2ChatModel {
             .map_err(|e| Error::InferenceError(format!("LFM2 GGUF forward failed: {e}")))?;
         let mut position = prompt_len;
 
-        let mut generated_ids = Vec::new();
-        let mut assembled = String::new();
         let max_new_tokens = max_new_tokens.max(1);
+        let mut generated_ids = Vec::with_capacity(max_new_tokens);
+        let mut assembled = String::with_capacity(max_new_tokens.saturating_mul(4));
 
         while generated_ids.len() < max_new_tokens {
             let next = argmax(&logits)?;
@@ -256,11 +258,13 @@ impl Lfm2ChatModel {
             let delta = self.tokenizer.decode_token_piece(next)?;
             generated_ids.push(next);
             if !delta.is_empty() {
-                on_delta(delta.as_ref());
+                on_delta(delta);
             }
-            assembled.push_str(delta.as_ref());
+            assembled.push_str(delta);
 
-            if has_token_repetition_loop(&generated_ids) {
+            if should_check_repetition_loop(generated_ids.len())
+                && has_token_repetition_loop(&generated_ids)
+            {
                 break;
             }
 
@@ -413,6 +417,10 @@ fn has_suffix_repeat(ids: &[u32], span: usize, repeats: usize) -> bool {
     })
 }
 
+fn should_check_repetition_loop(len: usize) -> bool {
+    len >= 48 && len % 4 == 0
+}
+
 fn has_token_repetition_loop(ids: &[u32]) -> bool {
     // Catch common degenerate loops from greedy decode where the same token span
     // is emitted repeatedly (frequent in tiny reasoning models).
@@ -427,7 +435,9 @@ fn has_token_repetition_loop(ids: &[u32]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_token_repetition_loop, strip_past_assistant_thinking};
+    use super::{
+        has_token_repetition_loop, should_check_repetition_loop, strip_past_assistant_thinking,
+    };
 
     #[test]
     fn strip_past_assistant_thinking_keeps_only_tail_after_close_tag() {
@@ -459,5 +469,13 @@ mod tests {
     fn does_not_flag_short_sequences_as_loop() {
         let ids: Vec<u32> = (1..30).collect();
         assert!(!has_token_repetition_loop(&ids));
+    }
+
+    #[test]
+    fn repetition_loop_check_interval_skips_between_boundaries() {
+        assert!(!should_check_repetition_loop(47));
+        assert!(should_check_repetition_loop(48));
+        assert!(!should_check_repetition_loop(49));
+        assert!(should_check_repetition_loop(52));
     }
 }
