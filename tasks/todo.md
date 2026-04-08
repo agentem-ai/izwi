@@ -532,6 +532,12 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   Verification:
   `cargo check -p izwi-core`, `cargo test -p izwi-core handler_chat -- --nocapture`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, and `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup`.
 
+- [x] Phase 9: Pivot TTFT work to LFM2 prefill strategy and timing visibility
+  Scope:
+  Add adaptive LFM2 prefill policy (`auto/full/token`) with a short-prompt token-mode path, record kernel prefill path counters for LFM2 prefill execution, and add per-request timing logs for prompt-build, prompt-forward, decode, and first-delta milestones.
+  Verification:
+  `cargo check -p izwi-core`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, and user-host benchmark rerun with current fixed protocol.
+
 - [x] Check-in before implementation
   Share Phase 1-2 scope and expected tradeoffs, then proceed with code changes only after signoff.
 
@@ -631,3 +637,24 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   - `cargo test -p izwi-core handler_chat -- --nocapture`
   - `cargo test -p izwi-core lfm2::chat -- --nocapture`
   - `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup` (local run remained slower/noisier than controlled host baselines; user-host benchmark remains source of truth)
+
+## Review (Implementation: Phase 9)
+
+- Added adaptive LFM2 prefill policy controls:
+  - `IZWI_LFM2_PREFILL_MODE` supports `auto` (default), `full`, and `token`.
+  - `IZWI_LFM2_PREFILL_TOKEN_THRESHOLD` controls short-prompt token-mode cutoff in `auto` mode (default: `64` prompt tokens).
+- Implemented token-mode prefill execution path for LFM2 where prompt tokens are prefed one-by-one before first decode token sampling.
+- Wired LFM2 prefill-path telemetry counters:
+  - full prefill records sequence spans/tokens,
+  - token prefill records token-mode steps.
+- Added LFM2 per-request timing breakdown logs (debug level) for:
+  - prompt build time,
+  - prefill forward time,
+  - first-delta timing,
+  - decode time,
+  - total generation time,
+  with prefill policy/execution metadata.
+- Verification:
+  - `cargo check -p izwi-core`
+  - `cargo test -p izwi-core lfm2::chat -- --nocapture`
+  - user-host benchmark rerun pending (source of truth for TTFT impact)
