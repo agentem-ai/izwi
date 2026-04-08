@@ -202,6 +202,58 @@ fn should_prepend_default_system(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lfm2PromptStylePolicy {
+    Auto,
+    Standard,
+    Aggressive,
+}
+
+impl Lfm2PromptStylePolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Standard => "standard",
+            Self::Aggressive => "aggressive",
+        }
+    }
+}
+
+fn parse_lfm2_prompt_style_policy(raw: Option<&str>) -> Lfm2PromptStylePolicy {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("standard" | "safe" | "chat") => Lfm2PromptStylePolicy::Standard,
+        Some("aggressive" | "compact" | "lean") => Lfm2PromptStylePolicy::Aggressive,
+        _ => Lfm2PromptStylePolicy::Auto,
+    }
+}
+
+fn lfm2_prompt_style_policy() -> &'static Lfm2PromptStylePolicy {
+    static POLICY: OnceLock<Lfm2PromptStylePolicy> = OnceLock::new();
+    POLICY.get_or_init(|| {
+        parse_lfm2_prompt_style_policy(
+            std::env::var("IZWI_LFM2_PROMPT_STYLE_POLICY")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+fn should_use_aggressive_single_turn_prompt(
+    messages: &[ChatMessage],
+    prepend_default_system: bool,
+    style_policy: Lfm2PromptStylePolicy,
+) -> bool {
+    if prepend_default_system {
+        return false;
+    }
+    let single_user_turn =
+        messages.len() == 1 && matches!(messages.first().map(|message| &message.role), Some(ChatRole::User));
+    if !single_user_turn {
+        return false;
+    }
+    !matches!(style_policy, Lfm2PromptStylePolicy::Standard)
+}
+
 impl PromptScaffoldTokens {
     fn load(tokenizer: &ChatTokenizer) -> Result<Self> {
         Ok(Self {
@@ -349,6 +401,10 @@ impl Lfm2ChatModel {
             "LFM2 default system policy: {}",
             lfm2_default_system_policy().as_str()
         );
+        info!(
+            "LFM2 prompt style policy: {}",
+            lfm2_prompt_style_policy().as_str()
+        );
 
         Ok(Self {
             device,
@@ -470,6 +526,11 @@ impl Lfm2ChatModel {
 
         let prepend_default_system =
             should_prepend_default_system(messages, *lfm2_default_system_policy());
+        let prompt_style = *lfm2_prompt_style_policy();
+        if should_use_aggressive_single_turn_prompt(messages, prepend_default_system, prompt_style)
+        {
+            return self.build_aggressive_single_turn_prompt(messages[0].content.as_str());
+        }
 
         let mut ids = Vec::new();
         if let Some(bos) = self.tokenizer.specials.bos {
@@ -539,6 +600,23 @@ impl Lfm2ChatModel {
         ids.push(self.tokenizer.specials.im_end);
         ids.extend_from_slice(&self.prompt_scaffold.newline);
         Ok(())
+    }
+
+    fn build_aggressive_single_turn_prompt(&self, content: &str) -> Result<Vec<u32>> {
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return Err(Error::InvalidInput(
+                "Chat request must include at least one tokenizable message".to_string(),
+            ));
+        }
+
+        // Aggressive TTFT mode intentionally uses a leaner single-turn prompt to
+        // reduce prefill token count for common benchmark traffic.
+        let mut ids = self.tokenizer.encode_text(trimmed)?;
+        ids.extend_from_slice(&self.prompt_scaffold.newline);
+        ids.push(self.tokenizer.specials.im_start);
+        ids.extend_from_slice(&self.prompt_scaffold.assistant_header);
+        Ok(ids)
     }
 
     fn prefill_prompt(
@@ -653,10 +731,12 @@ fn has_token_repetition_loop(ids: &[u32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        has_token_repetition_loop, parse_lfm2_default_system_policy, parse_lfm2_prefill_mode,
-        parse_lfm2_prefill_threshold, should_check_repetition_loop,
-        should_prepend_default_system, strip_past_assistant_thinking, Lfm2DefaultSystemPolicy,
-        Lfm2PrefillConfig, Lfm2PrefillExecution, Lfm2PrefillMode,
+        has_token_repetition_loop, parse_lfm2_default_system_policy,
+        parse_lfm2_prefill_mode, parse_lfm2_prefill_threshold, parse_lfm2_prompt_style_policy,
+        should_check_repetition_loop, should_prepend_default_system,
+        should_use_aggressive_single_turn_prompt, strip_past_assistant_thinking,
+        Lfm2DefaultSystemPolicy, Lfm2PrefillConfig, Lfm2PrefillExecution, Lfm2PrefillMode,
+        Lfm2PromptStylePolicy,
     };
     use crate::models::shared::chat::{ChatMessage, ChatRole};
 
@@ -782,6 +862,65 @@ mod tests {
         assert!(should_prepend_default_system(
             &multi_turn,
             Lfm2DefaultSystemPolicy::Auto
+        ));
+    }
+
+    #[test]
+    fn parse_prompt_style_policy_defaults_to_auto_for_unknown_values() {
+        assert_eq!(
+            parse_lfm2_prompt_style_policy(None),
+            Lfm2PromptStylePolicy::Auto
+        );
+        assert_eq!(
+            parse_lfm2_prompt_style_policy(Some("unsupported")),
+            Lfm2PromptStylePolicy::Auto
+        );
+        assert_eq!(
+            parse_lfm2_prompt_style_policy(Some("standard")),
+            Lfm2PromptStylePolicy::Standard
+        );
+        assert_eq!(
+            parse_lfm2_prompt_style_policy(Some("aggressive")),
+            Lfm2PromptStylePolicy::Aggressive
+        );
+    }
+
+    #[test]
+    fn aggressive_single_turn_prompt_only_applies_to_single_user_turns() {
+        let single_user_turn = vec![ChatMessage {
+            role: ChatRole::User,
+            content: "hello".to_string(),
+        }];
+        assert!(should_use_aggressive_single_turn_prompt(
+            &single_user_turn,
+            false,
+            Lfm2PromptStylePolicy::Auto
+        ));
+        assert!(!should_use_aggressive_single_turn_prompt(
+            &single_user_turn,
+            false,
+            Lfm2PromptStylePolicy::Standard
+        ));
+        assert!(!should_use_aggressive_single_turn_prompt(
+            &single_user_turn,
+            true,
+            Lfm2PromptStylePolicy::Aggressive
+        ));
+
+        let multi_turn = vec![
+            ChatMessage {
+                role: ChatRole::User,
+                content: "hello".to_string(),
+            },
+            ChatMessage {
+                role: ChatRole::Assistant,
+                content: "hi".to_string(),
+            },
+        ];
+        assert!(!should_use_aggressive_single_turn_prompt(
+            &multi_turn,
+            false,
+            Lfm2PromptStylePolicy::Aggressive
         ));
     }
 }
