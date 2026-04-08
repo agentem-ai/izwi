@@ -544,6 +544,12 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   Verification:
   `cargo check -p izwi-core`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, and user-host benchmark rerun with current fixed protocol.
 
+- [x] Phase 11: Add aggressive single-turn prompt compaction path
+  Scope:
+  Introduce policy-controlled aggressive prompt compaction for single-turn user prompts that removes chat-wrapper user scaffolding and keeps only lean content + assistant prefix, maximizing TTFT reduction at the expense of prompt-shape fidelity.
+  Verification:
+  `cargo check -p izwi-core`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, and user-host benchmark rerun with current fixed protocol.
+
 - [x] Check-in before implementation
   Share Phase 1-2 scope and expected tradeoffs, then proceed with code changes only after signoff.
 
@@ -674,6 +680,20 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   - preserves synthetic system insertion for multi-turn non-system conversations.
 - Logged resolved default-system policy at model load for easier runtime validation.
 - Added focused unit tests for policy parsing and auto-policy behavior.
+- Verification:
+  - `cargo check -p izwi-core`
+  - `cargo test -p izwi-core lfm2::chat -- --nocapture`
+  - user-host benchmark rerun pending (source of truth for TTFT impact)
+
+## Review (Implementation: Phase 11)
+
+- Added aggressive LFM2 prompt-style policy controls:
+  - `IZWI_LFM2_PROMPT_STYLE_POLICY` supports `auto` (default), `standard`, and `aggressive`.
+- Added aggressive single-turn prompt path in LFM2 `build_prompt`:
+  - for single user-turn prompts with no synthetic system insertion, use compact `content + newline + assistant prefix` prompt shape,
+  - keep standard chat-template prompt construction for multi-turn/system traffic.
+- Logged resolved prompt-style policy at model load for runtime verification.
+- Added focused unit tests for prompt-style policy parsing and aggressive-path gating behavior.
 - Verification:
   - `cargo check -p izwi-core`
   - `cargo test -p izwi-core lfm2::chat -- --nocapture`
