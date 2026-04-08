@@ -402,7 +402,7 @@ mod tests {
     fn detects_manifest_asset_on_release() {
         let contract = UpdaterContract::default();
         let release = GitHubRelease {
-            tag_name: "v0.1.0-beta-11".to_string(),
+            tag_name: "v0.1.0-beta-12".to_string(),
             draft: false,
             assets: vec![
                 GitHubReleaseAsset {
@@ -429,7 +429,7 @@ mod tests {
                 }],
             },
             GitHubRelease {
-                tag_name: "v0.1.0-beta-11".to_string(),
+                tag_name: "v0.1.0-beta-12".to_string(),
                 draft: false,
                 assets: vec![GitHubReleaseAsset {
                     name: "latest-beta.json".to_string(),
@@ -447,7 +447,7 @@ mod tests {
 
         assert_eq!(
             selected.map(|release| release.tag_name.as_str()),
-            Some("v0.1.0-beta-11")
+            Some("v0.1.0-beta-12")
         );
     }
 
