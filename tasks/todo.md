@@ -538,6 +538,12 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   Verification:
   `cargo check -p izwi-core`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, and user-host benchmark rerun with current fixed protocol.
 
+- [x] Phase 10: Reduce default prefill tokens for single-turn LFM2 prompts
+  Scope:
+  Add adaptive default-system policy for LFM2 prompt building (`auto/always/never`) and default `auto` behavior that skips synthetic system injection for single-turn user prompts, reducing prefill token count and TTFT for common bench/profile traffic.
+  Verification:
+  `cargo check -p izwi-core`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, and user-host benchmark rerun with current fixed protocol.
+
 - [x] Check-in before implementation
   Share Phase 1-2 scope and expected tradeoffs, then proceed with code changes only after signoff.
 
@@ -654,6 +660,20 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   - decode time,
   - total generation time,
   with prefill policy/execution metadata.
+- Verification:
+  - `cargo check -p izwi-core`
+  - `cargo test -p izwi-core lfm2::chat -- --nocapture`
+  - user-host benchmark rerun pending (source of truth for TTFT impact)
+
+## Review (Implementation: Phase 10)
+
+- Added adaptive LFM2 default-system policy controls:
+  - `IZWI_LFM2_DEFAULT_SYSTEM_POLICY` supports `auto` (default), `always`, and `never`.
+- Updated LFM2 prompt construction to use policy-driven system injection:
+  - `auto` now skips synthetic default system for single-turn user prompts,
+  - preserves synthetic system insertion for multi-turn non-system conversations.
+- Logged resolved default-system policy at model load for easier runtime validation.
+- Added focused unit tests for policy parsing and auto-policy behavior.
 - Verification:
   - `cargo check -p izwi-core`
   - `cargo test -p izwi-core lfm2::chat -- --nocapture`
