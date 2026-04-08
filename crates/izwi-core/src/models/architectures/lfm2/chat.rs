@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, IndexOp, Tensor, D};
@@ -17,6 +18,9 @@ use crate::backends::{open_gguf_reader, BackendKind};
 use crate::error::{Error, Result};
 use crate::model::ModelVariant;
 use crate::models::shared::chat::{ChatMessage, ChatRole};
+use crate::models::shared::telemetry::{
+    record_prefill_sequence_span, record_prefill_token_mode_step,
+};
 use crate::tokenizer::Tokenizer;
 
 #[derive(Debug, Clone)]
@@ -61,6 +65,89 @@ struct PromptScaffoldTokens {
     user_header: Vec<u32>,
     assistant_header: Vec<u32>,
     newline: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lfm2PrefillMode {
+    Auto,
+    Full,
+    Token,
+}
+
+impl Lfm2PrefillMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Full => "full",
+            Self::Token => "token",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lfm2PrefillExecution {
+    Full,
+    Token,
+}
+
+impl Lfm2PrefillExecution {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Token => "token",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Lfm2PrefillConfig {
+    mode: Lfm2PrefillMode,
+    token_prompt_threshold: usize,
+}
+
+impl Lfm2PrefillConfig {
+    const DEFAULT_TOKEN_THRESHOLD: usize = 64;
+
+    fn resolve(self, prompt_tokens: usize) -> Lfm2PrefillExecution {
+        match self.mode {
+            Lfm2PrefillMode::Full => Lfm2PrefillExecution::Full,
+            Lfm2PrefillMode::Token => Lfm2PrefillExecution::Token,
+            Lfm2PrefillMode::Auto => {
+                if prompt_tokens <= self.token_prompt_threshold {
+                    Lfm2PrefillExecution::Token
+                } else {
+                    Lfm2PrefillExecution::Full
+                }
+            }
+        }
+    }
+}
+
+fn parse_lfm2_prefill_mode(raw: Option<&str>) -> Lfm2PrefillMode {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("full" | "sequence") => Lfm2PrefillMode::Full,
+        Some("token" | "token_mode") => Lfm2PrefillMode::Token,
+        _ => Lfm2PrefillMode::Auto,
+    }
+}
+
+fn parse_lfm2_prefill_threshold(raw: Option<&str>) -> usize {
+    raw.map(str::trim)
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(Lfm2PrefillConfig::DEFAULT_TOKEN_THRESHOLD)
+}
+
+fn lfm2_prefill_config() -> &'static Lfm2PrefillConfig {
+    static CONFIG: OnceLock<Lfm2PrefillConfig> = OnceLock::new();
+    CONFIG.get_or_init(|| Lfm2PrefillConfig {
+        mode: parse_lfm2_prefill_mode(std::env::var("IZWI_LFM2_PREFILL_MODE").ok().as_deref()),
+        token_prompt_threshold: parse_lfm2_prefill_threshold(
+            std::env::var("IZWI_LFM2_PREFILL_TOKEN_THRESHOLD")
+                .ok()
+                .as_deref(),
+        ),
+    })
 }
 
 impl PromptScaffoldTokens {
@@ -200,6 +287,12 @@ impl Lfm2ChatModel {
             device.kind,
             gguf_path.display()
         );
+        let prefill = lfm2_prefill_config();
+        info!(
+            "LFM2 prefill policy: mode={}, token_prompt_threshold={}",
+            prefill.mode.as_str(),
+            prefill.token_prompt_threshold
+        );
 
         Ok(Self {
             device,
@@ -228,23 +321,28 @@ impl Lfm2ChatModel {
         max_new_tokens: usize,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ChatGenerationOutput> {
+        let total_started = Instant::now();
+        let prompt_build_started = Instant::now();
         let prompt_ids = self.build_prompt(messages)?;
+        let prompt_build_ms = prompt_build_started.elapsed().as_secs_f64() * 1000.0;
         let mut model = self
             .text_model
             .lock()
             .map_err(|_| Error::InferenceError("LFM2 GGUF model mutex poisoned".to_string()))?;
 
         let prompt_len = prompt_ids.len();
-        let input_ids =
-            Tensor::from_slice(prompt_ids.as_slice(), (1, prompt_len), &self.device.device)?;
-        let mut logits = model
-            .forward(&input_ids, 0)
-            .map_err(|e| Error::InferenceError(format!("LFM2 GGUF forward failed: {e}")))?;
-        let mut position = prompt_len;
+        let prefill_started = Instant::now();
+        let prefill_cfg = *lfm2_prefill_config();
+        let prefill_exec = prefill_cfg.resolve(prompt_len);
+        let (mut logits, mut position, prefill_steps) =
+            self.prefill_prompt(&mut model, prompt_ids.as_slice(), prefill_exec)?;
+        let prefill_forward_ms = prefill_started.elapsed().as_secs_f64() * 1000.0;
 
         let max_new_tokens = max_new_tokens.max(1);
         let mut generated_ids = Vec::with_capacity(max_new_tokens);
         let mut assembled = String::with_capacity(max_new_tokens.saturating_mul(4));
+        let decode_started = Instant::now();
+        let mut first_delta_ms: Option<f64> = None;
 
         while generated_ids.len() < max_new_tokens {
             let next = argmax(&logits)?;
@@ -258,6 +356,9 @@ impl Lfm2ChatModel {
             let delta = self.tokenizer.decode_token_piece(next)?;
             generated_ids.push(next);
             if !delta.is_empty() {
+                if first_delta_ms.is_none() {
+                    first_delta_ms = Some(total_started.elapsed().as_secs_f64() * 1000.0);
+                }
                 on_delta(delta);
             }
             assembled.push_str(delta);
@@ -273,6 +374,25 @@ impl Lfm2ChatModel {
                 .forward(&next_tensor, position)
                 .map_err(|e| Error::InferenceError(format!("LFM2 GGUF decode failed: {e}")))?;
             position += 1;
+        }
+
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let total_ms = total_started.elapsed().as_secs_f64() * 1000.0;
+            let decode_ms = decode_started.elapsed().as_secs_f64() * 1000.0;
+            tracing::debug!(
+                target: "izwi::lfm2::timing",
+                prompt_tokens = prompt_len,
+                prefill_policy = prefill_cfg.mode.as_str(),
+                prefill_execution = prefill_exec.as_str(),
+                prefill_steps,
+                prompt_build_ms,
+                prefill_forward_ms,
+                first_delta_ms = first_delta_ms.unwrap_or(total_ms),
+                decode_ms,
+                total_ms,
+                generated_tokens = generated_ids.len(),
+                "LFM2 chat timing breakdown"
+            );
         }
 
         Ok(ChatGenerationOutput {
@@ -366,6 +486,49 @@ impl Lfm2ChatModel {
         ids.extend_from_slice(&self.prompt_scaffold.newline);
         Ok(())
     }
+
+    fn prefill_prompt(
+        &self,
+        model: &mut QuantizedLfm2Model,
+        prompt_ids: &[u32],
+        exec: Lfm2PrefillExecution,
+    ) -> Result<(Tensor, usize, usize)> {
+        if prompt_ids.is_empty() {
+            return Err(Error::InvalidInput(
+                "LFM2 chat prompt must include at least one token".to_string(),
+            ));
+        }
+
+        match exec {
+            Lfm2PrefillExecution::Full => {
+                record_prefill_sequence_span(prompt_ids.len());
+                let input_ids =
+                    Tensor::from_slice(prompt_ids, (1, prompt_ids.len()), &self.device.device)?;
+                let logits = model
+                    .forward(&input_ids, 0)
+                    .map_err(|e| Error::InferenceError(format!("LFM2 GGUF forward failed: {e}")))?;
+                Ok((logits, prompt_ids.len(), 1))
+            }
+            Lfm2PrefillExecution::Token => {
+                let mut position = 0usize;
+                let mut logits: Option<Tensor> = None;
+                for &token in prompt_ids {
+                    record_prefill_token_mode_step();
+                    let token_ids = Tensor::from_slice(&[token], (1, 1), &self.device.device)?;
+                    logits = Some(model.forward(&token_ids, position).map_err(|e| {
+                        Error::InferenceError(format!("LFM2 GGUF token prefill failed: {e}"))
+                    })?);
+                    position += 1;
+                }
+                let logits = logits.ok_or_else(|| {
+                    Error::InferenceError(
+                        "LFM2 chat token prefill did not produce logits".to_string(),
+                    )
+                })?;
+                Ok((logits, position, prompt_ids.len()))
+            }
+        }
+    }
 }
 
 fn argmax(logits: &Tensor) -> Result<u32> {
@@ -436,7 +599,9 @@ fn has_token_repetition_loop(ids: &[u32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        has_token_repetition_loop, should_check_repetition_loop, strip_past_assistant_thinking,
+        has_token_repetition_loop, parse_lfm2_prefill_mode, parse_lfm2_prefill_threshold,
+        should_check_repetition_loop, strip_past_assistant_thinking, Lfm2PrefillConfig,
+        Lfm2PrefillExecution, Lfm2PrefillMode,
     };
 
     #[test]
@@ -477,5 +642,43 @@ mod tests {
         assert!(should_check_repetition_loop(48));
         assert!(!should_check_repetition_loop(49));
         assert!(should_check_repetition_loop(52));
+    }
+
+    #[test]
+    fn parse_prefill_mode_defaults_to_auto_for_unknown_values() {
+        assert_eq!(parse_lfm2_prefill_mode(None), Lfm2PrefillMode::Auto);
+        assert_eq!(
+            parse_lfm2_prefill_mode(Some("unsupported")),
+            Lfm2PrefillMode::Auto
+        );
+        assert_eq!(parse_lfm2_prefill_mode(Some("FULL")), Lfm2PrefillMode::Full);
+        assert_eq!(
+            parse_lfm2_prefill_mode(Some("token_mode")),
+            Lfm2PrefillMode::Token
+        );
+    }
+
+    #[test]
+    fn parse_prefill_threshold_defaults_when_missing_or_invalid() {
+        assert_eq!(
+            parse_lfm2_prefill_threshold(None),
+            Lfm2PrefillConfig::DEFAULT_TOKEN_THRESHOLD
+        );
+        assert_eq!(
+            parse_lfm2_prefill_threshold(Some("0")),
+            Lfm2PrefillConfig::DEFAULT_TOKEN_THRESHOLD
+        );
+        assert_eq!(parse_lfm2_prefill_threshold(Some("96")), 96);
+    }
+
+    #[test]
+    fn prefill_auto_policy_uses_token_mode_for_short_prompts() {
+        let config = Lfm2PrefillConfig {
+            mode: Lfm2PrefillMode::Auto,
+            token_prompt_threshold: 64,
+        };
+        assert_eq!(config.resolve(16), Lfm2PrefillExecution::Token);
+        assert_eq!(config.resolve(64), Lfm2PrefillExecution::Token);
+        assert_eq!(config.resolve(65), Lfm2PrefillExecution::Full);
     }
 }
