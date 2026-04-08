@@ -520,6 +520,12 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   Verification:
   `cargo check -p izwi-core`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, and `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup`.
 
+- [x] Phase 7: Trim decode-loop cache hit overhead and repetition checks
+  Scope:
+  Replace `Arc<str>` token-piece cache payloads with borrowed `&str` access from per-token `OnceLock<String>`, pre-allocate decode buffers from `max_new_tokens`, and run repetition-loop detection at fixed intervals instead of every token.
+  Verification:
+  `cargo check -p izwi-core`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, and `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup`.
+
 - [x] Check-in before implementation
   Share Phase 1-2 scope and expected tradeoffs, then proceed with code changes only after signoff.
 
@@ -593,3 +599,14 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   - `cargo check -p izwi-core`
   - `cargo test -p izwi-core lfm2::chat -- --nocapture`
   - `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup` (local sanity run remained noisy and slower than controlled baseline; host-to-host variance still dominates this short run)
+
+## Review (Implementation: Phase 7)
+
+- Switched token-piece cache payloads from `OnceLock<Arc<str>>` to `OnceLock<String>` and updated `decode_token_piece` to return borrowed `&str` on cache hits, removing per-token `Arc` clone churn.
+- Added decode-loop pre-allocation for token IDs and assembled text based on `max_new_tokens` to reduce incremental growth reallocations.
+- Added `should_check_repetition_loop` interval gating so repetition-loop detection runs every 4 tokens after warm-up threshold rather than on every decode step.
+- Added focused unit coverage for repetition-check intervals.
+- Verification:
+  - `cargo check -p izwi-core`
+  - `cargo test -p izwi-core lfm2::chat -- --nocapture`
+  - `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup` (local run remained slower/noisier than controlled host baselines; user-host benchmark remains source of truth)
