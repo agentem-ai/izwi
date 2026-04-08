@@ -14,7 +14,6 @@ import {
   CheckCircle2,
   Download,
   FilePlus2,
-  Library,
   Loader2,
   PencilLine,
   Settings2,
@@ -2173,26 +2172,6 @@ export function StudioWorkspace({
       ) : null}
     </div>
   );
-  const projectLibraryCountLabel = `${projects.length}${projectsHasMore ? "+" : ""}`;
-
-  const projectLibrarySummary = (
-    <Card className="rounded-2xl border-0 bg-[var(--bg-surface-0)] p-0 shadow-none">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-            Project Library
-          </div>
-          <div className="mt-1 text-base font-semibold text-[var(--text-primary)]">
-            {projectLibraryCountLabel} project{projects.length === 1 ? "" : "s"}
-          </div>
-        </div>
-        <div className="rounded-lg border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-2 text-[var(--text-muted)]">
-          <Library className="h-4 w-4" />
-        </div>
-      </div>
-    </Card>
-  );
-
   return (
     <>
       {headerActionContainer === undefined
@@ -2728,7 +2707,6 @@ export function StudioWorkspace({
 
         {!activeProjectId ? (
           <div className="space-y-5">
-            {projectLibrarySummary}
             <StudioProjectHistoryTable
               projects={visibleProjects}
               projectMetaById={projectMetaById}
