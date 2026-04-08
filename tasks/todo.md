@@ -526,6 +526,12 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   Verification:
   `cargo check -p izwi-core`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, and `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup`.
 
+- [x] Phase 8: Batch fallback chat stream deltas after first token
+  Scope:
+  Keep first streamed token immediate for TTFT, then batch fallback chat token-piece deltas by piece/byte thresholds to reduce `stream_text` send overhead and JSON chunk churn during streaming benchmarks.
+  Verification:
+  `cargo check -p izwi-core`, `cargo test -p izwi-core handler_chat -- --nocapture`, `cargo test -p izwi-core lfm2::chat -- --nocapture`, and `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup`.
+
 - [x] Check-in before implementation
   Share Phase 1-2 scope and expected tradeoffs, then proceed with code changes only after signoff.
 
@@ -608,5 +614,20 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
 - Added focused unit coverage for repetition-check intervals.
 - Verification:
   - `cargo check -p izwi-core`
+  - `cargo test -p izwi-core lfm2::chat -- --nocapture`
+  - `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup` (local run remained slower/noisier than controlled host baselines; user-host benchmark remains source of truth)
+
+## Review (Implementation: Phase 8)
+
+- Added `StreamDeltaBatch` in fallback chat executor path to preserve first-token immediacy while batching later deltas using fixed piece/byte thresholds and newline boundaries.
+- Updated fallback chat streaming emit flow to:
+  - capture first-output timing as before,
+  - emit first non-empty delta immediately,
+  - accumulate and flush subsequent deltas in batches,
+  - flush any residual batch before the final marker.
+- Added unit coverage for batch behavior (first-delta immediacy, threshold flush, newline flush, finish flush).
+- Verification:
+  - `cargo check -p izwi-core`
+  - `cargo test -p izwi-core handler_chat -- --nocapture`
   - `cargo test -p izwi-core lfm2::chat -- --nocapture`
   - `izwi bench chat --model LFM2.5-1.2B-Instruct-GGUF --prompt "Tell me about Victoria Falls." --iterations 5 --max-tokens 256 --warmup` (local run remained slower/noisier than controlled host baselines; user-host benchmark remains source of truth)
