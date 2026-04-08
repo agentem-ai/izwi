@@ -8,9 +8,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
+  ArrowLeft,
   AlertCircle,
   AlertTriangle,
-  ChevronLeft,
   CheckCircle2,
   Download,
   FilePlus2,
@@ -2737,12 +2737,12 @@ export function StudioWorkspace({
             <div className="flex flex-col items-start gap-3">
               <Button
                 type="button"
-                variant="ghost"
+                variant="outline"
                 size="sm"
                 onClick={() => onNavigateProject?.(null)}
-                className="h-8 px-2 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                className="h-10 gap-2 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 text-sm font-medium text-[var(--text-secondary)] shadow-sm hover:bg-[var(--bg-surface-1)]"
               >
-                <ChevronLeft className="h-3.5 w-3.5" />
+                <ArrowLeft className="h-4 w-4" />
                 Back to Studio
               </Button>
               <div className="text-sm text-[var(--text-muted)]">
@@ -2758,12 +2758,12 @@ export function StudioWorkspace({
                   {onNavigateProject ? (
                     <Button
                       type="button"
-                      variant="ghost"
+                      variant="outline"
                       size="sm"
                       onClick={() => onNavigateProject(null)}
-                      className="mb-2 h-8 px-2 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                      className="mb-4 h-10 gap-2 rounded-full border-[var(--border-muted)] bg-[var(--bg-surface-0)] px-4 text-sm font-medium text-[var(--text-secondary)] shadow-sm hover:bg-[var(--bg-surface-1)]"
                     >
-                      <ChevronLeft className="h-3.5 w-3.5" />
+                      <ArrowLeft className="h-4 w-4" />
                       Back to Studio
                     </Button>
                   ) : null}
