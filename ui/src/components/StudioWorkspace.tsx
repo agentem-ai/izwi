@@ -2222,6 +2222,7 @@ export function StudioWorkspace({
                   value={newProjectName}
                   onChange={(event) => setNewProjectName(event.target.value)}
                   placeholder="Optional project name"
+                  className="bg-[var(--bg-surface-1)] border-[var(--border-muted)]"
                 />
               </div>
 
