@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ModelInfo, SavedVoiceSummary } from "@/api";
@@ -65,6 +65,11 @@ function buildModel(overrides: Partial<ModelInfo> = {}): ModelInfo {
     },
     ...overrides,
   };
+}
+
+function LocationSearchEcho() {
+  const location = useLocation();
+  return <div data-testid="tts-location-search">{location.search}</div>;
 }
 
 describe("VoicesPage", () => {
@@ -208,6 +213,25 @@ describe("VoicesPage", () => {
       await screen.findByText("Generating a preview sample for this speaker."),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Preview" })).toBeDisabled();
+  });
+
+  it("includes a saved-voice-capable model when redirecting saved voices to text to speech", async () => {
+    render(
+      <MemoryRouter initialEntries={["/voices"]}>
+        <Routes>
+          <Route path="/voices" element={<VoicesPage {...baseProps} />} />
+          <Route path="/text-to-speech" element={<LocationSearchEcho />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(apiMocks.listSavedVoices).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Use in TTS" }));
+
+    const searchEcho = await screen.findByTestId("tts-location-search");
+    expect(searchEcho).toHaveTextContent("voiceId=voice-balanced");
+    expect(searchEcho).toHaveTextContent("model=MockVoiceModel");
   });
 
   it("loads more saved voices", async () => {

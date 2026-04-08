@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Plus, Settings2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import type { ModelInfo } from "@/api";
@@ -6,6 +6,7 @@ import { PageHeader, PageShell } from "@/components/PageShell";
 import { Button } from "@/components/ui/button";
 import { VoiceCreationModal } from "@/components/VoiceCreationModal";
 import {
+  TEXT_TO_SPEECH_PREFERRED_MODELS,
   VOICE_DESIGN_PREFERRED_MODELS,
   resolvePreferredRouteModel,
 } from "@/features/models/catalog/routeModelCatalog";
@@ -80,6 +81,29 @@ export function VoiceStudioPage({
       }),
   });
 
+  const preferredSavedVoiceModel = useMemo(() => {
+    const savedVoiceModels = models.filter(
+      (model) =>
+        !model.variant.includes("Tokenizer") &&
+        model.speech_capabilities?.supports_reference_voice === true,
+    );
+    if (savedVoiceModels.length === 0) {
+      return null;
+    }
+
+    const selectedSavedVoiceModel =
+      selectedModel &&
+      savedVoiceModels.some((model) => model.variant === selectedModel)
+        ? selectedModel
+        : null;
+
+    return resolvePreferredRouteModel({
+      models: savedVoiceModels,
+      selectedModel: selectedSavedVoiceModel,
+      preferredVariants: TEXT_TO_SPEECH_PREFERRED_MODELS,
+    });
+  }, [models, selectedModel]);
+
   return (
     <PageShell>
       <PageHeader
@@ -135,9 +159,14 @@ export function VoiceStudioPage({
         onVoiceCreated={() => {
           setVoicesRefreshKey((current) => current + 1);
         }}
-        onUseSavedVoiceInTts={(voiceId) =>
-          navigate(`/text-to-speech?voiceId=${encodeURIComponent(voiceId)}`)
-        }
+        onUseSavedVoiceInTts={(voiceId) => {
+          const params = new URLSearchParams();
+          params.set("voiceId", voiceId);
+          if (preferredSavedVoiceModel) {
+            params.set("model", preferredSavedVoiceModel);
+          }
+          navigate(`/text-to-speech?${params.toString()}`);
+        }}
         designModel={designResolvedModel}
         designModelReady={designModelReady}
         designModelOptions={designModelOptions}

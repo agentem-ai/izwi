@@ -16,7 +16,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Slider } from "@/components/ui/slider";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
   Select,
@@ -35,6 +34,8 @@ interface NewTextToSpeechModalProps {
   selectedModelReady: boolean;
   initialSavedVoiceId?: string | null;
   initialSpeaker?: string | null;
+  onLoadSelectedModel?: (variant: string) => Promise<void> | void;
+  onUnloadSelectedModel?: (variant: string) => Promise<void> | void;
   onModelRequired: () => void;
   onCreated: (record: SpeechHistoryRecord) => Promise<void> | void;
   onStreamingStart?: () => void;
@@ -67,6 +68,8 @@ export function NewTextToSpeechModal({
   selectedModelReady,
   initialSavedVoiceId = null,
   initialSpeaker = null,
+  onLoadSelectedModel,
+  onUnloadSelectedModel,
   onModelRequired,
   onCreated,
   onStreamingStart,
@@ -78,9 +81,11 @@ export function NewTextToSpeechModal({
   const [speaker, setSpeaker] = useState(initialSpeaker || "Vivian");
   const [savedVoiceId, setSavedVoiceId] = useState(initialSavedVoiceId || "");
   const [voiceDescription, setVoiceDescription] = useState("");
-  const [speed, setSpeed] = useState(1);
   const [streamingEnabled, setStreamingEnabled] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [modelActionPending, setModelActionPending] = useState<
+    "load" | "unload" | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [savedVoices, setSavedVoices] = useState<SavedVoiceSummary[]>([]);
   const [savedVoicesLoading, setSavedVoicesLoading] = useState(false);
@@ -94,7 +99,6 @@ export function NewTextToSpeechModal({
   const supportsVoiceDescription =
     capabilities?.supports_voice_description ?? false;
   const supportsStreaming = capabilities?.supports_streaming ?? false;
-  const supportsSpeedControl = capabilities?.supports_speed_control ?? false;
   const effectiveVoiceWorkflow: EffectiveVoiceWorkflow = supportsReferenceVoices
     ? "saved_voice"
     : supportsBuiltInVoices
@@ -124,14 +128,67 @@ export function NewTextToSpeechModal({
     setSpeaker(initialSpeaker || "Vivian");
     setSavedVoiceId(initialSavedVoiceId || "");
     setVoiceDescription("");
-    setSpeed(1);
     setStreamingEnabled(true);
     setIsSubmitting(false);
+    setModelActionPending(null);
     setError(null);
     setSavedVoices([]);
     setSavedVoicesLoading(false);
     setSavedVoicesError(null);
   }, [initialSavedVoiceId, initialSpeaker]);
+
+  const handleModelAction = useCallback(async () => {
+    if (!selectedModel || modelActionPending) {
+      if (!selectedModel) {
+        onModelRequired();
+      }
+      return;
+    }
+
+    setError(null);
+
+    if (selectedModelReady) {
+      if (!onUnloadSelectedModel) {
+        return;
+      }
+      try {
+        const result = onUnloadSelectedModel(selectedModel);
+        if (result && typeof (result as Promise<void>).then === "function") {
+          setModelActionPending("unload");
+          await result;
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to unload model.");
+      } finally {
+        setModelActionPending(null);
+      }
+      return;
+    }
+
+    if (!onLoadSelectedModel) {
+      onModelRequired();
+      return;
+    }
+
+    try {
+      const result = onLoadSelectedModel(selectedModel);
+      if (result && typeof (result as Promise<void>).then === "function") {
+        setModelActionPending("load");
+        await result;
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load model.");
+    } finally {
+      setModelActionPending(null);
+    }
+  }, [
+    modelActionPending,
+    onLoadSelectedModel,
+    onModelRequired,
+    onUnloadSelectedModel,
+    selectedModel,
+    selectedModelReady,
+  ]);
 
   useEffect(() => {
     const wasOpen = wasOpenRef.current;
@@ -233,7 +290,6 @@ export function NewTextToSpeechModal({
       speaker: usesBuiltInVoiceSelection ? speaker : undefined,
       saved_voice_id: usesSavedVoiceSelection ? savedVoiceId : undefined,
       voice_description: usesVoiceDescription ? trimmedVoiceDescription : undefined,
-      speed: supportsSpeedControl ? speed : undefined,
     };
 
     setIsSubmitting(true);
@@ -318,10 +374,8 @@ export function NewTextToSpeechModal({
     selectedModel,
     selectedModelReady,
     speaker,
-    speed,
     streamAvailable,
     streamingEnabled,
-    supportsSpeedControl,
     text,
     voiceDescription,
     usesBuiltInVoiceSelection,
@@ -330,6 +384,25 @@ export function NewTextToSpeechModal({
   ]);
 
   const modelStatus = selectedModelReady ? "ready" : "not_ready";
+  const modelStatusCode = selectedModelInfo?.status ?? null;
+  const modelStatusBusy =
+    modelStatusCode === "loading" || modelStatusCode === "downloading";
+  const modelActionBusy = modelStatusBusy || modelActionPending !== null;
+  const isUnloadAction = selectedModelReady || modelActionPending === "unload";
+  const modelActionLabel = modelStatusCode === "downloading"
+    ? "Downloading model..."
+    : modelStatusCode === "loading"
+      ? "Loading model..."
+      : modelActionPending === "load"
+        ? "Loading model..."
+        : modelActionPending === "unload"
+          ? "Unloading model..."
+          : isUnloadAction
+            ? "Unload model"
+            : "Load model";
+  const modelActionButtonClass = isUnloadAction
+    ? "mt-3 h-9 w-full gap-2 border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)] hover:bg-[var(--danger-bg-hover)] hover:text-[var(--danger-text)]"
+    : "mt-3 h-9 w-full gap-2";
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -416,6 +489,19 @@ export function NewTextToSpeechModal({
                     {selectedModel || "No model selected"}
                   </span>
                 </div>
+                <Button
+                  type="button"
+                  variant={isUnloadAction ? "outline" : "default"}
+                  size="sm"
+                  className={modelActionButtonClass}
+                  onClick={() => void handleModelAction()}
+                  disabled={isSubmitting || !selectedModel || modelActionBusy}
+                >
+                  {modelActionBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : null}
+                  {modelActionLabel}
+                </Button>
               </div>
 
               {usesBuiltInVoiceSelection ? (
@@ -488,27 +574,6 @@ export function NewTextToSpeechModal({
                     onChange={(event) => setVoiceDescription(event.target.value)}
                     disabled={isSubmitting}
                     placeholder="Optional style guidance"
-                  />
-                </div>
-              ) : null}
-
-              {supportsSpeedControl ? (
-                <div className="rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-1)] p-3.5">
-                  <div className="mb-1.5 flex items-center justify-between gap-3">
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">
-                      Speed
-                    </span>
-                    <span className="text-xs font-medium text-[var(--text-primary)]">
-                      {speed.toFixed(2)}x
-                    </span>
-                  </div>
-                  <Slider
-                    value={[speed]}
-                    min={0.25}
-                    max={4}
-                    step={0.05}
-                    onValueChange={(value) => setSpeed(value[0] ?? 1)}
-                    disabled={isSubmitting}
                   />
                 </div>
               ) : null}

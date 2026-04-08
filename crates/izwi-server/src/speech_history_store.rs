@@ -239,15 +239,6 @@ impl SpeechHistoryStore {
         })
     }
 
-    pub async fn list_records(
-        &self,
-        route_kind: SpeechRouteKind,
-        limit: usize,
-    ) -> anyhow::Result<Vec<SpeechHistoryRecordSummary>> {
-        let (records, _) = self.list_records_page(route_kind, limit, None).await?;
-        Ok(records)
-    }
-
     pub async fn list_records_page(
         &self,
         route_kind: SpeechRouteKind,

@@ -262,14 +262,6 @@ impl TranscriptionStore {
         })
     }
 
-    pub async fn list_records(
-        &self,
-        limit: usize,
-    ) -> anyhow::Result<Vec<TranscriptionRecordSummary>> {
-        let (records, _) = self.list_records_page(limit, None).await?;
-        Ok(records)
-    }
-
     pub async fn list_records_page(
         &self,
         limit: usize,
@@ -1405,8 +1397,12 @@ mod tests {
         );
         assert!(created.summary_text.is_none());
 
-        let summaries = store.list_records(10).await.expect("list should succeed");
+        let (summaries, next_cursor) = store
+            .list_records_page(10, None)
+            .await
+            .expect("list should succeed");
         assert_eq!(summaries.len(), 1);
+        assert!(next_cursor.is_none());
         assert!(summaries[0].transcription_preview.contains("Hello there."));
         assert_eq!(
             summaries[0].summary_status,
@@ -1543,7 +1539,11 @@ mod tests {
             Some("Runtime unavailable")
         );
 
-        let summaries = store.list_records(10).await.expect("list should succeed");
+        let (summaries, next_cursor) = store
+            .list_records_page(10, None)
+            .await
+            .expect("list should succeed");
+        assert!(next_cursor.is_none());
         assert_eq!(
             summaries[0].processing_status,
             TranscriptionProcessingStatus::Failed

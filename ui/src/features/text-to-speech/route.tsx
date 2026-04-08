@@ -137,20 +137,86 @@ export function TextToSpeechPage({
   }, []);
 
   useEffect(() => {
-    if (appliedQueryModelRef.current || routeModels.length === 0) {
+    if (appliedQueryModelRef.current || recordId) {
       return;
     }
 
     const requestedModel = searchParams.get("model");
-    if (
-      requestedModel &&
-      routeModels.some((model) => model.variant === requestedModel)
-    ) {
-      onSelect(requestedModel);
+    const requestedSavedVoiceId = searchParams.get("voiceId");
+    const requestedSpeaker = searchParams.get("speaker");
+
+    if (!requestedModel && !requestedSavedVoiceId && !requestedSpeaker) {
+      appliedQueryModelRef.current = true;
+      return;
+    }
+
+    const requestedModelInfo = requestedModel
+      ? routeModels.find((model) => model.variant === requestedModel) ?? null
+      : null;
+
+    const resolveModelForCapability = (
+      capability: "supports_reference_voice" | "supports_builtin_voices",
+    ) => {
+      const capabilityModels = routeModels.filter(
+        (model) => model.speech_capabilities?.[capability] === true,
+      );
+      if (capabilityModels.length === 0) {
+        return null;
+      }
+
+      const selectedCapabilityModel =
+        resolvedSelectedModel &&
+        capabilityModels.some((model) => model.variant === resolvedSelectedModel)
+          ? resolvedSelectedModel
+          : null;
+
+      return resolvePreferredRouteModel({
+        models: capabilityModels,
+        selectedModel: selectedCapabilityModel,
+        preferredVariants: TEXT_TO_SPEECH_PREFERRED_MODELS,
+      });
+    };
+
+    let targetModel: string | null = null;
+
+    if (requestedSavedVoiceId) {
+      targetModel =
+        requestedModelInfo?.speech_capabilities?.supports_reference_voice
+          ? requestedModelInfo.variant
+          : resolveModelForCapability("supports_reference_voice");
+    } else if (requestedSpeaker) {
+      targetModel =
+        requestedModelInfo?.speech_capabilities?.supports_builtin_voices
+          ? requestedModelInfo.variant
+          : resolveModelForCapability("supports_builtin_voices");
+    } else if (requestedModelInfo) {
+      targetModel = requestedModelInfo.variant;
+    }
+
+    if (!targetModel) {
+      if (loading || routeModels.length === 0) {
+        return;
+      }
+      if (!requestedSavedVoiceId && !requestedSpeaker) {
+        appliedQueryModelRef.current = true;
+      }
+      return;
+    }
+
+    if (selectedModel !== targetModel) {
+      onSelect(targetModel);
     }
 
     appliedQueryModelRef.current = true;
-  }, [onSelect, routeModels, searchParams]);
+  }, [
+    loading,
+    onSelect,
+    recordId,
+    resolvedSelectedModel,
+    routeModels,
+    searchParams,
+    selectedModel,
+  ]);
 
   useEffect(() => {
     void refreshSavedVoiceNames();
@@ -401,6 +467,12 @@ export function TextToSpeechPage({
         selectedModelReady={selectedModelReady}
         initialSavedVoiceId={searchParams.get("voiceId")}
         initialSpeaker={searchParams.get("speaker")}
+        onLoadSelectedModel={(variant) => {
+          onLoad(variant);
+        }}
+        onUnloadSelectedModel={(variant) => {
+          onUnload(variant);
+        }}
         onModelRequired={() => {
           requestModel();
           onError(

@@ -123,18 +123,34 @@ function buildSavedVoice(id: string, name: string) {
   };
 }
 
-function renderRoute(initialEntry: string) {
+function buildSpeechCapabilities(overrides: Partial<Record<string, boolean>> = {}) {
+  return {
+    supports_builtin_voices: true,
+    supports_reference_voice: false,
+    supports_voice_description: true,
+    supports_streaming: true,
+    supports_speed_control: true,
+    supports_auto_long_form: false,
+    ...overrides,
+  };
+}
+
+function renderRoute(
+  initialEntry: string,
+  propsOverrides: Partial<typeof baseProps> = {},
+) {
+  const routeProps = { ...baseProps, ...propsOverrides };
   return render(
     <NotificationProvider>
       <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route
             path="/text-to-speech"
-            element={<TextToSpeechPage {...baseProps} />}
+            element={<TextToSpeechPage {...routeProps} />}
           />
           <Route
             path="/text-to-speech/:recordId"
-            element={<TextToSpeechPage {...baseProps} />}
+            element={<TextToSpeechPage {...routeProps} />}
           />
         </Routes>
       </MemoryRouter>
@@ -564,6 +580,172 @@ describe("TextToSpeechPage", () => {
 
     expect(screen.getByText("Alice")).toBeInTheDocument();
     expect(screen.queryByText("bf_alice")).not.toBeInTheDocument();
+  });
+
+  it("loads the selected model from the modal readiness action", async () => {
+    const onLoad = vi.fn();
+
+    hookMocks.useRouteModelSelection.mockReturnValue({
+      routeModels: [],
+      resolvedSelectedModel: "Qwen3-TTS-12Hz-1.7B-Chat",
+      selectedModelInfo: {
+        variant: "Qwen3-TTS-12Hz-1.7B-Chat",
+        status: "downloaded",
+        speech_capabilities: {
+          supports_builtin_voices: true,
+          supports_reference_voice: false,
+          supports_voice_description: true,
+          supports_streaming: true,
+          supports_speed_control: true,
+        },
+      },
+      selectedModelReady: false,
+      isModelModalOpen: false,
+      intentVariant: null,
+      closeModelModal: vi.fn(),
+      openModelManager: vi.fn(),
+      requestModel: vi.fn(),
+    });
+
+    renderRoute("/text-to-speech", { onLoad });
+
+    await waitFor(() =>
+      expect(apiMocks.listTextToSpeechRecords).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New generation/i }));
+    await screen.findByRole("heading", { name: "New text-to-speech job" });
+
+    fireEvent.click(screen.getByRole("button", { name: /Load model/i }));
+    expect(onLoad).toHaveBeenCalledWith("Qwen3-TTS-12Hz-1.7B-Chat");
+  });
+
+  it("unloads the selected model from the modal readiness action", async () => {
+    const onUnload = vi.fn();
+
+    renderRoute("/text-to-speech", { onUnload });
+
+    await waitFor(() =>
+      expect(apiMocks.listTextToSpeechRecords).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New generation/i }));
+    await screen.findByRole("heading", { name: "New text-to-speech job" });
+
+    fireEvent.click(screen.getByRole("button", { name: /Unload model/i }));
+    expect(onUnload).toHaveBeenCalledWith("Qwen3-TTS-12Hz-1.7B-Chat");
+  });
+
+  it("selects a saved-voice-capable model when opening with a saved voice id", async () => {
+    const onSelect = vi.fn();
+
+    hookMocks.useRouteModelSelection.mockReturnValue({
+      routeModels: [
+        {
+          variant: "Kokoro-82M",
+          status: "ready",
+          speech_capabilities: buildSpeechCapabilities({
+            supports_reference_voice: false,
+            supports_voice_description: false,
+          }),
+        },
+        {
+          variant: "Qwen3-TTS-12Hz-0.6B-CustomVoice",
+          status: "downloaded",
+          speech_capabilities: buildSpeechCapabilities({
+            supports_reference_voice: true,
+            supports_voice_description: false,
+          }),
+        },
+      ],
+      resolvedSelectedModel: "Kokoro-82M",
+      selectedModelInfo: {
+        variant: "Kokoro-82M",
+        status: "ready",
+        speech_capabilities: buildSpeechCapabilities({
+          supports_reference_voice: false,
+          supports_voice_description: false,
+        }),
+      },
+      selectedModelReady: true,
+      isModelModalOpen: false,
+      intentVariant: null,
+      closeModelModal: vi.fn(),
+      openModelManager: vi.fn(),
+      requestModel: vi.fn(),
+    });
+
+    renderRoute("/text-to-speech?voiceId=voice-1", { onSelect });
+
+    await waitFor(() =>
+      expect(onSelect).toHaveBeenCalledWith(
+        "Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      ),
+    );
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries redirect model selection after route model options hydrate", async () => {
+    const onSelect = vi.fn();
+
+    const emptySelection = {
+      routeModels: [],
+      resolvedSelectedModel: "Kokoro-82M",
+      selectedModelInfo: {
+        variant: "Kokoro-82M",
+        status: "ready",
+        speech_capabilities: buildSpeechCapabilities({
+          supports_reference_voice: false,
+          supports_voice_description: false,
+        }),
+      },
+      selectedModelReady: true,
+      isModelModalOpen: false,
+      intentVariant: null,
+      closeModelModal: vi.fn(),
+      openModelManager: vi.fn(),
+      requestModel: vi.fn(),
+    };
+
+    const hydratedSelection = {
+      routeModels: [
+        {
+          variant: "Qwen3-TTS-12Hz-0.6B-CustomVoice",
+          status: "downloaded",
+          speech_capabilities: buildSpeechCapabilities({
+            supports_reference_voice: true,
+            supports_voice_description: false,
+          }),
+        },
+      ],
+      resolvedSelectedModel: "Kokoro-82M",
+      selectedModelInfo: {
+        variant: "Kokoro-82M",
+        status: "ready",
+        speech_capabilities: buildSpeechCapabilities({
+          supports_reference_voice: false,
+          supports_voice_description: false,
+        }),
+      },
+      selectedModelReady: true,
+      isModelModalOpen: false,
+      intentVariant: null,
+      closeModelModal: vi.fn(),
+      openModelManager: vi.fn(),
+      requestModel: vi.fn(),
+    };
+
+    hookMocks.useRouteModelSelection
+      .mockReturnValueOnce(emptySelection)
+      .mockReturnValue(hydratedSelection);
+
+    renderRoute("/text-to-speech?voiceId=voice-1", { onSelect });
+
+    await waitFor(() =>
+      expect(onSelect).toHaveBeenCalledWith(
+        "Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      ),
+    );
   });
 
   it("navigates to /text-to-speech/:id after stream created event", async () => {
