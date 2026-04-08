@@ -138,11 +138,6 @@ impl SavedVoiceStore {
         })
     }
 
-    pub async fn list_voices(&self, limit: usize) -> anyhow::Result<Vec<SavedVoiceSummary>> {
-        let (voices, _) = self.list_voices_page(limit, None).await?;
-        Ok(voices)
-    }
-
     pub async fn list_voices_page(
         &self,
         limit: usize,

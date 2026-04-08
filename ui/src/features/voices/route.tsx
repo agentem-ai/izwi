@@ -296,8 +296,41 @@ export function VoicesPage({
     [resolvedSelectedModel],
   );
 
+  const savedVoiceModels = useMemo(
+    () =>
+      models.filter(
+        (model) =>
+          !model.variant.includes("Tokenizer") &&
+          model.speech_capabilities?.supports_reference_voice === true,
+      ),
+    [models],
+  );
+
+  const preferredSavedVoiceModel = useMemo(() => {
+    if (savedVoiceModels.length === 0) {
+      return null;
+    }
+
+    const selectedSavedVoiceModel =
+      resolvedSelectedModel &&
+      savedVoiceModels.some((model) => model.variant === resolvedSelectedModel)
+        ? resolvedSelectedModel
+        : null;
+
+    return resolvePreferredRouteModel({
+      models: savedVoiceModels,
+      selectedModel: selectedSavedVoiceModel,
+      preferredVariants: TEXT_TO_SPEECH_PREFERRED_MODELS,
+    });
+  }, [resolvedSelectedModel, savedVoiceModels]);
+
   const handleUseSavedVoice = (voiceId: string) => {
-    navigate(`/text-to-speech?voiceId=${encodeURIComponent(voiceId)}`);
+    const params = new URLSearchParams();
+    params.set("voiceId", voiceId);
+    if (preferredSavedVoiceModel) {
+      params.set("model", preferredSavedVoiceModel);
+    }
+    navigate(`/text-to-speech?${params.toString()}`);
   };
 
   const handleUseBuiltInVoice = (speaker: string) => {

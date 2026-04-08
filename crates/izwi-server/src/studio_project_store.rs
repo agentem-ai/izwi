@@ -402,11 +402,6 @@ impl StudioProjectStore {
         Ok(Self { db_path })
     }
 
-    pub async fn list_projects(&self, limit: usize) -> anyhow::Result<Vec<StudioProjectSummary>> {
-        let (projects, _) = self.list_projects_page(limit, None).await?;
-        Ok(projects)
-    }
-
     pub async fn list_projects_page(
         &self,
         limit: usize,

@@ -328,14 +328,6 @@ impl DiarizationStore {
         })
     }
 
-    pub async fn list_records(
-        &self,
-        limit: usize,
-    ) -> anyhow::Result<Vec<DiarizationRecordSummary>> {
-        let (records, _) = self.list_records_page(limit, None).await?;
-        Ok(records)
-    }
-
     pub async fn list_records_page(
         &self,
         limit: usize,
@@ -1744,8 +1736,12 @@ mod tests {
             Some(&"Alice".to_string())
         );
 
-        let summaries = store.list_records(10).await.expect("list should succeed");
+        let (summaries, next_cursor) = store
+            .list_records_page(10, None)
+            .await
+            .expect("list should succeed");
         assert_eq!(summaries.len(), 1);
+        assert!(next_cursor.is_none());
         assert_eq!(
             summaries[0].processing_status,
             DiarizationProcessingStatus::Ready
