@@ -150,6 +150,58 @@ fn lfm2_prefill_config() -> &'static Lfm2PrefillConfig {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lfm2DefaultSystemPolicy {
+    Auto,
+    Always,
+    Never,
+}
+
+impl Lfm2DefaultSystemPolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+}
+
+fn parse_lfm2_default_system_policy(raw: Option<&str>) -> Lfm2DefaultSystemPolicy {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("always" | "on" | "true" | "1") => Lfm2DefaultSystemPolicy::Always,
+        Some("never" | "off" | "false" | "0") => Lfm2DefaultSystemPolicy::Never,
+        _ => Lfm2DefaultSystemPolicy::Auto,
+    }
+}
+
+fn lfm2_default_system_policy() -> &'static Lfm2DefaultSystemPolicy {
+    static POLICY: OnceLock<Lfm2DefaultSystemPolicy> = OnceLock::new();
+    POLICY.get_or_init(|| {
+        parse_lfm2_default_system_policy(
+            std::env::var("IZWI_LFM2_DEFAULT_SYSTEM_POLICY")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+fn should_prepend_default_system(
+    messages: &[ChatMessage],
+    policy: Lfm2DefaultSystemPolicy,
+) -> bool {
+    if matches!(messages.first().map(|message| &message.role), Some(ChatRole::System)) {
+        return false;
+    }
+    match policy {
+        Lfm2DefaultSystemPolicy::Always => true,
+        Lfm2DefaultSystemPolicy::Never => false,
+        Lfm2DefaultSystemPolicy::Auto => {
+            !(messages.len() == 1 && matches!(messages.first().map(|m| &m.role), Some(ChatRole::User)))
+        }
+    }
+}
+
 impl PromptScaffoldTokens {
     fn load(tokenizer: &ChatTokenizer) -> Result<Self> {
         Ok(Self {
@@ -293,6 +345,10 @@ impl Lfm2ChatModel {
             prefill.mode.as_str(),
             prefill.token_prompt_threshold
         );
+        info!(
+            "LFM2 default system policy: {}",
+            lfm2_default_system_policy().as_str()
+        );
 
         Ok(Self {
             device,
@@ -412,10 +468,8 @@ impl Lfm2ChatModel {
             ));
         }
 
-        let prepend_default_system = !matches!(
-            messages.first().map(|message| &message.role),
-            Some(ChatRole::System)
-        );
+        let prepend_default_system =
+            should_prepend_default_system(messages, *lfm2_default_system_policy());
 
         let mut ids = Vec::new();
         if let Some(bos) = self.tokenizer.specials.bos {
@@ -599,10 +653,12 @@ fn has_token_repetition_loop(ids: &[u32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        has_token_repetition_loop, parse_lfm2_prefill_mode, parse_lfm2_prefill_threshold,
-        should_check_repetition_loop, strip_past_assistant_thinking, Lfm2PrefillConfig,
-        Lfm2PrefillExecution, Lfm2PrefillMode,
+        has_token_repetition_loop, parse_lfm2_default_system_policy, parse_lfm2_prefill_mode,
+        parse_lfm2_prefill_threshold, should_check_repetition_loop,
+        should_prepend_default_system, strip_past_assistant_thinking, Lfm2DefaultSystemPolicy,
+        Lfm2PrefillConfig, Lfm2PrefillExecution, Lfm2PrefillMode,
     };
+    use crate::models::shared::chat::{ChatMessage, ChatRole};
 
     #[test]
     fn strip_past_assistant_thinking_keeps_only_tail_after_close_tag() {
@@ -680,5 +736,52 @@ mod tests {
         assert_eq!(config.resolve(16), Lfm2PrefillExecution::Token);
         assert_eq!(config.resolve(64), Lfm2PrefillExecution::Token);
         assert_eq!(config.resolve(65), Lfm2PrefillExecution::Full);
+    }
+
+    #[test]
+    fn parse_default_system_policy_defaults_to_auto_for_unknown_values() {
+        assert_eq!(
+            parse_lfm2_default_system_policy(None),
+            Lfm2DefaultSystemPolicy::Auto
+        );
+        assert_eq!(
+            parse_lfm2_default_system_policy(Some("unsupported")),
+            Lfm2DefaultSystemPolicy::Auto
+        );
+        assert_eq!(
+            parse_lfm2_default_system_policy(Some("always")),
+            Lfm2DefaultSystemPolicy::Always
+        );
+        assert_eq!(
+            parse_lfm2_default_system_policy(Some("never")),
+            Lfm2DefaultSystemPolicy::Never
+        );
+    }
+
+    #[test]
+    fn auto_default_system_policy_skips_single_turn_user_prompt() {
+        let single_turn = vec![ChatMessage {
+            role: ChatRole::User,
+            content: "hello".to_string(),
+        }];
+        assert!(!should_prepend_default_system(
+            &single_turn,
+            Lfm2DefaultSystemPolicy::Auto
+        ));
+
+        let multi_turn = vec![
+            ChatMessage {
+                role: ChatRole::User,
+                content: "hello".to_string(),
+            },
+            ChatMessage {
+                role: ChatRole::Assistant,
+                content: "hi".to_string(),
+            },
+        ];
+        assert!(should_prepend_default_system(
+            &multi_turn,
+            Lfm2DefaultSystemPolicy::Auto
+        ));
     }
 }
