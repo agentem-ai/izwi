@@ -193,17 +193,6 @@ export function StudioProjectHistoryTable({
                       >
                         {statusLabel}
                       </span>
-                      <div className="flex items-center gap-2">
-                        <div className="h-1.5 w-24 overflow-hidden rounded-full bg-[var(--bg-surface-2)]">
-                          <div
-                            className="h-full rounded-full bg-[var(--accent-solid)] transition-[width] duration-300"
-                            style={{ width: `${progressPercent}%` }}
-                          />
-                        </div>
-                        <span className="text-xs text-[var(--text-secondary)]">
-                          {progressPercent}%
-                        </span>
-                      </div>
                     </div>
                   </td>
                   <td className="px-4 py-3 align-top text-[var(--text-secondary)]">
