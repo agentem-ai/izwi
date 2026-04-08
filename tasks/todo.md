@@ -698,3 +698,57 @@ Improve `LFM2.5-1.2B-Instruct-GGUF` and `LFM2.5-1.2B-Thinking-GGUF` chat latency
   - `cargo check -p izwi-core`
   - `cargo test -p izwi-core lfm2::chat -- --nocapture`
   - user-host benchmark rerun pending (source of truth for TTFT impact)
+
+# Studio Route History Table Refactor Plan
+
+## Goal
+
+Refactor `/studio` project listing to align with the route pattern used by `/transcription`, `/diarization`, and `/text-to-speech`: operational history in a table with row actions, consistent loading/empty/error states, and cursor pagination behavior.
+
+## Plan
+
+- [x] Audit current `/studio` list UX and map matching history-table conventions from other routes.
+- [x] Introduce a dedicated Studio history table component with:
+  - row click navigation to `/studio/:projectId`
+  - columns for key project metadata and progress
+  - standardized overflow row actions (open + delete)
+  - loading, empty, and load-more states
+- [x] Replace the current card-grid listing in `StudioWorkspace` with the new table component while preserving delete confirmation behavior.
+- [x] Add focused tests for the new Studio history table behavior.
+- [x] Verify with typecheck and targeted UI tests.
+
+## Review
+
+- Added `StudioProjectHistoryTable` and aligned it with existing route table conventions:
+  - loading state, error state with retry, empty state with create CTA
+  - clickable rows that navigate to `/studio/:projectId`
+  - row overflow actions with `Open project` and `Delete`
+  - integrated cursor-based `Load more` control in table footer
+- Replaced Studio index card-grid listing with the new history table while keeping the existing project count summary header and existing delete confirmation dialog flow.
+- Kept the user-requested simplification by removing list search/filter/sort controls.
+- Added focused tests for the new Studio history table interactions:
+  - row open navigation
+  - row action delete callback
+  - empty-state create action
+  - load-more callback
+- Verification:
+  - `npm run typecheck` (in `ui/`)
+  - `npm run test -- src/features/studio/components/StudioProjectHistoryTable.test.tsx src/features/PageHeaderHistoryButtons.test.tsx`
+
+# Studio List Controls Removal
+
+## Goal
+
+Remove filter/sort controls from the `/studio` project listing UI.
+
+## Plan
+
+- [x] Remove search, status-filter, and sort controls from the Studio list header.
+- [x] Simplify list-state logic to render projects without filter/sort state.
+- [x] Verify UI compiles cleanly.
+
+## Review
+
+- Removed the `Search`, `All statuses`, and `Sort` controls from the Studio list surface.
+- Simplified `visibleProjects` to stable recency ordering without local filter/sort state.
+- Verification: `npm run typecheck` in `ui/`.
