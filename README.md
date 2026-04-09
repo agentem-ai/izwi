@@ -106,6 +106,11 @@ IZWI_ASR_CHUNK_OVERLAP_SECS=3
 # Optional: preload models at server startup to reduce first-request cold latency.
 # Comma-separated model IDs (for example Whisper-Large-v3-Turbo,Qwen3.5-4B)
 IZWI_PRELOAD_MODELS=Whisper-Large-v3-Turbo
+# Optional: run a short synthetic ASR warmup after preloading (enabled by default).
+IZWI_WARMUP_PRELOADED_MODELS=1
+IZWI_ASR_WARMUP_DURATION_MS=800
+# Optional: tune text streaming queue depth when using per-character ASR streaming.
+IZWI_STREAM_TEXT_QUEUE_CAPACITY=4096
 ```
 
 ---

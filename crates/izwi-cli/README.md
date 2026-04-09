@@ -121,6 +121,12 @@ Optional chunking controls:
 IZWI_ASR_CHUNK_TARGET_SECS=24
 IZWI_ASR_CHUNK_MAX_SECS=30
 IZWI_ASR_CHUNK_OVERLAP_SECS=3
+# Optional: preload/warmup ASR models at server startup for lower first-request latency.
+IZWI_PRELOAD_MODELS=Whisper-Large-v3-Turbo
+IZWI_WARMUP_PRELOADED_MODELS=1
+IZWI_ASR_WARMUP_DURATION_MS=800
+# Optional: tune text streaming queue depth for per-character ASR streaming.
+IZWI_STREAM_TEXT_QUEUE_CAPACITY=4096
 ```
 
 Note: `--word-timestamps` is accepted by the CLI but currently ignored by the server.
