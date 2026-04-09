@@ -32,6 +32,7 @@ const SAMPLE_RATE: u32 = whisper::SAMPLE_RATE as u32;
 const DEFAULT_MAX_NEW_TOKENS: usize = 448;
 const MAX_AUDIO_SECONDS_HINT: f32 = whisper::CHUNK_LENGTH as f32;
 const DEFAULT_TEMPERATURE_FALLBACK_INC: f32 = 0.2;
+const DEFAULT_MAX_FALLBACK_RETRIES: usize = 1;
 const DEFAULT_LOGPROB_THRESHOLD: f32 = -1.0;
 const DEFAULT_NO_SPEECH_THRESHOLD: f32 = 0.6;
 const REPETITION_GUARD_MIN_SPAN_TOKENS: usize = 8;
@@ -92,6 +93,22 @@ struct WhisperDecodeAttempt {
     compression_ratio: Option<f32>,
 }
 
+#[derive(Debug, Clone)]
+struct WhisperRuntimeTuning {
+    no_fallback: bool,
+    max_fallback_retries: usize,
+}
+
+impl WhisperRuntimeTuning {
+    fn from_env() -> Self {
+        Self {
+            no_fallback: env_bool("IZWI_WHISPER_NO_FALLBACK").unwrap_or(false),
+            max_fallback_retries: env_usize("IZWI_WHISPER_MAX_FALLBACK_RETRIES")
+                .unwrap_or(DEFAULT_MAX_FALLBACK_RETRIES),
+        }
+    }
+}
+
 pub struct WhisperTurboAsrModel {
     device: DeviceProfile,
     model_dtype: DType,
@@ -104,6 +121,7 @@ pub struct WhisperTurboAsrModel {
     suppress_tokens: Vec<u32>,
     language_token_ids: Vec<u32>,
     token_id_to_language_code: HashMap<u32, String>,
+    runtime_tuning: WhisperRuntimeTuning,
 }
 
 impl WhisperTurboAsrModel {
@@ -164,6 +182,7 @@ impl WhisperTurboAsrModel {
         let mut suppress_tokens = generation.suppress_tokens.clone();
         suppress_tokens.sort_unstable();
         suppress_tokens.dedup();
+        let runtime_tuning = WhisperRuntimeTuning::from_env();
 
         let mel = MelSpectrogram::new(MelConfig {
             sample_rate: whisper::SAMPLE_RATE,
@@ -192,6 +211,7 @@ impl WhisperTurboAsrModel {
             suppress_tokens,
             language_token_ids,
             token_id_to_language_code,
+            runtime_tuning,
         })
     }
 
@@ -363,6 +383,11 @@ impl WhisperTurboAsrModel {
             "model_family": "whisper_asr",
             "fallback_attempts": attempted_temperatures.len(),
             "attempted_temperatures": attempted_temperatures,
+            "fallback_policy": {
+                "no_fallback": self.runtime_tuning.no_fallback,
+                "max_fallback_retries": self.runtime_tuning.max_fallback_retries,
+                "max_attempts": self.runtime_tuning.max_fallback_retries.saturating_add(1),
+            },
             "selected_temperature": selected_temperature,
             "language_hint_used": language_hint_used,
             "decode": {
@@ -618,30 +643,53 @@ impl WhisperTurboAsrModel {
 
     fn decode_temperatures(&self) -> Vec<f32> {
         // Mirrors whisper.cpp/transformers temperature fallback ladder.
-        let mut temperatures = Vec::new();
         let start = self.generation.temperature.unwrap_or(0.0).clamp(0.0, 1.0);
         let inc = self
             .generation
             .temperature_increment_on_fallback
             .unwrap_or(DEFAULT_TEMPERATURE_FALLBACK_INC);
+        capped_decode_temperatures(
+            start,
+            inc,
+            self.runtime_tuning.no_fallback,
+            self.runtime_tuning.max_fallback_retries,
+        )
+    }
+}
 
-        if inc <= 0.0 {
-            temperatures.push(start);
-            return temperatures;
-        }
+fn capped_decode_temperatures(
+    start: f32,
+    temperature_inc: f32,
+    no_fallback: bool,
+    max_fallback_retries: usize,
+) -> Vec<f32> {
+    if no_fallback {
+        return vec![start];
+    }
 
+    let mut temperatures = Vec::new();
+    if temperature_inc <= 0.0 {
+        temperatures.push(start);
+    } else {
         let mut t = start;
         while t <= 1.0 + 1e-6 {
             temperatures.push((t * 100.0).round() / 100.0);
-            t += inc;
+            t += temperature_inc;
         }
-
-        if temperatures.is_empty() {
-            temperatures.push(start);
-        }
-        temperatures
     }
 
+    if temperatures.is_empty() {
+        temperatures.push(start);
+    }
+
+    let max_attempts = max_fallback_retries.saturating_add(1);
+    if temperatures.len() > max_attempts {
+        temperatures.truncate(max_attempts);
+    }
+    temperatures
+}
+
+impl WhisperTurboAsrModel {
     fn decode_attempt(
         &self,
         whisper: &mut Whisper,
@@ -992,6 +1040,23 @@ fn has_whisper_language_token(
     generation_lang_to_id.contains_key(&token) || tokenizer.token_to_id(&token).is_some()
 }
 
+fn env_bool(key: &str) -> Option<bool> {
+    std::env::var(key).ok().and_then(|raw| {
+        let normalized = raw.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        }
+    })
+}
+
+fn env_usize(key: &str) -> Option<usize> {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+}
+
 fn mask_token(logits: &mut [f32], token_id: u32) {
     let idx = token_id as usize;
     if idx < logits.len() {
@@ -1300,6 +1365,7 @@ fn decode_step_budget(
 #[cfg(test)]
 mod tests {
     use super::{
+        capped_decode_temperatures,
         decode_step_budget, find_suffix_token_repetition, logits_to_log_probs,
         logits_to_log_probs_in_place,
         text_delta,
@@ -1356,6 +1422,18 @@ mod tests {
     #[test]
     fn text_delta_handles_midstring_rewrites() {
         assert_eq!(text_delta("hello wrld", "hello world"), "orld");
+    }
+
+    #[test]
+    fn capped_decode_temperatures_limits_retry_count() {
+        let temps = capped_decode_temperatures(0.0, 0.2, false, 1);
+        assert_eq!(temps, vec![0.0, 0.2]);
+    }
+
+    #[test]
+    fn capped_decode_temperatures_respects_no_fallback() {
+        let temps = capped_decode_temperatures(0.4, 0.2, true, 8);
+        assert_eq!(temps, vec![0.4]);
     }
 }
 
