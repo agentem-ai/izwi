@@ -506,6 +506,10 @@ pub enum BenchCommands {
         #[arg(short, long)]
         file: Option<PathBuf>,
 
+        /// Optional language hint (for example: en, es)
+        #[arg(short = 'l', long)]
+        language: Option<String>,
+
         /// Enable warmup iteration
         #[arg(long)]
         warmup: bool,

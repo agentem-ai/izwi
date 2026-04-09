@@ -141,8 +141,18 @@ pub async fn execute(command: BenchCommands, server: &str, theme: &Theme) -> Res
             model,
             iterations,
             file,
+            language,
             warmup,
-        } => bench_asr(server, &model, iterations, file, warmup, theme).await,
+        } => bench_asr(
+            server,
+            &model,
+            iterations,
+            file,
+            language.as_deref(),
+            warmup,
+            theme,
+        )
+        .await,
         BenchCommands::Throughput {
             duration,
             concurrent,
@@ -360,6 +370,7 @@ async fn bench_asr(
     model: &str,
     iterations: u32,
     file: Option<std::path::PathBuf>,
+    language: Option<&str>,
     warmup: bool,
     theme: &Theme,
 ) -> Result<()> {
@@ -382,9 +393,15 @@ async fn bench_asr(
         )));
     }
 
+    let audio_data = tokio::fs::read(&audio_file).await.map_err(CliError::Io)?;
+    let audio_base64 = STANDARD.encode(&audio_data);
+    if let Some(language) = language {
+        theme.info(&format!("Using language hint: {}", language));
+    }
+
     if warmup {
         theme.info("Running warmup iteration...");
-        let _ = run_asr_request(server, model, &audio_file).await?;
+        let _ = run_asr_request(server, model, &audio_base64, language).await?;
     }
 
     let pb = ProgressBar::new(iterations as u64);
@@ -401,7 +418,7 @@ async fn bench_asr(
 
     for _ in 0..iterations {
         let start = std::time::Instant::now();
-        let _ = run_asr_request(server, model, &audio_file).await?;
+        let _ = run_asr_request(server, model, &audio_base64, language).await?;
         let elapsed = start.elapsed().as_millis() as f64;
         times.push(elapsed);
         pb.inc(1);
@@ -511,15 +528,20 @@ async fn run_tts_request(server: &str, model: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
-async fn run_asr_request(server: &str, model: &str, file: &std::path::PathBuf) -> Result<()> {
-    let audio_data = tokio::fs::read(file).await.map_err(|e| CliError::Io(e))?;
-    let audio_base64 = STANDARD.encode(&audio_data);
-
+async fn run_asr_request(
+    server: &str,
+    model: &str,
+    audio_base64: &str,
+    language: Option<&str>,
+) -> Result<()> {
     let client = http::client(Some(std::time::Duration::from_secs(300)))?;
-    let request_body = serde_json::json!({
+    let mut request_body = serde_json::json!({
         "model": model,
         "audio_base64": audio_base64,
     });
+    if let Some(language) = language {
+        request_body["language"] = serde_json::Value::String(language.to_string());
+    }
 
     let response = client
         .post(format!("{}/v1/audio/transcriptions", server))
