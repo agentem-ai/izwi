@@ -20,6 +20,7 @@ const DEFAULT_STREAM_LONG_OVERLAP_SECS: f32 = 1.0;
 const DEFAULT_STREAM_LONG_MIN_CHUNK_SECS: f32 = 2.0;
 const DEFAULT_STREAM_LONG_SILENCE_SEARCH_SECS: f32 = 1.5;
 const STREAM_SHORT_AUDIO_SECS_THRESHOLD: f32 = 12.0;
+const MAX_STREAMING_LOW_LATENCY_CHUNKS: usize = 24;
 
 impl NativeExecutor {
     pub(super) fn env_f32(key: &str) -> Option<f32> {
@@ -93,6 +94,12 @@ impl NativeExecutor {
         if cfg.silence_search_secs > cfg.target_chunk_secs * 0.5 {
             cfg.silence_search_secs = cfg.target_chunk_secs * 0.5;
         }
+        if audio_secs <= STREAM_SHORT_AUDIO_SECS_THRESHOLD {
+            let desired_overlap_floor = (cfg.target_chunk_secs * 0.2).min(0.5);
+            if cfg.overlap_secs < desired_overlap_floor {
+                cfg.overlap_secs = desired_overlap_floor;
+            }
+        }
 
         cfg
     }
@@ -116,7 +123,21 @@ impl NativeExecutor {
         let tuned_limit = model_max_chunk_secs
             .filter(|v| v.is_finite() && *v > 0.0)
             .map(|v| (v * 0.95).max(cfg.min_chunk_secs.max(1.0)));
-        let chunks = plan_audio_chunks(samples, sample_rate, &cfg, tuned_limit);
+        let mut chunks = plan_audio_chunks(samples, sample_rate, &cfg, tuned_limit);
+
+        if streaming_low_latency && chunks.len() > MAX_STREAMING_LOW_LATENCY_CHUNKS {
+            debug!(
+                "ASR streaming chunk plan too fragmented ({} chunks), relaxing to long-form defaults",
+                chunks.len()
+            );
+            let fallback_cfg = Self::asr_long_form_config();
+            let fallback_limit = model_max_chunk_secs
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .map(|v| (v * 0.95).max(fallback_cfg.min_chunk_secs.max(1.0)));
+            chunks = plan_audio_chunks(samples, sample_rate, &fallback_cfg, fallback_limit);
+            return (fallback_cfg, chunks);
+        }
+
         (cfg, chunks)
     }
 
@@ -147,17 +168,35 @@ impl NativeExecutor {
         );
 
         let mut assembler = TranscriptAssembler::new(chunk_cfg.clone());
-        for chunk in chunk_plan {
+        let mut deferred_boundary_delta = String::new();
+        for (idx, chunk) in chunk_plan.iter().enumerate() {
             if chunk.end_sample <= chunk.start_sample || chunk.end_sample > samples.len() {
                 continue;
             }
             let chunk_audio = &samples[chunk.start_sample..chunk.end_sample];
             let chunk_text = transcribe_chunk(chunk_audio, sample_rate)?;
-            let delta = assembler.push_chunk_text(&chunk_text);
+            let mut delta = assembler.push_chunk_text(&chunk_text);
+            if !deferred_boundary_delta.is_empty() {
+                deferred_boundary_delta.push_str(&delta);
+                delta = std::mem::take(&mut deferred_boundary_delta);
+            }
+
+            let is_last_chunk = idx + 1 == chunk_plan.len();
+            if !is_last_chunk && is_boundary_noise_delta(&delta) {
+                deferred_boundary_delta.push_str(&delta);
+                continue;
+            }
+
             if !delta.is_empty() {
                 if let Some(tx) = stream_tx {
                     Self::stream_text_per_character(tx, request_id, sequence, &delta)?;
                 }
+            }
+        }
+
+        if !deferred_boundary_delta.is_empty() {
+            if let Some(tx) = stream_tx {
+                Self::stream_text_per_character(tx, request_id, sequence, &deferred_boundary_delta)?;
             }
         }
 
@@ -212,8 +251,20 @@ pub(super) fn decode_request_audio_with_rate(
     decode_audio_base64_with_rate(audio_b64)
 }
 
+fn is_boundary_noise_delta(delta: &str) -> bool {
+    let trimmed = delta.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let char_count = trimmed.chars().count();
+    char_count <= 4 && trimmed.chars().all(|ch| !ch.is_alphanumeric())
+}
+
 #[cfg(test)]
 mod tests {
+    use izwi_asr_toolkit::AudioChunk;
+    use tokio::sync::mpsc;
+
     use super::NativeExecutor;
 
     #[test]
@@ -275,5 +326,78 @@ mod tests {
         let samples = vec![0.0f32; (sr as usize) * 4];
         let (_cfg, chunks) = NativeExecutor::asr_chunk_plan(&samples, sr, Some(30.0), false);
         assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn streaming_chunk_plan_relaxes_when_chunk_count_is_too_high() {
+        let sr = 16_000u32;
+        let samples = vec![0.0f32; (sr as usize) * 180];
+        let (_cfg, chunks) = NativeExecutor::asr_chunk_plan(&samples, sr, Some(30.0), true);
+        assert!(
+            chunks.len() <= 24,
+            "expected guarded chunk count, got {}",
+            chunks.len()
+        );
+    }
+
+    #[test]
+    fn chunk_streaming_defers_boundary_noise_until_next_delta() {
+        let sr = 16_000u32;
+        let samples = vec![0.0f32; sr as usize * 3];
+        let chunk_plan = vec![
+            AudioChunk {
+                start_sample: 0,
+                end_sample: sr as usize,
+            },
+            AudioChunk {
+                start_sample: sr as usize,
+                end_sample: sr as usize * 2,
+            },
+            AudioChunk {
+                start_sample: sr as usize * 2,
+                end_sample: sr as usize * 3,
+            },
+        ];
+
+        let (tx, mut rx) = mpsc::channel(128);
+        let mut sequence = 0usize;
+        let mut chunk_idx = 0usize;
+        let merged = NativeExecutor::transcribe_with_chunk_plan(
+            "req-1",
+            Some(&tx),
+            &mut sequence,
+            &samples,
+            sr,
+            &chunk_plan,
+            &NativeExecutor::asr_long_form_config(),
+            |_chunk_audio, _sr| {
+                let out = match chunk_idx {
+                    0 => "...".to_string(),
+                    1 => "hello".to_string(),
+                    _ => "world".to_string(),
+                };
+                chunk_idx = chunk_idx.saturating_add(1);
+                Ok(out)
+            },
+        )
+        .expect("chunk plan should succeed");
+
+        assert!(merged.contains("hello"));
+        assert!(merged.contains("world"));
+
+        let mut streamed = String::new();
+        let mut saw_final = false;
+        while let Ok(event) = rx.try_recv() {
+            if event.is_final {
+                saw_final = true;
+                continue;
+            }
+            if let Some(delta) = event.text {
+                streamed.push_str(&delta);
+            }
+        }
+        assert!(saw_final, "expected final marker");
+        assert!(streamed.contains("hello"));
+        assert!(streamed.contains("world"));
     }
 }
