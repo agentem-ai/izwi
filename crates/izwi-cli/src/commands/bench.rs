@@ -10,6 +10,12 @@ use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeTelemetryContext {
+    Default,
+    AsrWhisper,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct RuntimeTelemetrySnapshot {
     requests_queued: u64,
@@ -82,6 +88,22 @@ struct ChatBenchSample {
     prompt_tokens: usize,
     completion_tokens: usize,
     generation_time_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct AsrBenchResponse {
+    #[serde(default)]
+    izwi_asr_diagnostics: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WhisperStageTimings {
+    audio_decode: Option<f64>,
+    mel_prepare: Option<f64>,
+    encoder_forward: Option<f64>,
+    language_detect: Option<f64>,
+    decode: Option<f64>,
+    model_total: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,7 +316,11 @@ async fn bench_chat(
             percentile(&server_generation_ms, 0.95)
         );
     }
-    print_runtime_delta(metrics_before, fetch_runtime_metrics(server).await);
+    print_runtime_delta(
+        metrics_before,
+        fetch_runtime_metrics(server).await,
+        RuntimeTelemetryContext::Default,
+    );
 
     Ok(())
 }
@@ -360,7 +386,11 @@ async fn bench_tts(
     println!("  P95:        {:.2} ms", p95);
     println!("  P99:        {:.2} ms", p99);
     println!("  Throughput: {:.2} req/s", 1000.0 / avg);
-    print_runtime_delta(metrics_before, fetch_runtime_metrics(server).await);
+    print_runtime_delta(
+        metrics_before,
+        fetch_runtime_metrics(server).await,
+        RuntimeTelemetryContext::Default,
+    );
 
     Ok(())
 }
@@ -415,10 +445,24 @@ async fn bench_asr(
     );
 
     let mut times = Vec::new();
+    let mut stage_samples = Vec::new();
+    let mut saw_whisper_diagnostics = false;
 
     for _ in 0..iterations {
         let start = std::time::Instant::now();
-        let _ = run_asr_request(server, model, &audio_base64, language).await?;
+        let response = run_asr_request(server, model, &audio_base64, language).await?;
+        if let Some(diagnostics) = response.izwi_asr_diagnostics.as_ref() {
+            if diagnostics
+                .get("model_family")
+                .and_then(|value| value.as_str())
+                == Some("whisper_asr")
+            {
+                saw_whisper_diagnostics = true;
+            }
+            if let Some(sample) = whisper_stage_timings_from_diagnostics(diagnostics) {
+                stage_samples.push(sample);
+            }
+        }
         let elapsed = start.elapsed().as_millis() as f64;
         times.push(elapsed);
         pb.inc(1);
@@ -441,7 +485,19 @@ async fn bench_asr(
     println!("  P95:        {:.2} ms", p95);
     println!("  P99:        {:.2} ms", p99);
     println!("  Throughput: {:.2} req/s", 1000.0 / avg);
-    print_runtime_delta(metrics_before, fetch_runtime_metrics(server).await);
+    print_whisper_stage_timing_summary(&stage_samples);
+
+    let model_lower = model.to_ascii_lowercase();
+    let telemetry_context = if saw_whisper_diagnostics || model_lower.contains("whisper") {
+        RuntimeTelemetryContext::AsrWhisper
+    } else {
+        RuntimeTelemetryContext::Default
+    };
+    print_runtime_delta(
+        metrics_before,
+        fetch_runtime_metrics(server).await,
+        telemetry_context,
+    );
 
     Ok(())
 }
@@ -544,11 +600,12 @@ async fn run_asr_request(
     model: &str,
     audio_base64: &str,
     language: Option<&str>,
-) -> Result<()> {
+) -> Result<AsrBenchResponse> {
     let client = http::client(Some(std::time::Duration::from_secs(300)))?;
     let mut request_body = serde_json::json!({
         "model": model,
         "audio_base64": audio_base64,
+        "response_format": "verbose_json",
     });
     if let Some(language) = language {
         request_body["language"] = serde_json::Value::String(language.to_string());
@@ -570,7 +627,10 @@ async fn run_asr_request(
         });
     }
 
-    Ok(())
+    response
+        .json::<AsrBenchResponse>()
+        .await
+        .map_err(|e| CliError::Other(format!("Failed to parse ASR benchmark response: {e}")))
 }
 
 async fn run_chat_request(
@@ -747,9 +807,96 @@ async fn fetch_runtime_metrics(server: &str) -> Option<RuntimeTelemetrySnapshot>
     None
 }
 
+fn whisper_stage_timings_from_diagnostics(diagnostics: &serde_json::Value) -> Option<WhisperStageTimings> {
+    let timings = diagnostics.get("timings_ms")?.as_object()?;
+    Some(WhisperStageTimings {
+        audio_decode: timings.get("audio_decode").and_then(|value| value.as_f64()),
+        mel_prepare: timings.get("mel_prepare").and_then(|value| value.as_f64()),
+        encoder_forward: timings
+            .get("encoder_forward")
+            .and_then(|value| value.as_f64()),
+        language_detect: timings
+            .get("language_detect")
+            .and_then(|value| value.as_f64()),
+        decode: timings.get("decode").and_then(|value| value.as_f64()),
+        model_total: timings.get("model_total").and_then(|value| value.as_f64()),
+    })
+}
+
+fn summarize_stage(stage: &str, values: &[f64]) {
+    if values.is_empty() {
+        return;
+    }
+    let avg = values.iter().sum::<f64>() / values.len() as f64;
+    let p50 = percentile(values, 0.5);
+    let p95 = percentile(values, 0.95);
+    println!(
+        "  {:<14} avg/p50/p95: {:.2} / {:.2} / {:.2} ms",
+        stage, avg, p50, p95
+    );
+}
+
+fn print_whisper_stage_timing_summary(samples: &[WhisperStageTimings]) {
+    if samples.is_empty() {
+        return;
+    }
+
+    let mut audio_decode = Vec::new();
+    let mut mel_prepare = Vec::new();
+    let mut encoder_forward = Vec::new();
+    let mut language_detect = Vec::new();
+    let mut decode = Vec::new();
+    let mut model_total = Vec::new();
+
+    for sample in samples {
+        if let Some(value) = sample.audio_decode {
+            audio_decode.push(value);
+        }
+        if let Some(value) = sample.mel_prepare {
+            mel_prepare.push(value);
+        }
+        if let Some(value) = sample.encoder_forward {
+            encoder_forward.push(value);
+        }
+        if let Some(value) = sample.language_detect {
+            language_detect.push(value);
+        }
+        if let Some(value) = sample.decode {
+            decode.push(value);
+        }
+        if let Some(value) = sample.model_total {
+            model_total.push(value);
+        }
+    }
+
+    if audio_decode.is_empty()
+        && mel_prepare.is_empty()
+        && encoder_forward.is_empty()
+        && language_detect.is_empty()
+        && decode.is_empty()
+        && model_total.is_empty()
+    {
+        return;
+    }
+
+    println!(
+        "\n{}",
+        console::style("Whisper Stage Timings (run-local):")
+            .bold()
+            .underlined()
+    );
+    summarize_stage("audio_decode", &audio_decode);
+    summarize_stage("mel_prepare", &mel_prepare);
+    summarize_stage("encoder_fwd", &encoder_forward);
+    summarize_stage("lang_detect", &language_detect);
+    summarize_stage("decode", &decode);
+    summarize_stage("model_total", &model_total);
+}
+
 fn print_runtime_delta(
     before: Option<RuntimeTelemetrySnapshot>,
     after: Option<RuntimeTelemetrySnapshot>,
+    context: RuntimeTelemetryContext,
 ) {
     let (Some(before), Some(after)) = (before, after) else {
         println!(
@@ -791,6 +938,9 @@ fn print_runtime_delta(
         "  Decode rolling(avg/p50/p95):     {:.2} / {:.2} / {:.2} ms",
         after.decode_ms_avg, after.decode_ms_p50, after.decode_ms_p95
     );
+    if matches!(context, RuntimeTelemetryContext::AsrWhisper) {
+        println!("  Decode rolling note: single-pass Whisper ASR may report near-zero engine decode phase.");
+    }
     println!(
         "  TTFT rolling(avg/p50/p95):       {:.2} / {:.2} / {:.2} ms",
         after.ttft_ms_avg, after.ttft_ms_p50, after.ttft_ms_p95
@@ -909,6 +1059,11 @@ fn print_runtime_delta(
         fused_mask_shape_unsupported_delta,
         fused_mask_dtype_unsupported_delta
     );
+    if matches!(context, RuntimeTelemetryContext::AsrWhisper) {
+        println!(
+            "  Kernel-path note: fused-attention/RoPE counters track shared LLM/TTS paths and are not Whisper decoder proxies."
+        );
+    }
 }
 
 #[cfg(test)]
