@@ -147,11 +147,11 @@ impl NativeExecutor {
                         final_text = step.text.clone();
 
                         if !step.delta.is_empty() {
-                            Self::stream_text(
+                            Self::stream_text_per_character(
                                 tx,
                                 &request.id,
                                 &mut active_state.stream_sequence,
-                                step.delta.clone(),
+                                &step.delta,
                             )?;
                         }
                         if step.finished {
@@ -249,9 +249,12 @@ impl NativeExecutor {
                         let mut stream_err: Option<Error> = None;
                         let mut emit = |delta: &str| {
                             if stream_err.is_none() {
-                                if let Err(err) =
-                                    Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
-                                {
+                                if let Err(err) = Self::stream_text_per_character(
+                                    tx,
+                                    &request.id,
+                                    &mut sequence,
+                                    delta,
+                                ) {
                                     stream_err = Some(err);
                                 }
                             }
@@ -302,9 +305,12 @@ impl NativeExecutor {
                     let mut stream_err: Option<Error> = None;
                     let mut emit = |delta: &str| {
                         if stream_err.is_none() {
-                            if let Err(err) =
-                                Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
-                            {
+                            if let Err(err) = Self::stream_text_per_character(
+                                tx,
+                                &request.id,
+                                &mut sequence,
+                                delta,
+                            ) {
                                 stream_err = Some(err);
                             }
                         }

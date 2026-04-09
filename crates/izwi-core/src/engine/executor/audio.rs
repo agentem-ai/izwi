@@ -80,7 +80,7 @@ impl NativeExecutor {
             let delta = assembler.push_chunk_text(&chunk_text);
             if !delta.is_empty() {
                 if let Some(tx) = stream_tx {
-                    Self::stream_text(tx, request_id, sequence, delta)?;
+                    Self::stream_text_per_character(tx, request_id, sequence, &delta)?;
                 }
             }
         }
