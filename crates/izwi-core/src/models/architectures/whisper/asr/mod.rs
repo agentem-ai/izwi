@@ -36,6 +36,10 @@ const DEFAULT_MAX_FALLBACK_RETRIES: usize = 1;
 const DEFAULT_ADAPTIVE_MAX_NEW_TOKENS_PER_SECOND: f32 = 12.0;
 const DEFAULT_ADAPTIVE_MIN_NEW_TOKENS: usize = 32;
 const DEFAULT_ADAPTIVE_BUDGET_BUFFER_TOKENS: usize = 8;
+const DEFAULT_SILENCE_TRIM_THRESHOLD_SCALE: f32 = 0.02;
+const DEFAULT_SILENCE_TRIM_MIN_ABS: f32 = 0.0015;
+const DEFAULT_SILENCE_TRIM_MARGIN_MS: usize = 120;
+const DEFAULT_SILENCE_TRIM_MIN_CLIP_SECS: f32 = 0.8;
 const DEFAULT_LOGPROB_THRESHOLD: f32 = -1.0;
 const DEFAULT_NO_SPEECH_THRESHOLD: f32 = 0.6;
 const REPETITION_GUARD_MIN_SPAN_TOKENS: usize = 8;
@@ -107,6 +111,11 @@ struct WhisperRuntimeTuning {
     decode_budget_buffer_tokens: usize,
     default_language: Option<String>,
     reuse_detected_language: bool,
+    trim_silence: bool,
+    silence_trim_threshold_scale: f32,
+    silence_trim_min_abs: f32,
+    silence_trim_margin_ms: usize,
+    silence_trim_min_clip_secs: f32,
 }
 
 impl WhisperRuntimeTuning {
@@ -128,6 +137,15 @@ impl WhisperRuntimeTuning {
             default_language: env_nonempty_string("IZWI_WHISPER_DEFAULT_LANGUAGE"),
             reuse_detected_language: env_bool("IZWI_WHISPER_REUSE_DETECTED_LANGUAGE")
                 .unwrap_or(true),
+            trim_silence: env_bool("IZWI_WHISPER_TRIM_SILENCE").unwrap_or(true),
+            silence_trim_threshold_scale: env_f32("IZWI_WHISPER_SILENCE_TRIM_THRESHOLD_SCALE")
+                .unwrap_or(DEFAULT_SILENCE_TRIM_THRESHOLD_SCALE),
+            silence_trim_min_abs: env_f32("IZWI_WHISPER_SILENCE_TRIM_MIN_ABS")
+                .unwrap_or(DEFAULT_SILENCE_TRIM_MIN_ABS),
+            silence_trim_margin_ms: env_usize("IZWI_WHISPER_SILENCE_TRIM_MARGIN_MS")
+                .unwrap_or(DEFAULT_SILENCE_TRIM_MARGIN_MS),
+            silence_trim_min_clip_secs: env_f32("IZWI_WHISPER_SILENCE_TRIM_MIN_CLIP_SECS")
+                .unwrap_or(DEFAULT_SILENCE_TRIM_MIN_CLIP_SECS),
         }
     }
 }
@@ -295,9 +313,10 @@ impl WhisperTurboAsrModel {
             return Err(Error::InvalidInput("Empty audio input".to_string()));
         }
 
+        let trimmed_audio = self.trimmed_audio_slice(audio, sample_rate);
         let request_started = Instant::now();
         let mel_started = Instant::now();
-        let mel = self.prepare_mel(audio, sample_rate)?;
+        let mel = self.prepare_mel(trimmed_audio, sample_rate)?;
         let mel_prepare_ms = mel_started.elapsed().as_secs_f64() * 1000.0;
         let mut whisper = self
             .whisper
@@ -426,6 +445,12 @@ impl WhisperTurboAsrModel {
                     0.0
                 },
             },
+            "audio_window": {
+                "trim_silence": self.runtime_tuning.trim_silence,
+                "input_samples": audio.len(),
+                "effective_samples": trimmed_audio.len(),
+                "trimmed_samples": audio.len().saturating_sub(trimmed_audio.len()),
+            },
             "language_resolution": {
                 "strategy": language_resolution.strategy,
                 "default_language": self.runtime_tuning.default_language,
@@ -467,7 +492,8 @@ impl WhisperTurboAsrModel {
             return Err(Error::InvalidInput("Empty audio input".to_string()));
         }
 
-        let mel = self.prepare_mel(audio, sample_rate)?;
+        let trimmed_audio = self.trimmed_audio_slice(audio, sample_rate);
+        let mel = self.prepare_mel(trimmed_audio, sample_rate)?;
         let mut whisper = self
             .whisper
             .lock()
@@ -783,6 +809,22 @@ impl WhisperTurboAsrModel {
             *guard = Some((token, code));
         }
     }
+
+    fn trimmed_audio_slice<'a>(&self, audio: &'a [f32], sample_rate: u32) -> &'a [f32] {
+        if !self.runtime_tuning.trim_silence {
+            return audio;
+        }
+
+        let (start, end) = trimmed_audio_bounds(
+            audio,
+            sample_rate,
+            self.runtime_tuning.silence_trim_threshold_scale,
+            self.runtime_tuning.silence_trim_min_abs,
+            self.runtime_tuning.silence_trim_margin_ms,
+            self.runtime_tuning.silence_trim_min_clip_secs,
+        );
+        &audio[start..end]
+    }
 }
 
 fn capped_decode_temperatures(
@@ -834,6 +876,48 @@ fn adaptive_decode_budget(
         .max(min_new_tokens)
         .max(1);
     proposed.min(configured_cap.max(1))
+}
+
+fn trimmed_audio_bounds(
+    audio: &[f32],
+    sample_rate: u32,
+    threshold_scale: f32,
+    min_abs: f32,
+    margin_ms: usize,
+    min_clip_secs: f32,
+) -> (usize, usize) {
+    if audio.is_empty() || sample_rate == 0 {
+        return (0, audio.len());
+    }
+
+    let clip_secs = audio.len() as f32 / sample_rate as f32;
+    if clip_secs < min_clip_secs.max(0.0) {
+        return (0, audio.len());
+    }
+
+    let peak = audio.iter().fold(0.0f32, |p, &s| p.max(s.abs()));
+    if peak <= 0.0 {
+        return (0, audio.len());
+    }
+
+    let threshold = (peak * threshold_scale.max(0.0)).max(min_abs.max(0.0));
+    let Some(first) = audio.iter().position(|sample| sample.abs() >= threshold) else {
+        return (0, audio.len());
+    };
+    let Some(last) = audio.iter().rposition(|sample| sample.abs() >= threshold) else {
+        return (0, audio.len());
+    };
+
+    let margin = sample_rate as usize * margin_ms / 1000;
+    let start = first.saturating_sub(margin);
+    let end = (last.saturating_add(margin).saturating_add(1)).min(audio.len());
+    if end <= start {
+        return (0, audio.len());
+    }
+    if start == 0 && end == audio.len() {
+        return (0, audio.len());
+    }
+    (start, end)
 }
 
 impl WhisperTurboAsrModel {
@@ -1534,6 +1618,7 @@ mod tests {
         capped_decode_temperatures,
         decode_step_budget, find_suffix_token_repetition, logits_to_log_probs,
         logits_to_log_probs_in_place,
+        trimmed_audio_bounds,
         text_delta,
     };
 
@@ -1615,6 +1700,28 @@ mod tests {
 
         let capped = adaptive_decode_budget(30.0, 120, 12.0, 32, 8);
         assert_eq!(capped, 120);
+    }
+
+    #[test]
+    fn trimmed_audio_bounds_removes_leading_and_trailing_silence() {
+        let sr = 16_000u32;
+        let mut audio = vec![0.0f32; 8_000];
+        audio.extend(vec![0.2f32; 16_000]);
+        audio.extend(vec![0.0f32; 8_000]);
+
+        let (start, end) = trimmed_audio_bounds(&audio, sr, 0.02, 0.0015, 120, 0.8);
+        assert!(start > 0);
+        assert!(end < audio.len());
+        assert!(end > start);
+    }
+
+    #[test]
+    fn trimmed_audio_bounds_keeps_short_clips_untouched() {
+        let sr = 16_000u32;
+        let audio = vec![0.0f32; 4_000];
+        let (start, end) = trimmed_audio_bounds(&audio, sr, 0.02, 0.0015, 120, 0.8);
+        assert_eq!(start, 0);
+        assert_eq!(end, audio.len());
     }
 }
 
