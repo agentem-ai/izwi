@@ -134,6 +134,7 @@ Benchmarks report:
 - **Throughput** — Requests per second
 - **Tokens/second** — For TTS benchmarks
 - **Real-time factor** — Audio duration vs processing time
+- **Runtime telemetry snapshot** — Counter deltas for the run plus rolling runtime latency quantiles (explicitly labeled as rolling in CLI output)
 
 ---
 
