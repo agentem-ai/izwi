@@ -1,6 +1,6 @@
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use axum::{
     body::Body,
@@ -246,7 +246,6 @@ pub async fn create_record(
         state.runtime.clone(),
         state.transcription_store.clone(),
         state.request_semaphore.clone(),
-        state.request_timeout_secs,
         placeholder.id.clone(),
         parsed,
         Some(ctx.correlation_id),
@@ -275,7 +274,6 @@ async fn create_record_stream(
         state.runtime.clone(),
         state.transcription_store.clone(),
         state.request_semaphore.clone(),
-        state.request_timeout_secs,
         placeholder.id.clone(),
         parsed,
         Some(correlation_id),
@@ -341,7 +339,6 @@ fn spawn_transcription_processing_task(
     runtime: Arc<RuntimeService>,
     transcription_store: Arc<TranscriptionStore>,
     semaphore: Arc<tokio::sync::Semaphore>,
-    request_timeout_secs: u64,
     record_id: String,
     parsed: ParsedTranscriptionCreateRequest,
     correlation_id: Option<String>,
@@ -389,7 +386,6 @@ fn spawn_transcription_processing_task(
         send_event(serde_json::to_string(&StreamStartEvent { event: "start" }).unwrap_or_default());
 
         let delta_tx = event_tx.clone();
-        let timeout = Duration::from_secs(request_timeout_secs);
         let started = Instant::now();
         let model_id = parsed.model_id.clone();
         let aligner_model_id = parsed.aligner_model_id.clone();
@@ -398,33 +394,32 @@ fn spawn_transcription_processing_task(
         let audio_bytes = parsed.audio_bytes;
         let correlation_id_ref = correlation_id.clone();
 
-        let generation_result = tokio::time::timeout(timeout, async {
-            generate_transcription_artifacts(
-                runtime.clone(),
-                audio_bytes.as_slice(),
-                model_id.as_deref(),
-                aligner_model_id.as_deref(),
-                requested_language.as_deref(),
-                include_timestamps,
-                correlation_id_ref.as_deref(),
-                move |delta| {
-                    if let Some(tx) = &delta_tx {
-                        let _ = tx.send(
-                            serde_json::to_string(&StreamDeltaEvent {
-                                event: "delta",
-                                delta,
-                            })
-                            .unwrap_or_default(),
-                        );
-                    }
-                },
-            )
-            .await
-        })
+        // Keep transcription processing unbounded by wall-clock timeout so
+        // valid long jobs can finish and persist successfully.
+        let generation_result = generate_transcription_artifacts(
+            runtime.clone(),
+            audio_bytes.as_slice(),
+            model_id.as_deref(),
+            aligner_model_id.as_deref(),
+            requested_language.as_deref(),
+            include_timestamps,
+            correlation_id_ref.as_deref(),
+            move |delta| {
+                if let Some(tx) = &delta_tx {
+                    let _ = tx.send(
+                        serde_json::to_string(&StreamDeltaEvent {
+                            event: "delta",
+                            delta,
+                        })
+                        .unwrap_or_default(),
+                    );
+                }
+            },
+        )
         .await;
 
         match generation_result {
-            Ok(Ok(artifacts)) => {
+            Ok(artifacts) => {
                 let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
                 let rtf = if artifacts.duration_secs > 0.0 {
                     Some((elapsed_ms / 1000.0) / artifacts.duration_secs)
@@ -500,7 +495,7 @@ fn spawn_transcription_processing_task(
                     }
                 }
             }
-            Ok(Err(err)) => {
+            Err(err) => {
                 let _ = transcription_store
                     .update_processing_status(
                         record_id.clone(),
@@ -512,23 +507,6 @@ fn spawn_transcription_processing_task(
                     serde_json::to_string(&StreamErrorEvent {
                         event: "error",
                         error: err.message,
-                    })
-                    .unwrap_or_default(),
-                );
-            }
-            Err(_) => {
-                let error_message = "Transcription request timed out".to_string();
-                let _ = transcription_store
-                    .update_processing_status(
-                        record_id.clone(),
-                        TranscriptionProcessingStatus::Failed,
-                        Some(error_message.clone()),
-                    )
-                    .await;
-                send_event(
-                    serde_json::to_string(&StreamErrorEvent {
-                        event: "error",
-                        error: error_message,
                     })
                     .unwrap_or_default(),
                 );
