@@ -224,9 +224,7 @@ impl WhisperTurboAsrModel {
         language: Option<&str>,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String> {
-        Ok(self
-            .transcribe_impl(audio, sample_rate, language, on_delta)?
-            .text)
+        self.transcribe_streaming(audio, sample_rate, language, on_delta)
     }
 
     pub fn max_audio_seconds_hint(&self) -> Option<f32> {
@@ -388,6 +386,113 @@ impl WhisperTurboAsrModel {
             language,
             diagnostics: Some(diagnostics),
         })
+    }
+
+    fn transcribe_streaming(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String> {
+        if audio.is_empty() {
+            return Err(Error::InvalidInput("Empty audio input".to_string()));
+        }
+
+        let mel = self.prepare_mel(audio, sample_rate)?;
+        let mut whisper = self
+            .whisper
+            .lock()
+            .map_err(|_| Error::InferenceError("Whisper model mutex poisoned".to_string()))?;
+
+        whisper.reset_kv_cache();
+        let audio_features = whisper.encoder.forward(&mel, true)?;
+
+        let mut resolved_language = if let Some(language) = language {
+            self.resolve_language_token(language)?
+        } else {
+            None
+        };
+        if resolved_language.is_none() {
+            resolved_language = self.detect_language_token(&mut whisper, &audio_features)?;
+        }
+
+        let mut prompt = Vec::with_capacity(4);
+        prompt.push(self.special.sot);
+        if let Some((language_token, _language_code)) = resolved_language.as_ref() {
+            prompt.push(*language_token);
+        }
+        prompt.push(self.special.transcribe);
+        if let Some(no_timestamps) = self.special.no_timestamps {
+            prompt.push(no_timestamps);
+        }
+
+        let max_steps = decode_step_budget(
+            prompt.len(),
+            self.config.max_target_positions,
+            self.generation.max_length.unwrap_or(DEFAULT_MAX_NEW_TOKENS),
+        )?;
+        let temperatures = self.decode_temperatures();
+        let logprob_threshold = self
+            .generation
+            .logprob_threshold
+            .unwrap_or(DEFAULT_LOGPROB_THRESHOLD);
+        let no_speech_threshold = self
+            .generation
+            .no_speech_threshold
+            .unwrap_or(DEFAULT_NO_SPEECH_THRESHOLD);
+        let compression_ratio_threshold = self.generation.compression_ratio_threshold;
+
+        let first_temperature = temperatures.first().copied().unwrap_or(0.0);
+        let first_attempt = self.decode_attempt_streaming(
+            &mut whisper,
+            &audio_features,
+            &prompt,
+            max_steps,
+            first_temperature,
+            on_delta,
+        )?;
+
+        if should_skip_as_no_speech(&first_attempt, logprob_threshold, no_speech_threshold) {
+            return Ok(String::new());
+        }
+
+        let first_text = first_attempt.text.trim().to_string();
+        if !first_text.is_empty() {
+            return Ok(first_text);
+        }
+
+        let mut best_attempt = first_attempt;
+        for (idx, temperature) in temperatures.iter().copied().enumerate().skip(1) {
+            let attempt = self.decode_attempt(
+                &mut whisper,
+                &audio_features,
+                &prompt,
+                max_steps,
+                temperature,
+            )?;
+
+            if should_skip_as_no_speech(&attempt, logprob_threshold, no_speech_threshold) {
+                return Ok(String::new());
+            }
+
+            let is_last_temperature = idx + 1 == temperatures.len();
+            let should_retry =
+                !is_last_temperature
+                    && should_retry_decode(&attempt, logprob_threshold, compression_ratio_threshold);
+            if !should_retry {
+                if is_better_attempt(&attempt, &best_attempt) {
+                    best_attempt = attempt;
+                }
+                break;
+            }
+
+            if is_better_attempt(&attempt, &best_attempt) {
+                best_attempt = attempt;
+            }
+        }
+
+        Ok(best_attempt.text.trim().to_string())
     }
 
     fn prepare_mel(&self, audio: &[f32], sample_rate: u32) -> Result<Tensor> {
@@ -619,6 +724,130 @@ impl WhisperTurboAsrModel {
 
             generated_tokens.push(next);
             prompt.push(next);
+
+            if let Some((span, repeats)) = find_suffix_token_repetition(&generated_tokens) {
+                let trim = span.saturating_mul(repeats.saturating_sub(1));
+                if trim > 0 && trim <= generated_tokens.len() {
+                    generated_tokens.truncate(generated_tokens.len() - trim);
+                }
+                repetition_loop = true;
+                break;
+            }
+        }
+
+        let text = self
+            .decode_generated_text(&generated_tokens)?
+            .trim()
+            .to_string();
+        let avg_logprob = if sampled_token_count > 0 {
+            (sum_logprobs / sampled_token_count as f64) as f32
+        } else {
+            f32::NEG_INFINITY
+        };
+        let compression_ratio = token_compression_ratio(&generated_tokens, self.config.vocab_size);
+
+        Ok(WhisperDecodeAttempt {
+            text,
+            avg_logprob,
+            no_speech_prob,
+            ended_with_eot,
+            repetition_loop,
+            compression_ratio,
+        })
+    }
+
+    fn decode_attempt_streaming(
+        &self,
+        whisper: &mut Whisper,
+        audio_features: &Tensor,
+        prompt_prefix: &[u32],
+        max_steps: usize,
+        temperature: f32,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<WhisperDecodeAttempt> {
+        let mut rng = rand::thread_rng();
+        let deterministic = temperature <= 0.0;
+        let mut prompt = prompt_prefix.to_vec();
+        let mut generated_tokens = Vec::<u32>::new();
+        let mut sum_logprobs = 0.0f64;
+        let mut sampled_token_count = 0usize;
+        let mut no_speech_prob: Option<f32> = None;
+        let mut ended_with_eot = false;
+        let mut repetition_loop = false;
+        let mut streamed_text = String::new();
+
+        for step_idx in 0..max_steps {
+            let tokens_t = Tensor::new(prompt.as_slice(), &self.device.device)?.unsqueeze(0)?;
+            let ys = whisper
+                .decoder
+                .forward(&tokens_t, audio_features, step_idx == 0)?;
+            let (_, seq_len, _) = ys.dims3()?;
+            let logits = whisper
+                .decoder
+                .final_linear(&ys.i((..1, seq_len - 1..))?)?
+                .i(0)?
+                .i(0)?;
+
+            let mut logits_vec = logits.to_vec1::<f32>()?;
+            self.apply_decode_constraints(&mut logits_vec, step_idx == 0);
+            let (next, next_logprob, step_no_speech_prob) = if deterministic {
+                let inv_temperature = 1.0f32 / temperature.max(1e-6);
+                if let Some(logsumexp) = scaled_logsumexp(&logits_vec, inv_temperature) {
+                    let (next, best_logit) = best_finite_logit(&logits_vec, self.special.eot);
+                    let next_scaled_logit = best_logit * inv_temperature;
+                    let next_logprob = if next_scaled_logit.is_finite() {
+                        next_scaled_logit - logsumexp
+                    } else {
+                        f32::NEG_INFINITY
+                    };
+                    let no_speech_prob = self.special.no_speech.and_then(|token_id| {
+                        probability_for_token_from_logits(
+                            &logits_vec,
+                            token_id,
+                            logsumexp,
+                            inv_temperature,
+                        )
+                    });
+                    (next, next_logprob, no_speech_prob)
+                } else {
+                    (self.special.eot, f32::NEG_INFINITY, None)
+                }
+            } else {
+                let log_probs_buf = logits_to_log_probs(&logits_vec, temperature);
+                let no_speech_prob = self
+                    .special
+                    .no_speech
+                    .and_then(|token_id| probability_for_token(&log_probs_buf, token_id));
+                let (next, next_logprob) = sample_token_from_log_probs(
+                    &log_probs_buf,
+                    temperature,
+                    self.special.eot,
+                    &mut rng,
+                );
+                (next, next_logprob, no_speech_prob)
+            };
+
+            if step_idx == 0 {
+                no_speech_prob = step_no_speech_prob;
+            }
+            sum_logprobs += next_logprob as f64;
+            sampled_token_count = sampled_token_count.saturating_add(1);
+
+            if next == self.special.eot {
+                ended_with_eot = true;
+                break;
+            }
+
+            generated_tokens.push(next);
+            prompt.push(next);
+
+            let decoded = self.decode_generated_text(&generated_tokens)?;
+            let trimmed = decoded.trim().to_string();
+            let delta = text_delta(&streamed_text, &trimmed);
+            if !delta.is_empty() {
+                on_delta(delta.as_str());
+                streamed_text = trimmed;
+            }
 
             if let Some((span, repeats)) = find_suffix_token_repetition(&generated_tokens) {
                 let trim = span.saturating_mul(repeats.saturating_sub(1));
@@ -1067,6 +1296,7 @@ mod tests {
     use super::{
         decode_step_budget, find_suffix_token_repetition, logits_to_log_probs,
         logits_to_log_probs_in_place,
+        text_delta,
     };
 
     #[test]
@@ -1110,6 +1340,16 @@ mod tests {
                 assert!(!left.is_finite() && !right.is_finite());
             }
         }
+    }
+
+    #[test]
+    fn text_delta_uses_prefix_fast_path() {
+        assert_eq!(text_delta("the quick", "the quick brown"), " brown");
+    }
+
+    #[test]
+    fn text_delta_handles_midstring_rewrites() {
+        assert_eq!(text_delta("hello wrld", "hello world"), "orld");
     }
 }
 
