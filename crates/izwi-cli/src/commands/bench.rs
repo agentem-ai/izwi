@@ -427,8 +427,19 @@ async fn bench_asr(
     pb.finish_with_message("Benchmark complete");
 
     let avg = times.iter().sum::<f64>() / times.len() as f64;
+    let min = times.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = times.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let p50 = percentile(&times, 0.5);
+    let p95 = percentile(&times, 0.95);
+    let p99 = percentile(&times, 0.99);
     println!("\n{}", console::style("Results:").bold().underlined());
+    println!("  Iterations: {}", iterations);
     println!("  Average:    {:.2} ms", avg);
+    println!("  Min:        {:.2} ms", min);
+    println!("  Max:        {:.2} ms", max);
+    println!("  P50:        {:.2} ms", p50);
+    println!("  P95:        {:.2} ms", p95);
+    println!("  P99:        {:.2} ms", p99);
     println!("  Throughput: {:.2} req/s", 1000.0 / avg);
     print_runtime_delta(metrics_before, fetch_runtime_metrics(server).await);
 
@@ -757,10 +768,11 @@ fn print_runtime_delta(
 
     println!(
         "\n{}",
-        console::style("Runtime Telemetry Delta:")
+        console::style("Runtime Telemetry Snapshot (post-run):")
             .bold()
             .underlined()
     );
+    println!("  Note: rolling latency quantiles are runtime-wide, not run-local.");
     println!("  Queued:             {}", queued_delta);
     println!("  Completed:          {}", completed_delta);
     println!("  Failed:             {}", failed_delta);
@@ -768,23 +780,23 @@ fn print_runtime_delta(
     println!("  Worker restarts:    {}", restart_delta);
     println!("  Worker panics:      {}", panic_delta);
     println!(
-        "  Queue wait (avg/p50/p95): {:.2} / {:.2} / {:.2} ms",
+        "  Queue wait rolling(avg/p50/p95): {:.2} / {:.2} / {:.2} ms",
         after.queue_wait_ms_avg, after.queue_wait_ms_p50, after.queue_wait_ms_p95
     );
     println!(
-        "  Prefill (avg/p50/p95):    {:.2} / {:.2} / {:.2} ms",
+        "  Prefill rolling(avg/p50/p95):    {:.2} / {:.2} / {:.2} ms",
         after.prefill_ms_avg, after.prefill_ms_p50, after.prefill_ms_p95
     );
     println!(
-        "  Decode (avg/p50/p95):     {:.2} / {:.2} / {:.2} ms",
+        "  Decode rolling(avg/p50/p95):     {:.2} / {:.2} / {:.2} ms",
         after.decode_ms_avg, after.decode_ms_p50, after.decode_ms_p95
     );
     println!(
-        "  TTFT (avg/p50/p95):       {:.2} / {:.2} / {:.2} ms",
+        "  TTFT rolling(avg/p50/p95):       {:.2} / {:.2} / {:.2} ms",
         after.ttft_ms_avg, after.ttft_ms_p50, after.ttft_ms_p95
     );
     println!(
-        "  End-to-end (avg/p50/p95): {:.2} / {:.2} / {:.2} ms",
+        "  End-to-end rolling(avg/p50/p95): {:.2} / {:.2} / {:.2} ms",
         after.end_to_end_ms_avg, after.end_to_end_ms_p50, after.end_to_end_ms_p95
     );
     let kernel_before = &before.kernel_path;
