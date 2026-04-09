@@ -6,7 +6,7 @@
 //! - Hugging Face `transformers`: language/task prompt handling and suppress token
 //!   masks from `generation_config.json`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -39,6 +39,8 @@ const DEFAULT_ADAPTIVE_BUDGET_BUFFER_TOKENS: usize = 8;
 const DEFAULT_SILENCE_TRIM_THRESHOLD_SCALE: f32 = 0.02;
 const DEFAULT_SILENCE_TRIM_MIN_ABS: f32 = 0.0015;
 const DEFAULT_SILENCE_TRIM_MARGIN_MS: usize = 120;
+const DEFAULT_SILENCE_TRIM_MIN_LEADING_MS: usize = 500;
+const DEFAULT_SILENCE_TRIM_MIN_TRAILING_MS: usize = 160;
 const DEFAULT_SILENCE_TRIM_MIN_CLIP_SECS: f32 = 0.8;
 const DEFAULT_LOGPROB_THRESHOLD: f32 = -1.0;
 const DEFAULT_NO_SPEECH_THRESHOLD: f32 = 0.6;
@@ -115,6 +117,8 @@ struct WhisperRuntimeTuning {
     silence_trim_threshold_scale: f32,
     silence_trim_min_abs: f32,
     silence_trim_margin_ms: usize,
+    silence_trim_min_leading_ms: usize,
+    silence_trim_min_trailing_ms: usize,
     silence_trim_min_clip_secs: f32,
 }
 
@@ -144,6 +148,10 @@ impl WhisperRuntimeTuning {
                 .unwrap_or(DEFAULT_SILENCE_TRIM_MIN_ABS),
             silence_trim_margin_ms: env_usize("IZWI_WHISPER_SILENCE_TRIM_MARGIN_MS")
                 .unwrap_or(DEFAULT_SILENCE_TRIM_MARGIN_MS),
+            silence_trim_min_leading_ms: env_usize("IZWI_WHISPER_SILENCE_TRIM_MIN_LEADING_MS")
+                .unwrap_or(DEFAULT_SILENCE_TRIM_MIN_LEADING_MS),
+            silence_trim_min_trailing_ms: env_usize("IZWI_WHISPER_SILENCE_TRIM_MIN_TRAILING_MS")
+                .unwrap_or(DEFAULT_SILENCE_TRIM_MIN_TRAILING_MS),
             silence_trim_min_clip_secs: env_f32("IZWI_WHISPER_SILENCE_TRIM_MIN_CLIP_SECS")
                 .unwrap_or(DEFAULT_SILENCE_TRIM_MIN_CLIP_SECS),
         }
@@ -546,12 +554,18 @@ impl WhisperTurboAsrModel {
             return Ok(String::new());
         }
 
-        let first_text = first_attempt.text.trim().to_string();
-        if !first_text.is_empty() {
-            return Ok(first_text);
+        let mut best_attempt = first_attempt;
+        let mut should_retry = temperatures.len() > 1
+            && (best_attempt.text.trim().is_empty()
+                || should_retry_decode(
+                    &best_attempt,
+                    logprob_threshold,
+                    compression_ratio_threshold,
+                ));
+        if !should_retry {
+            return Ok(best_attempt.text.trim().to_string());
         }
 
-        let mut best_attempt = first_attempt;
         for (idx, temperature) in temperatures.iter().copied().enumerate().skip(1) {
             let attempt = self.decode_attempt(
                 &mut whisper,
@@ -566,9 +580,13 @@ impl WhisperTurboAsrModel {
             }
 
             let is_last_temperature = idx + 1 == temperatures.len();
-            let should_retry =
-                !is_last_temperature
-                    && should_retry_decode(&attempt, logprob_threshold, compression_ratio_threshold);
+            should_retry = !is_last_temperature
+                && (attempt.text.trim().is_empty()
+                    || should_retry_decode(
+                        &attempt,
+                        logprob_threshold,
+                        compression_ratio_threshold,
+                    ));
             if !should_retry {
                 if is_better_attempt(&attempt, &best_attempt) {
                     best_attempt = attempt;
@@ -821,6 +839,8 @@ impl WhisperTurboAsrModel {
             self.runtime_tuning.silence_trim_threshold_scale,
             self.runtime_tuning.silence_trim_min_abs,
             self.runtime_tuning.silence_trim_margin_ms,
+            self.runtime_tuning.silence_trim_min_leading_ms,
+            self.runtime_tuning.silence_trim_min_trailing_ms,
             self.runtime_tuning.silence_trim_min_clip_secs,
         );
         &audio[start..end]
@@ -884,6 +904,8 @@ fn trimmed_audio_bounds(
     threshold_scale: f32,
     min_abs: f32,
     margin_ms: usize,
+    min_leading_ms: usize,
+    min_trailing_ms: usize,
     min_clip_secs: f32,
 ) -> (usize, usize) {
     if audio.is_empty() || sample_rate == 0 {
@@ -909,8 +931,20 @@ fn trimmed_audio_bounds(
     };
 
     let margin = sample_rate as usize * margin_ms / 1000;
-    let start = first.saturating_sub(margin);
-    let end = (last.saturating_add(margin).saturating_add(1)).min(audio.len());
+    let mut start = first.saturating_sub(margin);
+    let mut end = (last.saturating_add(margin).saturating_add(1)).min(audio.len());
+
+    let min_leading_samples =
+        ((min_leading_ms as u64).saturating_mul(sample_rate as u64) / 1000) as usize;
+    let min_trailing_samples =
+        ((min_trailing_ms as u64).saturating_mul(sample_rate as u64) / 1000) as usize;
+    if start < min_leading_samples {
+        start = 0;
+    }
+    if audio.len().saturating_sub(end) < min_trailing_samples {
+        end = audio.len();
+    }
+
     if end <= start {
         return (0, audio.len());
     }
@@ -1524,7 +1558,27 @@ fn should_retry_decode(
             return true;
         }
     }
+    if has_low_word_diversity(&attempt.text) {
+        return true;
+    }
     false
+}
+
+fn has_low_word_diversity(text: &str) -> bool {
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|word| {
+            word.trim_matches(|ch: char| !ch.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|word| !word.is_empty())
+        .collect();
+    if words.len() < 8 {
+        return false;
+    }
+
+    let unique = words.iter().collect::<HashSet<_>>().len();
+    (unique as f32 / words.len() as f32) < 0.6
 }
 
 fn is_better_attempt(
@@ -1614,12 +1668,9 @@ fn decode_step_budget(
 #[cfg(test)]
 mod tests {
     use super::{
-        adaptive_decode_budget,
-        capped_decode_temperatures,
-        decode_step_budget, find_suffix_token_repetition, logits_to_log_probs,
-        logits_to_log_probs_in_place,
-        trimmed_audio_bounds,
-        text_delta,
+        adaptive_decode_budget, capped_decode_temperatures, decode_step_budget,
+        find_suffix_token_repetition, has_low_word_diversity, logits_to_log_probs,
+        logits_to_log_probs_in_place, text_delta, trimmed_audio_bounds,
     };
 
     #[test]
@@ -1709,7 +1760,7 @@ mod tests {
         audio.extend(vec![0.2f32; 16_000]);
         audio.extend(vec![0.0f32; 8_000]);
 
-        let (start, end) = trimmed_audio_bounds(&audio, sr, 0.02, 0.0015, 120, 0.8);
+        let (start, end) = trimmed_audio_bounds(&audio, sr, 0.02, 0.0015, 120, 300, 120, 0.8);
         assert!(start > 0);
         assert!(end < audio.len());
         assert!(end > start);
@@ -1719,9 +1770,35 @@ mod tests {
     fn trimmed_audio_bounds_keeps_short_clips_untouched() {
         let sr = 16_000u32;
         let audio = vec![0.0f32; 4_000];
-        let (start, end) = trimmed_audio_bounds(&audio, sr, 0.02, 0.0015, 120, 0.8);
+        let (start, end) = trimmed_audio_bounds(&audio, sr, 0.02, 0.0015, 120, 300, 120, 0.8);
         assert_eq!(start, 0);
         assert_eq!(end, audio.len());
+    }
+
+    #[test]
+    fn trimmed_audio_bounds_preserves_short_leading_silence() {
+        let sr = 16_000u32;
+        let mut audio = vec![0.0f32; 6_000];
+        audio.extend(vec![0.2f32; 16_000]);
+        audio.extend(vec![0.0f32; 6_000]);
+
+        let (start, end) = trimmed_audio_bounds(&audio, sr, 0.02, 0.0015, 120, 500, 120, 0.8);
+        assert_eq!(start, 0);
+        assert!(end < audio.len());
+    }
+
+    #[test]
+    fn low_word_diversity_flags_repetitive_output() {
+        assert!(has_low_word_diversity(
+            "The quick quick brown fox fox jumps jumps over the little the little"
+        ));
+    }
+
+    #[test]
+    fn low_word_diversity_allows_normal_transcript() {
+        assert!(!has_low_word_diversity(
+            "The quick brown fox jumps over the lazy dog"
+        ));
     }
 }
 

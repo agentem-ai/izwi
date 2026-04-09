@@ -20,6 +20,7 @@ const DEFAULT_STREAM_LONG_OVERLAP_SECS: f32 = 1.0;
 const DEFAULT_STREAM_LONG_MIN_CHUNK_SECS: f32 = 2.0;
 const DEFAULT_STREAM_LONG_SILENCE_SEARCH_SECS: f32 = 1.5;
 const STREAM_SHORT_AUDIO_SECS_THRESHOLD: f32 = 12.0;
+const STREAM_SINGLE_CHUNK_SECS_THRESHOLD: f32 = 4.5;
 const MAX_STREAMING_LOW_LATENCY_CHUNKS: usize = 24;
 
 impl NativeExecutor {
@@ -46,6 +47,15 @@ impl NativeExecutor {
 
     pub(super) fn asr_streaming_low_latency_config(audio_secs: f32) -> AsrLongFormConfig {
         let mut cfg = Self::asr_long_form_config();
+        let stream_chunk_overrides_present = [
+            "IZWI_ASR_STREAM_CHUNK_TARGET_SECS",
+            "IZWI_ASR_STREAM_CHUNK_MAX_SECS",
+            "IZWI_ASR_STREAM_CHUNK_OVERLAP_SECS",
+            "IZWI_ASR_STREAM_CHUNK_MIN_SECS",
+            "IZWI_ASR_STREAM_CHUNK_SILENCE_SEARCH_SECS",
+        ]
+        .iter()
+        .any(|key| std::env::var(key).is_ok());
         if audio_secs <= STREAM_SHORT_AUDIO_SECS_THRESHOLD {
             cfg.target_chunk_secs = DEFAULT_STREAM_SHORT_TARGET_CHUNK_SECS;
             cfg.hard_max_chunk_secs = DEFAULT_STREAM_SHORT_MAX_CHUNK_SECS;
@@ -53,9 +63,12 @@ impl NativeExecutor {
             cfg.min_chunk_secs = DEFAULT_STREAM_SHORT_MIN_CHUNK_SECS;
             cfg.silence_search_secs = DEFAULT_STREAM_SHORT_SILENCE_SEARCH_SECS;
         } else {
-            cfg.target_chunk_secs = cfg.target_chunk_secs.min(DEFAULT_STREAM_LONG_TARGET_CHUNK_SECS);
-            cfg.hard_max_chunk_secs =
-                cfg.hard_max_chunk_secs.min(DEFAULT_STREAM_LONG_MAX_CHUNK_SECS);
+            cfg.target_chunk_secs = cfg
+                .target_chunk_secs
+                .min(DEFAULT_STREAM_LONG_TARGET_CHUNK_SECS);
+            cfg.hard_max_chunk_secs = cfg
+                .hard_max_chunk_secs
+                .min(DEFAULT_STREAM_LONG_MAX_CHUNK_SECS);
             cfg.overlap_secs = cfg.overlap_secs.min(DEFAULT_STREAM_LONG_OVERLAP_SECS);
             cfg.min_chunk_secs = cfg.min_chunk_secs.min(DEFAULT_STREAM_LONG_MIN_CHUNK_SECS);
             cfg.silence_search_secs = cfg
@@ -98,6 +111,14 @@ impl NativeExecutor {
             let desired_overlap_floor = (cfg.target_chunk_secs * 0.2).min(0.5);
             if cfg.overlap_secs < desired_overlap_floor {
                 cfg.overlap_secs = desired_overlap_floor;
+            }
+
+            if !stream_chunk_overrides_present && audio_secs <= STREAM_SINGLE_CHUNK_SECS_THRESHOLD {
+                let single_chunk_secs = (audio_secs + 0.05).max(cfg.min_chunk_secs.max(0.5));
+                cfg.target_chunk_secs = single_chunk_secs;
+                cfg.hard_max_chunk_secs = single_chunk_secs;
+                cfg.overlap_secs = cfg.overlap_secs.min(single_chunk_secs * 0.1);
+                cfg.silence_search_secs = cfg.silence_search_secs.min(single_chunk_secs * 0.25);
             }
         }
 
@@ -196,7 +217,12 @@ impl NativeExecutor {
 
         if !deferred_boundary_delta.is_empty() {
             if let Some(tx) = stream_tx {
-                Self::stream_text_per_character(tx, request_id, sequence, &deferred_boundary_delta)?;
+                Self::stream_text_per_character(
+                    tx,
+                    request_id,
+                    sequence,
+                    &deferred_boundary_delta,
+                )?;
             }
         }
 
@@ -313,11 +339,28 @@ mod tests {
     }
 
     #[test]
-    fn streaming_low_latency_chunk_plan_splits_short_audio() {
+    fn streaming_low_latency_chunk_plan_keeps_very_short_audio_single_chunk() {
         let sr = 16_000u32;
         let samples = vec![0.0f32; (sr as usize) * 4];
         let (_cfg, chunks) = NativeExecutor::asr_chunk_plan(&samples, sr, Some(30.0), true);
-        assert!(chunks.len() > 1, "expected multiple chunks, got {}", chunks.len());
+        assert_eq!(
+            chunks.len(),
+            1,
+            "expected a single chunk, got {}",
+            chunks.len()
+        );
+    }
+
+    #[test]
+    fn streaming_low_latency_chunk_plan_splits_medium_audio() {
+        let sr = 16_000u32;
+        let samples = vec![0.0f32; (sr as usize) * 8];
+        let (_cfg, chunks) = NativeExecutor::asr_chunk_plan(&samples, sr, Some(30.0), true);
+        assert!(
+            chunks.len() > 1,
+            "expected multiple chunks, got {}",
+            chunks.len()
+        );
     }
 
     #[test]
