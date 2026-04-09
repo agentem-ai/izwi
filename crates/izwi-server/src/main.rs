@@ -24,7 +24,7 @@ mod voice_memory;
 mod voice_observation_store;
 mod voice_store;
 
-use izwi_core::{RuntimeService, ServeRuntimeConfig, ServeRuntimeConfigOverrides};
+use izwi_core::{parse_model_variant, RuntimeService, ServeRuntimeConfig, ServeRuntimeConfigOverrides};
 use state::AppState;
 
 #[derive(Debug, Parser)]
@@ -94,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
     // Create runtime service
     let runtime = RuntimeService::new(config)?;
     let state = AppState::new(runtime, &serve_config)?;
+    preload_configured_models(&state).await;
 
     info!("Runtime service initialized");
 
@@ -130,6 +131,47 @@ fn resolve_serve_runtime_config(args: &ServerArgs) -> ServeRuntimeConfig {
     };
     let env = ServeRuntimeConfigOverrides::from_env();
     ServeRuntimeConfig::from_sources(&ServeRuntimeConfigOverrides::default(), &env, &cli)
+}
+
+fn configured_preload_models() -> Vec<String> {
+    std::env::var("IZWI_PRELOAD_MODELS")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+async fn preload_configured_models(state: &AppState) {
+    let configured = configured_preload_models();
+    if configured.is_empty() {
+        return;
+    }
+
+    info!(
+        count = configured.len(),
+        "Preloading models from IZWI_PRELOAD_MODELS"
+    );
+
+    for model_id in configured {
+        match parse_model_variant(&model_id) {
+            Ok(variant) => match state.runtime.load_model(variant).await {
+                Ok(()) => {
+                    info!(model = %variant, "Preloaded model");
+                }
+                Err(err) => {
+                    warn!(model_id = %model_id, "Failed to preload model: {err}");
+                }
+            },
+            Err(err) => {
+                warn!(model_id = %model_id, "Skipping unknown preload model id: {err}");
+            }
+        }
+    }
 }
 
 /// Wait for shutdown signal and cleanup
@@ -209,10 +251,30 @@ mod tests {
         std::env::remove_var("IZWI_UI_DIR");
         std::env::remove_var("MAX_CONCURRENT_REQUESTS");
         std::env::remove_var("REQUEST_TIMEOUT_SECS");
+        std::env::remove_var("IZWI_PRELOAD_MODELS");
     }
 
     fn parse(args: &[&str]) -> ServerArgs {
         ServerArgs::try_parse_from(args).expect("arguments should parse")
+    }
+
+    #[test]
+    fn configured_preload_models_parses_csv_env() {
+        let _guard = env_lock();
+        std::env::set_var(
+            "IZWI_PRELOAD_MODELS",
+            " Whisper-Large-v3-Turbo, Qwen3.5-4B, ,invalid ",
+        );
+        let models = configured_preload_models();
+        assert_eq!(
+            models,
+            vec![
+                "Whisper-Large-v3-Turbo".to_string(),
+                "Qwen3.5-4B".to_string(),
+                "invalid".to_string()
+            ]
+        );
+        clear_bind_env();
     }
 
     #[test]
