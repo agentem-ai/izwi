@@ -103,6 +103,9 @@ Optional tuning knobs:
 IZWI_ASR_CHUNK_TARGET_SECS=24
 IZWI_ASR_CHUNK_MAX_SECS=30
 IZWI_ASR_CHUNK_OVERLAP_SECS=3
+# Optional: preload models at server startup to reduce first-request cold latency.
+# Comma-separated model IDs (for example Whisper-Large-v3-Turbo,Qwen3.5-4B)
+IZWI_PRELOAD_MODELS=Whisper-Large-v3-Turbo
 ```
 
 ---
