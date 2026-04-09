@@ -47,15 +47,7 @@ impl NativeExecutor {
 
     pub(super) fn asr_streaming_low_latency_config(audio_secs: f32) -> AsrLongFormConfig {
         let mut cfg = Self::asr_long_form_config();
-        let stream_chunk_overrides_present = [
-            "IZWI_ASR_STREAM_CHUNK_TARGET_SECS",
-            "IZWI_ASR_STREAM_CHUNK_MAX_SECS",
-            "IZWI_ASR_STREAM_CHUNK_OVERLAP_SECS",
-            "IZWI_ASR_STREAM_CHUNK_MIN_SECS",
-            "IZWI_ASR_STREAM_CHUNK_SILENCE_SEARCH_SECS",
-        ]
-        .iter()
-        .any(|key| std::env::var(key).is_ok());
+        let stream_chunk_overrides_present = Self::stream_chunk_overrides_present();
         if audio_secs <= STREAM_SHORT_AUDIO_SECS_THRESHOLD {
             cfg.target_chunk_secs = DEFAULT_STREAM_SHORT_TARGET_CHUNK_SECS;
             cfg.hard_max_chunk_secs = DEFAULT_STREAM_SHORT_MAX_CHUNK_SECS;
@@ -125,6 +117,18 @@ impl NativeExecutor {
         cfg
     }
 
+    fn stream_chunk_overrides_present() -> bool {
+        [
+            "IZWI_ASR_STREAM_CHUNK_TARGET_SECS",
+            "IZWI_ASR_STREAM_CHUNK_MAX_SECS",
+            "IZWI_ASR_STREAM_CHUNK_OVERLAP_SECS",
+            "IZWI_ASR_STREAM_CHUNK_MIN_SECS",
+            "IZWI_ASR_STREAM_CHUNK_SILENCE_SEARCH_SECS",
+        ]
+        .iter()
+        .any(|key| std::env::var(key).is_ok())
+    }
+
     pub(super) fn asr_chunk_plan(
         samples: &[f32],
         sample_rate: u32,
@@ -136,6 +140,33 @@ impl NativeExecutor {
         } else {
             0.0
         };
+        let model_fit_limit_secs = model_max_chunk_secs
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map(|v| v * 0.95);
+        if streaming_low_latency
+            && !Self::stream_chunk_overrides_present()
+            && model_fit_limit_secs
+                .map(|limit| audio_secs <= limit)
+                .unwrap_or(false)
+        {
+            let mut single_chunk_cfg = Self::asr_long_form_config();
+            let single_chunk_secs = audio_secs.max(single_chunk_cfg.min_chunk_secs.max(0.5));
+            single_chunk_cfg.target_chunk_secs = single_chunk_secs;
+            single_chunk_cfg.hard_max_chunk_secs = single_chunk_secs;
+            single_chunk_cfg.overlap_secs =
+                single_chunk_cfg.overlap_secs.min(single_chunk_secs * 0.1);
+            single_chunk_cfg.silence_search_secs = single_chunk_cfg
+                .silence_search_secs
+                .min(single_chunk_secs * 0.25);
+            let chunks = plan_audio_chunks(
+                samples,
+                sample_rate,
+                &single_chunk_cfg,
+                model_fit_limit_secs.map(|v| v.max(single_chunk_cfg.min_chunk_secs.max(1.0))),
+            );
+            return (single_chunk_cfg, chunks);
+        }
+
         let cfg = if streaming_low_latency {
             Self::asr_streaming_low_latency_config(audio_secs)
         } else {
@@ -355,10 +386,35 @@ mod tests {
     fn streaming_low_latency_chunk_plan_splits_medium_audio() {
         let sr = 16_000u32;
         let samples = vec![0.0f32; (sr as usize) * 8];
-        let (_cfg, chunks) = NativeExecutor::asr_chunk_plan(&samples, sr, Some(30.0), true);
+        let (_cfg, chunks) = NativeExecutor::asr_chunk_plan(&samples, sr, None, true);
         assert!(
             chunks.len() > 1,
             "expected multiple chunks, got {}",
+            chunks.len()
+        );
+    }
+
+    #[test]
+    fn streaming_chunk_plan_keeps_model_fit_audio_single_chunk() {
+        let sr = 16_000u32;
+        let samples = vec![0.0f32; (sr as usize) * 20];
+        let (_cfg, chunks) = NativeExecutor::asr_chunk_plan(&samples, sr, Some(30.0), true);
+        assert_eq!(
+            chunks.len(),
+            1,
+            "expected a single chunk for model-fit audio, got {}",
+            chunks.len()
+        );
+    }
+
+    #[test]
+    fn streaming_chunk_plan_splits_audio_when_model_hint_is_exceeded() {
+        let sr = 16_000u32;
+        let samples = vec![0.0f32; (sr as usize) * 40];
+        let (_cfg, chunks) = NativeExecutor::asr_chunk_plan(&samples, sr, Some(30.0), true);
+        assert!(
+            chunks.len() > 1,
+            "expected chunking beyond model hint, got {}",
             chunks.len()
         );
     }
