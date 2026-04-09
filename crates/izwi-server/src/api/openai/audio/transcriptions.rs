@@ -12,7 +12,7 @@ use axum::{
 };
 use base64::Engine;
 use std::convert::Infallible;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -153,7 +153,6 @@ async fn transcriptions_stream(
     audio_base64: String,
     correlation_id: String,
 ) -> Result<Response<Body>, ApiError> {
-    let timeout = Duration::from_secs(state.request_timeout_secs);
     let model = req.model;
     let language = req.language;
 
@@ -199,31 +198,30 @@ async fn transcriptions_stream(
         let _ = event_tx.send(serde_json::to_string(&start).unwrap_or_default());
 
         let delta_tx = event_tx.clone();
-        let result = tokio::time::timeout(timeout, async {
-            engine
-                .asr_transcribe_streaming_with_correlation(
-                    &audio_base64,
-                    model.as_deref(),
-                    language.as_deref(),
-                    Some(correlation_id.as_str()),
-                    move |delta| {
-                        let event = StreamEvent {
-                            event: "delta",
-                            text: None,
-                            delta: Some(delta),
-                            language: None,
-                            audio_duration_secs: None,
-                            error: None,
-                        };
-                        let _ = delta_tx.send(serde_json::to_string(&event).unwrap_or_default());
-                    },
-                )
-                .await
-        })
-        .await;
+        // Keep transcription streaming unbounded by wall-clock timeout so valid
+        // long jobs are not cut off mid-flight.
+        let result = engine
+            .asr_transcribe_streaming_with_correlation(
+                &audio_base64,
+                model.as_deref(),
+                language.as_deref(),
+                Some(correlation_id.as_str()),
+                move |delta| {
+                    let event = StreamEvent {
+                        event: "delta",
+                        text: None,
+                        delta: Some(delta),
+                        language: None,
+                        audio_duration_secs: None,
+                        error: None,
+                    };
+                    let _ = delta_tx.send(serde_json::to_string(&event).unwrap_or_default());
+                },
+            )
+            .await;
 
         match result {
-            Ok(Ok(output)) => {
+            Ok(output) => {
                 let final_event = StreamEvent {
                     event: "final",
                     text: Some(output.text),
@@ -234,7 +232,7 @@ async fn transcriptions_stream(
                 };
                 let _ = event_tx.send(serde_json::to_string(&final_event).unwrap_or_default());
             }
-            Ok(Err(err)) => {
+            Err(err) => {
                 let error_event = StreamEvent {
                     event: "error",
                     text: None,
@@ -242,17 +240,6 @@ async fn transcriptions_stream(
                     language: None,
                     audio_duration_secs: None,
                     error: Some(err.to_string()),
-                };
-                let _ = event_tx.send(serde_json::to_string(&error_event).unwrap_or_default());
-            }
-            Err(_) => {
-                let error_event = StreamEvent {
-                    event: "error",
-                    text: None,
-                    delta: None,
-                    language: None,
-                    audio_duration_secs: None,
-                    error: Some("Transcription request timed out".to_string()),
                 };
                 let _ = event_tx.send(serde_json::to_string(&error_event).unwrap_or_default());
             }
