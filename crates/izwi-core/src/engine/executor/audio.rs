@@ -9,6 +9,18 @@ use crate::runtime::audio_io::{base64_decode, decode_audio_bytes};
 use super::super::output::StreamingOutput;
 use super::NativeExecutor;
 
+const DEFAULT_STREAM_SHORT_TARGET_CHUNK_SECS: f32 = 2.4;
+const DEFAULT_STREAM_SHORT_MAX_CHUNK_SECS: f32 = 3.2;
+const DEFAULT_STREAM_SHORT_OVERLAP_SECS: f32 = 0.45;
+const DEFAULT_STREAM_SHORT_MIN_CHUNK_SECS: f32 = 1.0;
+const DEFAULT_STREAM_SHORT_SILENCE_SEARCH_SECS: f32 = 0.75;
+const DEFAULT_STREAM_LONG_TARGET_CHUNK_SECS: f32 = 6.0;
+const DEFAULT_STREAM_LONG_MAX_CHUNK_SECS: f32 = 8.0;
+const DEFAULT_STREAM_LONG_OVERLAP_SECS: f32 = 1.0;
+const DEFAULT_STREAM_LONG_MIN_CHUNK_SECS: f32 = 2.0;
+const DEFAULT_STREAM_LONG_SILENCE_SEARCH_SECS: f32 = 1.5;
+const STREAM_SHORT_AUDIO_SECS_THRESHOLD: f32 = 12.0;
+
 impl NativeExecutor {
     pub(super) fn env_f32(key: &str) -> Option<f32> {
         std::env::var(key)
@@ -31,12 +43,76 @@ impl NativeExecutor {
         cfg
     }
 
+    pub(super) fn asr_streaming_low_latency_config(audio_secs: f32) -> AsrLongFormConfig {
+        let mut cfg = Self::asr_long_form_config();
+        if audio_secs <= STREAM_SHORT_AUDIO_SECS_THRESHOLD {
+            cfg.target_chunk_secs = DEFAULT_STREAM_SHORT_TARGET_CHUNK_SECS;
+            cfg.hard_max_chunk_secs = DEFAULT_STREAM_SHORT_MAX_CHUNK_SECS;
+            cfg.overlap_secs = DEFAULT_STREAM_SHORT_OVERLAP_SECS;
+            cfg.min_chunk_secs = DEFAULT_STREAM_SHORT_MIN_CHUNK_SECS;
+            cfg.silence_search_secs = DEFAULT_STREAM_SHORT_SILENCE_SEARCH_SECS;
+        } else {
+            cfg.target_chunk_secs = cfg.target_chunk_secs.min(DEFAULT_STREAM_LONG_TARGET_CHUNK_SECS);
+            cfg.hard_max_chunk_secs =
+                cfg.hard_max_chunk_secs.min(DEFAULT_STREAM_LONG_MAX_CHUNK_SECS);
+            cfg.overlap_secs = cfg.overlap_secs.min(DEFAULT_STREAM_LONG_OVERLAP_SECS);
+            cfg.min_chunk_secs = cfg.min_chunk_secs.min(DEFAULT_STREAM_LONG_MIN_CHUNK_SECS);
+            cfg.silence_search_secs = cfg
+                .silence_search_secs
+                .min(DEFAULT_STREAM_LONG_SILENCE_SEARCH_SECS);
+        }
+
+        if let Some(v) = Self::env_f32("IZWI_ASR_STREAM_CHUNK_TARGET_SECS") {
+            cfg.target_chunk_secs = v;
+        }
+        if let Some(v) = Self::env_f32("IZWI_ASR_STREAM_CHUNK_MAX_SECS") {
+            cfg.hard_max_chunk_secs = v;
+        }
+        if let Some(v) = Self::env_f32("IZWI_ASR_STREAM_CHUNK_OVERLAP_SECS") {
+            cfg.overlap_secs = v;
+        }
+        if let Some(v) = Self::env_f32("IZWI_ASR_STREAM_CHUNK_MIN_SECS") {
+            cfg.min_chunk_secs = v;
+        }
+        if let Some(v) = Self::env_f32("IZWI_ASR_STREAM_CHUNK_SILENCE_SEARCH_SECS") {
+            cfg.silence_search_secs = v;
+        }
+
+        if cfg.hard_max_chunk_secs < cfg.min_chunk_secs {
+            cfg.hard_max_chunk_secs = cfg.min_chunk_secs;
+        }
+        if cfg.target_chunk_secs < cfg.min_chunk_secs {
+            cfg.target_chunk_secs = cfg.min_chunk_secs;
+        }
+        if cfg.target_chunk_secs > cfg.hard_max_chunk_secs {
+            cfg.target_chunk_secs = cfg.hard_max_chunk_secs;
+        }
+        if cfg.overlap_secs > cfg.target_chunk_secs * 0.45 {
+            cfg.overlap_secs = cfg.target_chunk_secs * 0.45;
+        }
+        if cfg.silence_search_secs > cfg.target_chunk_secs * 0.5 {
+            cfg.silence_search_secs = cfg.target_chunk_secs * 0.5;
+        }
+
+        cfg
+    }
+
     pub(super) fn asr_chunk_plan(
         samples: &[f32],
         sample_rate: u32,
         model_max_chunk_secs: Option<f32>,
+        streaming_low_latency: bool,
     ) -> (AsrLongFormConfig, Vec<AudioChunk>) {
-        let cfg = Self::asr_long_form_config();
+        let audio_secs = if sample_rate > 0 {
+            samples.len() as f32 / sample_rate as f32
+        } else {
+            0.0
+        };
+        let cfg = if streaming_low_latency {
+            Self::asr_streaming_low_latency_config(audio_secs)
+        } else {
+            Self::asr_long_form_config()
+        };
         let tuned_limit = model_max_chunk_secs
             .filter(|v| v.is_finite() && *v > 0.0)
             .map(|v| (v * 0.95).max(cfg.min_chunk_secs.max(1.0)));
@@ -183,5 +259,21 @@ mod tests {
         let delta = NativeExecutor::next_audio_delta_stable(&all, &mut emitted, 8, false);
         assert!(delta.is_empty());
         assert_eq!(emitted, 0);
+    }
+
+    #[test]
+    fn streaming_low_latency_chunk_plan_splits_short_audio() {
+        let sr = 16_000u32;
+        let samples = vec![0.0f32; (sr as usize) * 4];
+        let (_cfg, chunks) = NativeExecutor::asr_chunk_plan(&samples, sr, Some(30.0), true);
+        assert!(chunks.len() > 1, "expected multiple chunks, got {}", chunks.len());
+    }
+
+    #[test]
+    fn standard_chunk_plan_keeps_short_audio_single_chunk() {
+        let sr = 16_000u32;
+        let samples = vec![0.0f32; (sr as usize) * 4];
+        let (_cfg, chunks) = NativeExecutor::asr_chunk_plan(&samples, sr, Some(30.0), false);
+        assert_eq!(chunks.len(), 1);
     }
 }
