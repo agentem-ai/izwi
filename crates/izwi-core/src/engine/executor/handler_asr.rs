@@ -56,6 +56,7 @@ impl NativeExecutor {
                             &samples,
                             sample_rate,
                             model.max_audio_seconds_hint(),
+                            false,
                         );
                         if chunk_plan.len() > 1 {
                             let mut sequence = 0usize;
@@ -226,7 +227,8 @@ impl NativeExecutor {
                     })
                 })?;
 
-                let (chunk_cfg, chunk_plan) = Self::asr_chunk_plan(&samples, sample_rate, None);
+                let (chunk_cfg, chunk_plan) =
+                    Self::asr_chunk_plan(&samples, sample_rate, None, false);
                 if chunk_plan.len() > 1 {
                     let text = Self::transcribe_with_chunk_plan(
                         &request.id,
@@ -282,7 +284,12 @@ impl NativeExecutor {
             })?;
 
             let (chunk_cfg, chunk_plan) =
-                Self::asr_chunk_plan(&samples, sample_rate, model.max_audio_seconds_hint());
+                Self::asr_chunk_plan(
+                    &samples,
+                    sample_rate,
+                    model.max_audio_seconds_hint(),
+                    request.streaming && !model.supports_incremental_decode(),
+                );
             if chunk_plan.len() > 1 {
                 let text = Self::transcribe_with_chunk_plan(
                     &request.id,
