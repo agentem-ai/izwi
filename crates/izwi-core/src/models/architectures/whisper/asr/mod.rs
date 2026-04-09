@@ -11,6 +11,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use candle_core::{DType, IndexOp, Tensor};
 use candle_nn::VarBuilder;
@@ -19,6 +20,7 @@ use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use rand::Rng;
 use serde::Deserialize;
+use serde_json::json;
 use tracing::info;
 
 use crate::audio::{MelConfig, MelSpectrogram};
@@ -77,6 +79,7 @@ struct WhisperSpecialTokens {
 pub struct AsrTranscriptionOutput {
     pub text: String,
     pub language: Option<String>,
+    pub diagnostics: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -241,22 +244,32 @@ impl WhisperTurboAsrModel {
             return Err(Error::InvalidInput("Empty audio input".to_string()));
         }
 
+        let request_started = Instant::now();
+        let mel_started = Instant::now();
         let mel = self.prepare_mel(audio, sample_rate)?;
+        let mel_prepare_ms = mel_started.elapsed().as_secs_f64() * 1000.0;
         let mut whisper = self
             .whisper
             .lock()
             .map_err(|_| Error::InferenceError("Whisper model mutex poisoned".to_string()))?;
 
         whisper.reset_kv_cache();
+        let encoder_started = Instant::now();
         let audio_features = whisper.encoder.forward(&mel, true)?;
+        let encoder_forward_ms = encoder_started.elapsed().as_secs_f64() * 1000.0;
 
+        let mut language_hint_used = language.is_some();
+        let mut language_detect_ms = 0.0f64;
         let mut resolved_language = if let Some(language) = language {
             self.resolve_language_token(language)?
         } else {
             None
         };
         if resolved_language.is_none() {
+            language_hint_used = false;
+            let detect_started = Instant::now();
             resolved_language = self.detect_language_token(&mut whisper, &audio_features)?;
+            language_detect_ms = detect_started.elapsed().as_secs_f64() * 1000.0;
         }
 
         let mut prompt = Vec::with_capacity(4);
@@ -285,8 +298,12 @@ impl WhisperTurboAsrModel {
             .unwrap_or(DEFAULT_NO_SPEECH_THRESHOLD);
         let compression_ratio_threshold = self.generation.compression_ratio_threshold;
 
+        let decode_started = Instant::now();
+        let mut attempted_temperatures = Vec::with_capacity(temperatures.len());
         let mut best_attempt: Option<WhisperDecodeAttempt> = None;
+        let mut selected_temperature = temperatures.first().copied().unwrap_or(0.0);
         for (idx, temperature) in temperatures.iter().copied().enumerate() {
+            attempted_temperatures.push(temperature);
             let attempt = self.decode_attempt(
                 &mut whisper,
                 &audio_features,
@@ -300,6 +317,7 @@ impl WhisperTurboAsrModel {
                     text: String::new(),
                     ..attempt
                 });
+                selected_temperature = temperature;
                 break;
             }
 
@@ -308,6 +326,7 @@ impl WhisperTurboAsrModel {
                 && should_retry_decode(&attempt, logprob_threshold, compression_ratio_threshold);
             if !should_retry {
                 best_attempt = Some(attempt);
+                selected_temperature = temperature;
                 break;
             }
 
@@ -319,6 +338,7 @@ impl WhisperTurboAsrModel {
                 best_attempt = Some(attempt);
             }
         }
+        let decode_ms = decode_started.elapsed().as_secs_f64() * 1000.0;
 
         let final_attempt = best_attempt.unwrap_or_else(|| WhisperDecodeAttempt {
             text: String::new(),
@@ -331,7 +351,34 @@ impl WhisperTurboAsrModel {
 
         let text = final_attempt.text.trim().to_string();
         let language = resolved_language.map(|(_token_id, code)| code);
-        Ok(AsrTranscriptionOutput { text, language })
+        let model_total_ms = request_started.elapsed().as_secs_f64() * 1000.0;
+        let diagnostics = json!({
+            "model_family": "whisper_asr",
+            "fallback_attempts": attempted_temperatures.len(),
+            "attempted_temperatures": attempted_temperatures,
+            "selected_temperature": selected_temperature,
+            "language_hint_used": language_hint_used,
+            "decode": {
+                "ended_with_eot": final_attempt.ended_with_eot,
+                "repetition_loop": final_attempt.repetition_loop,
+                "avg_logprob": final_attempt.avg_logprob,
+                "no_speech_prob": final_attempt.no_speech_prob,
+                "compression_ratio": final_attempt.compression_ratio,
+            },
+            "timings_ms": {
+                "mel_prepare": mel_prepare_ms,
+                "encoder_forward": encoder_forward_ms,
+                "language_detect": language_detect_ms,
+                "decode": decode_ms,
+                "model_total": model_total_ms,
+            }
+        });
+
+        Ok(AsrTranscriptionOutput {
+            text,
+            language,
+            diagnostics: Some(diagnostics),
+        })
     }
 
     fn prepare_mel(&self, audio: &[f32], sample_rate: u32) -> Result<Tensor> {

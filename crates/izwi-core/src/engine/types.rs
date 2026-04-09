@@ -169,6 +169,8 @@ pub struct EngineOutput {
     pub token_stats: TokenStats,
     /// Latency breakdown by request phase.
     pub latency_breakdown: Option<LatencyBreakdown>,
+    /// Optional model-specific ASR diagnostics payload.
+    pub asr_diagnostics: Option<serde_json::Value>,
     /// Backend execution error when generation failed.
     pub error: Option<String>,
 }

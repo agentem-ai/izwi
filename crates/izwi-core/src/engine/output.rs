@@ -172,6 +172,7 @@ impl OutputProcessor {
             finish_reason,
             token_stats,
             latency_breakdown: None,
+            asr_diagnostics: executor_output.asr_diagnostics,
             error: executor_output.error,
         }
     }

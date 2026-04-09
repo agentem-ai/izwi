@@ -45,6 +45,8 @@ struct VerboseJsonTranscriptionResponse {
     duration: f32,
     processing_time_ms: f64,
     rtf: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    izwi_asr_diagnostics: Option<serde_json::Value>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -122,6 +124,7 @@ pub async fn transcriptions(
                     duration: output.duration_secs,
                     processing_time_ms: elapsed_ms,
                     rtf,
+                    izwi_asr_diagnostics: output.asr_diagnostics,
                 })
                 .unwrap(),
             ))

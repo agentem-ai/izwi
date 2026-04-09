@@ -9,6 +9,7 @@ pub struct AsrTranscription {
     pub text: String,
     pub language: Option<String>,
     pub duration_secs: f32,
+    pub asr_diagnostics: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

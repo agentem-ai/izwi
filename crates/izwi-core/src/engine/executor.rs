@@ -184,6 +184,8 @@ pub struct ExecutorOutput {
     pub finished: bool,
     /// Optional per-request phase timing override from model-specific execution paths.
     pub phase_timing_override: Option<ExecutorPhaseTiming>,
+    /// Optional ASR diagnostics payload surfaced by model-specific paths.
+    pub asr_diagnostics: Option<serde_json::Value>,
     /// Error if any
     pub error: Option<String>,
 }
@@ -213,6 +215,7 @@ impl ExecutorOutput {
             tokens_generated: 0,
             finished: true,
             phase_timing_override: None,
+            asr_diagnostics: None,
             error: Some(error.into()),
         }
     }
