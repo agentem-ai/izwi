@@ -244,28 +244,30 @@ impl NativeExecutor {
                     return Ok((text, None));
                 }
 
-                if let Some(tx) = stream_tx.as_ref() {
-                    let mut stream_err: Option<Error> = None;
-                    let mut emit = |delta: &str| {
-                        if stream_err.is_none() {
-                            if let Err(err) =
-                                Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
-                            {
-                                stream_err = Some(err);
+                if request.streaming {
+                    if let Some(tx) = stream_tx.as_ref() {
+                        let mut stream_err: Option<Error> = None;
+                        let mut emit = |delta: &str| {
+                            if stream_err.is_none() {
+                                if let Err(err) =
+                                    Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
+                                {
+                                    stream_err = Some(err);
+                                }
                             }
+                        };
+                        let text = model.transcribe_with_callback(
+                            &samples,
+                            sample_rate,
+                            language,
+                            &mut emit,
+                        )?;
+                        if let Some(err) = stream_err {
+                            return Err(err);
                         }
-                    };
-                    let text = model.transcribe_with_callback(
-                        &samples,
-                        sample_rate,
-                        language,
-                        &mut emit,
-                    )?;
-                    if let Some(err) = stream_err {
-                        return Err(err);
+                        Self::stream_final_marker(tx, &request.id, &mut sequence)?;
+                        return Ok((text, None));
                     }
-                    Self::stream_final_marker(tx, &request.id, &mut sequence)?;
-                    return Ok((text, None));
                 }
                 return Ok((model.transcribe(&samples, sample_rate, language)?, None));
             }
@@ -295,24 +297,26 @@ impl NativeExecutor {
                 return Ok((text, None));
             }
 
-            if let Some(tx) = stream_tx.as_ref() {
-                let mut stream_err: Option<Error> = None;
-                let mut emit = |delta: &str| {
-                    if stream_err.is_none() {
-                        if let Err(err) =
-                            Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
-                        {
-                            stream_err = Some(err);
+            if request.streaming {
+                if let Some(tx) = stream_tx.as_ref() {
+                    let mut stream_err: Option<Error> = None;
+                    let mut emit = |delta: &str| {
+                        if stream_err.is_none() {
+                            if let Err(err) =
+                                Self::stream_text(tx, &request.id, &mut sequence, delta.to_string())
+                            {
+                                stream_err = Some(err);
+                            }
                         }
+                    };
+                    let text =
+                        model.transcribe_with_callback(&samples, sample_rate, language, &mut emit)?;
+                    if let Some(err) = stream_err {
+                        return Err(err);
                     }
-                };
-                let text =
-                    model.transcribe_with_callback(&samples, sample_rate, language, &mut emit)?;
-                if let Some(err) = stream_err {
-                    return Err(err);
+                    Self::stream_final_marker(tx, &request.id, &mut sequence)?;
+                    return Ok((text, None));
                 }
-                Self::stream_final_marker(tx, &request.id, &mut sequence)?;
-                return Ok((text, None));
             }
             let details = model.transcribe_with_details(&samples, sample_rate, language)?;
             Ok((details.text, details.diagnostics))

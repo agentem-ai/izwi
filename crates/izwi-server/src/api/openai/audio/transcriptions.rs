@@ -86,12 +86,11 @@ pub async fn transcriptions(
     let started = Instant::now();
     let output = state
         .runtime
-        .asr_transcribe_streaming_with_correlation(
+        .asr_transcribe_with_correlation(
             &audio_base64,
             req.model.as_deref(),
             req.language.as_deref(),
             Some(&ctx.correlation_id),
-            |_delta| {},
         )
         .await?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;

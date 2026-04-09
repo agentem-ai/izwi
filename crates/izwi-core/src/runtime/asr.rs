@@ -295,8 +295,20 @@ impl RuntimeService {
         model_id: Option<&str>,
         language: Option<&str>,
     ) -> Result<AsrTranscription> {
+        self.asr_transcribe_with_correlation(audio_base64, model_id, language, None)
+            .await
+    }
+
+    /// Transcribe audio with request correlation metadata.
+    pub async fn asr_transcribe_with_correlation(
+        &self,
+        audio_base64: &str,
+        model_id: Option<&str>,
+        language: Option<&str>,
+        correlation_id: Option<&str>,
+    ) -> Result<AsrTranscription> {
         let variant = resolve_asr_model_variant(model_id);
-        self.asr_transcribe_with_variant(variant, audio_base64, language, None)
+        self.asr_transcribe_with_variant(variant, audio_base64, language, correlation_id)
             .await
     }
 
