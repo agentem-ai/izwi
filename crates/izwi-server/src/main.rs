@@ -1,6 +1,7 @@
 //! Izwi TTS Server - HTTP API for Qwen3-TTS inference
 
 use clap::{Parser, ValueEnum};
+use std::io::Cursor;
 use std::time::Duration;
 use tokio::signal;
 use tracing::{info, warn};
@@ -95,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
     let runtime = RuntimeService::new(config)?;
     let state = AppState::new(runtime, &serve_config)?;
     preload_configured_models(&state).await;
+    warmup_preloaded_asr_models(&state).await;
 
     info!("Runtime service initialized");
 
@@ -146,6 +148,62 @@ fn configured_preload_models() -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn env_bool(key: &str) -> Option<bool> {
+    std::env::var(key).ok().and_then(|raw| {
+        let normalized = raw.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        }
+    })
+}
+
+fn env_u32(key: &str) -> Option<u32> {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+}
+
+fn warmup_preloaded_models_enabled() -> bool {
+    env_bool("IZWI_WARMUP_PRELOADED_MODELS").unwrap_or(true)
+}
+
+fn asr_warmup_duration_ms() -> u32 {
+    env_u32("IZWI_ASR_WARMUP_DURATION_MS")
+        .unwrap_or(800)
+        .clamp(100, 5_000)
+}
+
+fn build_asr_warmup_wav(sample_rate: u32, duration_ms: u32) -> anyhow::Result<Vec<u8>> {
+    let sample_rate = sample_rate.max(8_000);
+    let total_samples = ((sample_rate as u64 * duration_ms as u64) / 1000).max(1) as usize;
+    let freq_hz = 440.0f32;
+    let amplitude = 0.12f32;
+
+    let mut wav_bytes = Vec::new();
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+
+    {
+        let cursor = Cursor::new(&mut wav_bytes);
+        let mut writer = hound::WavWriter::new(cursor, spec)?;
+        for idx in 0..total_samples {
+            let t = idx as f32 / sample_rate as f32;
+            let sample = (2.0 * std::f32::consts::PI * freq_hz * t).sin() * amplitude;
+            let quantized = (sample * i16::MAX as f32) as i16;
+            writer.write_sample(quantized)?;
+        }
+        writer.finalize()?;
+    }
+
+    Ok(wav_bytes)
+}
+
 async fn preload_configured_models(state: &AppState) {
     let configured = configured_preload_models();
     if configured.is_empty() {
@@ -169,6 +227,53 @@ async fn preload_configured_models(state: &AppState) {
             },
             Err(err) => {
                 warn!(model_id = %model_id, "Skipping unknown preload model id: {err}");
+            }
+        }
+    }
+}
+
+async fn warmup_preloaded_asr_models(state: &AppState) {
+    if !warmup_preloaded_models_enabled() {
+        return;
+    }
+
+    let configured = configured_preload_models();
+    if configured.is_empty() {
+        return;
+    }
+
+    let duration_ms = asr_warmup_duration_ms();
+    let warmup_wav = match build_asr_warmup_wav(16_000, duration_ms) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            warn!("Failed to build ASR warmup WAV bytes: {err}");
+            return;
+        }
+    };
+
+    info!(
+        count = configured.len(),
+        duration_ms,
+        "Running ASR warmup pass for preloaded models"
+    );
+
+    for model_id in configured {
+        match parse_model_variant(&model_id) {
+            Ok(variant) => {
+                if !variant.is_asr() {
+                    continue;
+                }
+                match state
+                    .runtime
+                    .asr_transcribe_bytes(&warmup_wav, Some(&model_id), Some("en"))
+                    .await
+                {
+                    Ok(_) => info!(model = %model_id, "ASR warmup completed"),
+                    Err(err) => warn!(model_id = %model_id, "ASR warmup failed: {err}"),
+                }
+            }
+            Err(err) => {
+                warn!(model_id = %model_id, "Skipping unknown warmup model id: {err}");
             }
         }
     }
@@ -252,6 +357,8 @@ mod tests {
         std::env::remove_var("MAX_CONCURRENT_REQUESTS");
         std::env::remove_var("REQUEST_TIMEOUT_SECS");
         std::env::remove_var("IZWI_PRELOAD_MODELS");
+        std::env::remove_var("IZWI_WARMUP_PRELOADED_MODELS");
+        std::env::remove_var("IZWI_ASR_WARMUP_DURATION_MS");
     }
 
     fn parse(args: &[&str]) -> ServerArgs {
@@ -274,6 +381,36 @@ mod tests {
                 "invalid".to_string()
             ]
         );
+        clear_bind_env();
+    }
+
+    #[test]
+    fn asr_warmup_duration_uses_env_and_clamps() {
+        let _guard = env_lock();
+        clear_bind_env();
+
+        std::env::set_var("IZWI_ASR_WARMUP_DURATION_MS", "42");
+        assert_eq!(asr_warmup_duration_ms(), 100);
+
+        std::env::set_var("IZWI_ASR_WARMUP_DURATION_MS", "1200");
+        assert_eq!(asr_warmup_duration_ms(), 1200);
+
+        std::env::set_var("IZWI_ASR_WARMUP_DURATION_MS", "99999");
+        assert_eq!(asr_warmup_duration_ms(), 5000);
+        clear_bind_env();
+    }
+
+    #[test]
+    fn warmup_flag_defaults_enabled_and_honors_env() {
+        let _guard = env_lock();
+        clear_bind_env();
+        assert!(warmup_preloaded_models_enabled());
+
+        std::env::set_var("IZWI_WARMUP_PRELOADED_MODELS", "0");
+        assert!(!warmup_preloaded_models_enabled());
+
+        std::env::set_var("IZWI_WARMUP_PRELOADED_MODELS", "true");
+        assert!(warmup_preloaded_models_enabled());
         clear_bind_env();
     }
 
