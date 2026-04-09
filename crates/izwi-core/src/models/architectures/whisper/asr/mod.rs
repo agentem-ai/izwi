@@ -775,6 +775,7 @@ impl WhisperTurboAsrModel {
         let mut ended_with_eot = false;
         let mut repetition_loop = false;
         let mut streamed_text = String::new();
+        let mut log_probs_buf = Vec::<f32>::new();
 
         for step_idx in 0..max_steps {
             let tokens_t = Tensor::new(prompt.as_slice(), &self.device.device)?.unsqueeze(0)?;
@@ -813,7 +814,7 @@ impl WhisperTurboAsrModel {
                     (self.special.eot, f32::NEG_INFINITY, None)
                 }
             } else {
-                let log_probs_buf = logits_to_log_probs(&logits_vec, temperature);
+                logits_to_log_probs_in_place(&logits_vec, temperature, &mut log_probs_buf);
                 let no_speech_prob = self
                     .special
                     .no_speech
@@ -842,11 +843,12 @@ impl WhisperTurboAsrModel {
             prompt.push(next);
 
             let decoded = self.decode_generated_text(&generated_tokens)?;
-            let trimmed = decoded.trim().to_string();
-            let delta = text_delta(&streamed_text, &trimmed);
+            let trimmed = decoded.trim();
+            let delta = text_delta(&streamed_text, trimmed);
             if !delta.is_empty() {
-                on_delta(delta.as_str());
-                streamed_text = trimmed;
+                on_delta(delta);
+                streamed_text.clear();
+                streamed_text.push_str(trimmed);
             }
 
             if let Some((span, repeats)) = find_suffix_token_repetition(&generated_tokens) {
@@ -1227,16 +1229,20 @@ fn is_better_attempt(
     candidate.text.len() > current_best.text.len()
 }
 
-fn text_delta(previous: &str, current: &str) -> String {
+fn text_delta<'a>(previous: &str, current: &'a str) -> &'a str {
     if let Some(delta) = current.strip_prefix(previous) {
-        return delta.to_string();
+        return delta;
     }
-    let common = previous
-        .chars()
-        .zip(current.chars())
-        .take_while(|(left, right)| left == right)
-        .count();
-    current.chars().skip(common).collect()
+
+    let mut shared_prefix_bytes = 0usize;
+    for (left, right) in previous.chars().zip(current.chars()) {
+        if left != right {
+            break;
+        }
+        shared_prefix_bytes += right.len_utf8();
+    }
+
+    &current[shared_prefix_bytes..]
 }
 
 fn find_suffix_token_repetition(ids: &[u32]) -> Option<(usize, usize)> {
