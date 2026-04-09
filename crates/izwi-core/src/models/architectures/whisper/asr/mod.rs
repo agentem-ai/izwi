@@ -33,6 +33,9 @@ const DEFAULT_MAX_NEW_TOKENS: usize = 448;
 const MAX_AUDIO_SECONDS_HINT: f32 = whisper::CHUNK_LENGTH as f32;
 const DEFAULT_TEMPERATURE_FALLBACK_INC: f32 = 0.2;
 const DEFAULT_MAX_FALLBACK_RETRIES: usize = 1;
+const DEFAULT_ADAPTIVE_MAX_NEW_TOKENS_PER_SECOND: f32 = 12.0;
+const DEFAULT_ADAPTIVE_MIN_NEW_TOKENS: usize = 32;
+const DEFAULT_ADAPTIVE_BUDGET_BUFFER_TOKENS: usize = 8;
 const DEFAULT_LOGPROB_THRESHOLD: f32 = -1.0;
 const DEFAULT_NO_SPEECH_THRESHOLD: f32 = 0.6;
 const REPETITION_GUARD_MIN_SPAN_TOKENS: usize = 8;
@@ -97,6 +100,11 @@ struct WhisperDecodeAttempt {
 struct WhisperRuntimeTuning {
     no_fallback: bool,
     max_fallback_retries: usize,
+    adaptive_decode_budget: bool,
+    max_new_tokens_per_second: f32,
+    min_new_tokens: usize,
+    max_new_tokens_cap: usize,
+    decode_budget_buffer_tokens: usize,
 }
 
 impl WhisperRuntimeTuning {
@@ -105,6 +113,16 @@ impl WhisperRuntimeTuning {
             no_fallback: env_bool("IZWI_WHISPER_NO_FALLBACK").unwrap_or(false),
             max_fallback_retries: env_usize("IZWI_WHISPER_MAX_FALLBACK_RETRIES")
                 .unwrap_or(DEFAULT_MAX_FALLBACK_RETRIES),
+            adaptive_decode_budget: env_bool("IZWI_WHISPER_ADAPTIVE_MAX_NEW_TOKENS")
+                .unwrap_or(true),
+            max_new_tokens_per_second: env_f32("IZWI_WHISPER_MAX_NEW_TOKENS_PER_SECOND")
+                .unwrap_or(DEFAULT_ADAPTIVE_MAX_NEW_TOKENS_PER_SECOND),
+            min_new_tokens: env_usize("IZWI_WHISPER_MIN_NEW_TOKENS")
+                .unwrap_or(DEFAULT_ADAPTIVE_MIN_NEW_TOKENS),
+            max_new_tokens_cap: env_usize("IZWI_WHISPER_MAX_NEW_TOKENS_CAP")
+                .unwrap_or(DEFAULT_MAX_NEW_TOKENS),
+            decode_budget_buffer_tokens: env_usize("IZWI_WHISPER_MAX_NEW_TOKENS_BUFFER")
+                .unwrap_or(DEFAULT_ADAPTIVE_BUDGET_BUFFER_TOKENS),
         }
     }
 }
@@ -303,7 +321,7 @@ impl WhisperTurboAsrModel {
         let max_steps = decode_step_budget(
             prompt.len(),
             self.config.max_target_positions,
-            self.generation.max_length.unwrap_or(DEFAULT_MAX_NEW_TOKENS),
+            self.resolve_max_decode_tokens(audio.len(), sample_rate),
         )?;
         let temperatures = self.decode_temperatures();
         let logprob_threshold = self
@@ -388,6 +406,19 @@ impl WhisperTurboAsrModel {
                 "max_fallback_retries": self.runtime_tuning.max_fallback_retries,
                 "max_attempts": self.runtime_tuning.max_fallback_retries.saturating_add(1),
             },
+            "decode_budget": {
+                "adaptive_enabled": self.runtime_tuning.adaptive_decode_budget,
+                "max_new_tokens_per_second": self.runtime_tuning.max_new_tokens_per_second,
+                "min_new_tokens": self.runtime_tuning.min_new_tokens,
+                "max_new_tokens_cap": self.runtime_tuning.max_new_tokens_cap,
+                "buffer_tokens": self.runtime_tuning.decode_budget_buffer_tokens,
+                "resolved_max_new_tokens": self.resolve_max_decode_tokens(audio.len(), sample_rate),
+                "audio_seconds": if sample_rate > 0 {
+                    audio.len() as f32 / sample_rate as f32
+                } else {
+                    0.0
+                },
+            },
             "selected_temperature": selected_temperature,
             "language_hint_used": language_hint_used,
             "decode": {
@@ -455,7 +486,7 @@ impl WhisperTurboAsrModel {
         let max_steps = decode_step_budget(
             prompt.len(),
             self.config.max_target_positions,
-            self.generation.max_length.unwrap_or(DEFAULT_MAX_NEW_TOKENS),
+            self.resolve_max_decode_tokens(audio.len(), sample_rate),
         )?;
         let temperatures = self.decode_temperatures();
         let logprob_threshold = self
@@ -655,6 +686,23 @@ impl WhisperTurboAsrModel {
             self.runtime_tuning.max_fallback_retries,
         )
     }
+
+    fn resolve_max_decode_tokens(&self, audio_len_samples: usize, sample_rate: u32) -> usize {
+        let configured_max = self.generation.max_length.unwrap_or(DEFAULT_MAX_NEW_TOKENS);
+        let cap = configured_max.min(self.runtime_tuning.max_new_tokens_cap.max(1));
+        if !self.runtime_tuning.adaptive_decode_budget || sample_rate == 0 {
+            return cap;
+        }
+
+        let audio_secs = audio_len_samples as f32 / sample_rate as f32;
+        adaptive_decode_budget(
+            audio_secs,
+            cap,
+            self.runtime_tuning.max_new_tokens_per_second,
+            self.runtime_tuning.min_new_tokens,
+            self.runtime_tuning.decode_budget_buffer_tokens,
+        )
+    }
 }
 
 fn capped_decode_temperatures(
@@ -687,6 +735,25 @@ fn capped_decode_temperatures(
         temperatures.truncate(max_attempts);
     }
     temperatures
+}
+
+fn adaptive_decode_budget(
+    audio_secs: f32,
+    configured_cap: usize,
+    tokens_per_second: f32,
+    min_new_tokens: usize,
+    buffer_tokens: usize,
+) -> usize {
+    if configured_cap == 0 {
+        return 1;
+    }
+    let tps = tokens_per_second.max(0.0);
+    let scaled = (audio_secs.max(0.0) * tps).ceil() as usize;
+    let proposed = scaled
+        .saturating_add(buffer_tokens)
+        .max(min_new_tokens)
+        .max(1);
+    proposed.min(configured_cap.max(1))
 }
 
 impl WhisperTurboAsrModel {
@@ -1057,6 +1124,13 @@ fn env_usize(key: &str) -> Option<usize> {
         .and_then(|raw| raw.trim().parse::<usize>().ok())
 }
 
+fn env_f32(key: &str) -> Option<f32> {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+}
+
 fn mask_token(logits: &mut [f32], token_id: u32) {
     let idx = token_id as usize;
     if idx < logits.len() {
@@ -1365,6 +1439,7 @@ fn decode_step_budget(
 #[cfg(test)]
 mod tests {
     use super::{
+        adaptive_decode_budget,
         capped_decode_temperatures,
         decode_step_budget, find_suffix_token_repetition, logits_to_log_probs,
         logits_to_log_probs_in_place,
@@ -1434,6 +1509,21 @@ mod tests {
     fn capped_decode_temperatures_respects_no_fallback() {
         let temps = capped_decode_temperatures(0.4, 0.2, true, 8);
         assert_eq!(temps, vec![0.4]);
+    }
+
+    #[test]
+    fn adaptive_decode_budget_scales_with_audio_duration() {
+        let budget = adaptive_decode_budget(3.6, 448, 12.0, 32, 8);
+        assert_eq!(budget, 52);
+    }
+
+    #[test]
+    fn adaptive_decode_budget_respects_cap_and_minimum() {
+        let budget = adaptive_decode_budget(0.4, 40, 2.0, 32, 8);
+        assert_eq!(budget, 32);
+
+        let capped = adaptive_decode_budget(30.0, 120, 12.0, 32, 8);
+        assert_eq!(capped, 120);
     }
 }
 
