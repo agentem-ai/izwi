@@ -302,6 +302,7 @@ impl WhisperTurboAsrModel {
         let mut attempted_temperatures = Vec::with_capacity(temperatures.len());
         let mut best_attempt: Option<WhisperDecodeAttempt> = None;
         let mut selected_temperature = temperatures.first().copied().unwrap_or(0.0);
+        let mut best_temperature = selected_temperature;
         for (idx, temperature) in temperatures.iter().copied().enumerate() {
             attempted_temperatures.push(temperature);
             let attempt = self.decode_attempt(
@@ -325,8 +326,15 @@ impl WhisperTurboAsrModel {
             let should_retry = !is_last_temperature
                 && should_retry_decode(&attempt, logprob_threshold, compression_ratio_threshold);
             if !should_retry {
-                best_attempt = Some(attempt);
-                selected_temperature = temperature;
+                if best_attempt
+                    .as_ref()
+                    .map(|best| is_better_attempt(&attempt, best))
+                    .unwrap_or(true)
+                {
+                    best_attempt = Some(attempt);
+                    best_temperature = temperature;
+                }
+                selected_temperature = best_temperature;
                 break;
             }
 
@@ -336,6 +344,7 @@ impl WhisperTurboAsrModel {
                 .unwrap_or(true)
             {
                 best_attempt = Some(attempt);
+                best_temperature = temperature;
             }
         }
         let decode_ms = decode_started.elapsed().as_secs_f64() * 1000.0;
@@ -540,7 +549,6 @@ impl WhisperTurboAsrModel {
         let deterministic = temperature <= 0.0;
         let mut prompt = prompt_prefix.to_vec();
         let mut generated_tokens = Vec::<u32>::new();
-        let mut log_probs_buf = Vec::<f32>::new();
         let mut sum_logprobs = 0.0f64;
         let mut sampled_token_count = 0usize;
         let mut no_speech_prob: Option<f32> = None;
@@ -562,23 +570,29 @@ impl WhisperTurboAsrModel {
             let mut logits_vec = logits.to_vec1::<f32>()?;
             self.apply_decode_constraints(&mut logits_vec, step_idx == 0);
             let (next, next_logprob, step_no_speech_prob) = if deterministic {
-                if let Some(logsumexp) = scaled_logsumexp(&logits_vec, 1.0) {
-                    let (next, best_scaled_logit) =
-                        best_finite_logit(&logits_vec, self.special.eot);
-                    let next_logprob = if best_scaled_logit.is_finite() {
-                        best_scaled_logit - logsumexp
+                let inv_temperature = 1.0f32 / temperature.max(1e-6);
+                if let Some(logsumexp) = scaled_logsumexp(&logits_vec, inv_temperature) {
+                    let (next, best_logit) = best_finite_logit(&logits_vec, self.special.eot);
+                    let next_scaled_logit = best_logit * inv_temperature;
+                    let next_logprob = if next_scaled_logit.is_finite() {
+                        next_scaled_logit - logsumexp
                     } else {
                         f32::NEG_INFINITY
                     };
                     let no_speech_prob = self.special.no_speech.and_then(|token_id| {
-                        probability_for_token_from_logits(&logits_vec, token_id, logsumexp, 1.0)
+                        probability_for_token_from_logits(
+                            &logits_vec,
+                            token_id,
+                            logsumexp,
+                            inv_temperature,
+                        )
                     });
                     (next, next_logprob, no_speech_prob)
                 } else {
                     (self.special.eot, f32::NEG_INFINITY, None)
                 }
             } else {
-                logits_to_log_probs_in_place(&logits_vec, temperature, &mut log_probs_buf);
+                let log_probs_buf = logits_to_log_probs(&logits_vec, temperature);
                 let no_speech_prob = self
                     .special
                     .no_speech
