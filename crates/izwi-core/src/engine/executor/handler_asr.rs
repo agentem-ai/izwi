@@ -1,5 +1,6 @@
 use crate::catalog::ModelFamily;
 use crate::error::{Error, Result};
+use std::time::Instant;
 
 use super::super::request::EngineCoreRequest;
 use super::super::scheduler::ScheduledRequest;
@@ -96,6 +97,7 @@ impl NativeExecutor {
                                 tokens_generated: (samples_len / 256).max(1),
                                 finished: true,
                                 phase_timing_override: None,
+                                asr_diagnostics: None,
                                 error: None,
                             });
                         }
@@ -201,16 +203,19 @@ impl NativeExecutor {
                         tokens_generated: total_tokens_generated,
                         finished,
                         phase_timing_override: None,
+                        asr_diagnostics: None,
                         error: None,
                     });
                 }
             }
         }
 
+        let audio_decode_started = Instant::now();
         let (samples, sample_rate) = decode_request_audio_with_rate(request)?;
+        let audio_decode_ms = audio_decode_started.elapsed().as_secs_f64() * 1000.0;
         let samples_len = samples.len();
 
-        let text = Self::run_blocking(|| {
+        let (text, asr_diagnostics) = Self::run_blocking(|| {
             let mut sequence = 0usize;
             if matches!(family, ModelFamily::Voxtral) {
                 let model = self.with_registry(|registry| {
@@ -223,7 +228,7 @@ impl NativeExecutor {
 
                 let (chunk_cfg, chunk_plan) = Self::asr_chunk_plan(&samples, sample_rate, None);
                 if chunk_plan.len() > 1 {
-                    return Self::transcribe_with_chunk_plan(
+                    let text = Self::transcribe_with_chunk_plan(
                         &request.id,
                         stream_tx.as_ref(),
                         &mut sequence,
@@ -235,7 +240,8 @@ impl NativeExecutor {
                             let mut sink = |_delta: &str| {};
                             model.transcribe_with_callback(chunk_audio, sr, language, &mut sink)
                         },
-                    );
+                    )?;
+                    return Ok((text, None));
                 }
 
                 if let Some(tx) = stream_tx.as_ref() {
@@ -259,9 +265,9 @@ impl NativeExecutor {
                         return Err(err);
                     }
                     Self::stream_final_marker(tx, &request.id, &mut sequence)?;
-                    return Ok(text);
+                    return Ok((text, None));
                 }
-                return model.transcribe(&samples, sample_rate, language);
+                return Ok((model.transcribe(&samples, sample_rate, language)?, None));
             }
 
             let model = self.with_registry(|registry| {
@@ -273,7 +279,7 @@ impl NativeExecutor {
             let (chunk_cfg, chunk_plan) =
                 Self::asr_chunk_plan(&samples, sample_rate, model.max_audio_seconds_hint());
             if chunk_plan.len() > 1 {
-                return Self::transcribe_with_chunk_plan(
+                let text = Self::transcribe_with_chunk_plan(
                     &request.id,
                     stream_tx.as_ref(),
                     &mut sequence,
@@ -285,7 +291,8 @@ impl NativeExecutor {
                         let mut sink = |_delta: &str| {};
                         model.transcribe_with_callback(chunk_audio, sr, language, &mut sink)
                     },
-                );
+                )?;
+                return Ok((text, None));
             }
 
             if let Some(tx) = stream_tx.as_ref() {
@@ -305,11 +312,12 @@ impl NativeExecutor {
                     return Err(err);
                 }
                 Self::stream_final_marker(tx, &request.id, &mut sequence)?;
-                return Ok(text);
+                return Ok((text, None));
             }
-            let mut sink = |_delta: &str| {};
-            model.transcribe_with_callback(&samples, sample_rate, language, &mut sink)
+            let details = model.transcribe_with_details(&samples, sample_rate, language)?;
+            Ok((details.text, details.diagnostics))
         })?;
+        let asr_diagnostics = Self::with_audio_decode_timing(asr_diagnostics, audio_decode_ms);
 
         Ok(ExecutorOutput {
             request_id: request.id.clone(),
@@ -324,7 +332,39 @@ impl NativeExecutor {
             tokens_generated: (samples_len / 256).max(1),
             finished: true,
             phase_timing_override: None,
+            asr_diagnostics,
             error: None,
         })
+    }
+
+    fn with_audio_decode_timing(
+        diagnostics: Option<serde_json::Value>,
+        audio_decode_ms: f64,
+    ) -> Option<serde_json::Value> {
+        let mut payload = diagnostics.unwrap_or_else(|| serde_json::json!({}));
+        if !payload.is_object() {
+            payload = serde_json::json!({
+                "model_diagnostics": payload
+            });
+        }
+
+        if let Some(root) = payload.as_object_mut() {
+            let timings = root
+                .entry("timings_ms")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(timings_obj) = timings.as_object_mut() {
+                timings_obj.insert(
+                    "audio_decode".to_string(),
+                    serde_json::json!(audio_decode_ms),
+                );
+            } else {
+                root.insert(
+                    "timings_ms".to_string(),
+                    serde_json::json!({ "audio_decode": audio_decode_ms }),
+                );
+            }
+        }
+
+        Some(payload)
     }
 }

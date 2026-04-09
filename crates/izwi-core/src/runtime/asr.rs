@@ -48,6 +48,7 @@ impl RuntimeService {
             } else {
                 0.0
             },
+            asr_diagnostics: None,
         })
     }
 
@@ -127,6 +128,7 @@ impl RuntimeService {
             text,
             language: language.map(|s| s.to_string()),
             duration_secs: output.audio.duration_secs,
+            asr_diagnostics: output.asr_diagnostics,
         })
     }
 
@@ -173,6 +175,7 @@ impl RuntimeService {
             text,
             language: language.map(|s| s.to_string()),
             duration_secs: output.audio.duration_secs,
+            asr_diagnostics: output.asr_diagnostics,
         })
     }
 
@@ -204,6 +207,7 @@ impl RuntimeService {
             text,
             language: language.map(|s| s.to_string()),
             duration_secs: output.audio.duration_secs,
+            asr_diagnostics: output.asr_diagnostics,
         })
     }
 
@@ -250,6 +254,7 @@ impl RuntimeService {
             text,
             language: language.map(|s| s.to_string()),
             duration_secs: output.audio.duration_secs,
+            asr_diagnostics: output.asr_diagnostics,
         })
     }
 

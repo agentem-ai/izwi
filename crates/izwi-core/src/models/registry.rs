@@ -398,6 +398,7 @@ pub struct NativeAsrDecodeStep {
 pub struct NativeAsrTranscription {
     pub text: String,
     pub language: Option<String>,
+    pub diagnostics: Option<serde_json::Value>,
 }
 
 impl NativeAsrModel {
@@ -441,16 +442,28 @@ impl NativeAsrModel {
             Self::Qwen3(model) => {
                 let Qwen3AsrTranscriptionOutput { text, language } =
                     model.transcribe_with_details(audio, sample_rate, language)?;
-                Ok(NativeAsrTranscription { text, language })
+                Ok(NativeAsrTranscription {
+                    text,
+                    language,
+                    diagnostics: None,
+                })
             }
             Self::Parakeet(model) => Ok(NativeAsrTranscription {
                 text: model.transcribe(audio, sample_rate, language)?,
                 language: language.map(|value| value.to_string()),
+                diagnostics: None,
             }),
             Self::WhisperTurbo(model) => {
-                let WhisperAsrTranscriptionOutput { text, language } =
-                    model.transcribe_with_details(audio, sample_rate, language)?;
-                Ok(NativeAsrTranscription { text, language })
+                let WhisperAsrTranscriptionOutput {
+                    text,
+                    language,
+                    diagnostics,
+                } = model.transcribe_with_details(audio, sample_rate, language)?;
+                Ok(NativeAsrTranscription {
+                    text,
+                    language,
+                    diagnostics,
+                })
             }
         }
     }
@@ -615,6 +628,7 @@ impl NativeAudioChatModel {
                 Ok(NativeAsrTranscription {
                     text: output.text,
                     language: None,
+                    diagnostics: None,
                 })
             }
         }

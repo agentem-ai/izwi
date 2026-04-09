@@ -237,6 +237,7 @@ impl EngineCore {
             tokens_generated,
             finished,
             phase_timing_override,
+            asr_diagnostics,
             error,
         } = current;
 
@@ -251,6 +252,7 @@ impl EngineCore {
         merged.tokens_generated = merged.tokens_generated.saturating_add(tokens_generated);
         merged.finished |= finished;
         merged.phase_timing_override = phase_timing_override.or(merged.phase_timing_override);
+        merged.asr_diagnostics = asr_diagnostics.or(merged.asr_diagnostics);
         if error.is_some() {
             merged.error = error;
         }

@@ -185,6 +185,7 @@ impl NativeExecutor {
                 tokens_generated: output.tokens_generated.max(1),
                 finished: true,
                 phase_timing_override,
+                asr_diagnostics: None,
                 error: None,
             });
         }
@@ -291,6 +292,7 @@ impl NativeExecutor {
             tokens_generated: total_tokens_generated,
             finished,
             phase_timing_override: None,
+            asr_diagnostics: None,
             error: None,
         })
     }
