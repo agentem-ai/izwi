@@ -537,8 +537,10 @@ impl WhisperTurboAsrModel {
         temperature: f32,
     ) -> Result<WhisperDecodeAttempt> {
         let mut rng = rand::thread_rng();
+        let deterministic = temperature <= 0.0;
         let mut prompt = prompt_prefix.to_vec();
         let mut generated_tokens = Vec::<u32>::new();
+        let mut log_probs_buf = Vec::<f32>::new();
         let mut sum_logprobs = 0.0f64;
         let mut sampled_token_count = 0usize;
         let mut no_speech_prob: Option<f32> = None;
@@ -559,17 +561,40 @@ impl WhisperTurboAsrModel {
 
             let mut logits_vec = logits.to_vec1::<f32>()?;
             self.apply_decode_constraints(&mut logits_vec, step_idx == 0);
-            let log_probs = logits_to_log_probs(&logits_vec, temperature);
-
-            if step_idx == 0 {
-                no_speech_prob = self
+            let (next, next_logprob, step_no_speech_prob) = if deterministic {
+                if let Some(logsumexp) = scaled_logsumexp(&logits_vec, 1.0) {
+                    let (next, best_scaled_logit) =
+                        best_finite_logit(&logits_vec, self.special.eot);
+                    let next_logprob = if best_scaled_logit.is_finite() {
+                        best_scaled_logit - logsumexp
+                    } else {
+                        f32::NEG_INFINITY
+                    };
+                    let no_speech_prob = self.special.no_speech.and_then(|token_id| {
+                        probability_for_token_from_logits(&logits_vec, token_id, logsumexp, 1.0)
+                    });
+                    (next, next_logprob, no_speech_prob)
+                } else {
+                    (self.special.eot, f32::NEG_INFINITY, None)
+                }
+            } else {
+                logits_to_log_probs_in_place(&logits_vec, temperature, &mut log_probs_buf);
+                let no_speech_prob = self
                     .special
                     .no_speech
-                    .and_then(|token_id| probability_for_token(&log_probs, token_id));
-            }
+                    .and_then(|token_id| probability_for_token(&log_probs_buf, token_id));
+                let (next, next_logprob) = sample_token_from_log_probs(
+                    &log_probs_buf,
+                    temperature,
+                    self.special.eot,
+                    &mut rng,
+                );
+                (next, next_logprob, no_speech_prob)
+            };
 
-            let (next, next_logprob) =
-                sample_token_from_log_probs(&log_probs, temperature, self.special.eot, &mut rng);
+            if step_idx == 0 {
+                no_speech_prob = step_no_speech_prob;
+            }
             sum_logprobs += next_logprob as f64;
             sampled_token_count = sampled_token_count.saturating_add(1);
 
@@ -730,25 +755,46 @@ fn mask_token(logits: &mut [f32], token_id: u32) {
 }
 
 fn logits_to_log_probs(logits: &[f32], temperature: f32) -> Vec<f32> {
+    let mut out = Vec::with_capacity(logits.len());
+    logits_to_log_probs_in_place(logits, temperature, &mut out);
+    out
+}
+
+fn logits_to_log_probs_in_place(logits: &[f32], temperature: f32, out: &mut Vec<f32>) {
     let inv_temperature = if temperature > 0.0 {
         1.0 / temperature
     } else {
         1.0
     };
 
-    let mut max_logit = f32::NEG_INFINITY;
+    out.clear();
+    out.resize(logits.len(), f32::NEG_INFINITY);
+
+    let Some(logsumexp) = scaled_logsumexp(logits, inv_temperature) else {
+        return;
+    };
+
+    for (idx, logit) in logits.iter().enumerate() {
+        if logit.is_finite() {
+            out[idx] = (*logit * inv_temperature) - logsumexp;
+        }
+    }
+}
+
+fn scaled_logsumexp(logits: &[f32], inv_temperature: f32) -> Option<f32> {
+    let mut max_scaled = f32::NEG_INFINITY;
     for logit in logits {
         if !logit.is_finite() {
             continue;
         }
         let scaled = *logit * inv_temperature;
-        if scaled > max_logit {
-            max_logit = scaled;
+        if scaled > max_scaled {
+            max_scaled = scaled;
         }
     }
 
-    if !max_logit.is_finite() {
-        return vec![f32::NEG_INFINITY; logits.len()];
+    if !max_scaled.is_finite() {
+        return None;
     }
 
     let mut sum_exp = 0.0f64;
@@ -757,24 +803,46 @@ fn logits_to_log_probs(logits: &[f32], temperature: f32) -> Vec<f32> {
             continue;
         }
         let scaled = *logit * inv_temperature;
-        sum_exp += (scaled - max_logit).exp() as f64;
+        sum_exp += (scaled - max_scaled).exp() as f64;
     }
 
     if sum_exp <= 0.0 {
-        return vec![f32::NEG_INFINITY; logits.len()];
+        return None;
     }
 
-    let logsumexp = max_logit + (sum_exp as f32).ln();
-    logits
-        .iter()
-        .map(|logit| {
-            if !logit.is_finite() {
-                f32::NEG_INFINITY
-            } else {
-                (*logit * inv_temperature) - logsumexp
-            }
-        })
-        .collect()
+    Some(max_scaled + (sum_exp as f32).ln())
+}
+
+fn best_finite_logit(logits: &[f32], fallback_token: u32) -> (u32, f32) {
+    let mut best_idx = fallback_token as usize;
+    let mut best_logit = f32::NEG_INFINITY;
+    for (idx, logit) in logits.iter().enumerate() {
+        if *logit > best_logit {
+            best_idx = idx;
+            best_logit = *logit;
+        }
+    }
+    if !best_logit.is_finite() {
+        return (fallback_token, f32::NEG_INFINITY);
+    }
+    (best_idx as u32, best_logit)
+}
+
+fn probability_for_token_from_logits(
+    logits: &[f32],
+    token_id: u32,
+    logsumexp: f32,
+    inv_temperature: f32,
+) -> Option<f32> {
+    let idx = token_id as usize;
+    if idx >= logits.len() {
+        return None;
+    }
+    let logit = logits[idx];
+    if !logit.is_finite() {
+        return None;
+    }
+    Some((logit * inv_temperature - logsumexp).exp())
 }
 
 fn probability_for_token(log_probs: &[f32], token_id: u32) -> Option<f32> {
@@ -982,7 +1050,10 @@ fn decode_step_budget(
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_step_budget, find_suffix_token_repetition};
+    use super::{
+        decode_step_budget, find_suffix_token_repetition, logits_to_log_probs,
+        logits_to_log_probs_in_place,
+    };
 
     #[test]
     fn decode_step_budget_clamps_generation_to_remaining_context() {
@@ -1009,6 +1080,22 @@ mod tests {
     fn ignores_short_or_non_repeating_suffixes() {
         let ids: Vec<u32> = (1..=16).collect();
         assert_eq!(find_suffix_token_repetition(&ids), None);
+    }
+
+    #[test]
+    fn in_place_log_probs_match_allocating_variant() {
+        let logits = vec![0.25f32, 0.75, -1.0, f32::NEG_INFINITY, 2.0];
+        let expected = logits_to_log_probs(&logits, 0.7);
+        let mut out = Vec::new();
+        logits_to_log_probs_in_place(&logits, 0.7, &mut out);
+        assert_eq!(expected.len(), out.len());
+        for (left, right) in expected.iter().zip(out.iter()) {
+            if left.is_finite() || right.is_finite() {
+                assert!((left - right).abs() < 1e-5, "{left} != {right}");
+            } else {
+                assert!(!left.is_finite() && !right.is_finite());
+            }
+        }
     }
 }
 

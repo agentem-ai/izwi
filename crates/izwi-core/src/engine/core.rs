@@ -866,6 +866,7 @@ mod tests {
                     tokens_generated: usize::from(!entry.is_prefill),
                     finished: false,
                     phase_timing_override: None,
+                    asr_diagnostics: None,
                     error: None,
                 })
                 .collect()
@@ -937,6 +938,7 @@ mod tests {
                     tokens_generated: 0,
                     finished: false,
                     phase_timing_override: None,
+                    asr_diagnostics: None,
                     error: None,
                 })
                 .collect())
@@ -966,6 +968,7 @@ mod tests {
                     tokens_generated: entry.num_tokens.max(1),
                     finished: false,
                     phase_timing_override: None,
+                    asr_diagnostics: None,
                     error: None,
                 })
                 .collect())
@@ -1003,6 +1006,7 @@ mod tests {
                     tokens_generated: 1,
                     finished: true,
                     phase_timing_override: None,
+                    asr_diagnostics: None,
                     error: None,
                 })
                 .collect())
@@ -1135,6 +1139,7 @@ mod tests {
             tokens_generated: 1,
             finished: false,
             phase_timing_override: None,
+            asr_diagnostics: None,
             error: None,
         };
         let second = ExecutorOutput {
@@ -1146,6 +1151,7 @@ mod tests {
             tokens_generated: 1,
             finished: true,
             phase_timing_override: None,
+            asr_diagnostics: None,
             error: None,
         };
 
