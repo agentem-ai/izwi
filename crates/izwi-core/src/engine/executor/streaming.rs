@@ -37,6 +37,22 @@ impl NativeExecutor {
         Ok(())
     }
 
+    pub(super) fn stream_text_per_character(
+        tx: &mpsc::Sender<StreamingOutput>,
+        request_id: &str,
+        sequence: &mut usize,
+        text: &str,
+    ) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+
+        for ch in text.chars() {
+            Self::stream_text(tx, request_id, sequence, ch.to_string())?;
+        }
+        Ok(())
+    }
+
     pub(super) fn stream_audio(
         tx: &mpsc::Sender<StreamingOutput>,
         request_id: &str,
@@ -76,5 +92,37 @@ fn stream_send_error(err: mpsc::error::TrySendError<StreamingOutput>) -> Error {
         mpsc::error::TrySendError::Full(_) => Error::InferenceError(
             "Streaming output backpressure exceeded queue capacity".to_string(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use crate::engine::executor::NativeExecutor;
+
+    #[test]
+    fn stream_text_per_character_emits_one_delta_per_character() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut sequence = 0usize;
+
+        NativeExecutor::stream_text_per_character(&tx, "req-1", &mut sequence, "abé")
+            .expect("stream should succeed");
+
+        assert_eq!(sequence, 3);
+
+        let first = rx.try_recv().expect("missing first chunk");
+        assert_eq!(first.sequence, 0);
+        assert_eq!(first.text.as_deref(), Some("a"));
+
+        let second = rx.try_recv().expect("missing second chunk");
+        assert_eq!(second.sequence, 1);
+        assert_eq!(second.text.as_deref(), Some("b"));
+
+        let third = rx.try_recv().expect("missing third chunk");
+        assert_eq!(third.sequence, 2);
+        assert_eq!(third.text.as_deref(), Some("é"));
+
+        assert!(rx.try_recv().is_err());
     }
 }
