@@ -94,7 +94,10 @@ impl Engine {
             // Unified speech-to-speech emits bursty interleaved text and audio
             // chunks, so it needs a deeper queue than plain TTS.
             TaskType::SpeechToSpeech => 64usize,
-            TaskType::ASR | TaskType::Chat => 64usize,
+            // ASR can emit per-character deltas in streaming mode.
+            // Use a deeper default queue to absorb bursty decode emission.
+            TaskType::ASR => 4096usize,
+            TaskType::Chat => 64usize,
         };
 
         let task_override = match request.task_type {
@@ -347,5 +350,11 @@ mod tests {
             Engine::streaming_queue_capacity(&speech_to_speech_request),
             64
         );
+    }
+
+    #[test]
+    fn asr_streaming_queue_default_handles_character_level_deltas() {
+        let asr_request = EngineCoreRequest::asr("audio");
+        assert_eq!(Engine::streaming_queue_capacity(&asr_request), 4096);
     }
 }
