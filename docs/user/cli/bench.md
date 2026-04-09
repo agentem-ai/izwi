@@ -91,12 +91,13 @@ izwi bench asr [OPTIONS]
 | `-m, --model <MODEL>` | Model to benchmark | `parakeet-tdt-0.6b-v3` |
 | `-i, --iterations <N>` | Number of iterations | `10` |
 | `-f, --file <PATH>` | Audio file to use | Built-in test audio |
+| `-l, --language <LANG>` | Optional ASR language hint (e.g., `en`) | Auto-detect |
 | `--warmup` | Enable warmup iteration | — |
 
 ### Example
 
 ```bash
-izwi bench asr --model Parakeet-TDT-0.6B-v3 --file test.wav --iterations 20
+izwi bench asr --model Whisper-Large-v3-Turbo --file test.wav --language en --iterations 20 --warmup
 ```
 
 ---
