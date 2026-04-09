@@ -105,6 +105,8 @@ struct WhisperRuntimeTuning {
     min_new_tokens: usize,
     max_new_tokens_cap: usize,
     decode_budget_buffer_tokens: usize,
+    default_language: Option<String>,
+    reuse_detected_language: bool,
 }
 
 impl WhisperRuntimeTuning {
@@ -123,8 +125,19 @@ impl WhisperRuntimeTuning {
                 .unwrap_or(DEFAULT_MAX_NEW_TOKENS),
             decode_budget_buffer_tokens: env_usize("IZWI_WHISPER_MAX_NEW_TOKENS_BUFFER")
                 .unwrap_or(DEFAULT_ADAPTIVE_BUDGET_BUFFER_TOKENS),
+            default_language: env_nonempty_string("IZWI_WHISPER_DEFAULT_LANGUAGE"),
+            reuse_detected_language: env_bool("IZWI_WHISPER_REUSE_DETECTED_LANGUAGE")
+                .unwrap_or(true),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct WhisperLanguageResolution {
+    resolved: Option<(u32, String)>,
+    hint_used: bool,
+    detect_ms: f64,
+    strategy: &'static str,
 }
 
 pub struct WhisperTurboAsrModel {
@@ -140,6 +153,7 @@ pub struct WhisperTurboAsrModel {
     language_token_ids: Vec<u32>,
     token_id_to_language_code: HashMap<u32, String>,
     runtime_tuning: WhisperRuntimeTuning,
+    cached_detected_language: Mutex<Option<(u32, String)>>,
 }
 
 impl WhisperTurboAsrModel {
@@ -230,6 +244,7 @@ impl WhisperTurboAsrModel {
             language_token_ids,
             token_id_to_language_code,
             runtime_tuning,
+            cached_detected_language: Mutex::new(None),
         })
     }
 
@@ -294,19 +309,11 @@ impl WhisperTurboAsrModel {
         let audio_features = whisper.encoder.forward(&mel, true)?;
         let encoder_forward_ms = encoder_started.elapsed().as_secs_f64() * 1000.0;
 
-        let mut language_hint_used = language.is_some();
-        let mut language_detect_ms = 0.0f64;
-        let mut resolved_language = if let Some(language) = language {
-            self.resolve_language_token(language)?
-        } else {
-            None
-        };
-        if resolved_language.is_none() {
-            language_hint_used = false;
-            let detect_started = Instant::now();
-            resolved_language = self.detect_language_token(&mut whisper, &audio_features)?;
-            language_detect_ms = detect_started.elapsed().as_secs_f64() * 1000.0;
-        }
+        let language_resolution =
+            self.resolve_request_language(&mut whisper, &audio_features, language)?;
+        let resolved_language = language_resolution.resolved.clone();
+        let language_hint_used = language_resolution.hint_used;
+        let language_detect_ms = language_resolution.detect_ms;
 
         let mut prompt = Vec::with_capacity(4);
         prompt.push(self.special.sot);
@@ -419,6 +426,11 @@ impl WhisperTurboAsrModel {
                     0.0
                 },
             },
+            "language_resolution": {
+                "strategy": language_resolution.strategy,
+                "default_language": self.runtime_tuning.default_language,
+                "reuse_detected_language": self.runtime_tuning.reuse_detected_language,
+            },
             "selected_temperature": selected_temperature,
             "language_hint_used": language_hint_used,
             "decode": {
@@ -464,14 +476,9 @@ impl WhisperTurboAsrModel {
         whisper.reset_kv_cache();
         let audio_features = whisper.encoder.forward(&mel, true)?;
 
-        let mut resolved_language = if let Some(language) = language {
-            self.resolve_language_token(language)?
-        } else {
-            None
-        };
-        if resolved_language.is_none() {
-            resolved_language = self.detect_language_token(&mut whisper, &audio_features)?;
-        }
+        let language_resolution =
+            self.resolve_request_language(&mut whisper, &audio_features, language)?;
+        let resolved_language = language_resolution.resolved;
 
         let mut prompt = Vec::with_capacity(4);
         prompt.push(self.special.sot);
@@ -702,6 +709,79 @@ impl WhisperTurboAsrModel {
             self.runtime_tuning.min_new_tokens,
             self.runtime_tuning.decode_budget_buffer_tokens,
         )
+    }
+
+    fn resolve_request_language(
+        &self,
+        whisper: &mut Whisper,
+        audio_features: &Tensor,
+        language: Option<&str>,
+    ) -> Result<WhisperLanguageResolution> {
+        if let Some(language) = language {
+            let resolved = self.resolve_language_token(language)?;
+            if let Some((token, code)) = resolved.as_ref() {
+                self.update_cached_language(*token, code.clone());
+            }
+            return Ok(WhisperLanguageResolution {
+                resolved,
+                hint_used: true,
+                detect_ms: 0.0,
+                strategy: "hint",
+            });
+        }
+
+        if let Some(default_language) = self.runtime_tuning.default_language.as_deref() {
+            let resolved = self.resolve_language_token(default_language)?;
+            if let Some((token, code)) = resolved.as_ref() {
+                self.update_cached_language(*token, code.clone());
+            }
+            return Ok(WhisperLanguageResolution {
+                resolved,
+                hint_used: false,
+                detect_ms: 0.0,
+                strategy: "default",
+            });
+        }
+
+        if self.runtime_tuning.reuse_detected_language {
+            if let Some(cached) = self.cached_language() {
+                return Ok(WhisperLanguageResolution {
+                    resolved: Some(cached),
+                    hint_used: false,
+                    detect_ms: 0.0,
+                    strategy: "cached",
+                });
+            }
+        }
+
+        let detect_started = Instant::now();
+        let resolved = self.detect_language_token(whisper, audio_features)?;
+        let detect_ms = detect_started.elapsed().as_secs_f64() * 1000.0;
+        if let Some((token, code)) = resolved.as_ref() {
+            self.update_cached_language(*token, code.clone());
+        }
+        Ok(WhisperLanguageResolution {
+            resolved,
+            hint_used: false,
+            detect_ms,
+            strategy: "detected",
+        })
+    }
+
+    fn cached_language(&self) -> Option<(u32, String)> {
+        self.cached_detected_language
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned())
+    }
+
+    fn update_cached_language(&self, token: u32, code: String) {
+        if !self.runtime_tuning.reuse_detected_language {
+            return;
+        }
+        if let Ok(mut guard) = self.cached_detected_language.lock() {
+            *guard = Some((token, code));
+        }
     }
 }
 
@@ -1129,6 +1209,17 @@ fn env_f32(key: &str) -> Option<f32> {
         .ok()
         .and_then(|raw| raw.trim().parse::<f32>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+fn env_nonempty_string(key: &str) -> Option<String> {
+    std::env::var(key).ok().and_then(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 fn mask_token(logits: &mut [f32], token_id: u32) {
