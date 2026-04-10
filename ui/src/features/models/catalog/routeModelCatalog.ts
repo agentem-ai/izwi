@@ -41,7 +41,7 @@ export const DIARIZATION_PREFERRED_MODELS = [
 ] as const;
 
 export const DIARIZATION_PREFERRED_ASR_MODELS = [
-  "Parakeet-TDT-0.6B-v3",
+  "Whisper-Large-v3-Turbo",
 ] as const;
 
 export const DIARIZATION_PREFERRED_ALIGNER_MODELS = [
