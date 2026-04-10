@@ -504,7 +504,7 @@ describe("DiarizationPage routes", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /New diarization/i }));
-    expect(await screen.findByText("Needs action")).toBeInTheDocument();
+    expect(await screen.findByText("NOT LOADED")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Unload Models" }),
     ).not.toBeInTheDocument();
@@ -526,7 +526,7 @@ describe("DiarizationPage routes", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /New diarization/i }));
-    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    expect(await screen.findByText("READY")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Load Models" }),
     ).not.toBeInTheDocument();
@@ -538,6 +538,58 @@ describe("DiarizationPage routes", () => {
     expect(props.onUnload).toHaveBeenCalledWith("Parakeet-TDT-0.6B-v3");
     expect(props.onUnload).toHaveBeenCalledWith("Qwen3-ForcedAligner-0.6B");
     expect(props.onUnload).toHaveBeenCalledWith("Qwen3.5-4B");
+  });
+
+  it("shows a loading readiness state while diarization models are loading", async () => {
+    const props = createRouteProps({
+      models: [
+        {
+          variant: "diar_streaming_sortformer_4spk-v2.1",
+          status: "loading" as const,
+          local_path: "/models/diar",
+          size_bytes: null,
+          download_progress: null,
+          error_message: null,
+        },
+        {
+          variant: "Whisper-Large-v3-Turbo",
+          status: "ready" as const,
+          local_path: "/models/asr",
+          size_bytes: null,
+          download_progress: null,
+          error_message: null,
+        },
+        {
+          variant: "Qwen3-ForcedAligner-0.6B",
+          status: "ready" as const,
+          local_path: "/models/aligner",
+          size_bytes: null,
+          download_progress: null,
+          error_message: null,
+        },
+        {
+          variant: "Qwen3.5-4B",
+          status: "ready" as const,
+          local_path: "/models/llm",
+          size_bytes: null,
+          download_progress: null,
+          error_message: null,
+        },
+      ],
+      selectedModel: "diar_streaming_sortformer_4spk-v2.1",
+    });
+
+    renderRoute("/diarization", props);
+
+    await waitFor(() =>
+      expect(apiMocks.listDiarizationRecords).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /New diarization/i }));
+    expect(await screen.findByText("LOADING")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Loading models..." }),
+    ).toBeDisabled();
   });
 
   it("loads the selected diarization record on /diarization/:recordId", async () => {

@@ -505,14 +505,26 @@ export function NewDiarizationModal({
     }
   }, [isRecording]);
 
-  const pipelineReadyForUse =
-    !!pipelineAsrModelId && !!pipelineAlignerModelId && pipelineModelsReady;
   const allManagedModelsReady =
     managedModelCount > 0 && readyManagedModelCount === managedModelCount;
-  const managedModelStatusLabel =
-    managedModelCount === 0
-      ? "No diarization route models are available."
-      : `${readyManagedModelCount} of ${managedModelCount} diarization route models are ready.`;
+  const readinessStatusLabel = allManagedModelsReady
+    ? "READY"
+    : isManagedModelActionBusy
+      ? "LOADING"
+      : "NOT LOADED";
+  const readinessTone = allManagedModelsReady ? "success" : "warning";
+  const readinessActionIsUnload = allManagedModelsReady;
+  const readinessActionLabel = isManagedModelActionBusy
+    ? "Loading models..."
+    : readinessActionIsUnload
+      ? "Unload Models"
+      : "Load Models";
+  const readinessActionClass = readinessActionIsUnload
+    ? "mt-3 h-9 w-full gap-2 border-[var(--danger-border)] bg-[var(--danger-bg)] text-[var(--danger-text)] hover:bg-[var(--danger-bg-hover)] hover:text-[var(--danger-text)]"
+    : "mt-3 h-9 w-full gap-2";
+  const canRunReadinessAction = readinessActionIsUnload
+    ? canUnloadAnyManagedModels
+    : canLoadAnyManagedModels;
 
   return (
     <Dialog
@@ -738,64 +750,37 @@ export function NewDiarizationModal({
                 </div>
 
                 <div className="mt-2.5 rounded-2xl border border-[var(--border-muted)] bg-[var(--bg-surface-0)] p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-[var(--text-primary)]">
-                        Diarization stack
-                      </div>
-                      <div className="mt-1 text-[13px] leading-5 text-[var(--text-muted)]">
-                        {managedModelStatusLabel}
-                      </div>
-                    </div>
-                    <StatusBadge
-                      tone={allManagedModelsReady ? "success" : "warning"}
-                    >
-                      {allManagedModelsReady ? "Ready" : "Needs action"}
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs text-[var(--text-muted)]">
+                      Diarization stack
+                    </span>
+                    <StatusBadge tone={readinessTone}>
+                      {readinessStatusLabel}
                     </StatusBadge>
                   </div>
 
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {allManagedModelsReady ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-8"
-                        onClick={onUnloadAllManagedModels}
-                        disabled={
-                          isSubmitting ||
-                          isRecording ||
-                          isManagedModelActionBusy ||
-                          !canUnloadAnyManagedModels
-                        }
-                      >
-                        Unload Models
-                      </Button>
-                    ) : (
-                      <Button
-                        type="button"
-                        size="sm"
-                        className="h-8"
-                        onClick={onLoadAllManagedModels}
-                        disabled={
-                          isSubmitting ||
-                          isRecording ||
-                          isManagedModelActionBusy ||
-                          !canLoadAnyManagedModels
-                        }
-                      >
-                        Load Models
-                      </Button>
-                    )}
-                  </div>
-
-                  {!allManagedModelsReady && (
-                    <div className="mt-3 text-[12px] leading-5 text-[var(--text-muted)]">
-                      {selectedModelReady && pipelineReadyForUse
-                        ? "Load the remaining diarization route models to mark the full stack ready."
-                        : "Load the diarization, ASR, and forced aligner models before starting a run."}
-                    </div>
-                  )}
+                  <Button
+                    type="button"
+                    variant={readinessActionIsUnload ? "outline" : "default"}
+                    size="sm"
+                    className={readinessActionClass}
+                    onClick={
+                      readinessActionIsUnload
+                        ? onUnloadAllManagedModels
+                        : onLoadAllManagedModels
+                    }
+                    disabled={
+                      isSubmitting ||
+                      isRecording ||
+                      isManagedModelActionBusy ||
+                      !canRunReadinessAction
+                    }
+                  >
+                    {isManagedModelActionBusy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : null}
+                    {readinessActionLabel}
+                  </Button>
                 </div>
               </div>
 
