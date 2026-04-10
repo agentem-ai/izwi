@@ -61,7 +61,7 @@ function isDiarizationVariant(variant: string): boolean {
 }
 
 function isPipelineAsrVariant(variant: string): boolean {
-  return variant.startsWith("Parakeet-TDT-");
+  return variant === "Whisper-Large-v3-Turbo";
 }
 
 function isPipelineAlignerVariant(variant: string): boolean {

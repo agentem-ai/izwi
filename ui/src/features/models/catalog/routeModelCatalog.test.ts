@@ -86,15 +86,15 @@ describe("route model catalog", () => {
   it("prefers the diarization ASR pipeline variant over a non-preferred ready model", () => {
     const selected = resolvePreferredRouteModel({
       models: [
-        { variant: "Parakeet-TDT-0.6B-v3", status: "downloaded" },
-        { variant: "Parakeet-TDT-1.1B", status: "ready" },
+        { variant: "Whisper-Large-v3-Turbo", status: "downloaded" },
+        { variant: "Parakeet-TDT-0.6B-v3", status: "ready" },
       ],
       selectedModel: null,
       preferredVariants: DIARIZATION_PREFERRED_ASR_MODELS,
       preferAnyPreferredBeforeReadyAny: true,
     });
 
-    expect(selected).toBe("Parakeet-TDT-0.6B-v3");
+    expect(selected).toBe("Whisper-Large-v3-Turbo");
   });
 
   it("treats Qwen3.5 models as thinking-capable chat models", () => {

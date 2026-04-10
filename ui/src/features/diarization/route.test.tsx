@@ -46,7 +46,7 @@ const baseModels: ModelInfo[] = [
     error_message: null,
   },
   {
-    variant: "Parakeet-TDT-0.6B-v3",
+    variant: "Whisper-Large-v3-Turbo",
     status: "ready" as const,
     local_path: "/models/asr",
     size_bytes: null,
@@ -153,7 +153,7 @@ const fullRecord = {
   id: "diar-1",
   created_at: 1,
   model_id: "diar_streaming_sortformer_4spk-v2.1",
-  asr_model_id: "Parakeet-TDT-0.6B-v3",
+  asr_model_id: "Whisper-Large-v3-Turbo",
   aligner_model_id: "Qwen3-ForcedAligner-0.6B",
   llm_model_id: "Qwen3.5-4B",
   processing_status: "ready" as const,
@@ -470,7 +470,7 @@ describe("DiarizationPage routes", () => {
           error_message: null,
         },
         {
-          variant: "Parakeet-TDT-0.6B-v3",
+          variant: "Whisper-Large-v3-Turbo",
           status: "not_downloaded" as const,
           local_path: "/models/asr",
           size_bytes: null,
@@ -512,7 +512,7 @@ describe("DiarizationPage routes", () => {
 
     expect(props.onLoad).toHaveBeenCalledWith("diar_streaming_sortformer_4spk-v2.1");
     expect(props.onLoad).toHaveBeenCalledWith("Qwen3.5-4B");
-    expect(props.onDownload).toHaveBeenCalledWith("Parakeet-TDT-0.6B-v3");
+    expect(props.onDownload).toHaveBeenCalledWith("Whisper-Large-v3-Turbo");
     expect(props.onUnload).not.toHaveBeenCalled();
   });
 
@@ -535,7 +535,7 @@ describe("DiarizationPage routes", () => {
     );
 
     expect(props.onUnload).toHaveBeenCalledWith("diar_streaming_sortformer_4spk-v2.1");
-    expect(props.onUnload).toHaveBeenCalledWith("Parakeet-TDT-0.6B-v3");
+    expect(props.onUnload).toHaveBeenCalledWith("Whisper-Large-v3-Turbo");
     expect(props.onUnload).toHaveBeenCalledWith("Qwen3-ForcedAligner-0.6B");
     expect(props.onUnload).toHaveBeenCalledWith("Qwen3.5-4B");
   });
