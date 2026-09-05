@@ -114,7 +114,9 @@ impl DerivedCache {
                 .open(self.dir.join("writer.lock"))?;
             // The writer is retained for this entire load; competing loaders
             // proceed with conversion/read hits instead of waiting.
-            if lock.try_lock().is_err() {
+            // Use the portable extension API: std file locks require Rust 1.89,
+            // while both Docker builders intentionally support Rust 1.88.
+            if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
                 return Ok(());
             }
             let mut files = Vec::new();
@@ -140,7 +142,7 @@ impl DerivedCache {
                     _ => {}
                 }
             }
-            files.sort_by(|a, b| a.0.cmp(&b.0));
+            files.sort_by_key(|entry| entry.0);
             let sizes = files.iter().map(|(_, p, n)| (p.clone(), *n)).collect();
             let oldest = files.into_iter().map(|(_, p, _)| p).collect();
             *session = Some(Writer {
@@ -245,7 +247,7 @@ pub(super) fn validate_q8(words: &[u16]) -> Result<()> {
             "Invalid aligned little-endian Q8_0 payload".into(),
         ));
     }
-    for block in words.chunks_exact(17) {
+    for block in words.as_chunks::<17>().0 {
         let d = f16::from_bits(block[0]).to_f32();
         if !d.is_finite() || d < 0. {
             return Err(Error::ModelLoadError("Invalid Q8_0 scale".into()));
@@ -308,7 +310,7 @@ mod tests {
             .write(true)
             .open(d.path().join("writer.lock"))
             .unwrap();
-        lock.lock().unwrap();
+        fs2::FileExt::lock_exclusive(&lock).unwrap();
         c.publish(&[99; 32], &words);
         assert!(c.read(&[99; 32], 17).is_none());
         drop(lock);
