@@ -797,12 +797,18 @@ describe("ChatPlayground", () => {
         expect.any(Object),
       ),
     );
-    expect(screen.getByRole("textbox")).toHaveValue(
-      "Keep this if stream setup fails",
-    );
-    expect(
-      screen.getByRole("button", { name: "Remove draft.png" }),
-    ).toBeInTheDocument();
+    // Stream setup runs before MemoryRouter commits its navigation transition.
+    // Wait for the created thread to load before checking its transferred draft.
+    await waitFor(() => {
+      expect(apiMocks.getChatThread).toHaveBeenCalledWith("created-thread");
+      expect(screen.getByRole("alert")).toHaveTextContent("Stream setup failed");
+      expect(screen.getByRole("textbox")).toHaveValue(
+        "Keep this if stream setup fails",
+      );
+      expect(
+        screen.getByRole("button", { name: "Remove draft.png" }),
+      ).toBeInTheDocument();
+    });
     expect(revokeObjectUrlMock).not.toHaveBeenCalled();
 
     view.unmount();
