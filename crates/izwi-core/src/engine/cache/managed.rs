@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use candle_core::{DType, Device, DeviceLocation};
@@ -171,8 +172,8 @@ pub struct ManagedKvCoordinatorSnapshot {
     pub capacity_pages: u64,
     pub allocated_pages: u64,
     pub free_pages: u64,
-    /// Pages promised to active requests for their complete prompt plus
-    /// maximum output budget. This is logical admission, not eager backing.
+    /// Pages promised to active requests by conservative or incremental
+    /// admission. This is logical admission, not eager backing.
     pub admission_claimed_pages: u64,
     pub admission_available_pages: u64,
     pub admission_claims: u64,
@@ -215,8 +216,12 @@ pub struct ManagedKvModelRuntimeSnapshot {
     pub registered_sessions: u64,
     /// Maximum logical token reach of one sequence across every state arena.
     pub single_sequence_token_capacity: u64,
+    /// Aggregate token capacity of the smallest shared paged arena.
+    pub aggregate_token_capacity: u64,
     /// Number of maximum-reach sequences the fitted page pools can admit.
     pub full_context_sequence_capacity: u64,
+    /// Active sessions admitted with bounded next-step claims.
+    pub incremental_claim_sessions: u64,
     pub arenas: Vec<ManagedKvArenaRuntimeSnapshot>,
 }
 
@@ -260,6 +265,7 @@ pub(crate) struct ManagedKvModelRuntime {
     arenas: HashMap<KvArenaId, Arc<dyn KvArena>>,
     tensor_state: Option<Arc<TensorStateArena>>,
     non_paged_physical_bytes: u64,
+    maximum_sequence_tokens: AtomicU64,
 }
 
 impl fmt::Debug for ManagedKvModelRuntime {
@@ -295,6 +301,22 @@ impl ManagedKvModelRuntime {
             .map(|group| u64::from(group.capacity_pages) * u64::from(group.page_tokens))
             .min()
             .unwrap_or(0)
+    }
+
+    /// Model context and aggregate page capacity are independent controls.
+    /// Called during model publication, before requests can observe the runtime.
+    pub(crate) fn set_maximum_sequence_tokens(&self, tokens: u64) {
+        self.maximum_sequence_tokens
+            .store(tokens, Ordering::Relaxed);
+    }
+
+    pub(crate) fn maximum_sequence_tokens(&self) -> u64 {
+        let configured = self.maximum_sequence_tokens.load(Ordering::Relaxed);
+        if configured == 0 {
+            self.logical_token_reach()
+        } else {
+            configured
+        }
     }
 
     /// Make asynchronous accelerator allocation/zeroing failures observable
@@ -342,6 +364,7 @@ struct ManagedKvModelState {
     registered_sessions: HashSet<SessionKey>,
     session_generations: HashMap<SessionKey, ManagedSessionGeneration>,
     capacity_claims: HashMap<SessionKey, Vec<(KvArenaId, u32)>>,
+    incremental_claim_sessions: HashSet<SessionKey>,
     tensor_sequences: HashMap<SessionKey, PhysicalStateSequenceId>,
     resource_lease: Option<ResourceLease>,
     materialized_resources: ResourceVector,
@@ -827,9 +850,14 @@ impl ManagedKvCacheManager {
                     authorized_tensor_bytes: state.runtime.authorized_tensor_bytes(),
                     physical_bytes: state.runtime.physical_bytes(),
                     registered_sessions: usize_to_u64(state.registered_sessions.len()),
-                    single_sequence_token_capacity: state.runtime.logical_token_reach(),
+                    single_sequence_token_capacity: state.runtime.maximum_sequence_tokens(),
+                    aggregate_token_capacity: state.runtime.logical_token_reach(),
                     full_context_sequence_capacity: full_context_sequence_capacity(
                         &state.runtime.plan,
+                        state.runtime.maximum_sequence_tokens(),
+                    ),
+                    incremental_claim_sessions: usize_to_u64(
+                        state.incremental_claim_sessions.len(),
                     ),
                     arenas,
                 }
@@ -1146,6 +1174,7 @@ impl ManagedKvCacheManager {
             arenas,
             tensor_state,
             non_paged_physical_bytes,
+            maximum_sequence_tokens: AtomicU64::new(0),
         });
         self.models.insert(
             model_instance,
@@ -1160,6 +1189,7 @@ impl ManagedKvCacheManager {
                 registered_sessions: HashSet::new(),
                 session_generations: HashMap::new(),
                 capacity_claims: HashMap::new(),
+                incremental_claim_sessions: HashSet::new(),
                 tensor_sequences: HashMap::new(),
                 resource_lease,
                 materialized_resources,
@@ -1214,6 +1244,73 @@ impl ManagedKvCacheManager {
         session: &SessionKey,
         work: &WorkUnit,
         request: Option<&EngineCoreRequest>,
+    ) -> Result<Option<ManagedCacheReservation>> {
+        self.prepare_with_admission(runtime, txn_id, session, work, request, false)
+    }
+
+    /// Incremental admission is only safe for execution adapters that can
+    /// replay an already-streamed request after capacity preemption.
+    pub(crate) fn prepare_incremental(
+        &mut self,
+        runtime: &ManagedKvModelRuntime,
+        txn_id: PlanId,
+        session: &SessionKey,
+        work: &WorkUnit,
+        request: Option<&EngineCoreRequest>,
+    ) -> Result<Option<ManagedCacheReservation>> {
+        self.prepare_with_admission(runtime, txn_id, session, work, request, true)
+    }
+
+    fn prepare_with_admission(
+        &mut self,
+        runtime: &ManagedKvModelRuntime,
+        txn_id: PlanId,
+        session: &SessionKey,
+        work: &WorkUnit,
+        request: Option<&EngineCoreRequest>,
+        incremental: bool,
+    ) -> Result<Option<ManagedCacheReservation>> {
+        let previous_claim = self
+            .models
+            .get(&runtime.plan.model_instance)
+            .and_then(|state| state.capacity_claims.get(session))
+            .cloned();
+        let result = self.prepare_inner(runtime, txn_id, session, work, request, incremental);
+        if result.is_ok() && incremental && matches!(work, WorkUnit::SequenceStep { .. }) {
+            if let Some(state) = self.models.get_mut(&runtime.plan.model_instance) {
+                if state.capacity_claims.contains_key(session) {
+                    state.incremental_claim_sessions.insert(session.clone());
+                }
+            }
+        }
+        if result.is_err() {
+            if let Some(state) = self.models.get_mut(&runtime.plan.model_instance) {
+                // Every arena belongs to the same logical transaction. Also
+                // catch errors from projection/prefix setup between arenas.
+                for coordinator in state.coordinators.values_mut() {
+                    let _ = coordinator.abort(txn_id);
+                }
+                match previous_claim {
+                    Some(claim) => {
+                        state.capacity_claims.insert(session.clone(), claim);
+                    }
+                    None => {
+                        state.capacity_claims.remove(session);
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn prepare_inner(
+        &mut self,
+        runtime: &ManagedKvModelRuntime,
+        txn_id: PlanId,
+        session: &SessionKey,
+        work: &WorkUnit,
+        request: Option<&EngineCoreRequest>,
+        incremental: bool,
     ) -> Result<Option<ManagedCacheReservation>> {
         let (
             sequence_input,
@@ -1352,7 +1449,11 @@ impl ManagedKvCacheManager {
             ));
         }
         let installed_claim = if let Some(request) = request {
-            ensure_capacity_claim(state, session, request)?
+            if incremental && sequence_input.is_some() {
+                ensure_incremental_capacity_claim(state, session, request, work)?
+            } else {
+                ensure_capacity_claim(state, session, request)?
+            }
         } else {
             false
         };
@@ -2140,6 +2241,7 @@ impl ManagedKvCacheManager {
             state.registered_sessions.remove(session);
             state.session_generations.remove(session);
             state.capacity_claims.remove(session);
+            state.incremental_claim_sessions.remove(session);
         }
         Ok(())
     }
@@ -3020,13 +3122,87 @@ fn ensure_capacity_claim(
     Ok(true)
 }
 
-fn full_context_sequence_capacity(plan: &ResolvedKvPlan) -> u64 {
-    let reach = plan
-        .groups
-        .iter()
-        .map(|group| u64::from(group.capacity_pages) * u64::from(group.page_tokens))
-        .min()
-        .unwrap_or(0);
+/// Claim the known prompt and the exact next scheduled progress (including
+/// adapter-projected speculative spans), never the potential complete answer.
+/// Validate all arenas before publishing any changes to the session claim.
+fn ensure_incremental_capacity_claim(
+    state: &mut ManagedKvModelState,
+    session: &SessionKey,
+    request: &EngineCoreRequest,
+    work: &WorkUnit,
+) -> Result<bool> {
+    let WorkUnit::SequenceStep { input, phase, .. } = work else {
+        return ensure_capacity_claim(state, session, request);
+    };
+    let mut requested_by_arena = HashMap::<KvArenaId, u64>::new();
+    for group in &state.runtime.plan.groups {
+        let projected = request.project_paged_state_input(group.domain, *phase, *input)?;
+        let target = u64::try_from(request.num_prompt_tokens().max(projected.end))
+            .map_err(|_| Error::Overloaded("incremental token demand exceeds u64".into()))?;
+        // Window movement can retain the old window while preparing the next
+        // chunk; reserve its append and page alignment as well.
+        let retained = sliding_window_for_domain(&state.contract, group.domain)?
+            .map(|window| {
+                target.min(
+                    u64::from(window)
+                        .saturating_add(projected.len() as u64)
+                        .saturating_add(u64::from(group.page_tokens - 1)),
+                )
+            })
+            .unwrap_or(target);
+        let required_pages = retained.div_ceil(u64::from(group.page_tokens));
+        let requested = requested_by_arena.entry(group.arena).or_default();
+        *requested = requested
+            .checked_add(required_pages)
+            .ok_or_else(|| Error::Overloaded("incremental arena page demand overflow".into()))?;
+    }
+    let mut claims = Vec::with_capacity(requested_by_arena.len());
+    for (arena, requested_pages) in requested_by_arena {
+        let group = state
+            .runtime
+            .plan
+            .groups
+            .iter()
+            .find(|group| group.arena == arena)
+            .ok_or_else(|| Error::InferenceError("managed capacity arena disappeared".into()))?;
+        let previous = state
+            .capacity_claims
+            .get(session)
+            .and_then(|claims| claims.iter().find(|(arena, _)| *arena == group.arena))
+            .map(|(_, pages)| u64::from(*pages))
+            .unwrap_or(0);
+        let pages = requested_pages.max(previous);
+        let capacity = u64::from(group.capacity_pages);
+        if pages > capacity {
+            return Err(Error::Overloaded(format!(
+                "request {} next managed step needs {pages} pages, arena capacity is {capacity}",
+                request.id
+            )));
+        }
+        let others = state
+            .capacity_claims
+            .iter()
+            .filter(|(owner, _)| *owner != session)
+            .flat_map(|(_, claims)| claims)
+            .filter(|(arena, _)| *arena == group.arena)
+            .map(|(_, pages)| u64::from(*pages))
+            .sum::<u64>();
+        if others.saturating_add(pages) > capacity {
+            return Err(Error::Backpressure(format!(
+                "managed KV incremental admission is waiting: request {} needs {pages} pages, {others} are claimed by other requests, capacity is {capacity}", request.id)));
+        }
+        claims.push((
+            group.arena,
+            u32::try_from(pages)
+                .map_err(|_| Error::Overloaded("incremental page demand exceeds u32".into()))?,
+        ));
+    }
+    let newly_installed = !state.capacity_claims.contains_key(session);
+    state.capacity_claims.insert(session.clone(), claims);
+    Ok(newly_installed)
+}
+
+fn full_context_sequence_capacity(plan: &ResolvedKvPlan, reach: u64) -> u64 {
     if reach == 0 {
         return 0;
     }
@@ -4600,6 +4776,311 @@ mod tests {
             })
             .expect("adapter binding");
         request
+    }
+
+    #[test]
+    fn incremental_admission_shares_uncapped_requests_and_waits_for_next_step() {
+        let model = ModelInstanceId::new(840);
+        let mut manager = ManagedKvCacheManager::default();
+        let runtime = manager
+            .bind_request(
+                model,
+                BackendKind::Cpu,
+                3,
+                8,
+                &CacheCapability::Managed(test_contract()),
+            )
+            .unwrap()
+            .unwrap();
+        let mut request = prefix_request(model, vec![1, 2, 3]);
+        request.params.max_tokens = runtime.logical_token_reach() as usize - 3;
+        let sessions = (0..3)
+            .map(|i| SessionKey::new(format!("incremental-{i}"), 1))
+            .collect::<Vec<_>>();
+        for (index, session) in sessions.iter().enumerate() {
+            let reservation = manager
+                .prepare_incremental(
+                    &runtime,
+                    8400 + index as u64,
+                    session,
+                    &sequence_work(0, 3),
+                    Some(&request),
+                )
+                .unwrap()
+                .unwrap();
+            manager
+                .finalize(
+                    &reservation,
+                    Some(&reservation.completed_write_receipt_for_test()),
+                    true,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            manager.runtime_snapshot().models[0].incremental_claim_sessions,
+            3
+        );
+        let before = manager.models[&model].capacity_claims.clone();
+        assert!(matches!(
+            manager.prepare_incremental(
+                &runtime,
+                8410,
+                &sessions[0],
+                &sequence_work(3, 9),
+                Some(&request)
+            ),
+            Err(Error::Backpressure(_))
+        ));
+        assert_eq!(manager.models[&model].capacity_claims, before);
+        manager.release_session(&sessions[1]).unwrap();
+        let next = manager
+            .prepare_incremental(
+                &runtime,
+                8411,
+                &sessions[0],
+                &sequence_work(3, 9),
+                Some(&request),
+            )
+            .unwrap()
+            .unwrap();
+        manager.finalize(&next, None, false).unwrap();
+        for session in &sessions {
+            manager.release_session(session).unwrap();
+        }
+        assert!(manager.models[&model].capacity_claims.is_empty());
+        assert_eq!(
+            manager.runtime_snapshot().models[0].incremental_claim_sessions,
+            0
+        );
+        for coordinator in manager.models[&model].coordinators.values() {
+            assert_eq!(coordinator.stats().allocated_pages, 0);
+            assert_eq!(coordinator.stats().active_transactions, 0);
+            coordinator.check_invariants().unwrap();
+        }
+    }
+
+    #[test]
+    fn incremental_prepare_failure_restores_existing_claim() {
+        let model = ModelInstanceId::new(841);
+        let session = SessionKey::new("incremental-rollback".into(), 1);
+        let mut manager = ManagedKvCacheManager::default();
+        let runtime = manager
+            .bind_request(
+                model,
+                BackendKind::Cpu,
+                4,
+                8,
+                &CacheCapability::Managed(test_contract()),
+            )
+            .unwrap()
+            .unwrap();
+        let request = prefix_request(model, vec![1, 2, 3]);
+        let reservation = manager
+            .prepare_incremental(
+                &runtime,
+                8420,
+                &session,
+                &sequence_work(0, 3),
+                Some(&request),
+            )
+            .unwrap()
+            .unwrap();
+        manager
+            .finalize(
+                &reservation,
+                Some(&reservation.completed_write_receipt_for_test()),
+                true,
+            )
+            .unwrap();
+        let before = manager.models[&model].capacity_claims[&session].clone();
+        // A newly known prompt grows the claim, but a regressed execution
+        // target must reject prepare and restore the earlier claim.
+        let mut expanded_request = request.clone();
+        expanded_request.prompt_tokens = vec![1; 20];
+        assert!(manager
+            .prepare_incremental(
+                &runtime,
+                8421,
+                &session,
+                &sequence_work(0, 2),
+                Some(&expanded_request)
+            )
+            .is_err());
+        assert_eq!(manager.models[&model].capacity_claims[&session], before);
+        for coordinator in manager.models[&model].coordinators.values() {
+            assert_eq!(coordinator.stats().active_transactions, 0);
+            coordinator.check_invariants().unwrap();
+        }
+    }
+
+    #[test]
+    fn incremental_claim_covers_known_prompt_next_token_and_replay_history() {
+        let model = ModelInstanceId::new(844);
+        let session = SessionKey::new("incremental-step-boundary".into(), 1);
+        let mut manager = ManagedKvCacheManager::default();
+        let runtime = manager
+            .bind_request(
+                model,
+                BackendKind::Cpu,
+                4,
+                8,
+                &CacheCapability::Managed(test_contract()),
+            )
+            .unwrap()
+            .unwrap();
+        let mut request = prefix_request(model, vec![1; 8]);
+        request.params.max_tokens = 24;
+        let first = manager
+            .prepare_incremental(
+                &runtime,
+                8440,
+                &session,
+                &sequence_work(0, 2),
+                Some(&request),
+            )
+            .unwrap()
+            .unwrap();
+        // The whole known prompt is admitted, although this chunk is shorter.
+        assert_eq!(manager.models[&model].capacity_claims[&session][0].1, 1);
+        manager
+            .finalize(
+                &first,
+                Some(&first.completed_write_receipt_for_test()),
+                true,
+            )
+            .unwrap();
+        let rest = manager
+            .prepare_incremental(
+                &runtime,
+                8441,
+                &session,
+                &sequence_work(2, 8),
+                Some(&request),
+            )
+            .unwrap()
+            .unwrap();
+        manager
+            .finalize(&rest, Some(&rest.completed_write_receipt_for_test()), true)
+            .unwrap();
+        let decode = WorkUnit::SequenceStep {
+            phase: SequencePhase::Decode,
+            input: InputRange { start: 8, end: 9 },
+            max_output_steps: 1,
+            auxiliary_state: None,
+        };
+        let next = manager
+            .prepare_incremental(&runtime, 8442, &session, &decode, Some(&request))
+            .unwrap()
+            .unwrap();
+        assert_eq!(manager.models[&model].capacity_claims[&session][0].1, 2);
+        manager
+            .finalize(&next, Some(&next.completed_write_receipt_for_test()), true)
+            .unwrap();
+        manager.release_session(&session).unwrap();
+        // Suspension frees both pages. Replay spans include generated history
+        // while the immutable request still carries its eight-token prompt.
+        let replay = manager
+            .prepare_incremental(
+                &runtime,
+                8443,
+                &session,
+                &sequence_work(0, 17),
+                Some(&request),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.num_prompt_tokens(), 8);
+        assert_eq!(manager.models[&model].capacity_claims[&session][0].1, 3);
+        assert_eq!(replay.domains[0].target_committed_tokens, 17);
+        manager.finalize(&replay, None, false).unwrap();
+        manager.release_session(&session).unwrap();
+        assert!(manager.models[&model].capacity_claims.is_empty());
+    }
+
+    #[test]
+    fn incremental_multi_arena_growth_is_atomic() {
+        let model = ModelInstanceId::new(843);
+        let session = SessionKey::new("incremental-atomic".into(), 1);
+        let other = SessionKey::new("incremental-other".into(), 1);
+        let mut manager = ManagedKvCacheManager::default();
+        let runtime = manager
+            .bind_request(
+                model,
+                BackendKind::Cpu,
+                6,
+                8,
+                &CacheCapability::Managed(two_paged_tensor_contract()),
+            )
+            .unwrap()
+            .unwrap();
+        let request = prefix_request(model, vec![1, 2, 3]);
+        let state = manager.models.get_mut(&model).unwrap();
+        ensure_incremental_capacity_claim(state, &session, &request, &sequence_work(0, 3)).unwrap();
+        let second = runtime.plan().groups[1].arena;
+        state.capacity_claims.insert(other, vec![(second, 2)]);
+        let before = state.capacity_claims.clone();
+        assert!(matches!(
+            ensure_incremental_capacity_claim(state, &session, &request, &sequence_work(3, 9)),
+            Err(Error::Backpressure(_))
+        ));
+        assert_eq!(state.capacity_claims, before);
+    }
+
+    #[test]
+    fn incremental_claim_aggregates_groups_sharing_an_arena() {
+        let model = ModelInstanceId::new(845);
+        let session = SessionKey::new("incremental-shared-arena".into(), 1);
+        let mut manager = ManagedKvCacheManager::default();
+        let runtime = manager
+            .bind_request(
+                model,
+                BackendKind::Cpu,
+                6,
+                8,
+                &CacheCapability::Managed(two_paged_tensor_contract()),
+            )
+            .unwrap()
+            .unwrap();
+        drop(runtime);
+        let state = manager.models.get_mut(&model).unwrap();
+        // Live binding currently gives each group an exclusive arena. Exercise
+        // admission independently with pooled geometry so this invariant is
+        // not required for correct aggregate claims.
+        let runtime = Arc::get_mut(&mut state.runtime).unwrap();
+        let plan = Arc::make_mut(&mut runtime.plan);
+        let shared_arena = plan.groups[0].arena;
+        plan.groups[1].arena = shared_arena;
+        let request = prefix_request(model, vec![1; 3]);
+        ensure_incremental_capacity_claim(state, &session, &request, &sequence_work(0, 3)).unwrap();
+        assert_eq!(state.capacity_claims[&session], vec![(shared_arena, 2)]);
+        assert!(matches!(
+            ensure_incremental_capacity_claim(state, &session, &request, &sequence_work(3, 9)),
+            Err(Error::Overloaded(_))
+        ));
+        assert_eq!(state.capacity_claims[&session], vec![(shared_arena, 2)]);
+    }
+
+    #[test]
+    fn model_context_metadata_is_independent_of_shared_pool() {
+        let model = ModelInstanceId::new(842);
+        let mut manager = ManagedKvCacheManager::default();
+        let runtime = manager
+            .bind_request(
+                model,
+                BackendKind::Cpu,
+                8,
+                8,
+                &CacheCapability::Managed(test_contract()),
+            )
+            .unwrap()
+            .unwrap();
+        runtime.set_maximum_sequence_tokens(16);
+        assert_eq!(runtime.maximum_sequence_tokens(), 16);
+        assert_eq!(runtime.logical_token_reach(), 64);
+        assert_eq!(
+            full_context_sequence_capacity(runtime.plan(), runtime.maximum_sequence_tokens()),
+            4
+        );
     }
 
     #[test]

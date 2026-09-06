@@ -1150,6 +1150,83 @@ impl EngineCore {
         }
     }
 
+    fn uses_incremental_chat_capacity(&self, request: &EngineCoreRequest) -> bool {
+        self.config.cuda_incremental_chat_enabled()
+            && request.task_type == super::TaskType::Chat
+            && request
+                .prepared_chat_model_for_executor()
+                .is_ok_and(|model| {
+                    matches!(
+                        model.as_ref(),
+                        crate::models::registry::NativeChatModel::Qwen38(_)
+                    )
+                })
+    }
+
+    async fn suspend_published_session_for_capacity(
+        &mut self,
+        blocked: &[super::scheduler::ScheduledRequest],
+    ) -> Result<bool> {
+        let candidates = blocked
+            .iter()
+            .filter(|row| {
+                self.requests
+                    .get(&row.request_id)
+                    .is_some_and(|request| self.uses_incremental_chat_capacity(request))
+            })
+            .map(|row| row.session_key());
+        let Some(survivor) = self.scheduler.capacity_survivor(candidates) else {
+            return Ok(false);
+        };
+        let model = self
+            .requests
+            .get(&survivor.request_id)
+            .and_then(|request| request.managed_cache_runtime())
+            .map(|runtime| runtime.plan().model_instance)
+            .ok_or_else(|| Error::InferenceError("capacity survivor lost runtime".into()))?;
+        let candidates = self
+            .managed_kv_cache
+            .capacity_claim_sessions(model)
+            .into_iter()
+            .filter(|session| *session != survivor)
+            .filter(|session| {
+                self.requests
+                    .get(&session.request_id)
+                    .is_some_and(|request| self.uses_incremental_chat_capacity(request))
+            })
+            .filter(|session| {
+                !self
+                    .active_plans
+                    .values()
+                    .any(|plan| plan.session == *session)
+                    && !self
+                        .active_managed_cache
+                        .values()
+                        .any(|reservation| reservation.session == *session)
+            });
+        let Some(victim) = self
+            .scheduler
+            .published_capacity_victim(candidates, &survivor)
+        else {
+            return Ok(false);
+        };
+        let Some(replay_tokens) = self.executor.suspend_session_for_capacity(&victim).await? else {
+            return Ok(false);
+        };
+        self.managed_kv_cache.release_session(&victim)?;
+        if !self
+            .scheduler
+            .suspend_for_replay(&victim, replay_tokens, survivor)
+        {
+            return Err(Error::InferenceError(
+                "capacity replay lost scheduler session".into(),
+            ));
+        }
+        self.clear_execution_state_for_capacity_replay(&victim);
+        super::metrics::record_capacity_suspension();
+        Ok(true)
+    }
+
     async fn preempt_unpublished_session_for_capacity(
         &mut self,
         blocked: &[super::scheduler::ScheduledRequest],
@@ -2419,17 +2496,30 @@ impl EngineCore {
             }
             let planned_work = plan.work.clone();
             let managed_cache = match request.managed_cache_runtime().map(|runtime| {
-                self.managed_kv_cache.prepare(
-                    runtime,
-                    plan.plan_id,
-                    &plan.session,
-                    &planned_work,
-                    Some(&request),
-                )
+                if self.uses_incremental_chat_capacity(&request) {
+                    self.managed_kv_cache.prepare_incremental(
+                        runtime,
+                        plan.plan_id,
+                        &plan.session,
+                        &planned_work,
+                        Some(&request),
+                    )
+                } else {
+                    self.managed_kv_cache.prepare(
+                        runtime,
+                        plan.plan_id,
+                        &plan.session,
+                        &planned_work,
+                        Some(&request),
+                    )
+                }
             }) {
                 Some(Ok(reservation)) => reservation,
                 None => None,
                 Some(Err(Error::Backpressure(reason))) => {
+                    super::metrics::record_engine_physical_defer(
+                        super::metrics::EnginePhysicalDeferReason::ManagedCacheCapacity,
+                    );
                     capacity_blocked.push(scheduled.clone());
                     debug!(
                         request_id = %scheduled.request_id,
@@ -3106,6 +3196,20 @@ impl EngineCore {
         {
             return;
         }
+        self.clear_execution_state_for_capacity_replay(session);
+        self.stream_sequence_cursors.remove(session);
+        self.incremental_stream_sessions.remove(session);
+    }
+
+    // Capacity replay retains the same client-visible stream incarnation.
+    fn clear_execution_state_for_capacity_replay(&mut self, session: &super::SessionKey) {
+        if self
+            .in_flight_dispatches
+            .values()
+            .any(|dispatch| dispatch.contains_session(session))
+        {
+            return;
+        }
         if self
             .execution_trackers
             .get(&session.request_id)
@@ -3117,8 +3221,6 @@ impl EngineCore {
         self.active_stream_batches
             .retain(|_, batch| !batch.rows.values().any(|row| row == session));
         self.execution_retry_attempts.remove(session);
-        self.stream_sequence_cursors.remove(session);
-        self.incremental_stream_sessions.remove(session);
     }
 
     fn request_managed_session_release(&mut self, session: &super::SessionKey) -> bool {
@@ -4043,9 +4145,12 @@ impl EngineCore {
         self.defer_unexecuted_schedule_for_capacity(&capacity_blocked);
         if decode_batches.is_empty()
             && prefill_batches.is_empty()
-            && self
-                .preempt_unpublished_session_for_capacity(&capacity_blocked)
+            && (self
+                .suspend_published_session_for_capacity(&capacity_blocked)
                 .await?
+                || self
+                    .preempt_unpublished_session_for_capacity(&capacity_blocked)
+                    .await?)
         {
             return Ok(None);
         }
@@ -4723,6 +4828,18 @@ impl EngineCore {
         )
     }
 
+    fn cuda_pool_upper_bound(context: u64, retained_rows: u32, incremental: bool) -> Result<u64> {
+        if incremental {
+            context
+                .checked_mul(u64::from(retained_rows))
+                .ok_or_else(|| {
+                    Error::ModelLoadError("CUDA aggregate token capacity overflow".into())
+                })
+        } else {
+            Ok(context)
+        }
+    }
+
     /// Load managed state while allowing a model lifecycle to distinguish the
     /// scheduler's retained-session capacity from its simultaneously staged
     /// transaction width. `None` preserves the engine-wide legacy behavior.
@@ -4760,9 +4877,13 @@ impl EngineCore {
                     .fit_cuda_resident_logical_token_reach(
                         model_instance,
                         contract,
-                        u64::try_from(maximum_tokens).map_err(|_| {
-                            Error::ModelLoadError("model context exceeds u64".into())
-                        })?,
+                        Self::cuda_pool_upper_bound(
+                            u64::try_from(maximum_tokens).map_err(|_| {
+                                Error::ModelLoadError("model context exceeds u64".into())
+                            })?,
+                            retained_sequence_rows,
+                            self.config.cuda_incremental_chat_enabled(),
+                        )?,
                         self.config
                             .portable_context_reserve_bytes
                             .checked_add(decode_workspace_reserve_bytes)
@@ -4807,6 +4928,10 @@ impl EngineCore {
                     "managed KV load did not install a physical runtime".to_string(),
                 )
             })?;
+        if let Some(context) = logical_context_tokens {
+            runtime
+                .set_maximum_sequence_tokens((context as u64).min(runtime.logical_token_reach()));
+        }
         runtime.synchronize_backing()?;
         Ok(Some(runtime))
     }
@@ -5177,6 +5302,35 @@ mod tests {
     use crate::models::shared::chat::{ChatMessage, ChatRole};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn capacity_replay_cleanup_preserves_stream_delivery_cursor() {
+        let mut core = EngineCore::new(EngineCoreConfig::default()).unwrap();
+        let session = super::super::SessionKey::new("stream-replay".into(), 1);
+        core.stream_sequence_cursors.insert(session.clone(), 7);
+        core.incremental_stream_sessions.insert(session.clone());
+        core.execution_retry_attempts.insert(session.clone(), 2);
+        core.clear_execution_state_for_capacity_replay(&session);
+        assert_eq!(core.stream_sequence_cursors.get(&session), Some(&7));
+        assert!(core.incremental_stream_sessions.contains(&session));
+        assert!(!core.execution_retry_attempts.contains_key(&session));
+        core.clear_exact_execution_state(&session);
+        assert!(!core.stream_sequence_cursors.contains_key(&session));
+        assert!(!core.incremental_stream_sessions.contains(&session));
+    }
+
+    #[test]
+    fn cuda_pool_ceiling_separates_sequence_context_from_aggregate_capacity() {
+        assert_eq!(
+            EngineCore::cuda_pool_upper_bound(4096, 16, true).unwrap(),
+            65536
+        );
+        assert_eq!(
+            EngineCore::cuda_pool_upper_bound(4096, 16, false).unwrap(),
+            4096
+        );
+        assert!(EngineCore::cuda_pool_upper_bound(u64::MAX, 16, true).is_err());
+    }
 
     #[test]
     fn single_candidate_admission_alternates_under_sustained_decode_and_prefill() {

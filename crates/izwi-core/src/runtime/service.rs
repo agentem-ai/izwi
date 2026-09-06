@@ -51,6 +51,11 @@ use crate::engine::{
     ENGINE_STREAM_CHECKPOINTS_COMMITTED_TOTAL, ENGINE_STREAM_CHECKPOINT_REJECTIONS_TOTAL,
     ENGINE_STREAM_DELIVERY_FAILURES_TOTAL, REQUEST_DEADLINE_EXCEEDED,
 };
+use crate::engine::metrics::{
+    ENGINE_EXECUTOR_MODEL_TENSOR_BATCH_WIDTH_CALLS_TOTAL,
+    ENGINE_SCHEDULER_CAPACITY_SUSPENSIONS_TOTAL,
+    ENGINE_SCHEDULER_CAPACITY_REPLAY_TOKENS_TOTAL,
+};
 use crate::error::{Error, Result};
 use crate::model::ModelResidencyLease;
 use crate::models::architectures::fish_s2::{FishS2GenerationParams, FishS2Reference};
@@ -2658,6 +2663,11 @@ impl RuntimeService {
         &self.config
     }
 
+    /// Effective startup concurrency policy; never re-reads rollout environment variables.
+    pub fn chat_concurrency_policy(&self) -> crate::engine::metrics::EngineChatConcurrencyPolicySnapshot {
+        crate::engine::metrics::EngineChatConcurrencyPolicySnapshot::from_config(self.core_engine.config())
+    }
+
     /// Immutable requested/effective KV cache policy selected at startup.
     pub fn resolved_kv_cache_policy(&self) -> &ResolvedKvCachePolicy {
         &self.cache_policy
@@ -3209,6 +3219,31 @@ impl RuntimeService {
             },
             input_bytes,
         );
+        // Price the durable prompt/position/token journal and overlapping
+        // suspension/restoration copies in the request's existing host lease.
+        // This is separate from the generic request/text/workspace allowance.
+        if request.task_type == TaskType::Chat
+            && request
+                .model_variant
+                .is_some_and(|variant| variant.family() == ModelFamily::Qwen38Chat)
+        {
+            if let Some(runtime) = request.managed_cache_runtime() {
+                let bytes = runtime
+                    .maximum_sequence_tokens()
+                    .checked_mul(256)
+                    .ok_or_else(|| {
+                        Error::Overloaded("chat replay host reservation overflow".into())
+                    })?;
+                let mut journal = ResourceVector::zero();
+                match self.backend_router.context().backend_kind {
+                    BackendKind::Metal => journal.unified_bytes = ResourceAmount::Known(bytes),
+                    BackendKind::Cpu | BackendKind::Cuda => {
+                        journal.host_bytes = ResourceAmount::Known(bytes)
+                    }
+                }
+                spec.resources = spec.resources.checked_add(journal)?;
+            }
+        }
         let audio_decode_required = task_decodes_audio(request.task_type)
             && !(request.task_type == TaskType::ASR
                 && request.model_variant.is_some_and(|variant| {
@@ -6310,6 +6345,7 @@ impl RuntimeService {
 
         let batch = engine_batch_metrics_snapshot();
         EngineRuntimeTelemetrySnapshot {
+            chat_concurrency_policy: self.chat_concurrency_policy(),
             scheduler_queue_depth: queue_depth,
             scheduler_running_requests: running_requests,
             incremental_prefill_quanta_committed_total: batch
@@ -6347,6 +6383,9 @@ impl RuntimeService {
             model_scalar_row_dispatches_total: batch.model_scalar_row_dispatches_total,
             model_decode_calls_total: batch.model_decode_calls_total,
             model_tensor_multirow_calls_total: batch.model_tensor_multirow_calls_total,
+            model_tensor_batch_width_counts: batch.model_tensor_batch_width_counts,
+            capacity_suspensions_total: batch.capacity_suspensions_total,
+            capacity_replay_tokens_total: batch.capacity_replay_tokens_total,
             continuous_envelope_scalar_fallbacks_total: batch
                 .continuous_envelope_scalar_fallbacks_total,
             physical_execution: batch.physical_execution,
@@ -6534,6 +6573,26 @@ impl RuntimeService {
             payload,
             ENGINE_EXECUTOR_MODEL_TENSOR_MULTIROW_CALLS_TOTAL,
             snapshot.model_tensor_multirow_calls_total,
+        );
+        let width_labels = snapshot.model_tensor_batch_width_counts.iter()
+            .map(|(width, count)| (width.to_string(), *count)).collect::<Vec<_>>();
+        let width_values = width_labels.iter()
+            .map(|(label, count)| (label.as_str(), *count)).collect::<Vec<_>>();
+        push_engine_labeled_metric(
+            payload,
+            ENGINE_EXECUTOR_MODEL_TENSOR_BATCH_WIDTH_CALLS_TOTAL,
+            "width",
+            &width_values,
+        );
+        push_engine_metric(
+            payload,
+            ENGINE_SCHEDULER_CAPACITY_SUSPENSIONS_TOTAL,
+            snapshot.capacity_suspensions_total,
+        );
+        push_engine_metric(
+            payload,
+            ENGINE_SCHEDULER_CAPACITY_REPLAY_TOKENS_TOTAL,
+            snapshot.capacity_replay_tokens_total,
         );
         push_engine_metric(
             payload,
@@ -8205,6 +8264,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_concurrency_metrics_preserve_real_width_and_recovery_counts() {
+        use crate::engine::metrics::{
+            record_capacity_replay, record_capacity_suspension,
+            record_engine_model_call, EngineModelCall,
+        };
+        let runtime = RuntimeService::new(EngineConfig::default()).expect("runtime");
+        let before = runtime.engine_telemetry_snapshot().await;
+        record_engine_model_call(EngineModelCall::NativeTensor {
+            mode: crate::engine::NativeBatchMode::Continuous,
+            rows: 3,
+        });
+        record_capacity_suspension();
+        record_capacity_replay(17);
+        let after = runtime.engine_telemetry_snapshot().await;
+        assert!(after.model_tensor_batch_width_counts.get(&3).copied().unwrap_or(0)
+            > before.model_tensor_batch_width_counts.get(&3).copied().unwrap_or(0));
+        assert!(after.capacity_suspensions_total > before.capacity_suspensions_total);
+        assert!(after.capacity_replay_tokens_total >= before.capacity_replay_tokens_total + 17);
+        let json = serde_json::to_value(&after).expect("serialize concurrency metrics");
+        assert_eq!(json["model_tensor_batch_width_counts"]["3"],
+            serde_json::json!(after.model_tensor_batch_width_counts[&3]));
+        assert_eq!(json["capacity_replay_tokens_total"],
+            serde_json::json!(after.capacity_replay_tokens_total));
+        let payload = runtime.telemetry_prometheus().await;
+        assert!(payload.contains("izwi_engine_executor_model_tensor_batch_width_calls_total{width=\"3\"}"));
+        assert!(payload.contains("# TYPE izwi_engine_scheduler_capacity_suspensions_total counter"));
+        assert!(payload.contains("# TYPE izwi_engine_scheduler_capacity_replay_tokens_total counter"));
+    }
+
+    #[tokio::test]
     async fn runtime_prometheus_includes_engine_metric_values() {
         let runtime = RuntimeService::new(EngineConfig::default()).expect("runtime");
 
@@ -8237,6 +8326,9 @@ mod tests {
         assert!(payload.contains("izwi_engine_executor_model_decode_calls_total"));
         assert!(payload.contains("izwi_engine_executor_model_tensor_batches_total"));
         assert!(payload.contains("izwi_engine_executor_model_tensor_multirow_calls_total"));
+        assert!(payload.contains("izwi_engine_executor_model_tensor_batch_width_calls_total"));
+        assert!(payload.contains("izwi_engine_scheduler_capacity_suspensions_total"));
+        assert!(payload.contains("izwi_engine_scheduler_capacity_replay_tokens_total"));
         assert!(payload.contains("izwi_engine_executor_model_tensor_batch_rows_total"));
         assert!(payload.contains("izwi_engine_executor_model_tensor_batch_max_width"));
         assert!(payload.contains("izwi_engine_executor_model_scalar_row_dispatches_total"));
@@ -8347,7 +8439,9 @@ mod tests {
             physical_bytes: 1_280,
             registered_sessions: 1,
             single_sequence_token_capacity: 160,
+            aggregate_token_capacity: 160,
             full_context_sequence_capacity: 1,
+            incremental_claim_sessions: 0,
             arenas: vec![arena(allocated_pages)],
         };
         let snapshot = crate::engine::ManagedKvRuntimeSnapshot {

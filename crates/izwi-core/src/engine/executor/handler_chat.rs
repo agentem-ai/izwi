@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::error::{Error, Result};
-use crate::models::registry::{NativeChatDecodeCheckpoint, NativeChatDecodeStep, NativeChatModel};
+use crate::models::registry::{
+    NativeChatDecodeCheckpoint, NativeChatDecodeState, NativeChatDecodeStep, NativeChatModel,
+};
 use crate::models::shared::attention::physical::PhysicalPagedKvCache;
 use crate::models::shared::chat::ChatGenerationConfig;
 use crate::models::shared::chat::ChatMessage;
@@ -178,6 +180,43 @@ fn canonical_chat_terminal_text(streamed_text: &str, terminal_text: String) -> S
 }
 
 impl NativeExecutor {
+    pub(super) fn suspend_chat_session(&self, session: &SessionKey) -> Result<Option<usize>> {
+        let mut states = self
+            .chat_decode_states
+            .lock()
+            .map_err(|_| Error::InferenceError("chat state mutex poisoned".into()))?;
+        let Some(super::ExecutorStateSlot::Ready { state, .. }) = states.get(session) else {
+            return Ok(None);
+        };
+        let NativeChatDecodeState::Qwen38(model_state) = &state.state else {
+            return Ok(None);
+        };
+        let checkpoint = model_state.replay_checkpoint()?;
+        let tokens = checkpoint.replay_tokens();
+        let mut suspended = self
+            .suspended_chat_states
+            .lock()
+            .map_err(|_| Error::InferenceError("suspended chat mutex poisoned".into()))?;
+        if suspended.contains_key(session) {
+            return Err(Error::InferenceError(
+                "duplicate suspended chat identity".into(),
+            ));
+        }
+        suspended.insert(
+            session.clone(),
+            super::state::SuspendedChatDecode {
+                variant: state.variant,
+                checkpoint,
+                last_tokens_generated: state.last_tokens_generated,
+                stream_sequence: state.stream_sequence,
+                streamed_text: state.streamed_text.clone(),
+            },
+        );
+        // All CPU continuation state is installed before dropping GPU owners.
+        states.remove(session);
+        Ok(Some(tokens))
+    }
+
     pub(super) fn chat_generation_config(request: &EngineCoreRequest) -> ChatGenerationConfig {
         request.chat_generation_config()
     }
@@ -361,7 +400,7 @@ impl NativeExecutor {
         // visible to cleanup until this quantum is committed or released.
         let mut state_lease = ExecutorStateLease::checkout(
             &self.chat_decode_states,
-            session,
+            session.clone(),
             variant,
             "chat decode",
         )?;
@@ -373,6 +412,49 @@ impl NativeExecutor {
             state_lease.discard_state();
         }
 
+        let mut started_replay = false;
+        if state_lease.state().is_none() {
+            let mut suspended = self
+                .suspended_chat_states
+                .lock()
+                .map_err(|_| Error::InferenceError("suspended chat mutex poisoned".into()))?;
+            if let Some(saved) = suspended.get(&session) {
+                if !scheduled.is_prefill
+                    || scheduled.num_computed_tokens != 0
+                    || saved.variant != variant
+                {
+                    return Err(Error::InferenceError(
+                        "invalid chat replay restart boundary".into(),
+                    ));
+                }
+                let NativeChatModel::Qwen38(qwen) = model.as_ref() else {
+                    return Err(Error::InferenceError(
+                        "replay model does not match session".into(),
+                    ));
+                };
+                let cache = managed_cache
+                    .take()
+                    .ok_or_else(|| Error::InferenceError("replay lost target cache".into()))?;
+                let mut state = NativeChatDecodeState::Qwen38(qwen.begin_replay_state_physical(
+                    &saved.checkpoint,
+                    cache,
+                    mtp_cache.take(),
+                )?);
+                if let Some(reservation) = tensor_reservation.as_ref() {
+                    state.bind_hybrid_tensor_sequence(reservation.sequence)?;
+                }
+                state_lease.install_state(ActiveChatDecode {
+                    variant,
+                    state,
+                    last_tokens_generated: saved.last_tokens_generated,
+                    stream_sequence: saved.stream_sequence,
+                    streamed_text: saved.streamed_text.clone(),
+                })?;
+                suspended.remove(&session);
+                started_replay = true;
+            }
+        }
+
         if state_lease.state().is_some() {
             match managed_cache.take() {
                 Some(cache) => {
@@ -382,9 +464,10 @@ impl NativeExecutor {
                         .state
                         .install_managed_reservations(cache, mtp_cache.take())?;
                 }
-                None if state_lease
-                    .state()
-                    .is_some_and(|state| state.state.uses_managed_kv()) =>
+                None if !started_replay
+                    && state_lease
+                        .state()
+                        .is_some_and(|state| state.state.uses_managed_kv()) =>
                 {
                     return Err(Error::InferenceError(
                         "managed chat session lost its physical cache authority".to_string(),
@@ -398,10 +481,12 @@ impl NativeExecutor {
                     .require_state_mut()?
                     .state
                     .bind_hybrid_tensor_sequence(reservation.sequence)?;
-                state_lease
-                    .require_state_mut()?
-                    .state
-                    .restore_hybrid_tensor_state(arena)?;
+                if !started_replay {
+                    state_lease
+                        .require_state_mut()?
+                        .state
+                        .restore_hybrid_tensor_state(arena)?;
+                }
             }
         } else {
             if request.is_cancelled() {
@@ -503,13 +588,39 @@ impl NativeExecutor {
         }
         let resumable_prefill_quantum = scheduled.is_prefill && resumable_prefill;
         let resumable_span_tokens = resumable_prefill_quantum.then_some(scheduled.num_tokens);
+        let replay_tokens = state_lease.state().and_then(|active| match &active.state {
+            NativeChatDecodeState::Qwen38(state) => state.replay_tokens(),
+            _ => None,
+        });
         let resumable_span = resumable_prefill_quantum
-            .then(|| resumable_prefill_span(scheduled, request.num_prompt_tokens()))
+            .then(|| {
+                resumable_prefill_span(
+                    scheduled,
+                    replay_tokens.unwrap_or(request.num_prompt_tokens()),
+                )
+            })
             .transpose()?;
         state_lease.mark_dirty();
         let (step, final_text, finished, managed_cache_completions) = {
             let active_state = state_lease.require_state_mut()?;
-            let step = if let Some((span_start, span_end)) = resumable_span {
+            let step = if let (Some(_), Some((start, end))) = (replay_tokens, resumable_span) {
+                let (NativeChatModel::Qwen38(qwen), NativeChatDecodeState::Qwen38(state)) =
+                    (model.as_ref(), &mut active_state.state)
+                else {
+                    return Err(Error::InferenceError(
+                        "chat replay crossed model family".into(),
+                    ));
+                };
+                Self::run_blocking(|| qwen.continue_replay_physical(state, start, end))?;
+                crate::engine::metrics::record_capacity_replay(end - start);
+                NativeChatDecodeStep {
+                    delta: String::new(),
+                    text: active_state.streamed_text.clone(),
+                    tokens_generated: active_state.last_tokens_generated,
+                    input_tokens_committed: 0,
+                    finished: false,
+                }
+            } else if let Some((span_start, span_end)) = resumable_span {
                 let prefill_complete = Self::run_blocking(|| {
                     model.continue_resumable_prefill(
                         &mut active_state.state,
@@ -1132,5 +1243,243 @@ mod tests {
             canonical_chat_terminal_text("", "terminal-only".to_string()),
             "terminal-only"
         );
+    }
+
+    #[test]
+    fn hybrid_handler_suspension_replays_physical_receipts_without_republishing() {
+        use crate::backends::BackendKind;
+        use crate::engine::cache::managed::ManagedKvCacheManager;
+        use crate::engine::ModelInstanceId;
+        use crate::kv::InferenceStateContractProvider;
+        use crate::models::architectures::qwen38::chat::recovery_tests::{
+            model_fixture, prepared_prompt,
+        };
+        use crate::models::registry::{ChatModelLease, NativeChatPreparedPrompt};
+
+        let model = model_fixture(true);
+        let capability = model.inference_state_contract().unwrap();
+        let lease = ChatModelLease::for_test(NativeChatModel::Qwen38(model));
+        let instance = ModelInstanceId::new(9191);
+        let mut actual_cache = ManagedKvCacheManager::new(None);
+        let mut baseline_cache = ManagedKvCacheManager::new(None);
+        let mut request = EngineCoreRequest::chat(vec![ChatMessage {
+            role: ChatRole::User,
+            content: "fixture".into(),
+        }])
+        .with_model_variant(ModelVariant::Qwen3827BFp8)
+        .with_streaming(true);
+        request.model_instance_id = Some(instance);
+        request.params.max_tokens = 12;
+        request.params.temperature = 0.8;
+        let prepared = prepared_prompt();
+        request
+            .install_chat_execution_preparation_with_model(
+                ModelVariant::Qwen3827BFp8,
+                prepared.prompt_ids().to_vec(),
+                Some(NativeChatPreparedPrompt::Qwen38(prepared)),
+                lease,
+                32,
+            )
+            .unwrap();
+        let runtime = actual_cache
+            .bind_request(instance, BackendKind::Cpu, 16, 4, &capability)
+            .unwrap()
+            .unwrap();
+        request
+            .install_managed_cache_runtime(runtime.clone())
+            .unwrap();
+        let mut baseline_request = request.clone();
+        let baseline_runtime = baseline_cache
+            .bind_request(instance, BackendKind::Cpu, 16, 4, &capability)
+            .unwrap()
+            .unwrap();
+        // Separate managers intentionally own separate model runtime allocations.
+        baseline_request.managed_cache_runtime = Some(baseline_runtime.clone());
+        let config = super::super::WorkerConfig {
+            enable_chunked_prefill: true,
+            ..Default::default()
+        };
+        let actual = NativeExecutor::new(config.clone());
+        let baseline = NativeExecutor::new(config);
+        let scheduled = |plan, start, end, prefill| ScheduledRequest {
+            plan_id: plan,
+            request_id: request.id.clone(),
+            sequence_id: 1,
+            num_tokens: end - start,
+            num_computed_tokens: start,
+            is_prefill: prefill,
+            work: WorkUnit::SequenceStep {
+                phase: if prefill {
+                    SequencePhase::Prefill
+                } else {
+                    SequencePhase::Decode
+                },
+                input: InputRange { start, end },
+                max_output_steps: 1,
+                auxiliary_state: None,
+            },
+        };
+        let run = |executor: &NativeExecutor,
+                   manager: &mut ManagedKvCacheManager,
+                   request: &EngineCoreRequest,
+                   row: &ScheduledRequest| {
+            let runtime = request.managed_cache_runtime().unwrap();
+            let reservation = manager
+                .prepare_incremental(
+                    runtime,
+                    row.plan_id,
+                    &row.session_key(),
+                    &row.work,
+                    Some(request),
+                )
+                .unwrap()
+                .unwrap();
+            let caches =
+                super::super::qwen38_managed_caches_for_row(request, row, &reservation).unwrap();
+            request.begin_stream_staging().unwrap();
+            let result = executor
+                .chat_request_with_managed_cache(
+                    request,
+                    row,
+                    Some(caches.target),
+                    caches.mtp,
+                    reservation.clocked_state.clone(),
+                )
+                .unwrap();
+            let receipt = reservation
+                .completed_write_receipt(&result.managed_cache_completions)
+                .unwrap();
+            manager
+                .finalize(&reservation, Some(&receipt), true)
+                .unwrap();
+            for group in &runtime.plan().groups {
+                assert_eq!(
+                    manager
+                        .snapshot(instance, &row.session_key(), group.domain)
+                        .unwrap()
+                        .committed_tokens,
+                    (row.num_computed_tokens + row.num_tokens) as u32
+                );
+            }
+            let tensor_sequence = crate::backends::state::PhysicalStateSequenceId::new(
+                reservation.clocked_state.as_ref().unwrap().sequence,
+            )
+            .unwrap();
+            let tensors = runtime
+                .state_plan_v2()
+                .non_paged
+                .iter()
+                .flat_map(|domain| {
+                    runtime
+                        .tensor_state()
+                        .unwrap()
+                        .read(tensor_sequence, domain.domain())
+                        .unwrap()
+                        .unwrap()
+                        .components
+                        .iter()
+                        .map(|component| {
+                            component
+                                .tensor
+                                .as_ref()
+                                .unwrap()
+                                .flatten_all()
+                                .unwrap()
+                                .to_vec1::<f32>()
+                                .unwrap()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                tensors.len(),
+                2,
+                "fixture must exercise recurrent and convolution domains"
+            );
+            assert!(
+                tensors
+                    .iter()
+                    .all(|values| values.iter().any(|value| value.abs() > 1e-6)),
+                "hybrid state must be nonzero"
+            );
+            let events = request.take_staged_stream_outputs().unwrap();
+            (result.output, events, tensors)
+        };
+        let compare_tensors = |actual: &Vec<Vec<f32>>, expected: &Vec<Vec<f32>>| {
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert_eq!(actual.len(), expected.len());
+                for (actual, expected) in actual.iter().zip(expected) {
+                    assert!(
+                        (actual - expected).abs() < 1e-5,
+                        "hybrid state mismatch: {actual} vs {expected}"
+                    );
+                }
+            }
+        };
+        let mut baseline_tensors = Vec::new();
+        for (plan, start, end, prefill) in [(1, 0, 2, true), (2, 2, 3, false), (3, 3, 4, false)] {
+            let row = scheduled(plan, start, end, prefill);
+            let (_, actual_events, actual_tensors) =
+                run(&actual, &mut actual_cache, &request, &row);
+            let (_, expected_events, expected_tensors) =
+                run(&baseline, &mut baseline_cache, &baseline_request, &row);
+            compare_tensors(&actual_tensors, &expected_tensors);
+            baseline_tensors = expected_tensors;
+            assert_eq!(
+                actual_events
+                    .iter()
+                    .map(|e| (&e.text, e.sequence))
+                    .collect::<Vec<_>>(),
+                expected_events
+                    .iter()
+                    .map(|e| (&e.text, e.sequence))
+                    .collect::<Vec<_>>()
+            );
+        }
+        let session = scheduled(3, 3, 4, false).session_key();
+        assert_eq!(actual.suspend_chat_session(&session).unwrap(), Some(4));
+        actual_cache.release_session(&session).unwrap();
+        assert!(!actual
+            .chat_decode_states
+            .lock()
+            .unwrap()
+            .contains_key(&session));
+        for cursor in 0..4 {
+            let row = scheduled(10 + cursor as u64, cursor, cursor + 1, true);
+            let (output, events, replay_tensors) = run(&actual, &mut actual_cache, &request, &row);
+            if cursor == 3 {
+                compare_tensors(&replay_tensors, &baseline_tensors);
+            }
+            assert_eq!(output.tokens_generated, 0);
+            assert_eq!(output.tokens_processed, 1);
+            assert!(
+                events.is_empty(),
+                "replay must not publish any duplicate token"
+            );
+        }
+        assert!(!actual
+            .suspended_chat_states
+            .lock()
+            .unwrap()
+            .contains_key(&session));
+        for cursor in 4..7 {
+            let row = scheduled(20 + cursor as u64, cursor, cursor + 1, false);
+            let (_, actual_events, actual_tensors) =
+                run(&actual, &mut actual_cache, &request, &row);
+            let (_, expected_events, expected_tensors) =
+                run(&baseline, &mut baseline_cache, &baseline_request, &row);
+            compare_tensors(&actual_tensors, &expected_tensors);
+            assert_eq!(
+                actual_events
+                    .iter()
+                    .map(|e| (&e.text, e.sequence))
+                    .collect::<Vec<_>>(),
+                expected_events
+                    .iter()
+                    .map(|e| (&e.text, e.sequence))
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 }

@@ -3,6 +3,7 @@
 use axum::{extract::State, Json};
 use izwi_core::backends::{CudaRuntimeDiagnostics, DTypeSelectionRequest};
 use izwi_core::config::ResolvedKvCachePolicy;
+use izwi_core::engine::metrics::EngineChatConcurrencyPolicySnapshot;
 use izwi_core::runtime_models::shared::attention::flash::{
     flash_attention_compiled, flash_attention_requested,
 };
@@ -21,6 +22,7 @@ pub struct HealthResponse {
 #[derive(Serialize)]
 pub struct RuntimeBackendResponse {
     pub build_git_sha: Option<&'static str>,
+    pub chat_concurrency_policy: EngineChatConcurrencyPolicySnapshot,
     pub requested_backend: String,
     pub requested_backend_available: bool,
     pub selected_backend: String,
@@ -98,6 +100,7 @@ pub async fn health_check(State(state): State<AppState>) -> Json<HealthResponse>
         version: env!("CARGO_PKG_VERSION"),
         runtime: RuntimeBackendResponse {
             build_git_sha: option_env!("IZWI_BUILD_GIT_SHA"),
+            chat_concurrency_policy: state.runtime.chat_concurrency_policy(),
             requested_backend: context.preference.as_str().to_string(),
             requested_backend_available,
             selected_backend: context.backend_kind.as_str().to_string(),
@@ -207,6 +210,13 @@ mod tests {
     fn runtime_backend_health_serializes_loaded_tts_model_diagnostics() {
         let response = RuntimeBackendResponse {
             build_git_sha: Some("test-sha"),
+            chat_concurrency_policy: EngineChatConcurrencyPolicySnapshot {
+                cuda_incremental_chat_requested: true,
+                cuda_incremental_chat_effective: true,
+                replay_eligible_families: vec!["qwen38_chat"],
+                chunked_prefill_effective: true,
+                chunked_prefill_requires_adapter_support: true,
+            },
             requested_backend: "cuda".to_string(),
             requested_backend_available: true,
             selected_backend: "cuda".to_string(),
@@ -295,6 +305,18 @@ mod tests {
         assert_eq!(
             value["loaded_tts_model"]["model_family"],
             serde_json::json!("vibevoice_tts")
+        );
+        assert_eq!(
+            value["chat_concurrency_policy"]["cuda_incremental_chat_effective"],
+            true
+        );
+        assert_eq!(
+            value["chat_concurrency_policy"]["chunked_prefill_effective"],
+            true
+        );
+        assert_eq!(
+            value["chat_concurrency_policy"]["replay_eligible_families"],
+            serde_json::json!(["qwen38_chat"])
         );
         assert_eq!(value["loaded_tts_model"]["device_kind"], "Cuda");
         assert_eq!(value["loaded_tts_model"]["dtype"], "BF16");

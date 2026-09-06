@@ -3774,6 +3774,15 @@ pub struct ChatModelLease {
 }
 
 impl ChatModelLease {
+    #[cfg(test)]
+    pub(crate) fn for_test(model: NativeChatModel) -> Self {
+        let uses = Arc::new(ModelUseState::default());
+        Self { inner: TrackedModelLease {
+            model: Arc::new(model),
+            _guard: uses.acquire().expect("fresh test model lease"),
+        } }
+    }
+
     pub(crate) fn model_arc(&self) -> Arc<NativeChatModel> {
         self.inner.model.clone()
     }

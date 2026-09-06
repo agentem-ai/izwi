@@ -75,6 +75,7 @@ pub struct InferenceBrokerRuntimeTelemetrySnapshot {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct EngineRuntimeTelemetrySnapshot {
+    pub chat_concurrency_policy: crate::engine::metrics::EngineChatConcurrencyPolicySnapshot,
     pub scheduler_queue_depth: u64,
     pub scheduler_running_requests: u64,
     pub incremental_prefill_quanta_committed_total: u64,
@@ -108,6 +109,10 @@ pub struct EngineRuntimeTelemetrySnapshot {
     pub model_scalar_row_dispatches_total: u64,
     pub model_decode_calls_total: u64,
     pub model_tensor_multirow_calls_total: u64,
+    /// Exact widths 1..=64; key 0 is overflow, never an exact-width proof.
+    pub model_tensor_batch_width_counts: BTreeMap<u64, u64>,
+    pub capacity_suspensions_total: u64,
+    pub capacity_replay_tokens_total: u64,
     pub continuous_envelope_scalar_fallbacks_total: u64,
     pub physical_execution: EnginePhysicalExecutionMetricsSnapshot,
     /// Exact backend-owned managed arenas, page ownership, and counters.

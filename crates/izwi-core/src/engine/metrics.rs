@@ -8,7 +8,7 @@
 //! - Queue depth monitoring
 
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -94,6 +94,12 @@ pub const ENGINE_EXECUTOR_MODEL_DECODE_CALLS_TOTAL: &str =
     "engine.executor.model_decode_calls_total";
 pub const ENGINE_EXECUTOR_MODEL_TENSOR_MULTIROW_CALLS_TOTAL: &str =
     "engine.executor.model_tensor_multirow_calls_total";
+pub const ENGINE_EXECUTOR_MODEL_TENSOR_BATCH_WIDTH_CALLS_TOTAL: &str =
+    "engine.executor.model_tensor_batch_width_calls_total";
+pub const ENGINE_SCHEDULER_CAPACITY_SUSPENSIONS_TOTAL: &str =
+    "engine.scheduler.capacity_suspensions_total";
+pub const ENGINE_SCHEDULER_CAPACITY_REPLAY_TOKENS_TOTAL: &str =
+    "engine.scheduler.capacity_replay_tokens_total";
 pub const ENGINE_EXECUTOR_CONTINUOUS_ENVELOPE_SCALAR_FALLBACKS_TOTAL: &str =
     "engine.executor.continuous_envelope_scalar_fallbacks_total";
 pub const ENGINE_EXECUTOR_PHYSICAL_EXECUTION_MODE: &str = "engine.executor.physical_execution_mode";
@@ -320,6 +326,18 @@ pub const ENGINE_METRIC_CATALOG: &[EngineMetricDescriptor] = &[
     EngineMetricDescriptor {
         name: ENGINE_EXECUTOR_MODEL_TENSOR_MULTIROW_CALLS_TOTAL,
         description: "Proven tensor-batched model call paths that executed at least two live rows.",
+    },
+    EngineMetricDescriptor {
+        name: ENGINE_EXECUTOR_MODEL_TENSOR_BATCH_WIDTH_CALLS_TOTAL,
+        description: "Actual native tensor forward calls by exact width 1 through 64; width 0 collects overflow above 64 and never certifies an exact width.",
+    },
+    EngineMetricDescriptor {
+        name: ENGINE_SCHEDULER_CAPACITY_SUSPENSIONS_TOTAL,
+        description: "Committed request suspensions that release model state for cache capacity recovery.",
+    },
+    EngineMetricDescriptor {
+        name: ENGINE_SCHEDULER_CAPACITY_REPLAY_TOKENS_TOTAL,
+        description: "Canonical tokens replayed while restoring a capacity-suspended request, without emitting output again.",
     },
     EngineMetricDescriptor {
         name: ENGINE_EXECUTOR_CONTINUOUS_ENVELOPE_SCALAR_FALLBACKS_TOTAL,
@@ -954,7 +972,7 @@ fn saturating_atomic_sub(value: &AtomicU64, amount: u64) {
     });
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct EngineBatchMetricsSnapshot {
     pub incremental_prefill_quanta_committed_total: u64,
     pub incremental_prefill_tokens_committed_total: u64,
@@ -983,8 +1001,57 @@ pub struct EngineBatchMetricsSnapshot {
     pub model_scalar_row_dispatches_total: u64,
     pub model_decode_calls_total: u64,
     pub model_tensor_multirow_calls_total: u64,
+    /// Actual forwards by exact tensor width 1..=64; key 0 is overflow above 64.
+    pub model_tensor_batch_width_counts: BTreeMap<u64, u64>,
+    pub capacity_suspensions_total: u64,
+    pub capacity_replay_tokens_total: u64,
     pub continuous_envelope_scalar_fallbacks_total: u64,
     pub physical_execution: EnginePhysicalExecutionMetricsSnapshot,
+}
+
+// Bound cardinality and remove allocation/locking from the model-call hot path.
+// Overflow cannot be interpreted as an exact width by the evidence runner.
+const EXACT_MODEL_WIDTH_LIMIT: usize = 64;
+struct ModelWidthCounts([AtomicU64; EXACT_MODEL_WIDTH_LIMIT + 1]);
+impl ModelWidthCounts {
+    const fn new() -> Self {
+        Self([const { AtomicU64::new(0) }; EXACT_MODEL_WIDTH_LIMIT + 1])
+    }
+
+    fn record(&self, call: EngineModelCall) {
+        if let EngineModelCall::NativeTensor { rows, .. } = call {
+            if rows == 0 {
+                return;
+            }
+            let bucket = if rows <= EXACT_MODEL_WIDTH_LIMIT {
+                rows
+            } else {
+                0
+            };
+            self.0[bucket].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn snapshot(&self) -> BTreeMap<u64, u64> {
+        self.0
+            .iter()
+            .enumerate()
+            .filter_map(|(width, count)| {
+                let count = count.load(Ordering::Relaxed);
+                (count > 0).then_some((width as u64, count))
+            })
+            .collect()
+    }
+}
+static ENGINE_MODEL_WIDTH_COUNTS: ModelWidthCounts = ModelWidthCounts::new();
+static ENGINE_CAPACITY_SUSPENSIONS: AtomicU64 = AtomicU64::new(0);
+static ENGINE_CAPACITY_REPLAY_TOKENS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn record_capacity_suspension() {
+    ENGINE_CAPACITY_SUSPENSIONS.fetch_add(1, Ordering::Relaxed);
+}
+pub(crate) fn record_capacity_replay(tokens: usize) {
+    ENGINE_CAPACITY_REPLAY_TOKENS.fetch_add(tokens as u64, Ordering::Relaxed);
 }
 
 static ENGINE_INCREMENTAL_PREFILL_QUANTA_COMMITTED: AtomicU64 = AtomicU64::new(0);
@@ -1098,6 +1165,7 @@ pub(crate) enum EngineModelCall {
 }
 
 pub(crate) fn record_engine_model_call(call: EngineModelCall) {
+    ENGINE_MODEL_WIDTH_COUNTS.record(call);
     match call {
         EngineModelCall::NativeTensor { mode, rows } => {
             debug_assert!(mode != NativeBatchMode::None);
@@ -1330,6 +1398,9 @@ pub fn engine_batch_metrics_snapshot() -> EngineBatchMetricsSnapshot {
         model_decode_calls_total: ENGINE_MODEL_DECODE_CALLS.load(Ordering::Relaxed),
         model_tensor_multirow_calls_total: ENGINE_MODEL_TENSOR_MULTIROW_CALLS
             .load(Ordering::Relaxed),
+        model_tensor_batch_width_counts: ENGINE_MODEL_WIDTH_COUNTS.snapshot(),
+        capacity_suspensions_total: ENGINE_CAPACITY_SUSPENSIONS.load(Ordering::Relaxed),
+        capacity_replay_tokens_total: ENGINE_CAPACITY_REPLAY_TOKENS.load(Ordering::Relaxed),
         continuous_envelope_scalar_fallbacks_total: ENGINE_CONTINUOUS_ENVELOPE_SCALAR_FALLBACKS
             .load(Ordering::Relaxed),
         physical_execution: engine_physical_execution_metrics_snapshot(),
@@ -1353,6 +1424,30 @@ pub fn prometheus_engine_metric_type(name: &str) -> &'static str {
         "counter"
     } else {
         "gauge"
+    }
+}
+
+/// Immutable startup policy, distinct from live request admission or GPU certification.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct EngineChatConcurrencyPolicySnapshot {
+    pub cuda_incremental_chat_requested: bool,
+    pub cuda_incremental_chat_effective: bool,
+    /// Families with published-token replay support used by this rollout.
+    pub replay_eligible_families: Vec<&'static str>,
+    pub chunked_prefill_effective: bool,
+    /// Unsupported adapters retain their existing prefill behavior.
+    pub chunked_prefill_requires_adapter_support: bool,
+}
+
+impl EngineChatConcurrencyPolicySnapshot {
+    pub fn from_config(config: &super::EngineCoreConfig) -> Self {
+        Self {
+            cuda_incremental_chat_requested: config.enable_cuda_incremental_chat,
+            cuda_incremental_chat_effective: config.cuda_incremental_chat_enabled(),
+            replay_eligible_families: vec!["qwen38_chat"],
+            chunked_prefill_effective: config.effective_chunked_prefill(),
+            chunked_prefill_requires_adapter_support: true,
+        }
     }
 }
 
@@ -1844,6 +1939,64 @@ mod tests {
             after.continuous_envelope_scalar_fallbacks_total
                 > before.continuous_envelope_scalar_fallbacks_total
         );
+    }
+
+    #[test]
+    fn concurrency_policy_uses_resolved_config_and_cuda_eligibility() {
+        for backend in [
+            crate::backends::BackendKind::Cpu,
+            crate::backends::BackendKind::Metal,
+            crate::backends::BackendKind::Cuda,
+        ] {
+            for requested in [false, true] {
+                for chunked in [false, true] {
+                    let config = super::super::EngineCoreConfig {
+                        backend,
+                        enable_cuda_incremental_chat: requested,
+                        enable_chunked_prefill: chunked,
+                        ..super::super::EngineCoreConfig::default()
+                    };
+                    let policy = EngineChatConcurrencyPolicySnapshot::from_config(&config);
+                    let effective = backend == crate::backends::BackendKind::Cuda && requested;
+                    assert_eq!(policy.cuda_incremental_chat_requested, requested);
+                    assert_eq!(policy.cuda_incremental_chat_effective, effective);
+                    assert_eq!(policy.chunked_prefill_effective, chunked || effective);
+                    assert_eq!(policy.replay_eligible_families, vec!["qwen38_chat"]);
+                    assert!(policy.chunked_prefill_requires_adapter_support);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn model_width_counts_exclude_scalar_envelopes_and_bound_cardinality() {
+        let counts = ModelWidthCounts::new();
+        for _ in 0..3 {
+            counts.record(EngineModelCall::NativeTensor {
+                mode: NativeBatchMode::Continuous,
+                rows: 3,
+            });
+        }
+        counts.record(EngineModelCall::ScalarRows {
+            envelope: NativeBatchMode::Continuous,
+            rows: 8,
+        });
+        counts.record(EngineModelCall::NativeTensor {
+            mode: NativeBatchMode::Static,
+            rows: 0,
+        });
+        assert_eq!(counts.snapshot(), BTreeMap::from([(3, 3)]));
+        for rows in 1..=1024 {
+            counts.record(EngineModelCall::NativeTensor {
+                mode: NativeBatchMode::Continuous,
+                rows,
+            });
+        }
+        let snapshot = counts.snapshot();
+        assert_eq!(snapshot.len(), EXACT_MODEL_WIDTH_LIMIT + 1);
+        assert_eq!(snapshot[&0], (1024 - EXACT_MODEL_WIDTH_LIMIT) as u64);
+        assert_eq!(snapshot[&3], 4);
+        assert_eq!(snapshot[&64], 1);
     }
 
     #[test]

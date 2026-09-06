@@ -27,6 +27,14 @@ use crate::models::registry::{
 };
 use crate::models::shared::attention::physical::PhysicalPagedKvCache;
 
+pub(super) struct SuspendedChatDecode {
+    pub(super) variant: ModelVariant,
+    pub(super) checkpoint: crate::models::architectures::qwen38::chat::Qwen38ReplayCheckpoint,
+    pub(super) last_tokens_generated: usize,
+    pub(super) stream_sequence: usize,
+    pub(super) streamed_text: String,
+}
+
 pub(super) struct ActiveChatDecode {
     pub(super) variant: ModelVariant,
     pub(super) state: NativeChatDecodeState,
