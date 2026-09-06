@@ -147,6 +147,18 @@ For `Qwen3.8-27B-FP8` on CUDA, inspect the loaded entry returned by
 fail when free VRAM or allocator headroom is insufficient. It is not a native
 FP8 mode; see the [support matrix](/support-matrix#qwen38-cuda-weight-residency).
 
+For Qwen3.8 responses that stop with `No finite Qwen3.8 sampling distribution`,
+check `family_diagnostics.optimization_evidence.cuda_kv_storage` in the loaded
+model diagnostics. BF16 model activations must retain their exponent range:
+F16 KV conversion can turn a finite value into infinity and corrupt subsequent
+attention. Supported CUDA devices (observed compute capability 8.0+) now default
+to `storage_dtype: bf16` and `selected_provider: cuda_bf16`, with the same KV
+memory footprint. Rebuild/restart and reload the model to apply the policy.
+Remove an explicit `IZWI_QWEN38_CUDA_BF16_KV=0` override to use the default;
+that override remains available for controlled F16 comparisons. Sampling
+failures include the target/draft/bonus stage and bounded numerical diagnostics;
+retain those details if a failure recurs under BF16 KV.
+
 For long-context requests, inspect `runtime_metrics.kv_cache.models` in the
 health/admin diagnostics. `single_sequence_token_capacity` is the largest
 sequence the fitted pools can retain, while `full_context_sequence_capacity`

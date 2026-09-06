@@ -354,8 +354,10 @@ sustained grants, soft-deadline fallbacks and fairness behavior.
 
 The FP8 checkpoint describes weight storage, not KV cache storage. Loaded-model
 diagnostics must currently report `cuda_kv_storage.quantized=false` and
-`physical_format=dense`: CUDA and Metal use F16 by default, CPU uses F32, and
-CUDA has a separately opt-in, unvalidated BF16 candidate. FP8 KV stays
+`physical_format=dense`: Metal uses F16 and CPU uses F32.
+CUDA defaults to BF16 KV on observed compute capability 8.0+;
+`IZWI_QWEN38_CUDA_BF16_KV=0` selects the F16 comparison. Unknown/older CUDA
+capabilities retain F16. Runtime validation remains a separate evidence gate. FP8 KV stays
 unselectable until the implementation has calibrated per-layer K/V scales,
 scale-aware page mutation/accounting, fused paged prefill and decode kernels,
 and retained numerical, quality, memory, and latency evidence. A standalone

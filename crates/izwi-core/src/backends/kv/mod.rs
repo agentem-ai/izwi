@@ -9,6 +9,8 @@
 mod accelerator;
 mod cpu;
 mod cuda_tuning;
+#[cfg(test)]
+mod precision_tests;
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};

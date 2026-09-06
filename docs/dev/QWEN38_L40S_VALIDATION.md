@@ -34,6 +34,7 @@ alone must not be reported as proof of native FP8 arithmetic or a speedup.
 | Projection provider | `projection_backend = "auto"` | `IZWI_CUDA_PROJECTION_BACKEND=q8` |
 | Packed projections | `packed_projections = "auto"` | `IZWI_CUDA_PACKED_PROJECTIONS=off` |
 | Fused decode | `fused_decode = "auto"` | `IZWI_CUDA_FUSED_DECODE=off` |
+| KV precision | BF16 on observed CUDA capability 8.0+ | `IZWI_QWEN38_CUDA_BF16_KV=0` |
 | Device sampling | `device_sampling = "auto"` | `IZWI_CUDA_DEVICE_SAMPLING=off` |
 | Decode graphs | `decode_graphs = "auto"` | `IZWI_CUDA_DECODE_GRAPHS=off` |
 | MTP / sustained quantum | `mtp = "auto"`, `mtp_quantum = "auto"` | `IZWI_CUDA_MTP=off`, `IZWI_CUDA_MTP_QUANTUM=off` |
@@ -46,9 +47,22 @@ Loading also exposes `workers`, `max_staging_bytes`, `cache_max_bytes`, `cache_d
 and `io_strategy` (`auto`, `mmap`, `sequential`). MTP begins at draft depth one;
 `mtp_draft_tokens` supports 1–3 and `mtp_adaptive` controls adaptation. Existing
 `IZWI_QWEN38_*` aliases remain supported, including explicit `0`; canonical
-configuration takes precedence. BF16 KV remains a separate precision comparison,
-not a consequence of FP8 checkpoint weights. An Auto request alone does not prove
-that an optional kernel, graph, or provider executed.
+configuration takes precedence. KV uses BF16 by default on observed CUDA
+capability 8.0+ to retain the exponent range of BF16 activations. F16 KV remains
+an explicit precision comparison via `IZWI_QWEN38_CUDA_BF16_KV=0`; unknown and
+older CUDA capabilities retain the F16 fallback. Both formats use two bytes per
+element. This precision policy is independent of `IZWI_CUDA_MODE=off`; the
+all-off baseline retains BF16. To reproduce the previous F16 precision, also
+set `IZWI_QWEN38_CUDA_BF16_KV=0`. An Auto request alone does not prove that an
+optional kernel, graph, or provider executed.
+
+The KV precision regression stores BF16 values of 65,536, whose causal attention
+averages fit F16. F16 storage nevertheless overflows; BF16 matches the F32
+reference. The hardware profile explicitly runs
+`cuda_flash_paged_bf16_preserves_finite_kv_range`, covering shuffled pages,
+excluded non-finite tails, and contexts through 2,049 tokens. The local CPU
+regression demonstrates the conversion failure mechanism; no failing deployed
+activation values or CUDA execution were captured during this repair.
 
 Collect empty-config defaults, an explicit all-off baseline, each individual
 optimization and opt-out, then combinations. The all-off server comparison uses

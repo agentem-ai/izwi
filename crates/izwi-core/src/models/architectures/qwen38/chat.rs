@@ -122,7 +122,7 @@ enum Qwen38KvStorageProvider {
     MetalF16,
     CudaF16Fallback,
     CudaF16CapabilityFallback,
-    CudaBf16Candidate,
+    CudaBf16,
 }
 
 impl Qwen38KvStorageProvider {
@@ -135,12 +135,12 @@ impl Qwen38KvStorageProvider {
             BackendKind::Cpu => Self::CpuF32,
             BackendKind::Metal => Self::MetalF16,
             BackendKind::Cuda
-                if qwen38_candidate_enabled(cuda_bf16_override)
+                if qwen38_bf16_kv_enabled(cuda_bf16_override)
                     && qwen38_cuda_supports_bf16(cuda_compute_capability) =>
             {
-                Self::CudaBf16Candidate
+                Self::CudaBf16
             }
-            BackendKind::Cuda if qwen38_candidate_enabled(cuda_bf16_override) => {
+            BackendKind::Cuda if qwen38_bf16_kv_enabled(cuda_bf16_override) => {
                 Self::CudaF16CapabilityFallback
             }
             BackendKind::Cuda => Self::CudaF16Fallback,
@@ -151,7 +151,7 @@ impl Qwen38KvStorageProvider {
         match self {
             Self::CpuF32 => DType::F32,
             Self::MetalF16 | Self::CudaF16Fallback | Self::CudaF16CapabilityFallback => DType::F16,
-            Self::CudaBf16Candidate => DType::BF16,
+            Self::CudaBf16 => DType::BF16,
         }
     }
 
@@ -161,18 +161,18 @@ impl Qwen38KvStorageProvider {
             Self::MetalF16 => "metal_f16",
             Self::CudaF16Fallback => "cuda_f16_fallback",
             Self::CudaF16CapabilityFallback => "cuda_f16_capability_fallback",
-            Self::CudaBf16Candidate => "cuda_bf16_candidate",
+            Self::CudaBf16 => "cuda_bf16",
         }
     }
 
     const fn fallback_reason(self) -> Option<&'static str> {
         match self {
-            Self::CudaF16Fallback => Some(
-                "CUDA BF16 KV is an unvalidated candidate; set IZWI_QWEN38_CUDA_BF16_KV=1 to test it",
-            ),
-            Self::CudaF16CapabilityFallback => Some(
-                "CUDA BF16 KV requires an observed compute capability 8.0 or newer; using F16",
-            ),
+            Self::CudaF16Fallback => {
+                Some("CUDA BF16 KV disabled by IZWI_QWEN38_CUDA_BF16_KV; using F16")
+            }
+            Self::CudaF16CapabilityFallback => {
+                Some("CUDA BF16 KV requires an observed compute capability 8.0 or newer; using F16")
+            }
             _ => None,
         }
     }
@@ -182,10 +182,13 @@ fn qwen38_cuda_supports_bf16(compute_capability: Option<(u32, u32)>) -> bool {
     compute_capability.is_some_and(cuda_compute_capability_supports_bf16)
 }
 
-fn qwen38_candidate_enabled(raw: Option<&str>) -> bool {
+fn qwen38_bf16_kv_enabled(raw: Option<&str>) -> bool {
+    // BF16 activations must retain their exponent range in persistent KV.
+    // Narrowing finite values above 65504 to F16 inserts infinities into the
+    // cache; later attention (including masked P*V) can then produce NaNs.
     matches!(
         raw.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
-        Some("1" | "true" | "yes" | "on")
+        None | Some("1" | "true" | "yes" | "on")
     )
 }
 
@@ -831,9 +834,7 @@ impl Qwen38ChatModel {
         let cuda_compute_capability = device.capabilities.cuda_compute_capability;
         let kv_storage_provider = qwen38_kv_storage_provider(device_kind, cuda_compute_capability);
         if device_kind == BackendKind::Cuda {
-            record_cuda_kv_provider(
-                kv_storage_provider == Qwen38KvStorageProvider::CudaBf16Candidate,
-            );
+            record_cuda_kv_provider(kv_storage_provider == Qwen38KvStorageProvider::CudaBf16);
         }
         info!(
             variant = %variant,
@@ -1009,6 +1010,7 @@ impl Qwen38ChatModel {
             ],
             "cuda_kv_storage": {
                 "candidate_switch": CUDA_BF16_KV_ENV,
+                "default_on_supported_cuda": true,
                 "selected_provider": self.kv_storage_provider.as_str(),
                 "storage_dtype": format!("{:?}", self.kv_storage_provider.dtype()).to_ascii_lowercase(),
                 "fallback_reason": self.kv_storage_provider.fallback_reason(),
@@ -3075,25 +3077,18 @@ mod tests {
     }
 
     #[test]
-    fn cuda_bf16_kv_candidate_is_explicit_and_fail_closed() {
-        for disabled in [
-            None,
-            Some(""),
-            Some("0"),
-            Some("false"),
-            Some("no"),
-            Some("off"),
-        ] {
+    fn cuda_bf16_kv_defaults_on_with_an_explicit_opt_out() {
+        for disabled in [Some(""), Some("0"), Some("false"), Some("no"), Some("off")] {
             let provider =
                 Qwen38KvStorageProvider::select(BackendKind::Cuda, Some((8, 0)), disabled);
             assert_eq!(provider, Qwen38KvStorageProvider::CudaF16Fallback);
             assert_eq!(provider.dtype(), DType::F16);
             assert!(provider.fallback_reason().is_some());
         }
-        for enabled in [Some("1"), Some("true"), Some(" YES "), Some("on")] {
+        for enabled in [None, Some("1"), Some("true"), Some(" YES "), Some("on")] {
             let provider =
                 Qwen38KvStorageProvider::select(BackendKind::Cuda, Some((8, 0)), enabled);
-            assert_eq!(provider, Qwen38KvStorageProvider::CudaBf16Candidate);
+            assert_eq!(provider, Qwen38KvStorageProvider::CudaBf16);
             assert_eq!(provider.dtype(), DType::BF16);
             assert!(provider.fallback_reason().is_none());
         }
@@ -3104,21 +3099,29 @@ mod tests {
     }
 
     #[test]
-    fn cuda_bf16_kv_candidate_requires_observed_ampere_or_newer_capability() {
+    fn cuda_bf16_kv_requires_observed_ampere_or_newer_capability() {
         for compute_capability in [None, Some((7, 5))] {
-            let provider =
-                Qwen38KvStorageProvider::select(BackendKind::Cuda, compute_capability, Some("1"));
-            assert_eq!(provider, Qwen38KvStorageProvider::CudaF16CapabilityFallback);
-            assert_eq!(provider.dtype(), DType::F16);
-            assert!(provider
-                .fallback_reason()
-                .expect("capability fallback reason")
-                .contains("8.0 or newer"));
+            for requested in [None, Some("1")] {
+                let provider = Qwen38KvStorageProvider::select(
+                    BackendKind::Cuda,
+                    compute_capability,
+                    requested,
+                );
+                assert_eq!(provider, Qwen38KvStorageProvider::CudaF16CapabilityFallback);
+                assert_eq!(provider.dtype(), DType::F16);
+                assert!(provider
+                    .fallback_reason()
+                    .expect("capability fallback reason")
+                    .contains("8.0 or newer"));
+            }
         }
-        assert_eq!(
-            Qwen38KvStorageProvider::select(BackendKind::Cuda, Some((9, 0)), Some("1")),
-            Qwen38KvStorageProvider::CudaBf16Candidate
-        );
+        for capability in [(8, 0), (8, 6), (8, 9), (9, 0), (10, 0)] {
+            let provider =
+                Qwen38KvStorageProvider::select(BackendKind::Cuda, Some(capability), None);
+            assert_eq!(provider, Qwen38KvStorageProvider::CudaBf16);
+            assert_eq!(provider.dtype(), DType::BF16);
+            assert_eq!(provider.dtype().size_in_bytes(), DType::F16.size_in_bytes());
+        }
     }
 
     #[test]

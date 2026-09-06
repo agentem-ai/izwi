@@ -79,13 +79,55 @@ pub(super) fn distribution(
         .map_err(Error::from)
 }
 
-fn sample_at(probabilities: &Tensor, uniform: f32) -> Result<u32> {
+fn sampling_failure(phase: &str, logits: &Tensor, vocab: usize) -> Error {
+    // Failure-only diagnostics: inspect the sampled vocabulary on-device and
+    // transfer three scalar counts, never logits or token data. Widen masks
+    // before summing so full-vocabulary counts cannot overflow a U8 mask.
+    let counts = (|| -> candle_core::Result<Vec<u32>> {
+        let logits = logits
+            .flatten_all()?
+            .narrow(0, 0, vocab)?
+            .to_dtype(DType::F32)?;
+        let nan = logits.ne(&logits)?.to_dtype(DType::U32)?.sum_all()?;
+        let positive_infinity = logits.eq(f32::INFINITY)?.to_dtype(DType::U32)?.sum_all()?;
+        let negative_infinity = logits
+            .eq(f32::NEG_INFINITY)?
+            .to_dtype(DType::U32)?
+            .sum_all()?;
+        Tensor::stack(&[nan, positive_infinity, negative_infinity], 0)?.to_vec1::<u32>()
+    })();
+    let detail = match counts {
+        Ok(counts) => {
+            let nan = counts[0] as usize;
+            let positive_infinity = counts[1] as usize;
+            let negative_infinity = counts[2] as usize;
+            let nonfinite = nan + positive_infinity + negative_infinity;
+            let finite = vocab.saturating_sub(nonfinite);
+            format!(
+                "logits={vocab}, finite={finite}, nonfinite={nonfinite}, \
+                 nan={nan}, pos_inf={positive_infinity}, neg_inf={negative_infinity}"
+            )
+        }
+        // A diagnostic/backend failure must not replace the original sampling
+        // failure or expose arbitrary backend error text in the statistics.
+        Err(_) => format!("logits={vocab}, counts=unavailable"),
+    };
+    Error::InferenceError(format!(
+        "No finite Qwen3.8 sampling distribution (phase={phase}, {detail})"
+    ))
+}
+
+fn sample_at(
+    probabilities: &Tensor,
+    uniform: f32,
+    phase: &str,
+    logits: &Tensor,
+    vocab: usize,
+) -> Result<u32> {
     let uniforms = Tensor::from_vec(vec![uniform], 1, probabilities.device())?;
     let result = sampling::sample_rows(probabilities, &uniforms)?.to_vec2::<u32>()?;
     if result[0][1] != 1 {
-        return Err(Error::InferenceError(
-            "No finite Qwen3.8 sampling distribution".into(),
-        ));
+        return Err(sampling_failure(phase, logits, vocab));
     }
     Ok(result[0][0])
 }
@@ -99,7 +141,7 @@ pub(super) fn propose(
 ) -> Result<(u32, Tensor)> {
     let probabilities = distribution(logits, vocab, config, history)?;
     let mut staged = rng.clone();
-    let token = sample_at(&probabilities, unit(&mut staged))?;
+    let token = sample_at(&probabilities, unit(&mut staged), "draft", logits, vocab)?;
     history.push(token);
     *rng = staged;
     Ok((token, probabilities))
@@ -126,7 +168,7 @@ pub(super) fn sample(
     } else {
         staged.next_f32()
     };
-    let token = sample_at(&probabilities, uniform)?;
+    let token = sample_at(&probabilities, uniform, "target", logits, vocab)?;
     *rng = staged;
     Ok(token)
 }
@@ -232,7 +274,13 @@ pub(super) fn verify(
         emitted_tokens.push(status[accepted][1]);
         accepted + 2
     } else {
-        emitted_tokens.push(sample_at(&p[drafts.len()], draws[drafts.len()])?);
+        emitted_tokens.push(sample_at(
+            &p[drafts.len()],
+            draws[drafts.len()],
+            "bonus",
+            &target_logits.i((0, drafts.len()))?,
+            vocab,
+        )?);
         drafts.len() + 1
     };
     let mut staged_rng = rng.clone();
@@ -347,7 +395,99 @@ mod tests {
         assert_eq!(rng.state, before);
         let bad = Tensor::from_slice(&[f32::NAN, f32::INFINITY], (1, 2), &Device::Cpu).unwrap();
         let mut history = vec![1];
-        assert!(propose(&bad, 2, &config, &mut history, &mut rng).is_err());
+        let error = propose(&bad, 2, &config, &mut history, &mut rng)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("No finite Qwen3.8 sampling distribution (phase=draft"));
+        assert!(error.contains("finite=0, nonfinite=2, nan=1, pos_inf=1, neg_inf=0"));
+        assert_eq!(history, vec![1]);
+        assert_eq!(rng.state, before);
+
+        let stochastic = ChatGenerationConfig {
+            temperature: 0.8,
+            ..config
+        };
+        let error = sample(&bad, 2, &stochastic, &history, &mut rng)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("No finite Qwen3.8 sampling distribution (phase=target"));
+        assert!(error.contains("finite=0, nonfinite=2, nan=1, pos_inf=1, neg_inf=0"));
+        assert_eq!(history, vec![1]);
+        assert_eq!(rng.state, before);
+    }
+
+    #[test]
+    fn invalid_status_reports_finite_full_vocabulary_without_counting_padding() {
+        let vocab = 248_320;
+        let probabilities = Tensor::zeros((1, vocab), DType::F32, &Device::Cpu).unwrap();
+        let mut values = vec![1.0f32; vocab];
+        values.push(f32::NAN);
+        let logits = Tensor::from_vec(values, (1, vocab + 1), &Device::Cpu).unwrap();
+        let error = sample_at(&probabilities, 0.5, "target", &logits, vocab)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("No finite Qwen3.8 sampling distribution (phase=target"));
+        assert!(error
+            .contains("logits=248320, finite=248320, nonfinite=0, nan=0, pos_inf=0, neg_inf=0"));
+
+        // The actual reduced masks must also hold counts above 255.
+        let logits = Tensor::full(f32::NAN, (1, vocab), &Device::Cpu).unwrap();
+        let error = sample_at(&probabilities, 0.5, "draft", &logits, vocab)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(
+            "logits=248320, finite=0, nonfinite=248320, nan=248320, pos_inf=0, neg_inf=0"
+        ));
+    }
+
+    #[test]
+    fn invalid_status_counts_each_nonfinite_kind_and_preserves_failure_if_counts_fail() {
+        let probabilities = Tensor::zeros((1, 5), DType::F32, &Device::Cpu).unwrap();
+        let logits = Tensor::from_slice(
+            &[7.0f32, -2.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
+            5,
+            &Device::Cpu,
+        )
+        .unwrap();
+        let error = sample_at(&probabilities, 0.5, "draft", &logits, 5)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("logits=5, finite=2, nonfinite=3, nan=1, pos_inf=1, neg_inf=1"));
+
+        let short_logits = logits.narrow(0, 0, 1).unwrap();
+        let error = sample_at(&probabilities, 0.5, "draft", &short_logits, 5)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(
+            "No finite Qwen3.8 sampling distribution (phase=draft, logits=5, counts=unavailable)"
+        ));
+    }
+
+    #[test]
+    fn invalid_bonus_reports_its_logit_row_without_committing_rng_or_history() {
+        let config = ChatGenerationConfig {
+            temperature: 1.0,
+            top_k: 1,
+            top_p: 1.0,
+            repetition_penalty: 1.0,
+            presence_penalty: 0.0,
+            ..Default::default()
+        };
+        let target = Tensor::from_slice(
+            &[0.0f32, -1000.0, f32::NAN, f32::NEG_INFINITY],
+            (1, 2, 2),
+            &Device::Cpu,
+        )
+        .unwrap();
+        let q = Tensor::from_slice(&[1.0f32, 0.0], (1, 2), &Device::Cpu).unwrap();
+        let mut history = vec![1];
+        let mut rng = SimpleRng::new(42);
+        let before = rng.state;
+        let error = verify(&[0], &[q], &target, 2, &config, &mut history, &mut rng)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("No finite Qwen3.8 sampling distribution (phase=bonus"));
+        assert!(error.contains("logits=2, finite=0, nonfinite=2, nan=1, pos_inf=0, neg_inf=1"));
         assert_eq!(history, vec![1]);
         assert_eq!(rng.state, before);
     }

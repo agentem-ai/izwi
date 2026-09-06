@@ -132,6 +132,7 @@ run_core_scheduler_regressions() {
         engine::executor
         engine::execution
         engine::output
+        backends::kv::precision_tests
     )
 
     if [[ -n "${features}" ]]; then
@@ -505,6 +506,11 @@ run_cargo_cuda_device_profile() {
         IZWI_REQUIRE_CUDA_TEST_DEVICE=1 cargo test --locked -p izwi-core \
             --features "${core_features}" "${suite}" --lib -- --test-threads=1
     done
+    if [[ ",${core_features}," == *",flash-attn,"* ]]; then
+        cargo test --locked -p izwi-core --features "${core_features}" \
+            cuda_flash_paged_bf16_preserves_finite_kv_range --lib -- \
+            --ignored --test-threads=1
+    fi
     run_server_scheduler_regressions "${wrapper_features}"
     smoke_cuda_device_if_available "${wrapper_features}"
 }
