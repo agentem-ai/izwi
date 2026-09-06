@@ -171,23 +171,23 @@ not native FP8 execution.
 - [Models](/models)
 - [CLI Reference](/cli)
 
-## CUDA concurrent chat (candidate)
+## CUDA concurrent chat
 
-Qwen3.8 can batch independent chat requests through one loaded model. The candidate
-admission policy grows cache reservations with active sequences and can suspend
-and replay a request when the shared cache is under pressure. It preserves automatic
+Qwen3.8 batches independent CUDA chat requests through one loaded model by default.
+The incremental admission policy grows cache reservations with active sequences
+and can suspend and replay a request when the shared cache is under pressure. It preserves automatic
 output limits and already streamed text. Capacity is derived from the device's
 memory and model state, rather than a GPU model name.
 
-Enable the candidate before starting the CUDA server:
+Use your normal CUDA server command; no environment flag is needed. The policy
+also enables scheduler-visible chunked prefill for resumable adapters. To opt out
+and return to conservative admission, set this before restarting the server:
 
 ```bash
-export IZWI_CUDA_INCREMENTAL_CHAT=1
+export IZWI_CUDA_INCREMENTAL_CHAT=0
 ```
 
-Use your normal CUDA server command. The flag also enables scheduler-visible
-chunked prefill for resumable adapters. It defaults off pending exact-build CUDA
-certification; set it to `0` and restart to return to conservative admission.
+Set it to `1` or remove the variable to restore the default.
 Other model families keep their existing admission policy until they implement the
 published-sequence replay contract.
 

@@ -370,9 +370,9 @@ the bandwidth benefit.
 contract through both `/v1/chat/completions` and independent first-party
 `/v1/chat/threads/{id}/messages` conversations. Every generation omits both output
 limit fields. Run against an idle, dedicated server with the model already loaded,
-using a clean checkout of the **exact server binary SHA**. Start the candidate
-server with `IZWI_CUDA_INCREMENTAL_CHAT=1`; the flag is off by default until CUDA
-validation. The resolved policy is visible in `/v1/health` at
+using a clean checkout of the **exact server binary SHA**. Qwen3.8 incremental CUDA
+admission is enabled by default. Ensure `IZWI_CUDA_INCREMENTAL_CHAT` is unset or `1`;
+use `0` for a conservative baseline. The resolved policy is visible in `/v1/health` at
 `runtime.chat_concurrency_policy` and `/v1/metrics` at
 `engine.chat_concurrency_policy`. It reports the requested flag, whether CUDA makes
 it effective, the eligible `qwen38_chat` replay family, and effective scheduler

@@ -150,8 +150,8 @@ pub struct EngineCoreConfig {
     #[serde(default = "default_chunked_prefill")]
     pub enable_chunked_prefill: bool,
 
-    /// Candidate CUDA admission with lossless published-sequence replay.
-    /// Explicitly gated until exact-build device evidence promotes the policy.
+    /// Default-on CUDA admission for replay-capable Qwen3.8 requests.
+    /// Operators can disable it with IZWI_CUDA_INCREMENTAL_CHAT=0.
     #[serde(default = "default_cuda_incremental_chat")]
     pub enable_cuda_incremental_chat: bool,
 
@@ -269,8 +269,11 @@ fn default_max_blocks() -> usize {
     1024
 }
 fn default_cuda_incremental_chat() -> bool {
-    std::env::var("IZWI_CUDA_INCREMENTAL_CHAT")
-        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "on"))
+    cuda_incremental_chat_from_env(std::env::var("IZWI_CUDA_INCREMENTAL_CHAT").ok().as_deref())
+}
+
+fn cuda_incremental_chat_from_env(value: Option<&str>) -> bool {
+    value.is_none_or(|value| matches!(value, "1" | "true" | "on"))
 }
 
 fn default_chunked_prefill() -> bool {
@@ -492,6 +495,17 @@ mod managed_kv_default_tests {
         KvCacheDtype, PhysicalExecutionMode, PhysicalInFlightLimit, PrefixCachePolicy,
     };
     use crate::model::ModelVariant;
+
+    #[test]
+    fn incremental_chat_defaults_on_and_preserves_explicit_opt_out() {
+        assert!(super::cuda_incremental_chat_from_env(None));
+        for value in ["1", "true", "on"] {
+            assert!(super::cuda_incremental_chat_from_env(Some(value)));
+        }
+        for value in ["0", "false", "off", "", "invalid"] {
+            assert!(!super::cuda_incremental_chat_from_env(Some(value)));
+        }
+    }
 
     #[test]
     fn incremental_chat_rollout_requires_cuda_and_enables_resumable_prefill() {
