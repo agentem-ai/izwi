@@ -222,7 +222,9 @@ impl Lfm2ShortConvRuntimeState {
         let mut slots = (0..self.capacity)
             .map(|index| current.i(index))
             .collect::<candle_core::Result<Vec<_>>>()?;
-        for step in 0..steps {
+        // Earlier tokens contribute to the convolution output, but only this
+        // suffix survives in the ring after a full-span prefill.
+        for step in steps.saturating_sub(self.capacity)..steps {
             let absolute = self.cursor.saturating_add(step as u64);
             let slot = (absolute % self.capacity as u64) as usize;
             slots[slot] = input.i((0, .., step))?.unsqueeze(0)?;
@@ -446,6 +448,35 @@ impl Mlp {
     }
 }
 
+// Decode rows can have different absolute positions. Gather their rotary tables
+// once and let Candle rotate all heads/rows in one launch per Q/K tensor.
+fn rotary_decode_batch(
+    query: &Tensor,
+    key: &Tensor,
+    cos: &Tensor,
+    sin: &Tensor,
+    positions: &[usize],
+) -> Result<(Tensor, Tensor)> {
+    let table_len = cos.dim(0)?.min(sin.dim(0)?);
+    if positions.len() != query.dim(0)? || positions.iter().any(|&position| position >= table_len) {
+        return Err(Error::InvalidInput(
+            "LFM2 rotary batch positions exceed the available tables".into(),
+        ));
+    }
+    let positions = positions
+        .iter()
+        .map(|&position| u32::try_from(position))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| Error::InvalidInput("LFM2 rotary position exceeds u32".into()))?;
+    let indices = Tensor::from_vec(positions, query.dim(0)?, query.device())?;
+    let cos = cos.index_select(&indices, 0)?.unsqueeze(1)?.contiguous()?;
+    let sin = sin.index_select(&indices, 0)?.unsqueeze(1)?.contiguous()?;
+    Ok((
+        candle_nn::rotary_emb::rope_thd(&query.contiguous()?, &cos, &sin)?,
+        candle_nn::rotary_emb::rope_thd(&key.contiguous()?, &cos, &sin)?,
+    ))
+}
+
 impl AttentionLayer {
     fn apply_rotary_emb(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
         let (_, _, seq_len, _) = x.dims4()?;
@@ -462,6 +493,16 @@ impl AttentionLayer {
         index_pos: usize,
     ) -> Result<Option<(Tensor, Tensor)>> {
         let (_, seq_len, _, _) = q.dims4()?;
+        if q.device().is_cuda() {
+            let cos = self.cos.narrow(0, index_pos, seq_len)?.contiguous()?;
+            let sin = self.sin.narrow(0, index_pos, seq_len)?.contiguous()?;
+            record_rope_kernel();
+            record_rope_kernel();
+            return Ok(Some((
+                candle_nn::rotary_emb::rope_thd(&q.contiguous()?, &cos, &sin)?,
+                candle_nn::rotary_emb::rope_thd(&k.contiguous()?, &cos, &sin)?,
+            )));
+        }
         let packed = self.cos_sin.narrow(0, index_pos, seq_len)?.contiguous()?;
         if let Some((q, k)) = try_fused_rope_pair_bshd(&q.contiguous()?, &k.contiguous()?, &packed)
         {
@@ -688,26 +729,37 @@ impl AttentionLayer {
                 .reshape((batch, 1, self.n_kv_head, self.head_dim))?;
         let query = self.q_norm.forward(&query.contiguous()?)?;
         let key = self.k_norm.forward(&key.contiguous()?)?;
-        let mut queries = Vec::with_capacity(batch);
-        let mut keys = Vec::with_capacity(batch);
-        for row in 0..batch {
-            let q = query.narrow(0, row, 1)?;
-            let k = key.narrow(0, row, 1)?;
-            let (q, k) = if let Some((q, k)) =
-                self.try_apply_rotary_emb_pair_bshd(&q, &k, positions[row])?
-            {
-                (q.transpose(1, 2)?, k.transpose(1, 2)?)
-            } else {
-                (
-                    self.apply_rotary_emb(&q.transpose(1, 2)?.contiguous()?, positions[row])?,
-                    self.apply_rotary_emb(&k.transpose(1, 2)?.contiguous()?, positions[row])?,
-                )
-            };
-            queries.push(q.reshape((self.n_head, self.head_dim))?);
-            keys.push(k.reshape((self.n_kv_head, self.head_dim))?);
-        }
-        let queries = Tensor::stack(&queries.iter().collect::<Vec<_>>(), 0)?.contiguous()?;
-        let keys = Tensor::stack(&keys.iter().collect::<Vec<_>>(), 0)?.contiguous()?;
+        let (queries, keys) = if query.device().is_cuda() {
+            let (query, key) = rotary_decode_batch(&query, &key, &self.cos, &self.sin, positions)?;
+            record_rope_kernel();
+            record_rope_kernel();
+            (
+                query.reshape((batch, self.n_head, self.head_dim))?,
+                key.reshape((batch, self.n_kv_head, self.head_dim))?,
+            )
+        } else {
+            let mut queries = Vec::with_capacity(batch);
+            let mut keys = Vec::with_capacity(batch);
+            for row in 0..batch {
+                let q = query.narrow(0, row, 1)?;
+                let k = key.narrow(0, row, 1)?;
+                let (q, k) = if let Some((q, k)) =
+                    self.try_apply_rotary_emb_pair_bshd(&q, &k, positions[row])?
+                {
+                    (q.transpose(1, 2)?, k.transpose(1, 2)?)
+                } else {
+                    (
+                        self.apply_rotary_emb(&q.transpose(1, 2)?.contiguous()?, positions[row])?,
+                        self.apply_rotary_emb(&k.transpose(1, 2)?.contiguous()?, positions[row])?,
+                    )
+                };
+                queries.push(q.reshape((self.n_head, self.head_dim))?);
+                keys.push(k.reshape((self.n_kv_head, self.head_dim))?);
+            }
+            let queries = Tensor::stack(&queries.iter().collect::<Vec<_>>(), 0)?.contiguous()?;
+            let keys = Tensor::stack(&keys.iter().collect::<Vec<_>>(), 0)?.contiguous()?;
+            (queries, keys)
+        };
         let values = values
             .reshape((batch, self.n_kv_head, self.head_dim))?
             .contiguous()?;
@@ -1778,6 +1830,75 @@ mod tests {
     };
     use crate::kv::v2::StateComponentId;
     use candle_core::{DType, Device, Tensor};
+
+    #[test]
+    fn lfm2_batched_rotary_matches_scalar_at_ragged_positions() {
+        assert_batched_rotary_matches_scalar(&Device::Cpu);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    #[ignore = "requires an NVIDIA CUDA device"]
+    fn cuda_lfm2_batched_rotary_matches_scalar_at_ragged_positions() {
+        assert_batched_rotary_matches_scalar(&Device::new_cuda(0).unwrap());
+    }
+
+    fn assert_batched_rotary_matches_scalar(device: &Device) {
+        let cos = Tensor::from_vec(
+            (0..64).map(|v| (v as f32 * 0.13).cos()).collect(),
+            (16, 4),
+            device,
+        )
+        .unwrap();
+        let sin = Tensor::from_vec(
+            (0..64).map(|v| (v as f32 * 0.13).sin()).collect(),
+            (16, 4),
+            device,
+        )
+        .unwrap();
+        let query = Tensor::from_vec(
+            (0..72).map(|v| v as f32 * 0.1 - 2.).collect(),
+            (3, 1, 3, 8),
+            device,
+        )
+        .unwrap();
+        let key = query.narrow(2, 0, 1).unwrap().contiguous().unwrap();
+        let positions = [0, 9, 15];
+        assert!(super::rotary_decode_batch(&query, &key, &cos, &sin, &[0, 9, 16]).is_err());
+        assert!(super::rotary_decode_batch(&query, &key, &cos, &sin, &[0, 9]).is_err());
+        let (q, k) = super::rotary_decode_batch(&query, &key, &cos, &sin, &positions).unwrap();
+        for (input, actual) in [(&query, &q), (&key, &k)] {
+            for (row, &position) in positions.iter().enumerate() {
+                let scalar = candle_nn::rotary_emb::rope(
+                    &input
+                        .narrow(0, row, 1)
+                        .unwrap()
+                        .transpose(1, 2)
+                        .unwrap()
+                        .contiguous()
+                        .unwrap(),
+                    &cos.narrow(0, position, 1).unwrap(),
+                    &sin.narrow(0, position, 1).unwrap(),
+                )
+                .unwrap()
+                .transpose(1, 2)
+                .unwrap()
+                .contiguous()
+                .unwrap();
+                let expected = scalar.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+                let actual = actual
+                    .narrow(0, row, 1)
+                    .unwrap()
+                    .flatten_all()
+                    .unwrap()
+                    .to_vec1::<f32>()
+                    .unwrap();
+                for (actual, expected) in actual.iter().zip(expected) {
+                    assert!((actual - expected).abs() <= 1e-6);
+                }
+            }
+        }
+    }
 
     #[test]
     fn lfm25_cuda_flash_options_use_window_only_for_masked_prefill() {

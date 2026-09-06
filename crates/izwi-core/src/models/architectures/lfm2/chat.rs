@@ -746,10 +746,7 @@ impl Lfm2ChatModel {
         )?;
         drop(shortconv);
         drop(caches);
-        let mut next_tokens = Vec::with_capacity(states.len());
-        for row in 0..states.len() {
-            next_tokens.push(argmax(&logits.i(row)?)?);
-        }
+        let next_tokens = argmax_batch(&logits)?;
         let mut steps = Vec::with_capacity(states.len());
         for (state, next) in states.iter_mut().zip(next_tokens) {
             state.position = state.position.saturating_add(1);
@@ -1033,6 +1030,15 @@ impl InferenceStateContractProvider for Lfm2ChatModel {
     }
 }
 
+fn argmax_batch(logits: &Tensor) -> Result<Vec<u32>> {
+    logits.dims2()?;
+    logits
+        .argmax(D::Minus1)?
+        .to_dtype(DType::U32)?
+        .to_vec1::<u32>()
+        .map_err(Error::from)
+}
+
 fn argmax(logits: &Tensor) -> Result<u32> {
     let logits = match logits.rank() {
         1 => logits.clone(),
@@ -1108,6 +1114,25 @@ mod tests {
         Lfm2PrefillExecution, Lfm2PrefillMode, Lfm2PromptStylePolicy,
     };
     use crate::models::shared::chat::{ChatMessage, ChatRole};
+
+    #[test]
+    fn lfm2_packed_greedy_tokens_match_scalar_rows_including_ties() {
+        use candle_core::{Device, IndexOp, Tensor};
+        let logits = Tensor::from_vec(
+            vec![1f32, 4., 2., 4., -3., -2., -1., -4., 9., 2., 1., 0.],
+            (3, 4),
+            &Device::Cpu,
+        )
+        .unwrap();
+        let expected = (0..3)
+            .map(|row| super::argmax(&logits.i(row).unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(super::argmax_batch(&logits).unwrap(), expected);
+        assert_eq!(
+            super::argmax_batch(&logits.narrow(0, 1, 1).unwrap()).unwrap(),
+            vec![2]
+        );
+    }
 
     #[test]
     fn strip_past_assistant_thinking_keeps_only_tail_after_close_tag() {
