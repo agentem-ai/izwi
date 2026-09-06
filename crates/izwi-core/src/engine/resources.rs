@@ -370,7 +370,59 @@ struct AuthorityState {
     poisoned: Option<String>,
 }
 
+/// A fixed-size diagnostic: reservation keys can contain caller-controlled
+/// identifiers and must never be included in capacity rejection summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingClassSummary {
+    class: ReservationClass,
+    reservations: usize,
+    pending: ResourceVector,
+}
+
 impl AuthorityState {
+    fn pending_by_class(
+        &self,
+        excluded: Option<ReservationId>,
+    ) -> Result<[PendingClassSummary; 5]> {
+        let mut summaries = [
+            ReservationClass::Model,
+            ReservationClass::Request,
+            ReservationClass::Cache,
+            ReservationClass::Pipeline,
+            ReservationClass::BatchWorkspace,
+        ]
+        .map(|class| PendingClassSummary {
+            class,
+            reservations: 0,
+            pending: ResourceVector::zero(),
+        });
+        for (id, resources) in &self.ledger.reservations {
+            if excluded == Some(*id) {
+                continue;
+            }
+            let owner = self.owners.get(id).ok_or_else(|| {
+                Error::InferenceError("resource reservation owner is missing".into())
+            })?;
+            let index = match owner.class {
+                ReservationClass::Model => 0,
+                ReservationClass::Request => 1,
+                ReservationClass::Cache => 2,
+                ReservationClass::Pipeline => 3,
+                ReservationClass::BatchWorkspace => 4,
+            };
+            let materialized = self
+                .materialized
+                .get(id)
+                .copied()
+                .unwrap_or_else(ResourceVector::zero);
+            summaries[index].reservations += 1;
+            summaries[index].pending = summaries[index]
+                .pending
+                .checked_add(resources.positive_growth_over(materialized)?)?;
+        }
+        Ok(summaries)
+    }
+
     fn pending_resources(&self) -> Result<ResourceVector> {
         self.ledger.reservations.iter().try_fold(
             ResourceVector::zero(),
@@ -693,8 +745,8 @@ impl ResourceAuthority {
                 let live_claim = existing_pending.checked_add(pending)?;
                 if !live_claim.fits_within(physical.available) {
                     return Err(Error::Overloaded(format!(
-                        "insufficient live physical capacity for {}: new_pending={pending:?}, existing_pending={existing_pending:?}, live_claim={live_claim:?}, physical_available={:?}, physical_capacity={:?}",
-                        owner.key, physical.available, physical.capacity
+                        "insufficient live physical capacity for {:?}: new_pending={pending:?}, existing_pending={existing_pending:?}, live_claim={live_claim:?}, physical_available={:?}, physical_capacity={:?}, existing_pending_by_class={:?}",
+                        owner.class, physical.available, physical.capacity, state.pending_by_class(None)?
                     )));
                 }
                 state.ledger.reserve(resources)?
@@ -762,8 +814,8 @@ impl ResourceAuthority {
             state.ledger.update_capacity(physical.capacity);
             if !live_claim.fits_within(physical.available) {
                 return Err(Error::Overloaded(format!(
-                    "insufficient live physical capacity for resource lease growth: next_pending={next_pending:?}, other_pending={other_pending:?}, live_claim={live_claim:?}, physical_available={:?}, physical_capacity={:?}",
-                    physical.available, physical.capacity
+                    "insufficient live physical capacity for resource lease growth: next_pending={next_pending:?}, other_pending={other_pending:?}, live_claim={live_claim:?}, physical_available={:?}, physical_capacity={:?}, other_pending_by_class={:?}",
+                    physical.available, physical.capacity, state.pending_by_class(Some(id))?
                 )));
             }
             state.ledger.resize(id, resources)?
@@ -1332,6 +1384,74 @@ mod tests {
         assert!(message.contains("physical_available="));
         assert!(message.contains("physical_capacity="));
         assert_eq!(authority.snapshot().reserved, slots(0));
+    }
+
+    #[test]
+    fn pending_class_diagnostics_are_bounded_and_exclude_materialized_allocations() {
+        let provider = Arc::new(TestProvider {
+            snapshot: PhysicalCapacitySnapshot {
+                capacity: slots(1000),
+                available: slots(500),
+                source: CapacitySource::Test,
+            },
+        });
+        let authority = Arc::new(ResourceAuthority::new(provider));
+        let cache = authority
+            .reserve_with_initial_materialized(
+                ReservationOwner::new(ReservationClass::Cache, "private-cache-key"),
+                slots(100),
+                slots(80),
+            )
+            .unwrap();
+        let requests: Vec<_> = (0..100)
+            .map(|_| {
+                authority
+                    .reserve(
+                        ReservationOwner::new(ReservationClass::Request, "private-request-key"),
+                        slots(1),
+                    )
+                    .unwrap()
+            })
+            .collect();
+        {
+            let state = authority.state.lock().unwrap();
+            let summaries = state.pending_by_class(None).unwrap();
+            assert_eq!(summaries.len(), 5);
+            assert_eq!(summaries[1].reservations, 100);
+            assert_eq!(summaries[1].pending, slots(100));
+            assert_eq!(summaries[2].reservations, 1);
+            assert_eq!(summaries[2].pending, slots(20));
+            let total = summaries
+                .iter()
+                .fold(ResourceVector::zero(), |sum, summary| {
+                    sum.checked_add(summary.pending).unwrap()
+                });
+            assert_eq!(total, state.pending_resources().unwrap());
+            let excluded = state.pending_by_class(cache.id).unwrap();
+            assert_eq!(excluded[2].reservations, 0);
+            assert_eq!(excluded[2].pending, slots(0));
+        }
+        let before = authority.snapshot();
+        let message = authority
+            .reserve(
+                ReservationOwner::new(ReservationClass::BatchWorkspace, "private-incoming-key"),
+                slots(400),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("existing_pending_by_class="));
+        assert!(message.contains("BatchWorkspace"));
+        assert!(!message.contains("private-"));
+        assert!(message.len() < 3000);
+        assert_eq!(authority.snapshot(), before);
+        let growth_message = authority
+            .resize(cache.id.unwrap(), slots(600))
+            .unwrap_err()
+            .to_string();
+        assert!(growth_message.contains("other_pending_by_class="));
+        assert!(!growth_message.contains("private-"));
+        assert_eq!(authority.snapshot(), before);
+        drop((cache, requests));
     }
 
     #[test]
