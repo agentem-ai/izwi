@@ -4416,6 +4416,39 @@ mod tests {
     }
 
     #[test]
+    fn qwen38_resident_context_leaves_room_for_decode_and_safety_headroom() {
+        let fixed = 2_667_184_128;
+        let paged = [
+            CudaContiguousPagedGeometry {
+                page_tokens: 64,
+                bytes_per_page: 4 * 1024 * 1024,
+            },
+            CudaContiguousPagedGeometry {
+                page_tokens: 64,
+                bytes_per_page: 256 * 1024,
+            },
+        ];
+        let safety = 1024 * 1024 * 1024;
+        let headroom = cuda_resident_required_bytes(65_536, &paged, fixed).unwrap() + safety;
+        // Exact shipped adaptive MTP estimate plus host collation. Context
+        // fitting conservatively protects the full mixed-domain stage budget.
+        let row = crate::engine::continuous_chat_workspace_per_row(475_144_192)
+            .unwrap()
+            .workspace_bytes()
+            .unwrap();
+        for width in [1, 8] {
+            let workspace = row * width;
+            let budget = headroom - safety - workspace;
+            let tokens = fit_cuda_resident_token_reach(262_144, 64, &paged, fixed, budget).unwrap();
+            assert!(tokens < 65_536, "KV must yield space to decode workspace");
+            let retained = cuda_resident_required_bytes(tokens, &paged, fixed).unwrap();
+            assert!(retained + workspace + safety <= headroom);
+            let next = cuda_resident_required_bytes(tokens + 1, &paged, fixed).unwrap();
+            assert!(next + workspace + safety > headroom);
+        }
+    }
+
+    #[test]
     fn qwen38_mtp_context_fitter_prices_both_paged_domains() {
         const TENSOR_BYTES: u64 = 2_667_184_128;
         const TARGET_BYTES_PER_PAGE: u64 = 4 * 1024 * 1024;

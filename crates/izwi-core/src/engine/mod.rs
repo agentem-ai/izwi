@@ -78,7 +78,7 @@ pub use config::EngineCoreConfig;
 pub use core::EngineCore;
 pub(crate) use execution::{
     continuous_asr_host_workspace_per_row_bytes, continuous_asr_workspace_per_row_bytes,
-    ClockedStateProjection,
+    continuous_chat_workspace_per_row, ClockedStateProjection,
 };
 pub use execution::{
     AdapterAbiRevision, AdapterBindingKey, AdapterInstanceId, BatchBudget, BatchDispatch,
@@ -2737,6 +2737,7 @@ impl Engine {
             logical_context_tokens,
             None,
             false,
+            0,
         )
         .await
     }
@@ -2748,6 +2749,7 @@ impl Engine {
         logical_context_tokens: Option<usize>,
         staged_transaction_rows: Option<u32>,
         fit_cuda_resident_context: bool,
+        decode_workspace_reserve_bytes: u64,
     ) -> Result<Option<Arc<ManagedKvModelRuntime>>> {
         let _step = self.step_gate.lock().await;
         self.core
@@ -2759,6 +2761,7 @@ impl Engine {
                 logical_context_tokens,
                 staged_transaction_rows,
                 fit_cuda_resident_context,
+                decode_workspace_reserve_bytes,
             )
     }
 

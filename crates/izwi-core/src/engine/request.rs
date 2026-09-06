@@ -2177,29 +2177,17 @@ impl EngineCoreRequest {
             ));
         }
         let accelerator_bytes = model.continuous_decode_batch_workspace_per_row_bytes()?;
-        let host_bytes = u64::try_from(
-            std::mem::size_of::<u32>() + 4 * std::mem::size_of::<usize>(),
-        )
-        .map_err(|_| {
-            Error::Overloaded("continuous decode host workspace estimate overflow".to_string())
-        })?;
         let cost = WorkCost::with_workspace(
             1,
             1,
-            ResourceVector {
-                host_bytes: ResourceAmount::Known(host_bytes),
-                temporary_bytes: ResourceAmount::Known(accelerator_bytes),
-                ..ResourceVector::zero()
-            },
+            super::continuous_chat_workspace_per_row(accelerator_bytes)?,
         );
-        if !cost
-            .workspace
-            .workspace_bytes()
-            .is_ok_and(|bytes| bytes <= stage.max_workspace_bytes)
-        {
-            return Err(Error::Overloaded(
-                "continuous decode workspace exceeds its loaded adapter budget".to_string(),
-            ));
+        let required_bytes = cost.workspace.workspace_bytes()?;
+        if required_bytes > stage.max_workspace_bytes {
+            return Err(Error::Overloaded(format!(
+                "continuous decode workspace exceeds its loaded adapter budget (required {} bytes, available {} bytes)",
+                required_bytes, stage.max_workspace_bytes,
+            )));
         }
         Ok(Some((stage.id, cost)))
     }

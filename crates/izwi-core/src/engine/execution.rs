@@ -16,7 +16,7 @@ pub use crate::kv::v2::{StateClock, StateGroupId};
 use crate::kv::{CacheBlockRef, CacheDomainId, KvArenaId, KvSlotRef};
 use crate::model::ModelVariant;
 
-use super::resources::{ResourceEstimate, ResourceVector};
+use super::resources::{ResourceAmount, ResourceEstimate, ResourceVector};
 use super::{RequestId, SequenceId, TaskType};
 
 pub type PlanId = u64;
@@ -909,6 +909,22 @@ impl Default for WorkCost {
     fn default() -> Self {
         Self::with_workspace(0, 0, ResourceVector::zero())
     }
+}
+
+/// Shared by loaded chat admission and exact request preparation so host
+/// collation is included in both the stage ceiling and each row's claim.
+pub(crate) fn continuous_chat_workspace_per_row(accelerator_bytes: u64) -> Result<ResourceVector> {
+    let host_bytes = u64::try_from(std::mem::size_of::<u32>() + 4 * std::mem::size_of::<usize>())
+        .map_err(|_| {
+        Error::Overloaded("continuous decode host workspace estimate overflow".into())
+    })?;
+    let workspace = ResourceVector {
+        host_bytes: ResourceAmount::Known(host_bytes),
+        temporary_bytes: ResourceAmount::Known(accelerator_bytes),
+        ..ResourceVector::zero()
+    };
+    workspace.workspace_bytes()?;
+    Ok(workspace)
 }
 
 pub(crate) fn continuous_asr_host_workspace_per_row_bytes() -> Result<u64> {

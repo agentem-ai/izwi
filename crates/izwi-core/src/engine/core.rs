@@ -4719,12 +4719,15 @@ impl EngineCore {
             logical_context_tokens,
             None,
             false,
+            0,
         )
     }
 
     /// Load managed state while allowing a model lifecycle to distinguish the
     /// scheduler's retained-session capacity from its simultaneously staged
     /// transaction width. `None` preserves the engine-wide legacy behavior.
+    /// CUDA context fitting leaves the largest active decode batch's workspace
+    /// free in addition to safety headroom. Dispatch still owns its lease.
     pub(crate) fn load_managed_model_cache_with_capacity_policy(
         &mut self,
         model_instance: super::ModelInstanceId,
@@ -4732,6 +4735,7 @@ impl EngineCore {
         logical_context_tokens: Option<usize>,
         staged_transaction_rows: Option<u32>,
         fit_cuda_resident_context: bool,
+        decode_workspace_reserve_bytes: u64,
     ) -> Result<Option<Arc<super::ManagedKvModelRuntime>>> {
         let Some(contract) = capability.managed_contract() else {
             return Ok(None);
@@ -4759,7 +4763,14 @@ impl EngineCore {
                         u64::try_from(maximum_tokens).map_err(|_| {
                             Error::ModelLoadError("model context exceeds u64".into())
                         })?,
-                        self.config.portable_context_reserve_bytes,
+                        self.config
+                            .portable_context_reserve_bytes
+                            .checked_add(decode_workspace_reserve_bytes)
+                            .ok_or_else(|| {
+                                Error::ModelLoadError(
+                                    "CUDA context workspace reserve overflow".into(),
+                                )
+                            })?,
                         self.config.block_size,
                         retained_sequence_rows,
                         staged_transaction_rows,

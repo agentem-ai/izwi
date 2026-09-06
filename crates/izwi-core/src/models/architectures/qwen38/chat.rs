@@ -1118,65 +1118,13 @@ impl Qwen38ChatModel {
 
     /// Conservative per-row workspace estimate for hybrid batch collation.
     pub fn continuous_decode_batch_workspace_per_row_bytes(&self) -> Result<u64> {
-        let cfg = &self.text_config;
-        let hidden = u64::try_from(cfg.embedding_length).ok();
-        let ff = u64::try_from(cfg.feed_forward_length).ok();
-        let q = cfg
-            .attention_head_count
-            .checked_mul(cfg.attention_key_length)
-            .and_then(|width| width.checked_mul(2))
-            .and_then(|width| u64::try_from(width).ok());
-        let kv = cfg
-            .attention_head_count_kv
-            .checked_mul(cfg.attention_key_length)
-            .and_then(|width| u64::try_from(width).ok());
-        let conv = cfg
-            .ssm_group_count
-            .checked_mul(cfg.ssm_state_size)
-            .and_then(|width| width.checked_mul(2))
-            .and_then(|width| width.checked_add(cfg.ssm_inner_size))
-            .and_then(|width| u64::try_from(width).ok());
-        let elements = hidden
-            .and_then(|hidden| hidden.checked_mul(8))
-            .and_then(|base| base.checked_add(ff?.checked_mul(2)?))
-            .and_then(|base| base.checked_add(q?))
-            .and_then(|base| base.checked_add(kv?.checked_mul(2)?))
-            .and_then(|base| base.checked_add(conv?))
-            .and_then(|target| {
-                if self.mtp_head.is_some() {
-                    target.checked_add(
-                        hidden?
-                            .checked_mul(8)?
-                            .checked_add(ff?.checked_mul(2)?)?
-                            .checked_add(q?)?
-                            .checked_add(kv?.checked_mul(2)?)?,
-                    )
-                } else {
-                    Some(target)
-                }
-            })
-            .ok_or_else(|| {
-                Error::Overloaded("continuous decode workspace estimate overflow".to_string())
-            })?;
-        // The recurrent/attention collation tensors use F32 in portable and
-        // state-update paths even when projection activations use F16/BF16.
-        let transient = elements.checked_mul(4).ok_or_else(|| {
-            Error::Overloaded("continuous decode workspace byte estimate overflow".to_string())
-        })?;
-        let retained = if self.mtp_head.is_some() {
-            verification_workspace_bytes(
-                cfg,
-                self.tokenizer.vocab_size,
-                self.preferred_decode_tokens(),
-            )?
-        } else {
-            0
-        };
-        let graph_bytes = self.graph_cache_capacity_bytes();
-        transient
-            .checked_add(retained)
-            .and_then(|bytes| bytes.checked_add(graph_bytes))
-            .ok_or_else(|| Error::Overloaded("Qwen3.8 verification workspace overflow".into()))
+        continuous_decode_workspace_per_row_bytes(
+            &self.text_config,
+            self.tokenizer.vocab_size,
+            self.mtp_head
+                .as_ref()
+                .map(|_| self.preferred_decode_tokens()),
+        )
     }
 
     pub(crate) fn preferred_decode_tokens(&self) -> usize {
@@ -2171,6 +2119,69 @@ impl Qwen38ChatModel {
     }
 }
 
+/// Pure per-row geometry bound, excluding model-owned graph cache capacity.
+/// `Some(rows)` includes MTP transient and conservative verification storage.
+fn continuous_decode_workspace_per_row_bytes(
+    cfg: &Qwen38TextConfig,
+    vocab: usize,
+    mtp_verification_rows: Option<usize>,
+) -> Result<u64> {
+    let hidden = u64::try_from(cfg.embedding_length).ok();
+    let ff = u64::try_from(cfg.feed_forward_length).ok();
+    let q = cfg
+        .attention_head_count
+        .checked_mul(cfg.attention_key_length)
+        .and_then(|width| width.checked_mul(2))
+        .and_then(|width| u64::try_from(width).ok());
+    let kv = cfg
+        .attention_head_count_kv
+        .checked_mul(cfg.attention_key_length)
+        .and_then(|width| u64::try_from(width).ok());
+    let conv = cfg
+        .ssm_group_count
+        .checked_mul(cfg.ssm_state_size)
+        .and_then(|width| width.checked_mul(2))
+        .and_then(|width| width.checked_add(cfg.ssm_inner_size))
+        .and_then(|width| u64::try_from(width).ok());
+    let elements = hidden
+        .and_then(|hidden| hidden.checked_mul(8))
+        .and_then(|base| base.checked_add(ff?.checked_mul(2)?))
+        .and_then(|base| base.checked_add(q?))
+        .and_then(|base| base.checked_add(kv?.checked_mul(2)?))
+        .and_then(|base| base.checked_add(conv?))
+        .and_then(|target| {
+            if mtp_verification_rows.is_some() {
+                target.checked_add(
+                    hidden?
+                        .checked_mul(8)?
+                        .checked_add(ff?.checked_mul(2)?)?
+                        .checked_add(q?)?
+                        .checked_add(kv?.checked_mul(2)?)?,
+                )
+            } else {
+                Some(target)
+            }
+        })
+        .ok_or_else(|| {
+            Error::Overloaded("continuous decode workspace estimate overflow".to_string())
+        })?;
+    // The recurrent/attention collation tensors use F32 in portable and
+    // state-update paths even when projection activations use F16/BF16.
+    let transient = elements.checked_mul(4).ok_or_else(|| {
+        Error::Overloaded("continuous decode workspace byte estimate overflow".to_string())
+    })?;
+    let retained = match mtp_verification_rows {
+        Some(rows) => verification_workspace_bytes(cfg, vocab, rows)?,
+        None => 0,
+    };
+    // CUDA graph caches are model-owned resident/deferred reservations in
+    // runtime/lifecycle/qwen38_memory.rs, shared across every request row.
+    // Charging them here would reserve the same cache again for each row.
+    transient
+        .checked_add(retained)
+        .ok_or_else(|| Error::Overloaded("Qwen3.8 verification workspace overflow".into()))
+}
+
 /// Conservative bound for all simultaneously retained verification state,
 /// compact intermediates, recovery copies, probability rows and scratch.
 /// Count every layer as linear so unusual layer schedules cannot underprice it.
@@ -2815,6 +2826,107 @@ mod tests {
     use crate::models::shared::chat::ChatRequestConfig;
 
     use super::*;
+
+    // Dimensions enforced by native::validate_hf_config for the shipped 27B
+    // checkpoint. No tokenizer, weights, device, or model load is needed.
+    fn shipped_workspace_config() -> Qwen38TextConfig {
+        Qwen38TextConfig {
+            architecture: "qwen3_5".into(),
+            block_count: 64,
+            context_length: 262_144,
+            embedding_length: 5_120,
+            feed_forward_length: 17_408,
+            attention_head_count: 24,
+            attention_head_count_kv: 4,
+            attention_key_length: 256,
+            attention_value_length: 256,
+            rope_dimension_sections: vec![11, 11, 10],
+            rope_dimension_count: 64,
+            rope_freq_base: 10_000_000.0,
+            attention_layer_norm_rms_epsilon: 1e-6,
+            ssm_conv_kernel: 4,
+            ssm_state_size: 128,
+            ssm_group_count: 16,
+            ssm_time_step_rank: 48,
+            ssm_inner_size: 6_144,
+            full_attention_interval: 4,
+        }
+    }
+
+    #[test]
+    fn shipped_decode_workspace_prices_adaptive_fixed_and_disabled_mtp() {
+        let cfg = shipped_workspace_config();
+        // Adaptive CUDA reserves four target positions even when its initial
+        // configured draft depth is one; fixed depth one needs two positions.
+        for (rows, verification, total) in
+            [(4, 474_382_336, 475_144_192), (2, 451_887_104, 452_648_960)]
+        {
+            assert_eq!(
+                verification_workspace_bytes(&cfg, 248_320, rows).unwrap(),
+                verification,
+            );
+            assert_eq!(
+                continuous_decode_workspace_per_row_bytes(&cfg, 248_320, Some(rows)).unwrap(),
+                total,
+            );
+            // Only target/MTP transient geometry is added to verification;
+            // the two model-owned 8 MiB graph caches must not reappear here.
+            assert_eq!(total - verification, 761_856);
+        }
+        assert_eq!(
+            continuous_decode_workspace_per_row_bytes(&cfg, 248_320, None).unwrap(),
+            401_408,
+        );
+        // Disabled MTP must not evaluate unused verification geometry.
+        assert_eq!(
+            continuous_decode_workspace_per_row_bytes(&cfg, usize::MAX, None).unwrap(),
+            401_408,
+        );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn decode_workspace_rejects_geometry_and_verification_overflow() {
+        let cfg = shipped_workspace_config();
+        let mut malformed = Vec::new();
+        let mut hidden = cfg.clone();
+        hidden.embedding_length = usize::MAX;
+        malformed.push(hidden);
+        let mut attention = cfg.clone();
+        attention.attention_head_count = usize::MAX;
+        malformed.push(attention);
+        let mut convolution = cfg.clone();
+        convolution.ssm_group_count = usize::MAX;
+        malformed.push(convolution);
+        let mut layers = cfg.clone();
+        layers.block_count = usize::MAX;
+        malformed.push(layers);
+        for cfg in malformed {
+            assert!(matches!(
+                continuous_decode_workspace_per_row_bytes(&cfg, 248_320, Some(4)),
+                Err(Error::Overloaded(_)),
+            ));
+        }
+        assert!(matches!(
+            continuous_decode_workspace_per_row_bytes(&cfg, usize::MAX, Some(4)),
+            Err(Error::Overloaded(_)),
+        ));
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn decode_workspace_rejects_f32_byte_conversion_overflow() {
+        let mut cfg = shipped_workspace_config();
+        // The element sum fits u64; converting that sum to F32 bytes does not.
+        cfg.embedding_length = usize::MAX / 32;
+        let error = continuous_decode_workspace_per_row_bytes(&cfg, 248_320, None)
+            .expect_err("F32 byte count must not wrap");
+        assert!(matches!(
+            error,
+            Error::Overloaded(message)
+                if message == "continuous decode workspace byte estimate overflow",
+        ));
+    }
 
     #[test]
     fn canonical_prefix_stops_at_each_eos_and_output_budget() {

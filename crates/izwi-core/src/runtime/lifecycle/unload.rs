@@ -411,9 +411,15 @@ mod tests {
                 .await
                 .unwrap()
                 .expect("managed physical state");
+            let draft = runtime
+                .model_lifecycle
+                .draft_loaded_model_bundle(variant, model_instance)
+                .unwrap();
+            draft.seal_chat_workspace(8_192).unwrap();
             let bundle = runtime
                 .model_lifecycle
-                .bind_loaded_model_bundle_with_state_publications(
+                .bind_loaded_model_bundle_draft(
+                    draft,
                     variant,
                     model_instance,
                     HashMap::from([(

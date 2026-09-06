@@ -4,7 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::backends::BackendKind;
-use crate::engine::{continuous_asr_workspace_per_row_bytes, ManagedKvModelRuntime};
+use crate::engine::{
+    continuous_asr_workspace_per_row_bytes, continuous_chat_workspace_per_row,
+    ManagedKvModelRuntime,
+};
 use crate::engine::{
     AdapterAbiRevision, AdapterInstanceId, CacheMode, CancellationGranularity,
     ClockedStateSelection, ConcurrencyClass, ExecutionAdapterBinding, ExecutionGroupId,
@@ -28,7 +31,7 @@ use super::{
 
 const SCALAR_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(11);
 const STATIC_TENSOR_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(12);
-const CONTINUOUS_TENSOR_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(13);
+const CONTINUOUS_TENSOR_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(29);
 const NEMOTRON_REALTIME_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(25);
 const CONTINUOUS_ASR_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(15);
 const CONTINUOUS_TTS_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(16);
@@ -49,7 +52,6 @@ pub(crate) const VOXTRAL_REALTIME_ADAPTER_ABI: AdapterAbiRevision =
 // preparation; this ceiling prevents the adapter from rejecting production
 // geometry before physical capacity admission.
 const STATIC_TTS_MAX_BATCH_WORKSPACE_BYTES: u64 = 8 * 8_192 * 1_920 * 4 * 1_024;
-const CONTINUOUS_CHAT_MAX_BATCH_WORKSPACE_BYTES: u64 = 16 * 1024 * 1024;
 const CONTINUOUS_ASR_MAX_BATCH_WORKSPACE_BYTES: u64 = 16 * 1024 * 1024;
 // Qwen3.8 MTP supports draft depths one through three, which requires an
 // isolated target quantum of depth + 1. Shared continuous batches remain one
@@ -214,6 +216,12 @@ pub(crate) trait LoadedExecutionAdapter: fmt::Debug + Send + Sync {
     fn adapter_instance_id(&self) -> AdapterInstanceId;
     fn adapter_abi_revision(&self) -> AdapterAbiRevision;
     fn contract(&self, streaming: StreamingRequirements) -> Result<LoadedExecutionContract>;
+
+    fn seal_chat_workspace(&self, _accelerator_bytes: u64) -> Result<()> {
+        Err(Error::ModelLoadError(
+            "loaded adapter does not support continuous chat workspace sealing".into(),
+        ))
+    }
 
     fn seal_qwen3_asr_audio_preparation(
         &self,
@@ -4373,6 +4381,7 @@ struct ContinuousChatExecutionAdapter {
     metadata: AdapterMetadata,
     backend_kind: BackendKind,
     max_batch_size: usize,
+    workspace_per_row_bytes: OnceLock<u64>,
 }
 
 impl ContinuousChatExecutionAdapter {
@@ -4393,6 +4402,7 @@ impl ContinuousChatExecutionAdapter {
             metadata,
             backend_kind,
             max_batch_size: max_batch_size.max(1),
+            workspace_per_row_bytes: OnceLock::new(),
         }
     }
 }
@@ -4410,8 +4420,40 @@ impl LoadedExecutionAdapter for ContinuousChatExecutionAdapter {
         CONTINUOUS_TENSOR_ADAPTER_ABI
     }
 
+    fn seal_chat_workspace(&self, accelerator_bytes: u64) -> Result<()> {
+        let per_row = continuous_chat_workspace_per_row(accelerator_bytes)?.workspace_bytes()?;
+        let width = u64::try_from(self.max_batch_size)
+            .map_err(|_| Error::Overloaded("continuous chat batch width overflow".into()))?;
+        per_row.checked_mul(width).ok_or_else(|| {
+            Error::Overloaded("continuous chat batch workspace estimate overflow".into())
+        })?;
+        if let Some(existing) = self.workspace_per_row_bytes.get() {
+            return if *existing == per_row {
+                Ok(())
+            } else {
+                Err(Error::ModelLoadError(
+                    "continuous chat workspace was resealed with different geometry".into(),
+                ))
+            };
+        }
+        self.workspace_per_row_bytes.set(per_row).map_err(|_| {
+            Error::ModelLoadError("continuous chat workspace seal raced publication".into())
+        })
+    }
+
+    #[cfg(test)]
+    fn install_test_preparation_seal(&self, _backend: BackendKind, _width: usize) -> Result<()> {
+        self.seal_chat_workspace(8_192)
+    }
+
     fn contract(&self, streaming: StreamingRequirements) -> Result<LoadedExecutionContract> {
         let metadata = self.metadata();
+        let workspace_per_row = *self.workspace_per_row_bytes.get().ok_or_else(|| {
+            Error::ModelLoadError(
+                "continuous chat execution graph is unavailable before loaded model workspace is sealed"
+                    .into(),
+            )
+        })?;
         if streaming.model_native && metadata.streaming_mode == StreamingMode::None {
             return Err(Error::InvalidInput(format!(
                 "Model {} has no streaming chat contract",
@@ -4468,7 +4510,15 @@ impl LoadedExecutionAdapter for ContinuousChatExecutionAdapter {
                 )
             })?
             .max(CONTINUOUS_CHAT_MAX_DECODE_QUANTUM);
-        decode.max_workspace_bytes = CONTINUOUS_CHAT_MAX_BATCH_WORKSPACE_BYTES;
+        decode.workspace_per_row_bytes = workspace_per_row;
+        decode.max_workspace_bytes =
+            workspace_per_row
+                .checked_mul(u64::try_from(decode.max_batch_size).map_err(|_| {
+                    Error::Overloaded("continuous chat batch width overflow".into())
+                })?)
+                .ok_or_else(|| {
+                    Error::Overloaded("continuous chat batch workspace estimate overflow".into())
+                })?;
         prefill.validate()?;
         decode.validate()?;
 
@@ -4631,6 +4681,16 @@ impl LoadedModelBundleDraft {
             ))
         })?;
         loaded_execution_contracts(execution.as_ref())
+    }
+
+    pub(crate) fn seal_chat_workspace(&self, accelerator_bytes: u64) -> Result<()> {
+        let execution = self
+            .capabilities
+            .get(&CapabilityKind::Chat)
+            .ok_or_else(|| {
+                Error::ModelLoadError("loaded bundle has no chat capability to seal".into())
+            })?;
+        execution.seal_chat_workspace(accelerator_bytes)
     }
 
     pub(crate) fn seal_qwen3_asr_audio_preparation(
@@ -4942,21 +5002,24 @@ mod tests {
             .load_managed_model_cache(model_instance, &capability, None)
             .unwrap()
             .expect("physical managed runtime");
-        let bundle = LoadedModelBundle::bind_with_state_publications(
+        let draft = LoadedModelBundleDraft::build(
             &registry,
             ExecutionGroupId::new(3),
             model_instance,
             ModelVariant::Qwen306B,
             BackendKind::Cpu,
-            HashMap::from([(
+        )
+        .unwrap();
+        install_test_preparation_seals(&draft, BackendKind::Cpu, 1);
+        let bundle = draft
+            .seal(HashMap::from([(
                 CapabilityKind::Chat,
                 LoadedStatePublication::ManagedV2 {
                     contract: state_contract,
                     physical: physical.clone(),
                 },
-            )]),
-        )
-        .unwrap();
+            )]))
+            .unwrap();
 
         let binding = bundle
             .capability_binding_for_streaming(CapabilityKind::Chat, StreamingRequirements::NONE)
@@ -5022,21 +5085,24 @@ mod tests {
             )
             .unwrap()
             .expect("physical managed runtime");
-        let bundle = LoadedModelBundle::bind_with_state_publications(
+        let draft = LoadedModelBundleDraft::build(
             &registry,
             ExecutionGroupId::new(30),
             model_instance,
             ModelVariant::Qwen306B,
             BackendKind::Cpu,
-            HashMap::from([(
+        )
+        .unwrap();
+        install_test_preparation_seals(&draft, BackendKind::Cpu, 1);
+        let bundle = draft
+            .seal(HashMap::from([(
                 CapabilityKind::Chat,
                 LoadedStatePublication::ManagedV2 {
                     contract: state_contract,
                     physical: physical.clone(),
                 },
-            )]),
-        )
-        .unwrap();
+            )]))
+            .unwrap();
         let binding = bundle
             .capability_binding_for_streaming(CapabilityKind::Chat, StreamingRequirements::NONE)
             .unwrap();
@@ -5089,14 +5155,18 @@ mod tests {
     #[test]
     fn stateful_qwen_capability_fails_closed_without_physical_publication() {
         let registry = RuntimeAdapterRegistry::built_in();
-        let error = LoadedModelBundle::bind(
+        let draft = LoadedModelBundleDraft::build(
             &registry,
             ExecutionGroupId::new(3),
             ModelInstanceId::new(10),
             ModelVariant::Qwen306B,
             BackendKind::Cpu,
         )
-        .expect_err("stateful chat must not seal without physical state");
+        .unwrap();
+        install_test_preparation_seals(&draft, BackendKind::Cpu, 1);
+        let error = draft
+            .seal(HashMap::new())
+            .expect_err("stateful chat must not seal without physical state");
         assert!(error
             .to_string()
             .contains("requires an explicit load-sealed ABI-v2 state publication"));
@@ -5105,14 +5175,18 @@ mod tests {
     #[test]
     fn lfm2_chat_fails_closed_without_managed_state_publication() {
         let registry = RuntimeAdapterRegistry::built_in();
-        let error = LoadedModelBundle::bind(
+        let draft = LoadedModelBundleDraft::build(
             &registry,
             ExecutionGroupId::new(3),
             ModelInstanceId::new(11),
             ModelVariant::Lfm2512BInstructGguf,
             BackendKind::Cpu,
         )
-        .expect_err("LFM2 chat must not seal without managed physical state");
+        .unwrap();
+        install_test_preparation_seals(&draft, BackendKind::Cpu, 1);
+        let error = draft
+            .seal(HashMap::new())
+            .expect_err("LFM2 chat must not seal without managed physical state");
         assert!(error
             .to_string()
             .contains("requires an explicit load-sealed ABI-v2 state publication"));
@@ -5335,6 +5409,7 @@ mod tests {
             BackendKind::Cpu,
         )
         .unwrap();
+        install_test_preparation_seals(&draft, BackendKind::Cpu, 1);
         let stages = draft
             .execution_contracts(CapabilityKind::Chat)
             .unwrap()
@@ -5366,6 +5441,7 @@ mod tests {
             BackendKind::Cpu,
         )
         .unwrap();
+        install_test_preparation_seals(&draft, BackendKind::Cpu, 1);
         let stages = draft
             .execution_contracts(CapabilityKind::Chat)
             .unwrap()
@@ -6131,6 +6207,7 @@ mod tests {
             BackendKind::Cuda,
         )
         .unwrap();
+        install_test_preparation_seals(&cuda, BackendKind::Cuda, 1);
         let contract = cuda
             .execution_contracts(CapabilityKind::Chat)
             .unwrap()
@@ -6232,6 +6309,7 @@ mod tests {
             BackendKind::Cpu,
         )
         .unwrap();
+        install_test_preparation_seals(&draft, BackendKind::Cpu, 1);
         let adapter = draft.capabilities.get(&CapabilityKind::Chat).unwrap();
 
         let non_streaming = adapter.contract(StreamingRequirements::NONE).unwrap();
@@ -6264,6 +6342,7 @@ mod tests {
             BackendKind::Cpu,
         )
         .unwrap();
+        install_test_preparation_seals(&draft, BackendKind::Cpu, 1);
 
         let streaming = draft
             .capabilities
@@ -6636,6 +6715,83 @@ mod tests {
     }
 
     #[test]
+    fn continuous_chat_workspace_is_sealed_before_publication_and_scales_to_loaded_geometry() {
+        // Full-size hybrid verification and graph storage exceed the former
+        // 16 MiB batch ceiling even for one row. Also cover small/disabled
+        // feature configurations without imposing a production-model minimum.
+        for backend in [BackendKind::Cpu, BackendKind::Metal, BackendKind::Cuda] {
+            for width in [1, 8] {
+                for accelerator_bytes in [8_192, 512 * 1024 * 1024] {
+                    let adapter = ContinuousChatExecutionAdapter::new(
+                        ExecutionGroupId::new(1),
+                        ModelInstanceId::new(2),
+                        *RuntimeAdapterRegistry::built_in()
+                            .require(CapabilityKind::Chat, ModelVariant::Qwen3827BFp8)
+                            .unwrap(),
+                        backend,
+                        width,
+                        1,
+                    );
+                    assert!(adapter.contract(StreamingRequirements::NONE).is_err());
+                    adapter.seal_chat_workspace(accelerator_bytes).unwrap();
+                    adapter.seal_chat_workspace(accelerator_bytes).unwrap();
+                    assert!(adapter.seal_chat_workspace(accelerator_bytes + 1).is_err());
+                    let row = crate::engine::WorkCost::with_workspace(
+                        1,
+                        1,
+                        continuous_chat_workspace_per_row(accelerator_bytes).unwrap(),
+                    );
+                    let row_bytes = row.workspace.workspace_bytes().unwrap();
+                    assert!(
+                        row_bytes > accelerator_bytes,
+                        "host collation must be included"
+                    );
+                    for streaming in [
+                        StreamingRequirements::NONE,
+                        StreamingRequirements::native(true),
+                    ] {
+                        let contract = adapter.contract(streaming).unwrap();
+                        let decode = &contract.stages[1];
+                        assert_eq!(decode.workspace_per_row_bytes, row_bytes);
+                        assert_eq!(decode.max_workspace_bytes, row_bytes * width as u64);
+                        let budget = crate::engine::BatchBudget {
+                            max_rows: width,
+                            max_workspace_bytes: decode.max_workspace_bytes,
+                            ..crate::engine::BatchBudget::width_one()
+                        };
+                        let mut accumulated = crate::engine::WorkCost::default();
+                        for rows in 0..width {
+                            assert!(budget.admits(rows, accumulated, row));
+                            accumulated = accumulated.checked_add(row).unwrap();
+                        }
+                        assert!(!budget.admits(width, accumulated, row));
+                        let oversized =
+                            crate::engine::WorkCost::new(1, 1, decode.max_workspace_bytes + 1);
+                        assert!(!budget.admits(0, crate::engine::WorkCost::default(), oversized));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn continuous_chat_workspace_rejects_row_and_batch_overflow() {
+        let adapter = ContinuousChatExecutionAdapter::new(
+            ExecutionGroupId::new(1),
+            ModelInstanceId::new(2),
+            *RuntimeAdapterRegistry::built_in()
+                .require(CapabilityKind::Chat, ModelVariant::Qwen3827BFp8)
+                .unwrap(),
+            BackendKind::Cuda,
+            8,
+            1,
+        );
+        assert!(adapter.seal_chat_workspace(u64::MAX).is_err());
+        assert!(adapter.seal_chat_workspace(u64::MAX / 2).is_err());
+        assert!(adapter.contract(StreamingRequirements::NONE).is_err());
+    }
+
+    #[test]
     fn qwen_chat_native_factory_publishes_scalar_prefill_and_ragged_decode() {
         let variant = ModelVariant::Qwen306B;
         let registry = RuntimeAdapterRegistry::built_in_with_execution_limits(8, 1).unwrap();
@@ -6648,6 +6804,7 @@ mod tests {
         )
         .unwrap();
 
+        install_test_preparation_seals(&draft, BackendKind::Cuda, 8);
         let contract = draft
             .capabilities
             .get(&CapabilityKind::Chat)
@@ -6685,7 +6842,10 @@ mod tests {
             .all(|stage| { stage.output_visibility == OutputVisibility::AfterQuantumCommit }));
         assert_eq!(
             contract.stages[1].max_workspace_bytes,
-            CONTINUOUS_CHAT_MAX_BATCH_WORKSPACE_BYTES
+            8 * continuous_chat_workspace_per_row(8_192)
+                .unwrap()
+                .workspace_bytes()
+                .unwrap()
         );
     }
 
@@ -6824,6 +6984,7 @@ mod tests {
             BackendKind::Cpu,
         )
         .unwrap();
+        install_test_preparation_seals(&draft, BackendKind::Cpu, 1);
         let contract = draft
             .capabilities
             .get(&CapabilityKind::Chat)

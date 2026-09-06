@@ -1380,6 +1380,18 @@ impl ModelLifecycleController {
             let state_started = Instant::now();
             let mut state_publications = HashMap::new();
             if let Some(loaded) = self.model_registry.get_chat(variant).await {
+                // Freeze exact MTP/collation geometry before deriving any
+                // selectable stage graphs or planning physical state.
+                bundle_draft.seal_chat_workspace(
+                    loaded.continuous_decode_batch_workspace_per_row_bytes()?,
+                )?;
+                let decode_workspace_reserve_bytes = bundle_draft
+                    .execution_contracts(CapabilityKind::Chat)?
+                    .iter()
+                    .flat_map(|contract| contract.stages.iter())
+                    .map(|stage| stage.max_workspace_bytes)
+                    .max()
+                    .unwrap_or(0);
                 let loaded_cache = loaded.inference_state_contract()?;
                 loaded_cache.validate()?;
                 let publication = match &loaded_cache {
@@ -1398,6 +1410,7 @@ impl ModelLifecycleController {
                                 Some(loaded.max_context_tokens()?),
                                 capacity_policy.staged_transaction_rows,
                                 capacity_policy.fit_cuda_resident_context,
+                                decode_workspace_reserve_bytes,
                             )
                             .await?;
                         let physical = physical.ok_or_else(|| {
