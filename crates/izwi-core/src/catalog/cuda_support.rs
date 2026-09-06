@@ -561,8 +561,8 @@ impl ModelVariant {
             ),
             _ if self.is_lfm25_audio_gguf() => {
                 CudaQuantizationInfo::new(
-                    CudaQuantizationSupportLevel::DenseDequantizedFallback,
-                    "GGUF speech/audio bundle is loaded through dense VarBuilder paths",
+                    CudaQuantizationSupportLevel::CandleQuantizedGeneric,
+                    "LFM2.5 Audio uses quantized GGUF QMatMul backbone and audio-output projections while the audio encoder and other audio components remain dense F32",
                 )
             }
             _ if self.is_quantized() => CudaQuantizationInfo::new(
@@ -840,6 +840,17 @@ mod tests {
                 .level,
             CudaQuantizationSupportLevel::Dense
         );
+    }
+
+    #[test]
+    fn lfm_audio_cuda_quantization_reports_mixed_components() {
+        let info = ModelVariant::Lfm25Audio15BGguf.cuda_quantization();
+        assert_eq!(
+            info.level,
+            CudaQuantizationSupportLevel::CandleQuantizedGeneric
+        );
+        assert!(info.reason.contains("QMatMul"));
+        assert!(info.reason.contains("dense F32"));
     }
 
     #[test]

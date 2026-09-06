@@ -67,3 +67,7 @@ pub use voice_metrics::{
     VOICE_VAD_SPEECH_START_MS,
 };
 pub use voice_session::{VoiceSession, VoiceSessionPhase};
+
+// Allow executor regression tests to validate the real loaded adapter join.
+#[cfg(test)]
+pub(crate) use adapters::{CapabilityKind, LoadedModelBundleDraft, RuntimeAdapterRegistry};

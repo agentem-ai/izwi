@@ -3086,29 +3086,32 @@ impl ModelExecutor for NativeExecutor {
             Some(variant),
             ExecutionMode::Atomic,
         );
-        profile.compute_dtype = self.config.dtype.clone();
-        profile.kv_dtype = self.config.kv_cache_dtype.clone();
+        // LFM loaders and retained-state contracts currently use F32 regardless
+        // of the global device preference. Report the representation actually
+        // consumed by these executors, including the cache namespace.
+        if matches!(
+            variant.family(),
+            crate::catalog::ModelFamily::Lfm2Chat | crate::catalog::ModelFamily::Lfm25Audio
+        ) {
+            profile.compute_dtype = "f32".into();
+            profile.kv_dtype = "f32".into();
+        } else {
+            profile.compute_dtype = self.config.dtype.clone();
+            profile.kv_dtype = self.config.kv_cache_dtype.clone();
+        }
         profile.cache_namespace = Some(format!(
             "{}:{}:{}:{}",
             variant,
             self.config.backend.as_str(),
-            self.config.dtype,
-            self.config.kv_cache_dtype
+            profile.compute_dtype,
+            profile.kv_dtype
         ));
 
         let loaded_incremental = match request.task_type {
-            super::types::TaskType::Chat => {
-                request
-                    .prepared_chat_model_for_executor()
-                    .ok()
-                    .map(|model| match model.as_ref() {
-                        NativeChatModel::Qwen3(model) => model.supports_incremental_decode(),
-                        NativeChatModel::Qwen35(model) => model.supports_incremental_decode(),
-                        NativeChatModel::Qwen38(model) => model.supports_incremental_decode(),
-                        NativeChatModel::Gemma3(model) => model.supports_incremental_decode(),
-                        NativeChatModel::Lfm2(_) => false,
-                    })
-            }
+            super::types::TaskType::Chat => request
+                .prepared_chat_model_for_executor()
+                .ok()
+                .map(|model| model.supports_incremental_decode()),
             super::types::TaskType::ASR => request
                 .prepared_asr_model_for_executor()
                 .ok()
@@ -6333,3 +6336,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "executor/lfm_contract_tests.rs"]
+mod lfm_contract_tests;
