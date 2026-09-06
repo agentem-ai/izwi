@@ -1165,7 +1165,7 @@ mod tests {
     };
     use izwi_core::{EngineConfig, RuntimeStageOutcome};
     use serde_json::json;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
     struct FakeExecutor {
         calls: AtomicUsize,
@@ -1546,7 +1546,16 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_drain_waits_for_active_iteration_while_renewing_lease() {
-        let store = build_store();
+        // Lease validity must not depend on how quickly CI schedules SQLite or
+        // the worker. Timers still run normally; advance lease time only after
+        // observing each renewal in the database.
+        let clock = Arc::new(AtomicI64::new(
+            super::super::store::current_timestamp_millis(),
+        ));
+        let mut store = build_store();
+        Arc::get_mut(&mut store)
+            .expect("unshared store")
+            .set_test_clock(clock.clone());
         let (_job_id, stage_id) = create_queued_fake_stage(&store, 1).await.expect("stage");
         let started = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
@@ -1574,20 +1583,33 @@ mod tests {
         assert_eq!(running.status, RuntimeStageStatus::Running);
         assert!(running.lease_expires_at.is_some());
 
+        let original_expiry = i64::try_from(running.lease_expires_at.expect("initial lease"))
+            .expect("lease timestamp fits i64");
+        supervisor.begin_drain();
         let mut shutdown = tokio::spawn(supervisor.shutdown());
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
-                .await
-                .is_err()
-        );
-        tokio::time::sleep(Duration::from_millis(180)).await;
-        let renewed = store
-            .get_stage(&stage_id)
+        for _ in 0..3 {
+            let now = clock.fetch_add(60, Ordering::SeqCst) + 60;
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    assert!(!shutdown.is_finished(), "drain must wait for the executor");
+                    let renewed = store
+                        .get_stage(&stage_id)
+                        .await
+                        .expect("stage")
+                        .expect("stage exists");
+                    assert_eq!(renewed.status, RuntimeStageStatus::Running);
+                    if renewed.lease_expires_at
+                        == Some(u64::try_from(now + 120).expect("positive lease timestamp"))
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
             .await
-            .expect("stage")
-            .expect("stage exists");
-        assert_eq!(renewed.status, RuntimeStageStatus::Running);
-        assert!(renewed.lease_expires_at.is_some());
+            .expect("worker should renew its lease while draining");
+        }
+        assert!(clock.load(Ordering::SeqCst) > original_expiry);
         release.notify_one();
         tokio::time::timeout(Duration::from_secs(2), &mut shutdown)
             .await

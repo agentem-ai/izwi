@@ -24,9 +24,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(test)]
+use std::sync::{atomic::AtomicI64, atomic::Ordering, Arc};
+
 #[derive(Debug, Clone)]
 pub struct BatchRuntimeStore {
     db: StoreDatabase,
+    #[cfg(test)]
+    test_clock: Option<Arc<AtomicI64>>,
 }
 
 #[derive(Debug, Clone)]
@@ -367,7 +372,24 @@ impl LeaseValidity {
 
 impl BatchRuntimeStore {
     pub fn initialize_with_database(db: StoreDatabase) -> Self {
-        Self { db }
+        Self {
+            db,
+            #[cfg(test)]
+            test_clock: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_clock(&mut self, clock: Arc<AtomicI64>) {
+        self.test_clock = Some(clock);
+    }
+
+    fn now_millis(&self) -> i64 {
+        #[cfg(test)]
+        if let Some(clock) = &self.test_clock {
+            return clock.load(Ordering::SeqCst);
+        }
+        current_timestamp_millis()
     }
 
     pub async fn connection(&self) -> anyhow::Result<&DatabaseConnection> {
@@ -376,7 +398,7 @@ impl BatchRuntimeStore {
 
     pub async fn create_media_asset(&self, input: NewMediaAsset) -> anyhow::Result<MediaAsset> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let id = new_uuid();
         let metadata_json = json_to_db_string(&input.metadata_json, "{}")?;
 
@@ -489,7 +511,7 @@ impl BatchRuntimeStore {
 
     pub async fn create_text_asset(&self, input: NewTextAsset) -> anyhow::Result<TextAsset> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let id = new_uuid();
         let normalized_text = input
             .normalized_text
@@ -549,7 +571,7 @@ impl BatchRuntimeStore {
 
     pub async fn create_job(&self, input: NewRuntimeJob) -> anyhow::Result<RuntimeJob> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let id = new_uuid();
         let request_json = json_to_db_string(&input.request_json, "{}")?;
         let model_snapshot_json = json_to_db_string(&input.model_snapshot_json, "{}")?;
@@ -739,7 +761,7 @@ impl BatchRuntimeStore {
         }
 
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let expected_placeholders = (0..expected_statuses.len())
             .map(|index| format!("?{}", index + 7))
             .collect::<Vec<_>>()
@@ -833,7 +855,7 @@ impl BatchRuntimeStore {
             return Ok(None);
         }
 
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let result = tx
             .execute_raw(raw::statement(
                 &tx,
@@ -916,7 +938,7 @@ impl BatchRuntimeStore {
         filter: &StageClaimFilter,
     ) -> anyhow::Result<Option<ClaimedStage>> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let lease_expires_at = now.saturating_add(i64::try_from(lease_duration_ms)?);
         let filter = filter.normalized();
         let mut params: Vec<Value> = vec![now.into()];
@@ -1120,7 +1142,7 @@ impl BatchRuntimeStore {
             .begin()
             .await
             .context("Failed to start runtime stage completion transaction")?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let output_json = json_to_db_string(&json!(output_artifact_ids), "[]")?;
         let result = tx
             .execute_raw(raw::statement(
@@ -1182,7 +1204,7 @@ impl BatchRuntimeStore {
         lease_duration_ms: u64,
     ) -> anyhow::Result<bool> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let lease_expires_at = now.saturating_add(i64::try_from(lease_duration_ms.max(1))?);
         let result = db
             .execute_raw(raw::statement(
@@ -1214,7 +1236,7 @@ impl BatchRuntimeStore {
 
     pub async fn stage_lease_is_active(&self, lease: &StageLease) -> anyhow::Result<bool> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let row = db
             .query_one_raw(raw::statement(
                 db,
@@ -1251,7 +1273,7 @@ impl BatchRuntimeStore {
         progress: serde_json::Value,
     ) -> anyhow::Result<bool> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let progress_json = json_to_db_string(&progress, "{}")?;
         let result = db
             .execute_raw(raw::statement(
@@ -1329,7 +1351,7 @@ impl BatchRuntimeStore {
         let policy = StoredRetryPolicy::from_job(&job);
         let should_retry =
             retryable && stage.attempt_count < policy.effective_max_attempts(&job, &stage);
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
 
         let result = if should_retry {
             let available_at = now.saturating_add(i64::try_from(policy.backoff_ms(&stage))?);
@@ -1377,7 +1399,7 @@ impl BatchRuntimeStore {
             .begin()
             .await
             .context("Failed to start runtime job cancellation transaction")?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
 
         let result = tx
             .execute_raw(raw::statement(
@@ -1428,7 +1450,7 @@ impl BatchRuntimeStore {
 
     pub async fn recover_expired_stage_leases(&self) -> anyhow::Result<u64> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let rows = db
             .query_all_raw(raw::statement(
                 db,
@@ -1530,7 +1552,7 @@ impl BatchRuntimeStore {
         heartbeat_stale_after_ms: u64,
     ) -> anyhow::Result<RuntimeQueueHealthSnapshot> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let queue_rows = db
             .query_all_raw(raw::statement(
                 db,
@@ -1638,7 +1660,7 @@ impl BatchRuntimeStore {
         input: NewJobStageDispatch,
     ) -> anyhow::Result<JobStage> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let id = new_uuid();
         let stage = input.stage;
         let resource_hints = input.resource_hints.normalized();
@@ -1746,7 +1768,7 @@ impl BatchRuntimeStore {
         input: NewRuntimeArtifact,
     ) -> anyhow::Result<RuntimeArtifact> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let id = new_uuid();
         let metadata_json = json_to_db_string(&input.metadata_json, "{}")?;
 
@@ -1824,7 +1846,7 @@ impl BatchRuntimeStore {
             .begin()
             .await
             .context("Failed to start runtime artifact publication transaction")?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let id = new_uuid();
         let metadata_json = json_to_db_string(&input.metadata_json, "{}")?;
         let conflict_clause = match tx.get_database_backend() {
@@ -2008,7 +2030,7 @@ impl BatchRuntimeStore {
         input: NewIdempotencyRecord,
     ) -> anyhow::Result<IdempotencyRecord> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let response_json = input
             .response_json
             .as_ref()
@@ -2122,7 +2144,7 @@ impl BatchRuntimeStore {
         update: RegisteredWorkerHeartbeatUpdate,
     ) -> anyhow::Result<RuntimeWorkerHeartbeat> {
         let db = self.db.connection().await?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let queue_names = update
             .registration
             .queue_classes
@@ -2336,7 +2358,7 @@ impl BatchRuntimeStore {
             .begin()
             .await
             .context("Failed to start runtime reconciliation transaction")?;
-        let now = current_timestamp_millis();
+        let now = self.now_millis();
         let mut report = RuntimeReconciliationReport::default();
 
         for (status, stage_status, excluded_statuses) in [
