@@ -2480,47 +2480,72 @@ impl EngineCoreRequest {
         Ok(Some((stage.id, cost)))
     }
 
-    fn continuous_lfm25_audio_asr_stage_cost(
+    fn lfm25_audio_asr_stage_costs(
         binding: Option<&super::ExecutionAdapterBinding>,
         model: &crate::models::registry::NativeAudioChatModel,
         prompt_tokens: usize,
         max_new_tokens: usize,
-    ) -> Result<Option<(StageId, WorkCost)>> {
-        let Some(stage) = binding.and_then(|binding| {
-            binding
-                .stages
-                .iter()
-                .find(|stage| stage.batch_mode == super::NativeBatchMode::Continuous)
-        }) else {
-            return Ok(None);
+    ) -> Result<Vec<(StageId, WorkCost)>> {
+        Self::lfm25_audio_asr_stage_costs_from_envelopes(binding, |selector| {
+            // Reserve a complete prompt span even when the scheduler divides
+            // it into smaller quanta. This also bounds singleton span prefill;
+            // the per-row cost is aggregated once by physical batch admission.
+            if selector == super::StageWorkSelector::SequencePrefill {
+                model.lfm25_audio_asr_prefill_resource_envelope(0, prompt_tokens, prompt_tokens)
+            } else {
+                let position = prompt_tokens
+                    .checked_add(max_new_tokens.max(1))
+                    .and_then(|value| value.checked_sub(1))
+                    .ok_or_else(|| {
+                        Error::Overloaded("LFM2.5 Audio ASR decode position overflowed".into())
+                    })?;
+                model.lfm25_audio_asr_decode_resource_envelope(position)
+            }
+        })
+    }
+
+    fn lfm25_audio_asr_stage_costs_from_envelopes(
+        binding: Option<&super::ExecutionAdapterBinding>,
+        mut envelope_for: impl FnMut(
+            super::StageWorkSelector,
+        ) -> Result<
+            crate::models::architectures::lfm25_audio::model::Lfm25AudioAsrStepResourceEnvelope,
+        >,
+    ) -> Result<Vec<(StageId, WorkCost)>> {
+        let Some(binding) = binding else {
+            return Ok(Vec::new());
         };
-        let position = prompt_tokens
-            .checked_add(max_new_tokens.max(1))
-            .and_then(|value| value.checked_sub(1))
-            .ok_or_else(|| {
-                Error::Overloaded("LFM2.5 Audio ASR decode position overflowed".into())
-            })?;
-        let envelope = model.lfm25_audio_asr_decode_resource_envelope(position)?;
-        let cost = WorkCost::with_workspace(
-            envelope.work_units,
-            envelope.materialized_tensor_elements,
-            ResourceVector {
-                host_bytes: ResourceAmount::Known(envelope.host_workspace_bytes),
-                device_bytes: ResourceAmount::Known(envelope.device_workspace_bytes),
-                unified_bytes: ResourceAmount::Known(envelope.unified_workspace_bytes),
-                ..ResourceVector::zero()
-            },
-        );
-        if !cost
-            .workspace
-            .workspace_bytes()
-            .is_ok_and(|bytes| bytes <= stage.max_workspace_bytes)
-        {
-            return Err(Error::Overloaded(
-                "LFM2.5 Audio ASR decode workspace exceeds its loaded adapter budget".into(),
-            ));
+        let mut costs = Vec::new();
+        for stage in binding.stages.iter().filter(|stage| {
+            matches!(
+                stage.selector,
+                super::StageWorkSelector::SequencePrefill
+                    | super::StageWorkSelector::SequenceDecode
+            )
+        }) {
+            let envelope = envelope_for(stage.selector)?;
+            let cost = WorkCost::with_workspace(
+                envelope.work_units,
+                envelope.materialized_tensor_elements,
+                ResourceVector {
+                    host_bytes: ResourceAmount::Known(envelope.host_workspace_bytes),
+                    device_bytes: ResourceAmount::Known(envelope.device_workspace_bytes),
+                    unified_bytes: ResourceAmount::Known(envelope.unified_workspace_bytes),
+                    ..ResourceVector::zero()
+                },
+            );
+            if !cost
+                .workspace
+                .workspace_bytes()
+                .is_ok_and(|bytes| bytes <= stage.max_workspace_bytes)
+            {
+                return Err(Error::Overloaded(
+                    "LFM2.5 Audio ASR workspace exceeds its loaded adapter budget".into(),
+                ));
+            }
+            costs.push((stage.id, cost));
         }
-        Ok(Some((stage.id, cost)))
+        Ok(costs)
     }
 
     fn lfm25_audio_tts_stage_costs(
@@ -3033,7 +3058,7 @@ impl EngineCoreRequest {
                 self.id
             )));
         }
-        let prepared_cost = self
+        let prepared_costs = self
             .incremental_model_execution_ready
             .as_ref()
             .and_then(|ready| match &ready.model {
@@ -3041,7 +3066,7 @@ impl EngineCoreRequest {
                 _ => None,
             })
             .map(|model| {
-                Self::continuous_lfm25_audio_asr_stage_cost(
+                Self::lfm25_audio_asr_stage_costs(
                     self.execution_adapter_binding.as_ref(),
                     model,
                     artifact.prompt_tokens,
@@ -3049,13 +3074,13 @@ impl EngineCoreRequest {
                 )
             })
             .transpose()?
-            .flatten();
+            .unwrap_or_default();
         self.prepared_asr_encoder_artifact = Some(PreparedAsrEncoderArtifact {
             model_variant,
             artifact: PreparedAsrEncoderArtifactValue::Lfm25Audio(artifact),
             source_fingerprint,
         });
-        if let Some((stage_id, cost)) = prepared_cost {
+        for (stage_id, cost) in prepared_costs {
             self.install_prepared_stage_cost(stage_id, cost)?;
         }
         Ok(())
@@ -4768,7 +4793,7 @@ impl EngineCoreRequest {
             .map(|model| Self::continuous_asr_stage_cost(Some(&binding), model))
             .transpose()?
             .flatten();
-        let prepared_lfm25_asr_continuous_cost = self
+        let prepared_lfm25_asr_costs = self
             .incremental_model_execution_ready
             .as_ref()
             .and_then(|ready| match &ready.model {
@@ -4784,7 +4809,7 @@ impl EngineCoreRequest {
             })
             .filter(|_| self.uses_asr_retained_sequence())
             .map(|(model, prompt_tokens)| {
-                Self::continuous_lfm25_audio_asr_stage_cost(
+                Self::lfm25_audio_asr_stage_costs(
                     Some(&binding),
                     model,
                     prompt_tokens,
@@ -4792,7 +4817,7 @@ impl EngineCoreRequest {
                 )
             })
             .transpose()?
-            .flatten();
+            .unwrap_or_default();
         let prepared_lfm25_tts_costs = self
             .incremental_model_execution_ready
             .as_ref()
@@ -4874,7 +4899,7 @@ impl EngineCoreRequest {
         if let Some((stage_id, cost)) = prepared_asr_continuous_cost {
             self.install_prepared_stage_cost(stage_id, cost)?;
         }
-        if let Some((stage_id, cost)) = prepared_lfm25_asr_continuous_cost {
+        for (stage_id, cost) in prepared_lfm25_asr_costs {
             self.install_prepared_stage_cost(stage_id, cost)?;
         }
         for (stage_id, cost) in prepared_lfm25_tts_costs {
@@ -5784,6 +5809,116 @@ mod tests {
         let mut mismatched = binding;
         mismatched.adapter_instance_id = super::super::AdapterInstanceId::new(3);
         assert!(request.bind_execution_adapter(mismatched).is_err());
+    }
+
+    #[test]
+    fn lfm_asr_prefill_and_decode_costs_remain_separate_across_rebinding() {
+        let variant = ModelVariant::Lfm25Audio15BGguf;
+        // The production ASR adapter needs an encoder seal; use its sequence
+        // selectors here to exercise request cost lifetime independently of
+        // checkpoint loading.
+        let profile = super::super::ExecutionProfile::fail_closed(
+            BackendKind::Cuda,
+            Some(variant),
+            super::super::ExecutionMode::Sequence,
+        );
+        let mut stages = Vec::new();
+        for (id, selector, mode) in [
+            (
+                1,
+                super::super::StageWorkSelector::SequencePrefill,
+                super::super::NativeBatchMode::Static,
+            ),
+            (
+                2,
+                super::super::StageWorkSelector::SequenceDecode,
+                super::super::NativeBatchMode::Continuous,
+            ),
+        ] {
+            let mut stage = super::super::StageDescriptor::from_execution_profile(
+                StageId::new(id),
+                "asr.resource-test",
+                &profile,
+                mode,
+            );
+            stage.selector = selector;
+            stage.max_workspace_bytes = 16_384;
+            stages.push(stage);
+        }
+        let binding = super::super::ExecutionAdapterBinding {
+            execution_group_id: super::super::ExecutionGroupId::new(1),
+            model_instance_id: super::super::ModelInstanceId::new(2),
+            adapter_instance_id: super::super::AdapterInstanceId::new(3),
+            adapter_abi_revision: super::super::AdapterAbiRevision::new(1),
+            model_variant: variant,
+            capability_id: "asr".into(),
+            stages: Arc::from(stages),
+        };
+        let mut request = EngineCoreRequest::asr_bytes(vec![1]).with_model_variant(variant);
+        request.bind_execution_adapter(binding.clone()).unwrap();
+        let mut requested = Vec::new();
+        let envelope_for = |selector| {
+            let (work_units, materialized_tensor_elements, workspace_bytes) =
+                if selector == super::super::StageWorkSelector::SequencePrefill {
+                    (32, 128, 8192)
+                } else {
+                    (1, 4, 1024)
+                };
+            Ok(crate::models::architectures::lfm25_audio::model::Lfm25AudioAsrStepResourceEnvelope {
+                backend: BackendKind::Cuda,
+                work_units, materialized_tensor_elements,
+                host_workspace_bytes: 0,
+                device_workspace_bytes: workspace_bytes,
+                unified_workspace_bytes: 0,
+                workspace_bytes,
+            })
+        };
+        let costs = EngineCoreRequest::lfm25_audio_asr_stage_costs_from_envelopes(
+            Some(&binding),
+            |selector| {
+                requested.push(selector);
+                envelope_for(selector)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            requested,
+            vec![
+                super::super::StageWorkSelector::SequencePrefill,
+                super::super::StageWorkSelector::SequenceDecode,
+            ]
+        );
+        assert_eq!(costs.len(), 2);
+        let prefill = costs[0].1;
+        let decode = costs[1].1;
+        assert_eq!(prefill.logical_units, 32);
+        assert_eq!(prefill.workspace.workspace_bytes().unwrap(), 8192);
+        assert_eq!(decode.logical_units, 1);
+        assert_eq!(decode.workspace.workspace_bytes().unwrap(), 1024);
+        let mut undersized = binding.clone();
+        let mut undersized_stages = undersized.stages.to_vec();
+        undersized_stages[0].max_workspace_bytes = 8191;
+        undersized.stages = Arc::from(undersized_stages);
+        assert!(
+            EngineCoreRequest::lfm25_audio_asr_stage_costs_from_envelopes(
+                Some(&undersized),
+                envelope_for,
+            )
+            .is_err()
+        );
+        assert!(request.prepared_stage_costs.is_empty());
+        for _ in 0..2 {
+            request
+                .install_prepared_stage_cost(StageId::new(1), prefill)
+                .unwrap();
+            request
+                .install_prepared_stage_cost(StageId::new(2), decode)
+                .unwrap();
+            request.bind_execution_adapter(binding.clone()).unwrap();
+        }
+        assert_eq!(request.prepared_stage_costs.len(), 2);
+        assert_eq!(request.prepared_stage_cost(StageId::new(1)), Some(prefill));
+        assert_eq!(request.prepared_stage_cost(StageId::new(2)), Some(decode));
     }
 
     #[test]

@@ -69,7 +69,25 @@ impl Lfm25SampledAudioFrame {
     }
 
     pub(crate) fn tokens(&self) -> Result<Vec<u32>> {
-        self.samples.iter().map(CodebookSample::to_token).collect()
+        Ok(materialize_codebook_samples_with_profile(self.samples.iter())?.samples)
+    }
+
+    /// Materialize all rows together, preserving each frame's codebook order.
+    /// Greedy CUDA frames cross the device/host boundary only once per batch.
+    pub(crate) fn tokens_batch(frames: &[Self]) -> Result<Vec<Vec<u32>>> {
+        let materialized = materialize_codebook_samples_with_profile(
+            frames.iter().flat_map(|frame| frame.samples.iter()),
+        )?;
+        let mut offset = 0;
+        Ok(frames
+            .iter()
+            .map(|frame| {
+                let end = offset + frame.samples.len();
+                let tokens = materialized.samples[offset..end].to_vec();
+                offset = end;
+                tokens
+            })
+            .collect())
     }
 }
 
@@ -192,7 +210,7 @@ impl Lfm25AudioHead {
         let (frame, mut profile) =
             self.sample_audio_frame_embedded_with_profile(hidden, config, rng, cache)?;
         let materialize_started = Instant::now();
-        let materialized = materialize_codebook_samples_with_profile(&frame.samples)?;
+        let materialized = materialize_codebook_samples_with_profile(frame.samples.iter())?;
         profile.materialize_ms = elapsed_ms(materialize_started);
         profile.materialize_pack_ms = materialized.pack_ms;
         profile.materialize_readback_ms = materialized.readback_ms;
@@ -1222,15 +1240,15 @@ struct MaterializedCodebookSamples {
     readback_ms: f64,
 }
 
-fn materialize_codebook_samples_with_profile(
-    samples: &[CodebookSample],
+fn materialize_codebook_samples_with_profile<'a>(
+    samples: impl Iterator<Item = &'a CodebookSample> + Clone,
 ) -> Result<MaterializedCodebookSamples> {
     if samples
-        .iter()
+        .clone()
         .all(|sample| matches!(sample, CodebookSample::DeviceGreedy(_)))
     {
         let tensors = samples
-            .iter()
+            .clone()
             .filter_map(|sample| match sample {
                 CodebookSample::DeviceGreedy(token) => Some(token),
                 CodebookSample::Host(_) => None,
@@ -1253,7 +1271,7 @@ fn materialize_codebook_samples_with_profile(
 
     let readback_started = Instant::now();
     let samples = samples
-        .iter()
+        .clone()
         .map(|sample| match sample {
             CodebookSample::Host(token) => Ok(*token),
             CodebookSample::DeviceGreedy(token) => {
@@ -1400,5 +1418,95 @@ fn ensure_rank3(hidden: &Tensor) -> Result<Tensor> {
         rank => Err(Error::InferenceError(format!(
             "Expected 1D/2D/3D hidden state, got rank {rank}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CodebookSample, Lfm25SampledAudioFrame};
+    use candle_core::{DType, Device, Tensor};
+
+    fn frame(tokens: &[u32], host_index: Option<usize>) -> Lfm25SampledAudioFrame {
+        frame_on_device(tokens, host_index, &Device::Cpu)
+    }
+
+    fn frame_on_device(
+        tokens: &[u32],
+        host_index: Option<usize>,
+        device: &Device,
+    ) -> Lfm25SampledAudioFrame {
+        Lfm25SampledAudioFrame {
+            samples: tokens
+                .iter()
+                .enumerate()
+                .map(|(index, &token)| {
+                    if host_index == Some(index) {
+                        CodebookSample::Host(token)
+                    } else {
+                        CodebookSample::DeviceGreedy(Tensor::new(&[token], device).unwrap())
+                    }
+                })
+                .collect(),
+            embedding: Tensor::zeros((1, 1, 2), DType::F32, device).unwrap(),
+        }
+    }
+
+    #[test]
+    fn lfm25_packed_frame_tokens_preserve_rows_codebooks_and_end_tokens() {
+        let expected = vec![
+            vec![2048, 1, 2, 3, 4, 5, 6, 7],
+            vec![10, 11, 12, 13, 14, 15, 16, 17],
+            vec![20, 21, 22, 23, 24, 25, 26, 27],
+        ];
+        let frames = expected
+            .iter()
+            .map(|ids| frame(ids, None))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            Lfm25SampledAudioFrame::tokens_batch(&frames).unwrap(),
+            expected
+        );
+        assert_eq!(frames[0].tokens().unwrap(), expected[0]);
+    }
+
+    #[test]
+    fn lfm25_packed_frame_tokens_handle_mixed_sampling_and_empty_rows() {
+        let expected = vec![vec![], vec![2048], vec![7, 3, 9]];
+        for host_index in [None, Some(0), Some(1)] {
+            let frames = expected
+                .iter()
+                .map(|ids| frame(ids, host_index))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                Lfm25SampledAudioFrame::tokens_batch(&frames).unwrap(),
+                expected
+            );
+        }
+        assert!(Lfm25SampledAudioFrame::tokens_batch(&[])
+            .unwrap()
+            .is_empty());
+        assert!(frame(&[], None).tokens().unwrap().is_empty());
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    #[ignore = "requires CUDA device; run explicitly to validate packed frame readback"]
+    fn lfm25_cuda_packed_frame_tokens_preserve_greedy_and_mixed_rows() {
+        let device = Device::new_cuda(0).expect("CUDA device required");
+        let expected = vec![
+            vec![2048, 1, 2, 3, 4, 5, 6, 7],
+            vec![9, 8, 7, 6, 5, 4, 3, 2],
+        ];
+        for host_index in [None, Some(3)] {
+            let frames = expected
+                .iter()
+                .map(|ids| frame_on_device(ids, host_index, &device))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                Lfm25SampledAudioFrame::tokens_batch(&frames).unwrap(),
+                expected
+            );
+            assert_eq!(frames[0].tokens().unwrap(), expected[0]);
+        }
     }
 }
