@@ -939,23 +939,9 @@ async fn execute_dispatches_serial(
         let workspace = match executor.reserve_batch_workspace(&dispatch.physical_batch) {
             Ok(workspace) => workspace,
             Err(error) => {
-                let batch_dispatch = super::BatchDispatch::not_dispatched(dispatch.scheduled.len());
-                let results = dispatch
-                    .scheduled
-                    .iter()
-                    .map(|scheduled| {
-                        let mut result = failed_step_result(
-                            scheduled,
-                            format!("physical batch workspace admission failed: {error}"),
-                        );
-                        result.dispatch = batch_dispatch;
-                        result.provenance = OutcomeProvenance::failure(
-                            FailureOrigin::WorkspaceAdmission,
-                            DispatchState::NotStarted,
-                        );
-                        result
-                    })
-                    .collect();
+                // No model or cache write has run: transient capacity pressure
+                // can safely return every row to its exact existing session.
+                let results = workspace_admission_failure_results(&dispatch.scheduled, error);
                 publish_serial_completion(
                     executed_batch(
                         dispatch,
@@ -1308,6 +1294,37 @@ fn state_disposition(disposition: &ExecutionDisposition) -> StateDisposition {
         ExecutionDisposition::Failed(_) => StateDisposition::Poisoned,
         ExecutionDisposition::Finished(_) => StateDisposition::Unchanged,
     }
+}
+
+fn workspace_admission_failure_results(
+    scheduled: &[ScheduledRequest],
+    error: crate::error::Error,
+) -> Vec<ExecutorStepResult> {
+    let retryable = matches!(error, crate::error::Error::Overloaded(_));
+    let message = format!("physical batch workspace admission failed: {error}");
+    let dispatch = super::BatchDispatch::not_dispatched(scheduled.len());
+    scheduled
+        .iter()
+        .map(|scheduled| {
+            let mut result = failed_step_result(scheduled, message.clone());
+            if retryable {
+                result.output.finished = false;
+                result.disposition = ExecutionDisposition::Failed(ExecutionFailure {
+                    kind: FailureKind::ResourceExhausted,
+                    scope: FailureScope::PhysicalBatch,
+                    retry: RetryDisposition::RetrySameSession,
+                    health: HealthImpact::None,
+                    message: message.clone(),
+                });
+            }
+            result.dispatch = dispatch;
+            result.provenance = OutcomeProvenance::failure(
+                FailureOrigin::WorkspaceAdmission,
+                DispatchState::NotStarted,
+            );
+            result
+        })
+        .collect()
 }
 
 fn failed_step_result(
@@ -2896,6 +2913,145 @@ mod tests {
                     .as_deref()
                     .is_some_and(|message| message.contains("tensor kernel failed"))
         }));
+    }
+
+    #[test]
+    fn workspace_admission_only_retries_capacity_errors_for_every_row() {
+        let scheduled = vec![
+            scheduled("workspace-a", 41, 2),
+            scheduled("workspace-b", 42, 3),
+        ];
+        let results = workspace_admission_failure_results(
+            &scheduled,
+            crate::error::Error::Overloaded("live device capacity is exhausted".to_string()),
+        );
+        for (result, expected) in results.iter().zip(&scheduled) {
+            assert_eq!(result.session, expected.session_key());
+            assert_eq!(result.plan_id, expected.plan_id);
+            assert_eq!(result.dispatch, BatchDispatch::not_dispatched(2));
+            assert_eq!(
+                state_disposition(&result.disposition),
+                StateDisposition::Unchanged
+            );
+            assert!(matches!(
+                result.disposition,
+                ExecutionDisposition::Failed(ExecutionFailure {
+                    kind: FailureKind::ResourceExhausted,
+                    scope: FailureScope::PhysicalBatch,
+                    retry: RetryDisposition::RetrySameSession,
+                    health: HealthImpact::None,
+                    ..
+                })
+            ));
+            assert!(!result.output.finished);
+            assert_eq!(result.output.tokens_processed, 0);
+            assert_eq!(result.output.tokens_generated, 0);
+            assert!(result.output.text.is_none());
+            assert!(result.output.audio.is_none());
+            assert!(result.staged_stream_outputs.is_empty());
+        }
+        for error in [
+            crate::error::Error::InvalidInput("invalid workspace".to_string()),
+            crate::error::Error::InferenceError("resource accounting fault".to_string()),
+        ] {
+            for result in workspace_admission_failure_results(&scheduled, error) {
+                assert!(matches!(
+                    result.disposition,
+                    ExecutionDisposition::Failed(ExecutionFailure {
+                        retry: RetryDisposition::Never,
+                        ..
+                    })
+                ));
+                assert!(result.output.finished);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_capacity_rejection_can_retry_after_capacity_is_released() {
+        use crate::engine::resources::{
+            CapacitySource, PhysicalCapacityProvider, PhysicalCapacitySnapshot, ReservationClass,
+            ReservationOwner, ResourceAuthority,
+        };
+        #[derive(Debug)]
+        struct EightByteCapacity;
+        impl PhysicalCapacityProvider for EightByteCapacity {
+            fn snapshot(&self) -> PhysicalCapacitySnapshot {
+                let mut capacity = ResourceVector::zero();
+                capacity.host_bytes = ResourceAmount::Known(8);
+                PhysicalCapacitySnapshot {
+                    capacity,
+                    available: capacity,
+                    source: CapacitySource::Test,
+                }
+            }
+        }
+        let authority = Arc::new(ResourceAuthority::new(Arc::new(EightByteCapacity)));
+        let mut occupied = ResourceVector::zero();
+        occupied.host_bytes = ResourceAmount::Known(1);
+        let blocker = authority
+            .reserve(
+                ReservationOwner::new(ReservationClass::Request, "other-request"),
+                occupied,
+            )
+            .unwrap();
+        let coordinator = InferenceCoordinator::new(BackendKind::Cpu, 1, 4);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = UnifiedExecutor::new_for_test_with_physical_context(
+            Box::new(SleepingPhysicalExecutor {
+                physical_calls: calls.clone(),
+                delay: Duration::ZERO,
+            }),
+            BackendKind::Cpu,
+            authority.clone(),
+            coordinator.physical_execution_admission(),
+        );
+        let make_dispatch = || {
+            let mut request = EngineCoreRequest::tts("retry workspace");
+            request.id = "retry-workspace".to_string();
+            let scheduled = scheduled(&request.id, 701, 1);
+            let mut dispatch = rebind_execution_group(
+                prepared_batch(701, request, scheduled),
+                coordinator.execution_group_id().get(),
+            );
+            dispatch.physical_batch.workspace.host_bytes = ResourceAmount::Known(8);
+            dispatch.physical_batch.rows[0].cost = WorkCost::new(1, 1, 8);
+            dispatch
+        };
+        let rejected = execute_prepared(PreparedEngineStep::new(
+            executor.clone(),
+            vec![make_dispatch()],
+        ))
+        .await;
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(authority.snapshot().reservations, 1);
+        let result = &rejected.batches[0].results[0];
+        assert!(matches!(
+            result.disposition,
+            ExecutionDisposition::Failed(ExecutionFailure {
+                retry: RetryDisposition::RetrySameSession,
+                ..
+            })
+        ));
+        assert_eq!(
+            result.provenance,
+            OutcomeProvenance::failure(
+                FailureOrigin::WorkspaceAdmission,
+                DispatchState::NotStarted,
+            )
+        );
+        assert!(result.staged_stream_outputs.is_empty());
+        assert!(!result.output.finished);
+        drop(blocker);
+        let retried =
+            execute_prepared(PreparedEngineStep::new(executor, vec![make_dispatch()])).await;
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(authority.snapshot().reservations, 0);
+        assert_eq!(retried.batches[0].results[0].session, result.session);
+        assert_ne!(
+            retried.batches[0].report.dispatch.kind,
+            BatchDispatchKind::NotDispatched
+        );
     }
 
     #[tokio::test]

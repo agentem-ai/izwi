@@ -4118,7 +4118,7 @@ impl UnifiedExecutor {
         }
         let Some(context) = self.batch_workspace.as_ref() else {
             record_engine_physical_defer(EnginePhysicalDeferReason::WorkspaceCapacity);
-            return Err(Error::Overloaded(
+            return Err(Error::InvalidInput(
                 "physical batch requires workspace but no resource authority is installed"
                     .to_string(),
             ));

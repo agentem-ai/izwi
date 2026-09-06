@@ -524,6 +524,8 @@ struct RequestMetadata {
     retry_not_before: Option<Instant>,
     replay_prompt_tokens: Option<usize>,
     capacity_blocked_on: Option<SessionKey>,
+    /// Retained per-session bound after a pre-execution workspace rejection.
+    workspace_prefill_token_cap: Option<usize>,
 }
 
 impl RequestMetadata {
@@ -688,6 +690,7 @@ impl Scheduler {
             retry_not_before: None,
             replay_prompt_tokens: None,
             capacity_blocked_on: None,
+            workspace_prefill_token_cap: None,
         };
 
         self.requests.insert(request.id.clone(), metadata);
@@ -734,6 +737,7 @@ impl Scheduler {
                 retry_not_before: None,
                 replay_prompt_tokens: None,
                 capacity_blocked_on: None,
+                workspace_prefill_token_cap: None,
             },
         );
         self.running.insert(
@@ -1406,7 +1410,9 @@ impl Scheduler {
                 }
                 scheduling_full_prefill_batch = true;
             } else {
-                target_tokens = target_tokens.min(remaining_prefill_budget);
+                target_tokens = target_tokens
+                    .min(remaining_prefill_budget)
+                    .min(metadata.workspace_prefill_token_cap.unwrap_or(usize::MAX));
             }
             if target_tokens == 0 {
                 continue;
@@ -1511,7 +1517,9 @@ impl Scheduler {
                 }
                 scheduling_full_prefill_batch = true;
             } else {
-                target_tokens = target_tokens.min(remaining_prefill_budget);
+                target_tokens = target_tokens
+                    .min(remaining_prefill_budget)
+                    .min(metadata.workspace_prefill_token_cap.unwrap_or(usize::MAX));
             }
             if target_tokens == 0 {
                 break;
@@ -2004,6 +2012,34 @@ impl Scheduler {
             .entry(metadata.workload_class)
             .or_default();
         *service = service.saturating_sub(scheduled_tokens.max(1) as u64);
+        true
+    }
+
+    /// Shrink only a resumable prefill after workspace admission rejected an
+    /// unstarted quantum. The bound survives retries and replay, but never
+    /// changes the logical prompt, committed cursor, or generation budget.
+    pub(crate) fn reduce_workspace_prefill_quantum(
+        &mut self,
+        session: &SessionKey,
+        failed_tokens: usize,
+    ) -> bool {
+        let Some(metadata) = self.requests.get_mut(&session.request_id) else {
+            return false;
+        };
+        if metadata.sequence_id != session.epoch
+            || metadata.cache_policy.prefill != PrefillMode::Incremental
+            || failed_tokens <= 1
+        {
+            return false;
+        }
+        let reduced = (failed_tokens / 2).max(1);
+        if metadata
+            .workspace_prefill_token_cap
+            .is_some_and(|current| current <= reduced)
+        {
+            return false;
+        }
+        metadata.workspace_prefill_token_cap = Some(reduced);
         true
     }
 
@@ -3782,6 +3818,92 @@ mod tests {
         let retry = scheduler.schedule();
         assert_eq!(retry.prefill_requests.len(), 1);
         assert_eq!(retry.prefill_requests[0].session_key(), session);
+    }
+
+    #[test]
+    fn workspace_prefill_retry_shrinks_at_the_committed_cursor() {
+        let mut scheduler = Scheduler::new(SchedulerConfig {
+            max_batch_size: 1,
+            max_tokens_per_step: 8,
+            min_tokens_per_step: 1,
+            enable_chunked_prefill: true,
+            enable_adaptive_batching: false,
+            ..Default::default()
+        });
+        let mut request = build_request(TaskType::Chat, "workspace-retry", Priority::Normal);
+        request.prompt_tokens = vec![7; 32];
+        assert!(scheduler.add_request(&request));
+        allow_incremental_prefill(&mut scheduler, &request.id);
+        let first = scheduler.schedule().prefill_requests.remove(0);
+        let session = first.session_key();
+        assert_eq!(first.num_tokens, 8);
+        scheduler.update_after_step(&request.id, 8, 0, 1.0);
+        let failed = scheduler.schedule().prefill_requests.remove(0);
+        assert_eq!(failed.num_computed_tokens, 8);
+        assert_eq!(failed.num_tokens, 8);
+        let logical_prompt = scheduler.requests[&request.id].total_prompt_tokens;
+        let generation_budget = scheduler.requests[&request.id].max_tokens;
+        assert!(scheduler.reduce_workspace_prefill_quantum(&session, failed.num_tokens));
+        assert!(scheduler.defer_execution_retry(&session, Instant::now()));
+        let retry = scheduler.schedule().prefill_requests.remove(0);
+        assert_eq!(retry.num_computed_tokens, 8);
+        assert_eq!(retry.num_tokens, 4);
+        assert_eq!(
+            scheduler.requests[&request.id].total_prompt_tokens,
+            logical_prompt
+        );
+        assert_eq!(scheduler.requests[&request.id].max_tokens, generation_budget);
+        assert_eq!(scheduler.running[&request.id].num_tokens_generated, 0);
+        scheduler.update_after_step(&request.id, 4, 0, 1.0);
+        let subsequent = scheduler.schedule().prefill_requests.remove(0);
+        assert_eq!(subsequent.num_computed_tokens, 12);
+        assert_eq!(
+            subsequent.num_tokens, 4,
+            "retain the learned bound after progress"
+        );
+        assert!(scheduler.reduce_workspace_prefill_quantum(&session, 3));
+        assert!(scheduler.defer_execution_retry(&session, Instant::now()));
+        assert_eq!(scheduler.schedule().prefill_requests[0].num_tokens, 1);
+        assert!(!scheduler.reduce_workspace_prefill_quantum(&session, 1));
+        assert!(!scheduler.reduce_workspace_prefill_quantum(&session, 0));
+    }
+
+    #[test]
+    fn workspace_prefill_cap_applies_to_waiting_requests_and_fences_epochs() {
+        let mut scheduler = Scheduler::new(SchedulerConfig {
+            max_batch_size: 1,
+            max_tokens_per_step: 8,
+            min_tokens_per_step: 1,
+            enable_chunked_prefill: true,
+            enable_adaptive_batching: false,
+            ..Default::default()
+        });
+        let mut request = build_request(TaskType::Chat, "workspace-waiting", Priority::Normal);
+        request.prompt_tokens = vec![7; 16];
+        assert!(scheduler.add_request(&request));
+        let session = SessionKey::new(
+            request.id.clone(),
+            scheduler.requests[&request.id].sequence_id,
+        );
+        assert!(
+            !scheduler.reduce_workspace_prefill_quantum(&session, 8),
+            "full prefill cannot shrink"
+        );
+        allow_incremental_prefill(&mut scheduler, &request.id);
+        let stale = SessionKey::new(request.id.clone(), session.epoch.saturating_add(1));
+        assert!(!scheduler.reduce_workspace_prefill_quantum(&stale, 8));
+        assert_eq!(
+            scheduler.requests[&request.id].workspace_prefill_token_cap,
+            None
+        );
+        assert!(scheduler.reduce_workspace_prefill_quantum(&session, 8));
+        assert!(
+            !scheduler.reduce_workspace_prefill_quantum(&session, 16),
+            "never enlarge a retained cap"
+        );
+        let first = scheduler.schedule().prefill_requests.remove(0);
+        assert_eq!(first.num_computed_tokens, 0);
+        assert_eq!(first.num_tokens, 4);
     }
 
     #[test]

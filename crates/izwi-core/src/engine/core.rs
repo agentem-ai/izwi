@@ -514,6 +514,10 @@ pub struct EngineCore {
     pending_terminal_outputs: VecDeque<CommittedExecutorOutput>,
     /// Consecutive retryable executor failures for each exact session.
     execution_retry_attempts: HashMap<super::SessionKey, u32>,
+    workspace_progress_epoch: u64,
+    workspace_retry_progress: HashMap<super::SessionKey, u64>,
+    workspace_row_limits: HashMap<super::SessionKey, usize>,
+    workspace_pressure: HashMap<super::SessionKey, super::scheduler::ScheduledRequest>,
     retry_policy: LifecycleRetryPolicy,
     #[cfg(test)]
     restart_after_reset_hook: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -1150,6 +1154,81 @@ impl EngineCore {
         }
     }
 
+    /// Only a rejected admission can retry a published stream without model
+    /// rollback: no device entry, output, or state receipts may have occurred.
+    fn is_workspace_backpressure(result: &ExecutorStepResult) -> bool {
+        result.provenance
+            == OutcomeProvenance::failure(
+                FailureOrigin::WorkspaceAdmission,
+                DispatchState::NotStarted,
+            )
+            && result.dispatch.kind == super::BatchDispatchKind::NotDispatched
+            && result.safe_point
+            && result.output.tokens_processed == 0
+            && result.output.tokens_generated == 0
+            && !result.output.finished
+            && result.output.error.is_some()
+            && result.output.text.is_none()
+            && result.output.audio.is_none()
+            && result.output.input_transcription.is_none()
+            && result.output.phase_timing_override.is_none()
+            && result.output.asr_diagnostics.is_none()
+            && result.staged_stream_outputs.is_empty()
+            && result.managed_cache.is_none()
+            && result.managed_cache_completions.is_empty()
+            && result.managed_cache_append.is_none()
+            && !result.pending_quantum_required
+            && result.realtime_stage_outcome.is_none()
+            && result.clocked_state_completion.is_none()
+            && matches!(&result.disposition, ExecutionDisposition::Failed(failure)
+                if failure.retry == RetryDisposition::RetrySameSession
+                    && failure.kind == super::execution::FailureKind::ResourceExhausted
+                    && failure.scope == super::execution::FailureScope::PhysicalBatch
+                    && failure.health == super::execution::HealthImpact::None)
+    }
+
+    fn observe_workspace_retry(&mut self, session: &super::SessionKey) {
+        let previous = self
+            .workspace_retry_progress
+            .insert(session.clone(), self.workspace_progress_epoch);
+        if previous.is_some_and(|epoch| epoch != self.workspace_progress_epoch) {
+            // Other work can release live workspace/request reservations. A
+            // progressing owner must not exhaust a waiting stream's budget.
+            self.execution_retry_attempts.remove(session);
+        }
+    }
+
+    fn adapt_workspace_batch(
+        &mut self,
+        scheduled: &super::scheduler::ScheduledRequest,
+        width: usize,
+    ) -> bool {
+        let session = scheduled.session_key();
+        let reduced = if width > 1 {
+            let next = (width / 2).max(1);
+            let cap = self
+                .workspace_row_limits
+                .entry(session.clone())
+                .or_insert(width);
+            let reduced = next < *cap;
+            *cap = (*cap).min(next);
+            reduced
+        } else if scheduled.is_prefill {
+            self.scheduler
+                .reduce_workspace_prefill_quantum(&session, scheduled.num_tokens)
+        } else {
+            false
+        };
+        if reduced {
+            // A smaller physical shape is a new attempt at fitting; only
+            // unchanged failures consume the bounded no-progress retry budget.
+            self.execution_retry_attempts.remove(&session);
+        } else {
+            self.workspace_pressure.insert(session, scheduled.clone());
+        }
+        reduced
+    }
+
     fn uses_incremental_chat_capacity(&self, request: &EngineCoreRequest) -> bool {
         self.config.cuda_incremental_chat_enabled()
             && request.task_type == super::TaskType::Chat
@@ -1456,9 +1535,10 @@ impl EngineCore {
             return None;
         };
 
-        if self
+        if (self
             .executor
             .has_pending_quantum(plan.plan_id, &plan.session)
+            || Self::is_workspace_backpressure(&result))
             && self
                 .requests
                 .get(&plan.session.request_id)
@@ -1466,13 +1546,17 @@ impl EngineCore {
         {
             result.output = ExecutorOutput::cancelled(plan.session.request_id.clone());
             result.disposition = ExecutionDisposition::Finished(ExecutionFinishReason::Cancelled);
+            result.provenance.failure_origin = None;
+            result.provenance.deadline_phase = None;
             result.safe_point = true;
             result.staged_stream_outputs.clear();
             result.managed_cache = None;
             result.managed_cache_completions.clear();
         }
 
-        if self.incremental_stream_sessions.contains(&plan.session) {
+        if self.incremental_stream_sessions.contains(&plan.session)
+            && !Self::is_workspace_backpressure(&result)
+        {
             match &mut result.disposition {
                 ExecutionDisposition::Failed(failure)
                     if failure.retry != RetryDisposition::Never =>
@@ -1550,6 +1634,9 @@ impl EngineCore {
             }
         };
 
+        if Self::is_workspace_backpressure(&result) {
+            self.observe_workspace_retry(&plan.session);
+        }
         let retry_attempt = match &mut result.disposition {
             ExecutionDisposition::Failed(failure) if failure.retry != RetryDisposition::Never => {
                 let attempts = self
@@ -1944,6 +2031,15 @@ impl EngineCore {
             }
         }
         self.release_managed_session_if_ready(&plan.session);
+        if matches!(
+            result.disposition,
+            ExecutionDisposition::Progress
+                | ExecutionDisposition::Yielded(_)
+                | ExecutionDisposition::Finished(ExecutionFinishReason::Completed)
+        ) && result.provenance.dispatch_state != DispatchState::NotStarted
+        {
+            self.workspace_progress_epoch = self.workspace_progress_epoch.wrapping_add(1);
+        }
 
         match &result.disposition {
             ExecutionDisposition::Failed(failure)
@@ -2464,6 +2560,9 @@ impl EngineCore {
             let cost = Self::work_cost(&request, &plan.work, plan.stage.as_ref())?;
             let lane = Self::batch_lane(&plan, cost);
             let (mut budget, shape_policy) = Self::batch_budget(&plan)?;
+            if let Some(cap) = self.workspace_row_limits.get(&plan.session) {
+                budget.max_rows = budget.max_rows.min(*cap);
+            }
             let output_visibility = plan
                 .stage
                 .as_ref()
@@ -2840,6 +2939,10 @@ impl EngineCore {
             incremental_stream_sessions: HashSet::new(),
             pending_terminal_outputs: VecDeque::new(),
             execution_retry_attempts: HashMap::new(),
+            workspace_progress_epoch: 0,
+            workspace_retry_progress: HashMap::new(),
+            workspace_row_limits: HashMap::new(),
+            workspace_pressure: HashMap::new(),
             retry_policy: LifecycleRetryPolicy::default(),
             #[cfg(test)]
             restart_after_reset_hook: None,
@@ -3197,6 +3300,9 @@ impl EngineCore {
             return;
         }
         self.clear_execution_state_for_capacity_replay(session);
+        self.workspace_retry_progress.remove(session);
+        self.workspace_row_limits.remove(session);
+        self.workspace_pressure.remove(session);
         self.stream_sequence_cursors.remove(session);
         self.incremental_stream_sessions.remove(session);
     }
@@ -3923,6 +4029,26 @@ impl EngineCore {
             return Ok(None);
         }
 
+        let blocked = std::mem::take(&mut self.workspace_pressure)
+            .into_values()
+            .filter(|row| {
+                self.requests
+                    .get(&row.request_id)
+                    .is_some_and(|r| !r.is_cancelled())
+            })
+            .collect::<Vec<_>>();
+        if !blocked.is_empty()
+            && self
+                .suspend_published_session_for_capacity(&blocked)
+                .await?
+        {
+            // Reclaimed state changes the physical resource envelope. Keep
+            // the original streams and let the protected survivor try again.
+            for row in &blocked {
+                self.execution_retry_attempts.remove(&row.session_key());
+            }
+        }
+
         // Phase 1: Schedule
         self.refresh_scheduler_execution_profiles().await;
         self.reconcile_due_cleanup().await;
@@ -4264,6 +4390,18 @@ impl EngineCore {
                 }
             } else {
                 record_engine_physical_batch(&batch.physical_batch, batch.report.dispatch);
+            }
+
+            for (scheduled, result) in in_flight.scheduled.iter().filter_map(|scheduled| {
+                batch
+                    .results
+                    .iter()
+                    .find(|result| result.plan_id == scheduled.plan_id)
+                    .map(|result| (scheduled, result))
+            }) {
+                if Self::is_workspace_backpressure(result) {
+                    self.adapt_workspace_batch(scheduled, batch.physical_batch.rows.len());
+                }
             }
 
             let decode_transaction = batch.phase == ExecutionPhase::Decode;
@@ -5260,6 +5398,9 @@ impl EngineCore {
         self.incremental_stream_sessions.clear();
         self.pending_terminal_outputs.clear();
         self.execution_retry_attempts.clear();
+        self.workspace_retry_progress.clear();
+        self.workspace_row_limits.clear();
+        self.workspace_pressure.clear();
         self.initialized = false;
 
         if managed_release_errors.is_empty() {
@@ -7529,87 +7670,98 @@ mod tests {
 
     #[test]
     fn one_token_continuous_budget_admits_multiple_rows() {
-        let executor = UnifiedExecutor::new_for_test(Box::new(MockExecutor::new(Arc::new(
-            Mutex::new(Vec::new()),
-        ))));
-        let mut core = EngineCore::new_with_unified_executor(EngineCoreConfig::default(), executor)
-            .expect("core");
-        for id in ["continuous-a", "continuous-b"] {
-            let mut request = EngineCoreRequest::tts("continuous batch fixture");
-            request.id = id.to_string();
-            core.add_request(request).unwrap();
-        }
-        let scheduled = ["continuous-a", "continuous-b"]
-            .into_iter()
-            .map(|id| {
-                let epoch = core.get_session_key(&id.to_string()).unwrap().epoch;
-                scheduled_decode(id, epoch)
-            })
-            .collect::<Vec<_>>();
-        let mut profile =
-            ExecutionProfile::fail_closed(BackendKind::Cpu, None, ExecutionMode::Sequence);
-        profile.max_batch_size = 2;
-        let mut stage = super::super::StageDescriptor::from_execution_profile(
-            super::super::StageId::new(5),
-            "chat.decode.tensor_continuous",
-            &profile,
-            NativeBatchMode::Continuous,
-        );
-        stage.max_work_units = 2;
-        let adapter_key = super::super::AdapterBindingKey {
-            execution_group_id: super::super::ExecutionGroupId::new(1),
-            model_instance_id: super::super::ModelInstanceId::new(2),
-            adapter_instance_id: super::super::AdapterInstanceId::new(3),
-            adapter_abi_revision: super::super::AdapterAbiRevision::new(1),
-            capability_id: "chat".to_string(),
-            stage_id: stage.id,
-        };
-        for item in &scheduled {
-            core.active_plans.insert(
-                item.plan_id,
-                ExecutionPlan {
-                    plan_id: item.plan_id,
-                    session: item.session_key(),
-                    work: item.work.clone(),
-                    batch_key: BatchKey {
-                        backend: BackendKind::Cpu,
-                        model_variant: None,
-                        task_type: TaskType::Chat,
-                        work_kind: "decode".to_string(),
-                        compute_dtype: "f32".to_string(),
-                        kv_dtype: "f32".to_string(),
-                        cache_namespace: "continuous".to_string(),
-                        adapter: Some(adapter_key.clone()),
-                    },
-                    batch_mode: NativeBatchMode::Continuous,
-                    max_batch_size: 2,
-                    estimate: ResourceVector::zero(),
-                    stage: Some(stage.clone()),
-                },
+        for under_pressure in [false, true] {
+            let executor = UnifiedExecutor::new_for_test(Box::new(MockExecutor::new(Arc::new(
+                Mutex::new(Vec::new()),
+            ))));
+            let mut core =
+                EngineCore::new_with_unified_executor(EngineCoreConfig::default(), executor)
+                    .expect("core");
+            for id in ["continuous-a", "continuous-b"] {
+                let mut request = EngineCoreRequest::tts("continuous batch fixture");
+                request.id = id.to_string();
+                core.add_request(request).unwrap();
+            }
+            let scheduled = ["continuous-a", "continuous-b"]
+                .into_iter()
+                .map(|id| {
+                    let epoch = core.get_session_key(&id.to_string()).unwrap().epoch;
+                    scheduled_decode(id, epoch)
+                })
+                .collect::<Vec<_>>();
+            let mut profile =
+                ExecutionProfile::fail_closed(BackendKind::Cpu, None, ExecutionMode::Sequence);
+            profile.max_batch_size = 2;
+            let mut stage = super::super::StageDescriptor::from_execution_profile(
+                super::super::StageId::new(5),
+                "chat.decode.tensor_continuous",
+                &profile,
+                NativeBatchMode::Continuous,
             );
-        }
-        let requests = scheduled
-            .iter()
-            .map(|item| core.requests.get(&item.request_id).unwrap().clone())
-            .collect::<Vec<_>>();
+            stage.max_work_units = 2;
+            let adapter_key = super::super::AdapterBindingKey {
+                execution_group_id: super::super::ExecutionGroupId::new(1),
+                model_instance_id: super::super::ModelInstanceId::new(2),
+                adapter_instance_id: super::super::AdapterInstanceId::new(3),
+                adapter_abi_revision: super::super::AdapterAbiRevision::new(1),
+                capability_id: "chat".to_string(),
+                stage_id: stage.id,
+            };
+            for item in &scheduled {
+                core.active_plans.insert(
+                    item.plan_id,
+                    ExecutionPlan {
+                        plan_id: item.plan_id,
+                        session: item.session_key(),
+                        work: item.work.clone(),
+                        batch_key: BatchKey {
+                            backend: BackendKind::Cpu,
+                            model_variant: None,
+                            task_type: TaskType::Chat,
+                            work_kind: "decode".to_string(),
+                            compute_dtype: "f32".to_string(),
+                            kv_dtype: "f32".to_string(),
+                            cache_namespace: "continuous".to_string(),
+                            adapter: Some(adapter_key.clone()),
+                        },
+                        batch_mode: NativeBatchMode::Continuous,
+                        max_batch_size: 2,
+                        estimate: ResourceVector::zero(),
+                        stage: Some(stage.clone()),
+                    },
+                );
+            }
+            let requests = scheduled
+                .iter()
+                .map(|item| core.requests.get(&item.request_id).unwrap().clone())
+                .collect::<Vec<_>>();
 
-        let batches = core
-            .form_physical_batches(
-                ExecutionPhase::Decode,
-                &requests,
-                &scheduled,
-                usize::MAX,
-                &mut Vec::new(),
-                &mut Vec::new(),
-            )
-            .unwrap();
-        assert_eq!(batches.len(), 1);
-        assert_eq!(
-            batches[0].physical_batch().mode,
-            NativeBatchMode::Continuous
-        );
-        assert_eq!(batches[0].physical_batch().rows.len(), 2);
-        assert_eq!(batches[0].physical_batch().budget.max_logical_units, 2);
+            if under_pressure {
+                for row in &scheduled {
+                    assert!(core.adapt_workspace_batch(row, 2));
+                }
+            }
+            let batches = core
+                .form_physical_batches(
+                    ExecutionPhase::Decode,
+                    &requests,
+                    &scheduled,
+                    usize::MAX,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                )
+                .unwrap();
+            assert_eq!(batches.len(), 1);
+            assert_eq!(
+                batches[0].physical_batch().mode,
+                NativeBatchMode::Continuous
+            );
+            assert_eq!(
+                batches[0].physical_batch().rows.len(),
+                if under_pressure { 1 } else { 2 }
+            );
+            assert_eq!(batches[0].physical_batch().budget.max_logical_units, 2);
+        }
     }
 
     #[test]
@@ -7892,6 +8044,158 @@ mod tests {
         )
     }
 
+    fn workspace_rejection(scheduled: &ScheduledRequest, width: usize) -> ExecutorStepResult {
+        let mut result = retryable_step_result(scheduled, RetryDisposition::RetrySameSession);
+        if let ExecutionDisposition::Failed(failure) = &mut result.disposition {
+            failure.kind = super::super::execution::FailureKind::ResourceExhausted;
+            failure.scope = super::super::execution::FailureScope::PhysicalBatch;
+            failure.health = super::super::execution::HealthImpact::None;
+        }
+        result.provenance = OutcomeProvenance::failure(
+            FailureOrigin::WorkspaceAdmission,
+            DispatchState::NotStarted,
+        );
+        result.dispatch = BatchDispatch::not_dispatched(width);
+        result
+    }
+
+    #[tokio::test]
+    async fn workspace_backpressure_preserves_published_stream_and_shrinks_before_retry() {
+        let executor = UnifiedExecutor::new_for_test(Box::new(MockExecutor::new(Arc::new(
+            Mutex::new(Vec::new()),
+        ))));
+        let mut core =
+            EngineCore::new_with_unified_executor(EngineCoreConfig::default(), executor).unwrap();
+        core.retry_policy.execution_backoff_base = Duration::ZERO;
+        core.retry_policy.execution_backoff_max = Duration::ZERO;
+        let mut request = EngineCoreRequest::tts("workspace pressure");
+        request.id = "workspace-published".into();
+        request.prompt_tokens = vec![1];
+        core.add_request(request).unwrap();
+        core.refresh_scheduler_execution_profiles().await;
+        let mut scheduled = core.scheduler.schedule().prefill_requests.remove(0);
+        let session = scheduled.session_key();
+        core.incremental_stream_sessions.insert(session.clone());
+        core.stream_sequence_cursors.insert(session.clone(), 7);
+        for (width, expected_cap) in [(4, 2), (2, 1)] {
+            core.begin_execution_plan(&scheduled).await.unwrap();
+            let result = workspace_rejection(&scheduled, 1);
+            assert!(EngineCore::is_workspace_backpressure(&result));
+            assert!(core.adapt_workspace_batch(&scheduled, width));
+            let committed = core.commit_executor_result(result, 0.0).await;
+            assert!(
+                committed.is_none(),
+                "unexpected terminal: {:?}",
+                committed.map(|value| value.output.error)
+            );
+            assert_eq!(core.workspace_row_limits[&session], expected_cap);
+            assert_eq!(core.stream_sequence_cursors[&session], 7);
+            assert!(core.incremental_stream_sessions.contains(&session));
+            assert_eq!(
+                core.scheduler.get_running_info(&session.request_id),
+                Some((0, 0))
+            );
+            scheduled = core.scheduler.schedule().prefill_requests.remove(0);
+            assert_eq!(scheduled.session_key(), session);
+        }
+        // Once memory fits, the unchanged session can commit its next quantum.
+        core.begin_execution_plan(&scheduled).await.unwrap();
+        let mut output = workspace_rejection(&scheduled, 1).output;
+        output.error = None;
+        output.tokens_processed = 1;
+        let result = ExecutorStepResult::new(&scheduled, output);
+        let committed = core.commit_executor_result(result, 0.0).await.unwrap();
+        assert!(committed.output.error.is_none());
+        assert_eq!(core.stream_sequence_cursors[&session], 7);
+    }
+
+    #[tokio::test]
+    async fn workspace_rejection_honors_cancellation_before_retry() {
+        let executor = UnifiedExecutor::new_for_test(Box::new(MockExecutor::new(Arc::new(
+            Mutex::new(Vec::new()),
+        ))));
+        let mut core =
+            EngineCore::new_with_unified_executor(EngineCoreConfig::default(), executor).unwrap();
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let mut request = EngineCoreRequest::tts("cancel rejected workspace");
+        request.id = "workspace-cancel".into();
+        request.prompt_tokens = vec![1];
+        request.cancellation = Some(cancellation.clone());
+        core.add_request(request).unwrap();
+        core.refresh_scheduler_execution_profiles().await;
+        let scheduled = core.scheduler.schedule().prefill_requests.remove(0);
+        core.begin_execution_plan(&scheduled).await.unwrap();
+        core.incremental_stream_sessions
+            .insert(scheduled.session_key());
+        cancellation.store(true, Ordering::Release);
+        let committed = core
+            .commit_executor_result(workspace_rejection(&scheduled, 1), 0.0)
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                committed.disposition,
+                ExecutionDisposition::Finished(ExecutionFinishReason::Cancelled)
+            ),
+            "{:?}: {:?}",
+            committed.disposition,
+            committed.output.error
+        );
+        assert!(committed.output.error.is_none());
+        assert!(!core
+            .execution_retry_attempts
+            .contains_key(&scheduled.session_key()));
+    }
+
+    #[test]
+    fn workspace_retry_budget_counts_only_failures_without_peer_progress() {
+        let mut core = EngineCore::new(EngineCoreConfig::default()).unwrap();
+        let session = super::super::SessionKey::new("waiting".into(), 1);
+        core.observe_workspace_retry(&session);
+        core.execution_retry_attempts.insert(session.clone(), 3);
+        core.observe_workspace_retry(&session);
+        assert_eq!(core.execution_retry_attempts[&session], 3);
+        core.workspace_progress_epoch += 1;
+        core.observe_workspace_retry(&session);
+        assert!(!core.execution_retry_attempts.contains_key(&session));
+        core.execution_retry_attempts.insert(session.clone(), 1);
+        core.observe_workspace_retry(&session);
+        assert_eq!(core.execution_retry_attempts[&session], 1);
+        core.clear_exact_execution_state(&session);
+        assert!(!core.workspace_retry_progress.contains_key(&session));
+    }
+
+    #[test]
+    fn workspace_retry_requires_unchanged_pre_device_state() {
+        let scheduled = ScheduledRequest {
+            plan_id: 1,
+            request_id: "fence".into(),
+            sequence_id: 1,
+            num_tokens: 1,
+            is_prefill: true,
+            num_computed_tokens: 0,
+            work: WorkUnit::SequenceStep {
+                phase: SequencePhase::Prefill,
+                input: InputRange { start: 0, end: 1 },
+                max_output_steps: 1,
+                auxiliary_state: None,
+            },
+        };
+        let mut result = workspace_rejection(&scheduled, 4);
+        assert!(EngineCore::is_workspace_backpressure(&result));
+        result.provenance.dispatch_state = DispatchState::Started;
+        assert!(!EngineCore::is_workspace_backpressure(&result));
+        result = workspace_rejection(&scheduled, 4);
+        result.output.tokens_generated = 1;
+        assert!(!EngineCore::is_workspace_backpressure(&result));
+        result = workspace_rejection(&scheduled, 4);
+        result.pending_quantum_required = true;
+        assert!(!EngineCore::is_workspace_backpressure(&result));
+        result = workspace_rejection(&scheduled, 4);
+        result.output.text = Some("unexpected output".into());
+        assert!(!EngineCore::is_workspace_backpressure(&result));
+    }
+
     #[tokio::test]
     async fn same_session_retry_releases_quantum_without_committing_progress() {
         let executor = UnifiedExecutor::new_for_test(Box::new(MockExecutor::new(Arc::new(
@@ -7998,56 +8302,65 @@ mod tests {
 
     #[tokio::test]
     async fn retry_budget_exhaustion_terminalizes_the_exact_session() {
-        let executor = UnifiedExecutor::new_for_test(Box::new(MockExecutor::new(Arc::new(
-            Mutex::new(Vec::new()),
-        ))));
-        let mut core = EngineCore::new_with_unified_executor(
-            EngineCoreConfig {
-                max_batch_size: 1,
-                max_tokens_per_step: 8,
-                ..Default::default()
-            },
-            executor,
-        )
-        .unwrap();
-        core.retry_policy.max_execution_retries = 2;
-        core.retry_policy.execution_backoff_base = Duration::ZERO;
-        core.retry_policy.execution_backoff_max = Duration::ZERO;
-        let mut request = EngineCoreRequest::tts("retry budget");
-        request.id = "retry-budget".to_string();
-        request.prompt_tokens = vec![1];
-        core.add_request(request).unwrap();
-        core.refresh_scheduler_execution_profiles().await;
+        for workspace in [false, true] {
+            let executor = UnifiedExecutor::new_for_test(Box::new(MockExecutor::new(Arc::new(
+                Mutex::new(Vec::new()),
+            ))));
+            let mut core = EngineCore::new_with_unified_executor(
+                EngineCoreConfig {
+                    max_batch_size: 1,
+                    max_tokens_per_step: 8,
+                    ..Default::default()
+                },
+                executor,
+            )
+            .unwrap();
+            core.retry_policy.max_execution_retries = 2;
+            core.retry_policy.execution_backoff_base = Duration::ZERO;
+            core.retry_policy.execution_backoff_max = Duration::ZERO;
+            let mut request = EngineCoreRequest::tts("retry budget");
+            request.id = "retry-budget".to_string();
+            request.prompt_tokens = vec![1];
+            core.add_request(request).unwrap();
+            core.refresh_scheduler_execution_profiles().await;
 
-        let mut scheduled = core.scheduler.schedule().prefill_requests.remove(0);
-        let session = scheduled.session_key();
-        for attempt in 1..=3 {
-            core.begin_execution_plan(&scheduled).await.unwrap();
-            let committed = core
-                .commit_executor_result(
-                    retryable_step_result(&scheduled, RetryDisposition::RetrySameSession),
-                    1.0,
-                )
-                .await;
-            if attempt <= 2 {
-                assert!(committed.is_none());
-                scheduled = core.scheduler.schedule().prefill_requests.remove(0);
-                assert_eq!(scheduled.session_key(), session);
-            } else {
-                let committed = committed.expect("retry budget must terminalize");
-                assert_eq!(committed.session, session);
-                assert!(committed
-                    .output
-                    .error
-                    .as_deref()
-                    .is_some_and(|message| message.contains("retry budget exhausted")));
-                assert!(matches!(
-                    committed.disposition,
-                    ExecutionDisposition::Failed(ExecutionFailure {
-                        retry: RetryDisposition::Never,
-                        ..
-                    })
-                ));
+            let mut scheduled = core.scheduler.schedule().prefill_requests.remove(0);
+            let session = scheduled.session_key();
+            if workspace {
+                core.incremental_stream_sessions.insert(session.clone());
+            }
+            for attempt in 1..=3 {
+                core.begin_execution_plan(&scheduled).await.unwrap();
+                let committed = core
+                    .commit_executor_result(
+                        if workspace {
+                            workspace_rejection(&scheduled, 1)
+                        } else {
+                            retryable_step_result(&scheduled, RetryDisposition::RetrySameSession)
+                        },
+                        1.0,
+                    )
+                    .await;
+                if attempt <= 2 {
+                    assert!(committed.is_none());
+                    scheduled = core.scheduler.schedule().prefill_requests.remove(0);
+                    assert_eq!(scheduled.session_key(), session);
+                } else {
+                    let committed = committed.expect("retry budget must terminalize");
+                    assert_eq!(committed.session, session);
+                    assert!(committed
+                        .output
+                        .error
+                        .as_deref()
+                        .is_some_and(|message| message.contains("retry budget exhausted")));
+                    assert!(matches!(
+                        committed.disposition,
+                        ExecutionDisposition::Failed(ExecutionFailure {
+                            retry: RetryDisposition::Never,
+                            ..
+                        })
+                    ));
+                }
             }
         }
     }

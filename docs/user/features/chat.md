@@ -201,6 +201,15 @@ work. Open HTTP streams alone do not establish concurrent model execution. Heavy
 cache pressure can still queue or suspend requests; simultaneous maximum-length
 histories must fit the available state budget.
 
+Temporary batch workspace pressure is also handled before model execution: the
+scheduler reduces batch width or resumable prefill size and retries the same
+request without repeating streamed output. Under persistent pressure it can
+suspend eligible Qwen3.8 requests. Progress from competing work keeps waiting
+requests eligible; repeated failures with no progress still return an explicit
+capacity error. Requests that cannot fit alone cannot be guaranteed to finish.
+Capacity diagnostics group pending reservations by owner class to distinguish
+model, request, and workspace promises from materialized memory.
+
 For a controlled hardware acceptance run, use
 `scripts/bench/run-cuda-chat-concurrency.py` as documented in
 `scripts/bench/README.md`. It checks uncapped requests through both API routes,
