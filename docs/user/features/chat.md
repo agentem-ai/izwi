@@ -170,3 +170,39 @@ not native FP8 execution.
 - [Voice Mode](/features/voice)
 - [Models](/models)
 - [CLI Reference](/cli)
+
+## CUDA concurrent chat (candidate)
+
+Qwen3.8 can batch independent chat requests through one loaded model. The candidate
+admission policy grows cache reservations with active sequences and can suspend
+and replay a request when the shared cache is under pressure. It preserves automatic
+output limits and already streamed text. Capacity is derived from the device's
+memory and model state, rather than a GPU model name.
+
+Enable the candidate before starting the CUDA server:
+
+```bash
+export IZWI_CUDA_INCREMENTAL_CHAT=1
+```
+
+Use your normal CUDA server command. The flag also enables scheduler-visible
+chunked prefill for resumable adapters. It defaults off pending exact-build CUDA
+certification; set it to `0` and restart to return to conservative admission.
+Other model families keep their existing admission policy until they implement the
+published-sequence replay contract.
+
+Use separate conversations, or independent `/v1/chat/completions` requests, for
+concurrent answers. Sends to the same conversation remain ordered. The playground
+allows one active stream per mounted view; separate tabs can use separate conversations.
+
+Inspect `/v1/health` for the effective `runtime.chat_concurrency_policy`, and
+`/v1/metrics` for actual model batch widths, cache claims, suspensions and replay
+work. Open HTTP streams alone do not establish concurrent model execution. Heavy
+cache pressure can still queue or suspend requests; simultaneous maximum-length
+histories must fit the available state budget.
+
+For a controlled hardware acceptance run, use
+`scripts/bench/run-cuda-chat-concurrency.py` as documented in
+`scripts/bench/README.md`. It checks uncapped requests through both API routes,
+staggered arrivals, cancellation, overlapping output, actual multirow forwards,
+and resource release. CPU tests do not certify CUDA throughput or numerical behavior.

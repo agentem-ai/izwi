@@ -363,3 +363,61 @@ scale-aware page mutation/accounting, fused paged prefill and decode kernels,
 and retained numerical, quality, memory, and latency evidence. A standalone
 dequantization pass is not an acceptable promotion path because it can erase
 the bandwidth benefit.
+
+### Automatic-length CUDA chat concurrency
+
+`run-cuda-chat-concurrency.py` exercises the user-facing concurrency admission
+contract through both `/v1/chat/completions` and independent first-party
+`/v1/chat/threads/{id}/messages` conversations. Every generation omits both output
+limit fields. Run against an idle, dedicated server with the model already loaded,
+using a clean checkout of the **exact server binary SHA**. Start the candidate
+server with `IZWI_CUDA_INCREMENTAL_CHAT=1`; the flag is off by default until CUDA
+validation. The resolved policy is visible in `/v1/health` at
+`runtime.chat_concurrency_policy` and `/v1/metrics` at
+`engine.chat_concurrency_policy`. It reports the requested flag, whether CUDA makes
+it effective, the eligible `qwen38_chat` replay family, and effective scheduler
+chunked prefill. These values come from startup configuration, not a new environment
+read during the health request. Adapters without resumable prefill keep their existing behavior;
+policy visibility alone does not certify device execution.
+
+
+```bash
+python3 scripts/bench/run-cuda-chat-concurrency.py \
+  --model Qwen3.8-27B-FP8 --output target/cuda-chat-concurrency
+python3 scripts/bench/test-cuda-chat-concurrency.py
+```
+
+The default matrix is c1, c2 and c3 on each route, followed by c3 with a late
+arrival after the first two streams produce output. `--extended` additionally
+requires c4 and c8, where the configured resource envelope supports them. The
+late-arrival case disconnects its first client and requires surviving streams to
+produce additional output. Normal cases disconnect all clients after
+`--events 32` nonempty stream deltas per request; `--timeout 120` bounds each
+observation and cleanup phase. These are client cancellation bounds, not hidden
+`max_tokens` settings. Temporary conversations are deleted after cleanup.
+
+A pass requires a shared interval of observed text generation and at least two
+**actual model forwards** at the requested width, measured as a per-case delta
+of `engine.model_tensor_batch_width_counts` (exact widths 1–64; key 0
+is an overflow bucket and cannot certify any width). HTTP connection overlap, lifetime
+maximum batch width, or scheduler envelope counters alone cannot pass. Stream
+deltas may contain multiple tokens, so the report deliberately does not invent
+token counts or tokens-per-second. Stream errors fail acceptance, and cancellation
+must drain running and queued requests and restore active cache claims, page-table
+ownership, reservations and execution/transfer pins before the next case begins.
+Reusable prefix-cache retention is permitted.
+
+The JSON report preserves request bodies, text-delta timestamps, loaded model
+representation/diagnostics, exact SHA and runtime health, before/after metrics,
+and periodic full metrics and NVIDIA memory samples. It contains no generated
+text. `--allow-remote` explicitly permits another host; in that case `--nvidia-smi`
+must name a wrapper that queries **the server host**, not a local unrelated GPU.
+Results describe only the device/configuration observed. Run the same matrix
+with candidate rollout settings and with MTP disabled and enabled as appropriate;
+retain separate output directories and record server launch configuration.
+
+This is an admission/overlap/cancellation gate, not complete numerical or memory
+pressure certification. Forced replay boundaries, loss/duplication of streamed
+output, long-prompt fairness, slow clients, and resource-exhaustion recovery still
+require the engine tests and targeted CUDA stress runs in the implementation plan.
+No production inference is run by the deterministic Python fixture tests.
