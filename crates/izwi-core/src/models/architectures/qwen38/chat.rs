@@ -1,17 +1,20 @@
 //! Native Qwen3.8 chat model loader and text generation.
 
 mod device_sampling;
+#[cfg(test)]
+mod recovery_tests;
 mod timing;
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use candle_core::{DType, IndexOp, Tensor, D};
 use serde::Deserialize;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::backends::device::cuda_compute_capability_supports_bf16;
 use crate::backends::state::{
@@ -40,9 +43,10 @@ use super::cache::qwen38_composite_cache_contract_with_mtp;
 use super::mtp::{AdaptiveMtp, Qwen38MtpDepth, Qwen38MtpHead, Qwen38MtpPairBatch};
 use super::native::{ProjectionMaterialization, Qwen38NativeCheckpoint, QWEN38_27B_FP8_REVISION};
 use super::telemetry::{
-    record_cuda_kv_provider, record_mtp_policy, record_mtp_round, record_mtp_round_timing,
-    record_mtp_scalar_target_token, record_sampling_bounded_cuda, record_sampling_device_argmax,
-    record_sampling_host, snapshot as qwen38_optimization_telemetry_snapshot,
+    record_cuda_kv_provider, record_mtp_nonfinite_draft_fallback, record_mtp_policy,
+    record_mtp_round, record_mtp_round_timing, record_mtp_scalar_target_token,
+    record_sampling_bounded_cuda, record_sampling_device_argmax, record_sampling_host,
+    snapshot as qwen38_optimization_telemetry_snapshot,
 };
 use super::text::{Qwen38ProjectionRepresentation, Qwen38TextModel, Qwen38TextRuntimeState};
 
@@ -459,7 +463,7 @@ impl ChatDecodeState {
         self.finished = finished;
         self.rng = rng;
         self.draft_rng = draft_rng;
-        self.adaptive_mtp = adaptive_mtp;
+        self.adaptive_mtp.restore_from_checkpoint(adaptive_mtp);
         self.mtp_timings = mtp_timings;
     }
 
@@ -1048,6 +1052,7 @@ impl Qwen38ChatModel {
                 "runtime_validated": false,
                 "performance_certified": false,
                 "scheduler_policy": "speculate_only_without_queue_pressure_or_concurrent_decode",
+                "nonfinite_draft_policy": "discard_round_and_use_target_only_sampling_for_request",
                 "execution_evidence": {
                     "observed_execution": observed_execution,
                     "draft_acceptance_rate": draft_acceptance_rate,
@@ -1821,6 +1826,7 @@ impl Qwen38ChatModel {
             let mut draft_proposals = Vec::with_capacity(depth.get());
             let device_sampling = self.device_sampling_enabled();
             let mut device_proposals = Vec::with_capacity(depth.get());
+            let draft_rng_checkpoint = state.draft_rng.clone();
             let drafted = head.draft_recurrently_with_text(
                 &self.text_model,
                 anchor_hidden,
@@ -1829,8 +1835,59 @@ impl Qwen38ChatModel {
                 mtp,
                 |_, logits| {
                     let logits = logits.i((0, 0))?;
+                    if device_sampling {
+                        if !stochastic_drafting {
+                            let token = match device_sampling::sample_or_abort(
+                                &logits,
+                                self.tokenizer.vocab_size,
+                                &state.config,
+                                &draft_history,
+                                &mut state.draft_rng,
+                                "draft",
+                            )? {
+                                ControlFlow::Continue(token) => token,
+                                ControlFlow::Break(error) => return Ok(ControlFlow::Break(error)),
+                            };
+                            record_sampling_bounded_cuda(true);
+                            if state.track_history {
+                                draft_history.push(token);
+                            }
+                            return Ok(ControlFlow::Continue(token));
+                        }
+                        let (token, q) = match device_sampling::propose_or_abort(
+                            &logits.unsqueeze(0)?,
+                            self.tokenizer.vocab_size,
+                            &state.config,
+                            &mut draft_history,
+                            &mut state.draft_rng,
+                        )? {
+                            ControlFlow::Continue(proposal) => proposal,
+                            ControlFlow::Break(error) => return Ok(ControlFlow::Break(error)),
+                        };
+                        device_proposals.push(q);
+                        return Ok(ControlFlow::Continue(token));
+                    }
+                    let mut values = logits_to_vec(&logits)?;
+                    if self.tokenizer.vocab_size == 0 || values.len() < self.tokenizer.vocab_size {
+                        return Err(Error::InvalidInput(
+                            "invalid Qwen3.8 draft sampling vocabulary".into(),
+                        ));
+                    }
+                    truncate_logits_to_vocab(&mut values, self.tokenizer.vocab_size);
+                    if !values.iter().any(|value| value.is_finite()) {
+                        return Ok(ControlFlow::Break(Error::InferenceError(
+                            "No finite Qwen3.8 draft logits".into(),
+                        )));
+                    }
                     if !stochastic_drafting {
-                        let token = self.sample_next_token(
+                        // The compatibility sampler already needs host logits
+                        // for numerical classification; reuse this same row.
+                        let logits = Tensor::from_vec(
+                            values,
+                            self.tokenizer.vocab_size,
+                            &candle_core::Device::Cpu,
+                        )?;
+                        let token = sample_next_token(
                             &logits,
                             self.tokenizer.vocab_size,
                             &state.config,
@@ -1840,21 +1897,8 @@ impl Qwen38ChatModel {
                         if state.track_history {
                             draft_history.push(token);
                         }
-                        return Ok(token);
+                        return Ok(ControlFlow::Continue(token));
                     }
-                    if device_sampling {
-                        let (token, q) = device_sampling::propose(
-                            &logits.unsqueeze(0)?,
-                            self.tokenizer.vocab_size,
-                            &state.config,
-                            &mut draft_history,
-                            &mut state.draft_rng,
-                        )?;
-                        device_proposals.push(q);
-                        return Ok(token);
-                    }
-                    let mut values = logits_to_vec(&logits)?;
-                    truncate_logits_to_vocab(&mut values, self.tokenizer.vocab_size);
                     let proposal = propose_speculative_draft(
                         &values,
                         &state.config,
@@ -1863,11 +1907,28 @@ impl Qwen38ChatModel {
                     )?;
                     let token = proposal.token_id;
                     draft_proposals.push(proposal);
-                    Ok(token)
+                    Ok(ControlFlow::Continue(token))
                 },
             );
             mtp.restore_logical_checkpoint(mtp_checkpoint)?;
-            let drafted = drafted?;
+            let drafted = match drafted? {
+                ControlFlow::Continue(drafted) => drafted,
+                ControlFlow::Break(error) => {
+                    // No target forward, target RNG, canonical history or
+                    // output has changed. Discard even earlier valid proposals
+                    // from this round and never sample this MTP state again.
+                    state.draft_rng = draft_rng_checkpoint;
+                    state.adaptive_mtp.disable_after_nonfinite_draft();
+                    record_mtp_nonfinite_draft_fallback();
+                    warn!(
+                        position = state.next_text_position,
+                        draft_depth = depth.get(),
+                        error = %error,
+                        "Qwen3.8 MTP produced no finite draft logits; continuing this request with target-only sampling"
+                    );
+                    continue;
+                }
+            };
 
             let pending = state.pending_token.ok_or_else(|| {
                 Error::InferenceError("Qwen3.8 MTP verification has no pending token".into())

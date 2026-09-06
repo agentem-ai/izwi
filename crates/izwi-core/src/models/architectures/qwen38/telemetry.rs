@@ -53,6 +53,7 @@ pub(crate) struct Qwen38OptimizationTelemetrySnapshot {
     pub mtp_enabled_loads_total: u64,
     pub mtp_disabled_loads_total: u64,
     pub mtp_scalar_target_tokens_total: u64,
+    pub mtp_nonfinite_draft_fallbacks_total: u64,
     pub mtp_rounds_total: u64,
     pub mtp_draft_tokens_total: u64,
     pub mtp_accepted_draft_tokens_total: u64,
@@ -121,6 +122,7 @@ counters!(
     MTP_ENABLED_LOADS,
     MTP_DISABLED_LOADS,
     MTP_SCALAR_TARGET_TOKENS,
+    MTP_NONFINITE_DRAFT_FALLBACKS,
     MTP_ROUNDS,
     MTP_DRAFT_TOKENS,
     MTP_ACCEPTED_DRAFT_TOKENS,
@@ -273,11 +275,13 @@ pub(crate) fn record_mtp_policy(enabled: bool) {
     }
 }
 
-/// Record a target-only decode token taken while the model has an MTP head.
-///
-/// The scheduler intentionally selects this path under queue pressure or when
-/// only one output slot remains. Keeping it distinct from speculative rounds
-/// prevents "MTP loaded" from being mistaken for "MTP executed".
+/// Requests switched to target-only sampling after unusable MTP logits.
+pub(crate) fn record_mtp_nonfinite_draft_fallback() {
+    MTP_NONFINITE_DRAFT_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record a target-only token while the model has an MTP head, whether selected
+/// by the scheduler, the adaptive controller, or numerical draft recovery.
 pub(crate) fn record_mtp_scalar_target_token() {
     MTP_SCALAR_TARGET_TOKENS.fetch_add(1, Ordering::Relaxed);
 }
@@ -388,6 +392,7 @@ pub(crate) fn snapshot() -> Qwen38OptimizationTelemetrySnapshot {
         mtp_enabled_loads_total: load!(MTP_ENABLED_LOADS),
         mtp_disabled_loads_total: load!(MTP_DISABLED_LOADS),
         mtp_scalar_target_tokens_total: load!(MTP_SCALAR_TARGET_TOKENS),
+        mtp_nonfinite_draft_fallbacks_total: load!(MTP_NONFINITE_DRAFT_FALLBACKS),
         mtp_rounds_total: load!(MTP_ROUNDS),
         mtp_draft_tokens_total: load!(MTP_DRAFT_TOKENS),
         mtp_accepted_draft_tokens_total: load!(MTP_ACCEPTED_DRAFT_TOKENS),

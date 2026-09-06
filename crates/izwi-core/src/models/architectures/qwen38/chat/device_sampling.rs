@@ -6,6 +6,7 @@ use crate::kernels::cuda::sampling::{self, SamplingParams};
 use crate::models::shared::speculative_sampling::SpeculativeVerification;
 use candle_core::{DType, IndexOp, Tensor};
 use std::collections::BTreeMap;
+use std::ops::ControlFlow;
 
 fn unit(rng: &mut SimpleRng) -> f32 {
     (rng.next_u32() >> 8) as f32 * (1.0 / (1u32 << 24) as f32)
@@ -79,7 +80,29 @@ pub(super) fn distribution(
         .map_err(Error::from)
 }
 
-fn sampling_failure(phase: &str, logits: &Tensor, vocab: usize) -> Error {
+struct SamplingFailure {
+    error: Error,
+    no_finite_logits: bool,
+}
+
+impl SamplingFailure {
+    fn into_checked<T>(self) -> Result<ControlFlow<Error, T>> {
+        if self.no_finite_logits {
+            Ok(ControlFlow::Break(self.error))
+        } else {
+            Err(self.error)
+        }
+    }
+}
+
+fn strict<T>(result: ControlFlow<Error, T>) -> Result<T> {
+    match result {
+        ControlFlow::Continue(value) => Ok(value),
+        ControlFlow::Break(error) => Err(error),
+    }
+}
+
+fn sampling_failure(phase: &str, logits: &Tensor, vocab: usize) -> SamplingFailure {
     // Failure-only diagnostics: inspect the sampled vocabulary on-device and
     // transfer three scalar counts, never logits or token data. Widen masks
     // before summing so full-vocabulary counts cannot overflow a U8 mask.
@@ -96,25 +119,31 @@ fn sampling_failure(phase: &str, logits: &Tensor, vocab: usize) -> Error {
             .sum_all()?;
         Tensor::stack(&[nan, positive_infinity, negative_infinity], 0)?.to_vec1::<u32>()
     })();
-    let detail = match counts {
+    let (detail, no_finite_logits) = match counts {
         Ok(counts) => {
             let nan = counts[0] as usize;
             let positive_infinity = counts[1] as usize;
             let negative_infinity = counts[2] as usize;
             let nonfinite = nan + positive_infinity + negative_infinity;
             let finite = vocab.saturating_sub(nonfinite);
-            format!(
-                "logits={vocab}, finite={finite}, nonfinite={nonfinite}, \
-                 nan={nan}, pos_inf={positive_infinity}, neg_inf={negative_infinity}"
+            (
+                format!(
+                    "logits={vocab}, finite={finite}, nonfinite={nonfinite}, \
+                     nan={nan}, pos_inf={positive_infinity}, neg_inf={negative_infinity}"
+                ),
+                vocab != 0 && nonfinite == vocab,
             )
         }
         // A diagnostic/backend failure must not replace the original sampling
         // failure or expose arbitrary backend error text in the statistics.
-        Err(_) => format!("logits={vocab}, counts=unavailable"),
+        Err(_) => (format!("logits={vocab}, counts=unavailable"), false),
     };
-    Error::InferenceError(format!(
-        "No finite Qwen3.8 sampling distribution (phase={phase}, {detail})"
-    ))
+    SamplingFailure {
+        error: Error::InferenceError(format!(
+            "No finite Qwen3.8 sampling distribution (phase={phase}, {detail})"
+        )),
+        no_finite_logits,
+    }
 }
 
 fn sample_at(
@@ -124,14 +153,32 @@ fn sample_at(
     logits: &Tensor,
     vocab: usize,
 ) -> Result<u32> {
+    strict(sample_at_checked(
+        probabilities,
+        uniform,
+        phase,
+        logits,
+        vocab,
+    )?)
+}
+
+fn sample_at_checked(
+    probabilities: &Tensor,
+    uniform: f32,
+    phase: &str,
+    logits: &Tensor,
+    vocab: usize,
+) -> Result<ControlFlow<Error, u32>> {
     let uniforms = Tensor::from_vec(vec![uniform], 1, probabilities.device())?;
     let result = sampling::sample_rows(probabilities, &uniforms)?.to_vec2::<u32>()?;
     if result[0][1] != 1 {
-        return Err(sampling_failure(phase, logits, vocab));
+        return sampling_failure(phase, logits, vocab).into_checked();
     }
-    Ok(result[0][0])
+    Ok(ControlFlow::Continue(result[0][0]))
 }
 
+// Keep the strict API for callers that cannot abandon a proposal and for tests.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn propose(
     logits: &Tensor,
     vocab: usize,
@@ -139,12 +186,28 @@ pub(super) fn propose(
     history: &mut Vec<u32>,
     rng: &mut SimpleRng,
 ) -> Result<(u32, Tensor)> {
+    strict(propose_or_abort(logits, vocab, config, history, rng)?)
+}
+
+/// Abort an optional proposal only when invalid status is backed by a
+/// successfully counted, nonempty vocabulary containing no finite logits.
+pub(super) fn propose_or_abort(
+    logits: &Tensor,
+    vocab: usize,
+    config: &ChatGenerationConfig,
+    history: &mut Vec<u32>,
+    rng: &mut SimpleRng,
+) -> Result<ControlFlow<Error, (u32, Tensor)>> {
     let probabilities = distribution(logits, vocab, config, history)?;
     let mut staged = rng.clone();
-    let token = sample_at(&probabilities, unit(&mut staged), "draft", logits, vocab)?;
+    let token = match sample_at_checked(&probabilities, unit(&mut staged), "draft", logits, vocab)?
+    {
+        ControlFlow::Continue(token) => token,
+        ControlFlow::Break(error) => return Ok(ControlFlow::Break(error)),
+    };
     history.push(token);
     *rng = staged;
-    Ok((token, probabilities))
+    Ok(ControlFlow::Continue((token, probabilities)))
 }
 
 pub(super) fn sample(
@@ -154,11 +217,36 @@ pub(super) fn sample(
     history: &[u32],
     rng: &mut SimpleRng,
 ) -> Result<u32> {
+    strict(sample_or_abort(
+        logits, vocab, config, history, rng, "target",
+    )?)
+}
+
+/// Like `sample`, with failure-only evidence allowing the caller to abandon an
+/// optional draft. `Break` and `Err` both leave the RNG unchanged.
+pub(super) fn sample_or_abort(
+    logits: &Tensor,
+    vocab: usize,
+    config: &ChatGenerationConfig,
+    history: &[u32],
+    rng: &mut SimpleRng,
+    phase: &str,
+) -> Result<ControlFlow<Error, u32>> {
     if config.temperature <= 1e-5
         && config.repetition_penalty <= 1.0
         && config.presence_penalty.abs() <= f32::EPSILON
     {
-        return Ok(greedy(&logits.reshape((1, ()))?, vocab)?[0]);
+        let logits = logits.reshape((1, ()))?;
+        if vocab == 0 || logits.dim(1)? < vocab {
+            return Err(Error::InvalidInput(
+                "invalid device sampling vocabulary".into(),
+            ));
+        }
+        let result = sampling::greedy_rows(&logits.narrow(1, 0, vocab)?)?.to_vec2::<u32>()?;
+        if result[0][1] != 1 {
+            return sampling_failure(phase, &logits, vocab).into_checked();
+        }
+        return Ok(ControlFlow::Continue(result[0][0]));
     }
     let probabilities = distribution(&logits.reshape((1, ()))?, vocab, config, history)?;
     let mut staged = rng.clone();
@@ -168,9 +256,12 @@ pub(super) fn sample(
     } else {
         staged.next_f32()
     };
-    let token = sample_at(&probabilities, uniform, "target", logits, vocab)?;
+    let token = match sample_at_checked(&probabilities, uniform, phase, logits, vocab)? {
+        ControlFlow::Continue(token) => token,
+        ControlFlow::Break(error) => return Ok(ControlFlow::Break(error)),
+    };
     *rng = staged;
-    Ok(token)
+    Ok(ControlFlow::Continue(token))
 }
 
 pub(super) fn verify_greedy(
@@ -303,6 +394,136 @@ mod tests {
         propose_speculative_draft, verify_speculative_proposals,
     };
     use candle_core::Device;
+
+    #[test]
+    fn optional_nan_sampling_aborts_without_committing_rng_or_history() {
+        let logits = Tensor::full(f32::NAN, (1, 3), &Device::Cpu).unwrap();
+        for (temperature, repetition_penalty) in [(0.0, 1.0), (0.0, 1.1), (0.8, 1.0)] {
+            let config = ChatGenerationConfig {
+                temperature,
+                repetition_penalty,
+                presence_penalty: 0.0,
+                ..Default::default()
+            };
+            let mut rng = SimpleRng::new(42);
+            let before = rng.state;
+            let mut history = vec![1];
+            let outcome =
+                sample_or_abort(&logits, 3, &config, &history, &mut rng, "draft").unwrap();
+            let ControlFlow::Break(error) = outcome else {
+                panic!("all-NaN optional sample must abort");
+            };
+            assert!(error.to_string().contains("phase=draft"));
+            assert!(error.to_string().contains("finite=0, nonfinite=3, nan=3"));
+            assert_eq!(rng.state, before);
+            assert_eq!(history, vec![1]);
+
+            assert!(matches!(
+                propose_or_abort(&logits, 3, &config, &mut history, &mut rng).unwrap(),
+                ControlFlow::Break(_)
+            ));
+            assert_eq!(rng.state, before);
+            assert_eq!(history, vec![1]);
+
+            // The strict target and proposal APIs still reject the same input.
+            assert!(sample(&logits, 3, &config, &history, &mut rng).is_err());
+            assert!(propose(&logits, 3, &config, &mut history, &mut rng).is_err());
+            assert_eq!(rng.state, before);
+            assert_eq!(history, vec![1]);
+        }
+    }
+
+    #[test]
+    fn checked_invalid_status_requires_proven_nonempty_all_nonfinite_logits() {
+        let probabilities = Tensor::zeros((1, 3), DType::F32, &Device::Cpu).unwrap();
+        // Even one finite logit makes invalid probability mass a strict error.
+        for values in [[1.0f32, 2.0, 3.0], [1.0, f32::NAN, f32::INFINITY]] {
+            let logits = Tensor::from_slice(&values, 3, &Device::Cpu).unwrap();
+            assert!(sample_at_checked(&probabilities, 0.5, "draft", &logits, 3).is_err());
+        }
+        let short_logits = Tensor::full(f32::NAN, 1, &Device::Cpu).unwrap();
+        let error = sample_at_checked(&probabilities, 0.5, "draft", &short_logits, 3).unwrap_err();
+        assert!(error.to_string().contains("counts=unavailable"));
+        assert!(sample_at_checked(&probabilities, 0.5, "draft", &short_logits, 0).is_err());
+
+        let nonfinite = Tensor::from_slice(
+            &[f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
+            3,
+            &Device::Cpu,
+        )
+        .unwrap();
+        assert!(matches!(
+            sample_at_checked(&probabilities, 0.5, "draft", &nonfinite, 3).unwrap(),
+            ControlFlow::Break(_)
+        ));
+        // A primitive API error must not become recovery, even for all-NaN input.
+        let malformed = probabilities.to_dtype(DType::F64).unwrap();
+        assert!(sample_at_checked(&malformed, 0.5, "draft", &nonfinite, 3).is_err());
+    }
+
+    #[test]
+    fn optional_sampling_api_errors_remain_strict_and_transactional() {
+        let logits = Tensor::full(f32::NAN, (1, 3), &Device::Cpu).unwrap();
+        let config = ChatGenerationConfig {
+            temperature: f32::NAN,
+            ..Default::default()
+        };
+        let mut history = vec![1];
+        let mut rng = SimpleRng::new(42);
+        let before = rng.state;
+        assert!(sample_or_abort(&logits, 3, &config, &history, &mut rng, "draft").is_err());
+        assert!(propose_or_abort(&logits, 3, &config, &mut history, &mut rng).is_err());
+        assert_eq!(rng.state, before);
+        assert_eq!(history, vec![1]);
+    }
+
+    #[test]
+    fn optional_sampling_preserves_healthy_draw_and_history_contracts() {
+        let logits = Tensor::from_slice(&[2.0f32, 2.0, -1.0], (1, 3), &Device::Cpu).unwrap();
+        for (temperature, repetition_penalty) in [(0.0, 1.0), (0.0, 1.1), (0.8, 1.0)] {
+            let config = ChatGenerationConfig {
+                temperature,
+                repetition_penalty,
+                presence_penalty: 0.0,
+                ..Default::default()
+            };
+            let history = vec![1];
+            let mut rng = SimpleRng::new(42);
+            let mut expected_rng = rng.clone();
+            let expected = if temperature <= 1e-5 && repetition_penalty <= 1.0 {
+                greedy(&logits, 3).unwrap()[0]
+            } else {
+                let probabilities = distribution(&logits, 3, &config, &history).unwrap();
+                let draw = if temperature <= 1e-5 {
+                    0.0
+                } else {
+                    expected_rng.next_f32()
+                };
+                sample_at(&probabilities, draw, "draft", &logits, 3).unwrap()
+            };
+            let outcome =
+                sample_or_abort(&logits, 3, &config, &history, &mut rng, "draft").unwrap();
+            assert!(matches!(outcome, ControlFlow::Continue(token) if token == expected));
+            assert_eq!(rng.state, expected_rng.state);
+            assert_eq!(history, vec![1]);
+
+            let mut history = history;
+            let probabilities = distribution(&logits, 3, &config, &history).unwrap();
+            let expected =
+                sample_at(&probabilities, unit(&mut expected_rng), "draft", &logits, 3).unwrap();
+            let outcome = propose_or_abort(&logits, 3, &config, &mut history, &mut rng).unwrap();
+            let ControlFlow::Continue((token, actual_probabilities)) = outcome else {
+                panic!("healthy proposal must continue");
+            };
+            assert_eq!(token, expected);
+            assert_eq!(history, vec![1, token]);
+            assert_eq!(rng.state, expected_rng.state);
+            assert_eq!(
+                actual_probabilities.to_vec2::<f32>().unwrap(),
+                probabilities.to_vec2::<f32>().unwrap()
+            );
+        }
+    }
 
     #[test]
     fn device_math_matches_shared_proposal_and_pq_verifier_with_penalties_and_rng_commit() {

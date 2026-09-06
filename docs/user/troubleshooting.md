@@ -159,6 +159,20 @@ that override remains available for controlled F16 comparisons. Sampling
 failures include the target/draft/bonus stage and bounded numerical diagnostics;
 retain those details if a failure recurs under BF16 KV.
 
+If the diagnostic reports `phase=draft` and `finite=0`, the optional MTP head
+has produced an unusable proposal. Izwi now discards that entire speculative
+round, restores its cache position and draft RNG, and uses target-only sampling
+for the rest of that request. This recovery is automatic with MTP enabled;
+other requests retain their own MTP policy. The warning records the failing
+position and draft depth, and
+`optimization_evidence.counters.mtp_nonfinite_draft_fallbacks_total` counts
+requests switched to target-only sampling. MTP cache maintenance continues to
+preserve the loaded adapter's state contract, so recovery does not remove all
+MTP computation.
+It prevents an invalid optional draft from aborting a healthy target stream;
+it does not establish or repair the underlying source of the MTP NaNs.
+Target/bonus numerical failures and backend execution failures remain errors.
+
 For long-context requests, inspect `runtime_metrics.kv_cache.models` in the
 health/admin diagnostics. `single_sequence_token_capacity` is the largest
 sequence the fitted pools can retain, while `full_context_sequence_capacity`
