@@ -2,7 +2,7 @@
 
 mod device_sampling;
 #[cfg(test)]
-mod recovery_tests;
+pub(crate) mod recovery_tests;
 mod timing;
 
 use std::cmp::Ordering;
@@ -286,7 +286,42 @@ fn initial_penalty_history(
     history
 }
 
+/// Durable CPU-only continuation record. It deliberately owns no tensors, cache
+/// views, device events, or physical sequence identities.
+#[derive(Clone)]
+pub(crate) struct Qwen38ReplayCheckpoint {
+    prepared: Qwen38PreparedPrompt,
+    generated_ids: Vec<u32>,
+    appended_tokens: usize,
+    prefill_progress: usize,
+    pending_token: Option<u32>,
+    bootstrap_token: Option<u32>,
+    history_ids: Vec<u32>,
+    decoder: IncrementalDecoder,
+    tokens_generated: usize,
+    track_history: bool,
+    assembled: String,
+    max_new_tokens: usize,
+    next_text_position: usize,
+    config: ChatGenerationConfig,
+    rng: SimpleRng,
+    draft_rng: SimpleRng,
+    adaptive_mtp: AdaptiveMtp,
+}
+
+impl Qwen38ReplayCheckpoint {
+    pub(crate) fn replay_tokens(&self) -> usize {
+        self.appended_tokens
+    }
+}
+
 pub struct ChatDecodeState {
+    replay: Option<std::sync::Arc<Qwen38ReplayCheckpoint>>,
+    prepared: Qwen38PreparedPrompt,
+    /// Append-only CPU journal; bounded by max_new_tokens. Step rollback
+    /// stores only its length, avoiding quadratic history copies. Suspension
+    /// temporarily clones at most 4 * max_new_tokens bytes (plus prompt IDs).
+    generated_ids: Vec<u32>,
     text_state: Qwen38TextRuntimeState,
     physical_kv: PhysicalPagedKvCache,
     mtp_physical_kv: Option<PhysicalPagedKvCache>,
@@ -316,6 +351,51 @@ pub struct ChatDecodeState {
 }
 
 impl ChatDecodeState {
+    pub(crate) fn replay_tokens(&self) -> Option<usize> {
+        self.replay.as_ref().map(|saved| saved.appended_tokens)
+    }
+    /// Caller must fence the completed step before releasing its physical state.
+    pub(crate) fn replay_checkpoint(&self) -> Result<Qwen38ReplayCheckpoint> {
+        if let Some(saved) = &self.replay {
+            return Ok((**saved).clone());
+        }
+        if self.finished {
+            return Err(Error::InvalidInput(
+                "cannot suspend a finished Qwen3.8 sequence".into(),
+            ));
+        }
+        let appended_tokens = self.physical_kv.context_len();
+        let known = self
+            .prepared
+            .prompt_ids
+            .len()
+            .saturating_add(self.generated_ids.len());
+        if appended_tokens > known || appended_tokens < self.prefill_progress {
+            return Err(Error::InferenceError(
+                "Qwen3.8 replay journal does not cover cache cursor".into(),
+            ));
+        }
+        Ok(Qwen38ReplayCheckpoint {
+            prepared: self.prepared.clone(),
+            generated_ids: self.generated_ids.clone(),
+            appended_tokens,
+            prefill_progress: self.prefill_progress,
+            pending_token: self.pending_token,
+            bootstrap_token: self.bootstrap_token,
+            history_ids: self.history_ids.clone(),
+            decoder: self.decoder.clone(),
+            tokens_generated: self.tokens_generated,
+            track_history: self.track_history,
+            assembled: self.assembled.clone(),
+            max_new_tokens: self.max_new_tokens,
+            next_text_position: self.next_text_position,
+            config: self.config.clone(),
+            rng: self.rng.clone(),
+            draft_rng: self.draft_rng.clone(),
+            adaptive_mtp: self.adaptive_mtp.clone(),
+        })
+    }
+
     pub(crate) fn prefill_progress(&self) -> usize {
         self.prefill_progress
     }
@@ -405,6 +485,7 @@ impl ChatDecodeState {
             }
         }
         Ok(Qwen38SharedStepCheckpoint {
+            replay: self.replay.clone(),
             text_state: self.text_state.clone(),
             mtp_anchor_hidden: self.mtp_anchor_hidden.clone(),
             unconsumed_output: self.unconsumed_output.clone(),
@@ -412,6 +493,7 @@ impl ChatDecodeState {
             bootstrap_token: self.bootstrap_token,
             next_text_position: self.next_text_position,
             history_ids: self.history_ids.clone(),
+            generated_ids_len: self.generated_ids.len(),
             tokens_generated: self.tokens_generated,
             decoder: self.decoder.clone(),
             assembled: self.assembled.clone(),
@@ -430,6 +512,7 @@ impl ChatDecodeState {
 
     pub(crate) fn rollback_shared_step_quantum(&mut self, checkpoint: Qwen38SharedStepCheckpoint) {
         let Qwen38SharedStepCheckpoint {
+            replay,
             text_state,
             physical_kv,
             mtp_physical_kv,
@@ -439,6 +522,7 @@ impl ChatDecodeState {
             bootstrap_token,
             next_text_position,
             history_ids,
+            generated_ids_len,
             tokens_generated,
             decoder,
             assembled,
@@ -448,6 +532,7 @@ impl ChatDecodeState {
             adaptive_mtp,
             mtp_timings,
         } = checkpoint;
+        self.replay = replay;
         self.text_state = text_state;
         self.physical_kv = physical_kv;
         self.mtp_physical_kv = mtp_physical_kv;
@@ -457,6 +542,7 @@ impl ChatDecodeState {
         self.bootstrap_token = bootstrap_token;
         self.next_text_position = next_text_position;
         self.history_ids = history_ids;
+        self.generated_ids.truncate(generated_ids_len);
         self.tokens_generated = tokens_generated;
         self.decoder = decoder;
         self.assembled = assembled;
@@ -516,6 +602,7 @@ pub struct ChatDecodeStep {
 /// writes under the new views are abandoned when the previous views are
 /// restored on rollback.
 pub(crate) struct Qwen38SharedStepCheckpoint {
+    replay: Option<std::sync::Arc<Qwen38ReplayCheckpoint>>,
     text_state: Qwen38TextRuntimeState,
     physical_kv: PhysicalPagedKvCache,
     mtp_physical_kv: Option<PhysicalPagedKvCache>,
@@ -525,6 +612,7 @@ pub(crate) struct Qwen38SharedStepCheckpoint {
     bootstrap_token: Option<u32>,
     next_text_position: usize,
     history_ids: Vec<u32>,
+    generated_ids_len: usize,
     tokens_generated: usize,
     decoder: IncrementalDecoder,
     assembled: String,
@@ -1230,6 +1318,9 @@ impl Qwen38ChatModel {
             };
         let draft_rng = rng.fork();
         Ok(ChatDecodeState {
+            replay: None,
+            prepared: prepared.clone(),
+            generated_ids: Vec::new(),
             text_state,
             physical_kv: cache,
             mtp_physical_kv: mtp_cache,
@@ -1258,6 +1349,155 @@ impl Qwen38ChatModel {
                 self.performance.cuda.mtp_draft_tokens,
             ),
         })
+    }
+
+    /// Build CPU continuation metadata with empty physical state. Replay spans
+    /// are scheduled independently and must complete before decode resumes.
+    pub(crate) fn begin_replay_state_physical(
+        &self,
+        saved: &Qwen38ReplayCheckpoint,
+        cache: PhysicalPagedKvCache,
+        mtp_cache: Option<PhysicalPagedKvCache>,
+    ) -> Result<ChatDecodeState> {
+        if cache.context_len() != 0
+            || mtp_cache
+                .as_ref()
+                .is_some_and(|cache| cache.context_len() != 0)
+            || self.mtp_head.is_some() != mtp_cache.is_some()
+        {
+            return Err(Error::InvalidInput(
+                "Qwen3.8 replay requires fresh matching cache reservations".into(),
+            ));
+        }
+        Ok(ChatDecodeState {
+            replay: (saved.appended_tokens > 0).then(|| std::sync::Arc::new(saved.clone())),
+            prepared: saved.prepared.clone(),
+            generated_ids: saved.generated_ids.clone(),
+            text_state: self.text_model.new_state(),
+            physical_kv: cache,
+            mtp_physical_kv: mtp_cache,
+            mtp_anchor_hidden: None,
+            bootstrap_token: saved.bootstrap_token,
+            physical_tensor_sequence: None,
+            unconsumed_output: None,
+            pending_token: saved.pending_token,
+            history_ids: saved.history_ids.clone(),
+            decoder: saved.decoder.clone(),
+            tokens_generated: saved.tokens_generated,
+            track_history: saved.track_history,
+            assembled: saved.assembled.clone(),
+            max_new_tokens: saved.max_new_tokens,
+            finished: false,
+            next_text_position: saved.next_text_position,
+            prefill_progress: saved.prefill_progress,
+            config: saved.config.clone(),
+            rng: saved.rng.clone(),
+            draft_rng: saved.draft_rng.clone(),
+            adaptive_mtp: saved.adaptive_mtp.clone(),
+            mtp_timings: Vec::new(),
+        })
+    }
+
+    /// Rebuild one scheduler quantum without sampling or emitting output.
+    /// Target IDs stop at the append cursor; MTP additionally consumes the
+    /// known successor, including a sampled token that target has not appended.
+    pub(crate) fn continue_replay_physical(
+        &self,
+        state: &mut ChatDecodeState,
+        span_start: usize,
+        span_end: usize,
+    ) -> Result<bool> {
+        let saved = state
+            .replay
+            .as_ref()
+            .ok_or_else(|| Error::InvalidInput("Qwen3.8 state has no pending replay".into()))?;
+        if state.physical_kv.context_len() != span_start
+            || span_end <= span_start
+            || span_end > saved.appended_tokens
+        {
+            return Err(Error::InvalidInput(
+                "Qwen3.8 replay span does not continue its append cursor".into(),
+            ));
+        }
+        let prompt_len = saved.prepared.prompt_ids.len();
+        let known_len = prompt_len + saved.generated_ids.len();
+        let token_at = |index: usize| {
+            if index < prompt_len {
+                saved.prepared.prompt_ids.get(index).copied()
+            } else if index < known_len {
+                saved.generated_ids.get(index - prompt_len).copied()
+            } else if index == known_len && known_len == saved.appended_tokens {
+                saved.pending_token
+            } else {
+                None
+            }
+        };
+        let ids: Vec<_> = (span_start..=span_end).filter_map(token_at).collect();
+        let positions: Vec<_> = (span_start..span_end)
+            .map(|index| {
+                if index < prompt_len {
+                    saved.prepared.prompt_positions[index]
+                } else {
+                    [saved.prepared.next_text_position + index - prompt_len; 3]
+                }
+            })
+            .collect();
+        let prompt_complete = saved.prefill_progress == saved.prepared.prompt_ids.len();
+        for start in (span_start..span_end).step_by(self.prefill_chunk_size) {
+            let end = (start + self.prefill_chunk_size).min(span_end);
+            let output = self
+                .text_model
+                .prefill_token_ids_with_hidden_physical(
+                    &ids[start - span_start..end - span_start],
+                    &positions[start - span_start..end - span_start],
+                    &mut state.text_state,
+                    &mut state.physical_kv,
+                    end == saved.appended_tokens,
+                )?
+                .ok_or_else(|| {
+                    Error::InferenceError("Qwen3.8 replay produced no hidden state".into())
+                })?;
+            if let (Some(head), Some(mtp)) = (&self.mtp_head, state.mtp_physical_kv.as_mut()) {
+                let count = (end - span_start)
+                    .min(ids.len().saturating_sub(1))
+                    .saturating_sub(start - span_start);
+                if count > 0 {
+                    let pairs = Qwen38MtpPairBatch::new(
+                        self.text_model.embed_token_ids(
+                            &ids[start - span_start + 1..start - span_start + count + 1],
+                        )?,
+                        output.hidden_states.narrow(1, 0, count)?,
+                        positions[start - span_start..start - span_start + count].to_vec(),
+                    )?;
+                    let hidden = head.forward_pairs(&pairs, mtp)?;
+                    if end == saved.appended_tokens && prompt_complete {
+                        state.mtp_anchor_hidden = Some(hidden.narrow(1, count - 1, 1)?);
+                    }
+                }
+            }
+            if end == saved.appended_tokens && prompt_complete && saved.pending_token.is_none() {
+                state.unconsumed_output = output.logits;
+            }
+        }
+        let finished = span_end == saved.appended_tokens;
+        if finished {
+            state.replay = None;
+        }
+        Ok(finished)
+    }
+
+    /// Convenience restoration used by adapters without scheduler replay spans.
+    pub(crate) fn restore_decode_state_physical(
+        &self,
+        saved: &Qwen38ReplayCheckpoint,
+        cache: PhysicalPagedKvCache,
+        mtp_cache: Option<PhysicalPagedKvCache>,
+    ) -> Result<ChatDecodeState> {
+        let mut state = self.begin_replay_state_physical(saved, cache, mtp_cache)?;
+        if saved.appended_tokens > 0 {
+            self.continue_replay_physical(&mut state, 0, saved.appended_tokens)?;
+        }
+        Ok(state)
     }
 
     pub fn decode_step(&self, state: &mut ChatDecodeState) -> Result<ChatDecodeStep> {
@@ -1298,6 +1538,9 @@ impl Qwen38ChatModel {
         let mut rng = SimpleRng::new(config.seed);
         let draft_rng = rng.fork();
         Ok(ChatDecodeState {
+            replay: None,
+            prepared: prepared.clone(),
+            generated_ids: Vec::new(),
             text_state: self.text_model.new_state(),
             physical_kv: cache,
             mtp_physical_kv: mtp_cache,
@@ -1468,7 +1711,8 @@ impl Qwen38ChatModel {
             return Ok(Vec::new());
         }
         for state in states.iter() {
-            if state.finished
+            if state.replay.is_some()
+                || state.finished
                 || state.tokens_generated >= state.max_new_tokens
                 || state.bootstrap_token.is_some()
                 || state.unconsumed_output.is_some()
@@ -1601,6 +1845,11 @@ impl Qwen38ChatModel {
         state: &mut ChatDecodeState,
         input_budget: usize,
     ) -> Result<ChatDecodeStep> {
+        if state.replay.is_some() {
+            return Err(Error::InvalidInput(
+                "Qwen3.8 decode cannot run before replay completes".into(),
+            ));
+        }
         if state.finished || state.tokens_generated >= state.max_new_tokens {
             state.finished = true;
             let delta = self.tokenizer.finish_decode(&mut state.decoder)?;
@@ -1679,6 +1928,7 @@ impl Qwen38ChatModel {
     }
 
     fn publish_token(&self, state: &mut ChatDecodeState, token: u32) -> Result<String> {
+        state.generated_ids.push(token);
         if self.is_stop_token(token, &state.config) {
             state.finished = true;
             let delta = self.tokenizer.finish_decode(&mut state.decoder)?;

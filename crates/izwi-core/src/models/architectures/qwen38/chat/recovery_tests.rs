@@ -13,8 +13,21 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 fn model() -> Qwen38ChatModel {
+    model_fixture(false)
+}
+
+pub(crate) fn model_fixture(hybrid: bool) -> Qwen38ChatModel {
     let dir = TestDir::new("chat-recovery");
-    let native = tiny_config();
+    let mut native = tiny_config();
+    if hybrid {
+        native.text.block_count = 2;
+        native.text.ssm_conv_kernel = 3;
+        native.text.full_attention_interval = 2;
+        native.layer_types.insert(
+            0,
+            crate::models::architectures::qwen38::native::Qwen38LayerType::LinearAttention,
+        );
+    }
     write_tiny_checkpoint(dir.path(), &native);
     // Reuse the zero-projection MTP transformer as the tiny target. Distinct
     // embeddings and an identity-like output head give non-uniform logits.
@@ -24,8 +37,58 @@ fn model() -> Qwen38ChatModel {
     for name in mtp.names() {
         if name.starts_with("mtp.layers.0.") {
             views.insert(
-                name.replacen("mtp.layers.0.", "model.language_model.layers.0.", 1),
+                name.replacen(
+                    "mtp.layers.0.",
+                    if hybrid {
+                        "model.language_model.layers.1."
+                    } else {
+                        "model.language_model.layers.0."
+                    },
+                    1,
+                ),
                 mtp.tensor(name).unwrap(),
+            );
+        }
+    }
+    // A nonzero DeltaNet layer makes restoration depend on both convolution
+    // history and recurrent state, rather than only the token append cursor.
+    let mut hybrid_tensors = Vec::new();
+    if hybrid {
+        for name in mtp.names() {
+            if name.contains(".mlp.")
+                || name.ends_with(".input_layernorm.weight")
+                || name.ends_with(".post_attention_layernorm.weight")
+            {
+                views.insert(
+                    name.replacen("mtp.layers.0.", "model.language_model.layers.0.", 1),
+                    mtp.tensor(name).unwrap(),
+                );
+            }
+        }
+        for (name, shape, value) in [
+            ("dt_bias", vec![1], 0.1f32),
+            ("A_log", vec![1], -1.0),
+            ("conv1d.weight", vec![3, 1, 3], 0.25),
+            ("norm.weight", vec![1], 1.0),
+            ("in_proj_qkv.weight", vec![3, 4], 0.125),
+            ("in_proj_z.weight", vec![1, 4], 0.25),
+            ("in_proj_a.weight", vec![1, 4], 0.125),
+            ("in_proj_b.weight", vec![1, 4], 0.125),
+            ("out_proj.weight", vec![4, 1], 0.125),
+        ] {
+            let bytes = (0..shape.iter().product::<usize>())
+                .flat_map(|_| half::bf16::from_f32(value).to_bits().to_le_bytes())
+                .collect::<Vec<_>>();
+            hybrid_tensors.push((
+                format!("model.language_model.layers.0.linear_attn.{name}"),
+                shape,
+                bytes,
+            ));
+        }
+        for (name, shape, bytes) in &hybrid_tensors {
+            views.insert(
+                name.clone(),
+                TensorView::new(Dtype::BF16, shape.clone(), bytes).unwrap(),
             );
         }
     }
@@ -251,6 +314,7 @@ fn nonfinite_mtp_draft_recovers_to_exact_scalar_sequence() {
             expected.input_tokens_committed
         );
         assert_eq!(actual.history_ids, reference.history_ids);
+        assert_eq!(actual.generated_ids, reference.generated_ids);
         assert_eq!(actual.rng.state, reference.rng.state);
         assert_eq!(actual.pending_token, reference.pending_token);
         assert_eq!(actual.next_text_position, reference.next_text_position);
@@ -268,6 +332,7 @@ fn nonfinite_mtp_draft_recovers_to_exact_scalar_sequence() {
         // latch, even when the checkpoint's anchor was healthy.
         actual.rollback_shared_step_quantum(checkpoint);
         reference.rollback_shared_step_quantum(reference_checkpoint);
+        assert_eq!(actual.generated_ids, reference.generated_ids);
         assert!(actual.adaptive_mtp.speculation_disabled());
         while !actual.finished {
             let step = model.decode_quantum(&mut actual, 4).unwrap();
@@ -296,5 +361,169 @@ fn nonfinite_mtp_draft_recovers_to_exact_scalar_sequence() {
         assert!(!start(&model, temperature)
             .adaptive_mtp
             .speculation_disabled());
+    }
+}
+
+#[test]
+fn cpu_replay_preserves_published_boundary_and_sampling_with_and_without_mtp() {
+    for mtp in [false, true] {
+        let mut model = model_fixture(true);
+        if !mtp {
+            model.mtp_head = None;
+        }
+        for temperature in [0.0, 0.8] {
+            let config = ChatGenerationConfig {
+                temperature,
+                seed: 42,
+                ..Default::default()
+            };
+            let prepared = Qwen38PreparedPrompt {
+                prompt_ids: vec![1, 2],
+                prompt_positions: vec![[0; 3], [1; 3]],
+                next_text_position: 2,
+            };
+            let mut uninterrupted = model
+                .start_decode_state_physical(
+                    &[],
+                    12,
+                    &config,
+                    Some(&prepared),
+                    cache(model.text_config.block_count as u32 - 1),
+                    mtp.then(|| cache(model.text_config.block_count as u32)),
+                )
+                .unwrap();
+            // Covers unsampled scalar logits and sampled but unpublished MTP bootstrap.
+            let mut resumed = model
+                .restore_decode_state_physical(
+                    &uninterrupted.replay_checkpoint().unwrap(),
+                    cache(model.text_config.block_count as u32 - 1),
+                    mtp.then(|| cache(model.text_config.block_count as u32)),
+                )
+                .unwrap();
+            while !uninterrupted.finished {
+                let expected = model.decode_quantum(&mut uninterrupted, 4).unwrap();
+                let actual = model.decode_quantum(&mut resumed, 4).unwrap();
+                assert_eq!(actual.delta, expected.delta);
+                assert_eq!(actual.tokens_generated, expected.tokens_generated);
+                assert_eq!(resumed.generated_ids, uninterrupted.generated_ids);
+                assert_eq!(resumed.rng.state, uninterrupted.rng.state);
+                assert_eq!(resumed.draft_rng.state, uninterrupted.draft_rng.state);
+                assert_eq!(resumed.pending_token, uninterrupted.pending_token);
+                assert_eq!(
+                    resumed.physical_kv.context_len(),
+                    uninterrupted.physical_kv.context_len()
+                );
+                assert!(
+                    resumed.history_ids.is_empty(),
+                    "journal must not require penalties"
+                );
+                if !resumed.finished {
+                    let checkpoint = resumed.replay_checkpoint().unwrap();
+                    drop(resumed); // No device state from the old session survives restoration.
+                    resumed = model
+                        .begin_replay_state_physical(
+                            &checkpoint,
+                            cache(model.text_config.block_count as u32 - 1),
+                            mtp.then(|| cache(model.text_config.block_count as u32)),
+                        )
+                        .unwrap();
+                    assert!(model.decode_quantum(&mut resumed, 1).is_err());
+                    model.continue_replay_physical(&mut resumed, 0, 1).unwrap();
+                    // A second suspension during replay must retain the full
+                    // original journal, not just the rebuilt prefix.
+                    let again = resumed.replay_checkpoint().unwrap();
+                    assert_eq!(again.replay_tokens(), checkpoint.replay_tokens());
+                    drop(resumed);
+                    resumed = model
+                        .begin_replay_state_physical(
+                            &again,
+                            cache(model.text_config.block_count as u32 - 1),
+                            mtp.then(|| cache(model.text_config.block_count as u32)),
+                        )
+                        .unwrap();
+                    for cursor in 0..again.replay_tokens() {
+                        let complete = model
+                            .continue_replay_physical(&mut resumed, cursor, cursor + 1)
+                            .unwrap();
+                        assert_eq!(complete, cursor + 1 == again.replay_tokens());
+                    }
+                    assert!(resumed.replay_tokens().is_none());
+                }
+            }
+            assert_eq!(resumed.assembled, uninterrupted.assembled);
+        }
+    }
+}
+
+#[test]
+fn replay_of_partial_prefill_preserves_known_mtp_successor() {
+    for mtp in [false, true] {
+        let mut model = model_fixture(true);
+        if !mtp {
+            model.mtp_head = None;
+        }
+        let config = ChatGenerationConfig {
+            seed: 73,
+            ..Default::default()
+        };
+        let prepared = Qwen38PreparedPrompt {
+            prompt_ids: vec![1, 2, 3, 4],
+            prompt_positions: (0..4).map(|position| [position; 3]).collect(),
+            next_text_position: 4,
+        };
+        let mut original = model
+            .begin_chunked_prefill_state_physical(
+                &[],
+                12,
+                &config,
+                Some(&prepared),
+                cache(model.text_config.block_count as u32 - 1),
+                mtp.then(|| cache(model.text_config.block_count as u32)),
+            )
+            .unwrap();
+        model
+            .continue_chunked_prefill_physical(
+                &mut original,
+                &[],
+                &config,
+                Some(&prepared),
+                0,
+                2,
+                4,
+            )
+            .unwrap();
+        let saved = original.replay_checkpoint().unwrap();
+        let mut resumed = model
+            .restore_decode_state_physical(
+                &saved,
+                cache(model.text_config.block_count as u32 - 1),
+                mtp.then(|| cache(model.text_config.block_count as u32)),
+            )
+            .unwrap();
+        assert_eq!(resumed.prefill_progress, 2);
+        if mtp {
+            assert_eq!(resumed.mtp_physical_kv.as_ref().unwrap().context_len(), 2);
+        }
+        for state in [&mut original, &mut resumed] {
+            model
+                .continue_chunked_prefill_physical(state, &[], &config, Some(&prepared), 2, 4, 4)
+                .unwrap();
+        }
+        while !original.finished {
+            let expected = model.decode_quantum(&mut original, 4).unwrap();
+            let actual = model.decode_quantum(&mut resumed, 4).unwrap();
+            assert_eq!(actual.delta, expected.delta);
+            assert_eq!(resumed.rng.state, original.rng.state);
+            assert_eq!(resumed.generated_ids, original.generated_ids);
+        }
+    }
+}
+
+/// Exact small prompt for executor integration fixtures.
+pub(crate) fn prepared_prompt() -> Qwen38PreparedPrompt {
+    Qwen38PreparedPrompt {
+        prompt_ids: vec![1, 2],
+        prompt_positions: vec![[0; 3], [1; 3]],
+        next_text_position: 2,
     }
 }
