@@ -1,3 +1,4 @@
+use super::diagnostics;
 use std::sync::Arc;
 
 use candle_core::{DType, Device, IndexOp, Tensor};
@@ -203,6 +204,18 @@ impl Lfm2ShortConvRuntimeState {
             }
         };
         let valid = self.cursor.min(self.capacity as u64);
+        if diagnostics::enabled() {
+            diagnostics::check(
+                input,
+                &format!("ShortConv {component:?} gated input"),
+                self.cursor as usize,
+            )?;
+            diagnostics::check(
+                &current,
+                &format!("ShortConv {component:?} ring"),
+                self.cursor as usize,
+            )?;
+        }
         let output = try_lfm_shortconv_ring_sequence(
             &current,
             &input.contiguous()?,
@@ -219,6 +232,13 @@ impl Lfm2ShortConvRuntimeState {
             Some(output) => output,
             None => direct_shortconv_ring(&current, input, weight, self.cursor, valid)?,
         };
+        if diagnostics::enabled() {
+            diagnostics::check(
+                &output,
+                &format!("ShortConv {component:?} convolution output"),
+                self.cursor as usize,
+            )?;
+        }
         let mut slots = (0..self.capacity)
             .map(|index| current.i(index))
             .collect::<candle_core::Result<Vec<_>>>()?;
@@ -321,6 +341,7 @@ struct AttentionLayer {
     cos_sin: Tensor,
     neg_inf: Tensor,
     physical_layer: usize,
+    model_layer: usize,
 }
 
 #[derive(Debug)]
@@ -539,6 +560,9 @@ impl AttentionLayer {
             .contiguous()?;
         let query_states = query_states.contiguous()?;
         let key_states = key_states.contiguous()?;
+        diagnostics::check_layer(&query_states, "raw Q", self.model_layer, index_pos)?;
+        diagnostics::check_layer(&key_states, "raw K", self.model_layer, index_pos)?;
+        diagnostics::check_layer(&value_states, "raw V", self.model_layer, index_pos)?;
         let (query_states, key_states) = if seq_len == 1
             && (query_states.device().is_metal() || query_states.device().is_cuda())
         {
@@ -561,6 +585,8 @@ impl AttentionLayer {
                 self.k_norm.forward(&key_states)?,
             )
         };
+        diagnostics::check_layer(&query_states, "normalized Q", self.model_layer, index_pos)?;
+        diagnostics::check_layer(&key_states, "normalized K", self.model_layer, index_pos)?;
         let (query_states, key_states) = if let Some((query_states, key_states)) =
             self.try_apply_rotary_emb_pair_bshd(&query_states, &key_states, index_pos)?
         {
@@ -576,6 +602,18 @@ impl AttentionLayer {
                 self.apply_rotary_emb(&key_states, index_pos)?,
             )
         };
+        diagnostics::check_layer(
+            &query_states,
+            "normalized/rotated Q",
+            self.model_layer,
+            index_pos,
+        )?;
+        diagnostics::check_layer(
+            &key_states,
+            "normalized/rotated K",
+            self.model_layer,
+            index_pos,
+        )?;
         Ok((query_states, key_states, value_states))
     }
 
@@ -686,6 +724,12 @@ impl AttentionLayer {
                 softmax_scale,
             )?,
         };
+        diagnostics::check_layer(
+            &output,
+            "paged attention output",
+            self.model_layer,
+            index_pos,
+        )?;
         let output = output.reshape((batch_size, seq_len, hidden_size))?;
         self.wo.forward(&output).map_err(Error::from)
     }
@@ -727,8 +771,13 @@ impl AttentionLayer {
             self.wv
                 .forward(hidden_states)?
                 .reshape((batch, 1, self.n_kv_head, self.head_dim))?;
+        diagnostics::check_batch_layer(&query, "raw Q", self.model_layer, positions)?;
+        diagnostics::check_batch_layer(&key, "raw K", self.model_layer, positions)?;
+        diagnostics::check_batch_layer(&values, "raw V", self.model_layer, positions)?;
         let query = self.q_norm.forward(&query.contiguous()?)?;
         let key = self.k_norm.forward(&key.contiguous()?)?;
+        diagnostics::check_batch_layer(&query, "normalized Q", self.model_layer, positions)?;
+        diagnostics::check_batch_layer(&key, "normalized K", self.model_layer, positions)?;
         let (queries, keys) = if query.device().is_cuda() {
             let (query, key) = rotary_decode_batch(&query, &key, &self.cos, &self.sin, positions)?;
             record_rope_kernel();
@@ -763,6 +812,13 @@ impl AttentionLayer {
         let values = values
             .reshape((batch, self.n_kv_head, self.head_dim))?
             .contiguous()?;
+        diagnostics::check_batch_layer(
+            &queries,
+            "normalized/rotated Q",
+            self.model_layer,
+            positions,
+        )?;
+        diagnostics::check_batch_layer(&keys, "normalized/rotated K", self.model_layer, positions)?;
         let metadata = KvDecodeBatchMetadata {
             sequences: caches
                 .iter()
@@ -794,6 +850,12 @@ impl AttentionLayer {
             )
         })?;
         completions.collect(completion)?;
+        diagnostics::check_batch_layer(
+            &output,
+            "paged attention output",
+            self.model_layer,
+            positions,
+        )?;
         self.wo
             .forward(&output.reshape((batch, 1, hidden_size))?)
             .map_err(Error::from)
@@ -1146,6 +1208,7 @@ impl QuantizedLfm2Backbone {
                     cos_sin: cos_sin.clone(),
                     neg_inf: neg_inf.clone(),
                     physical_layer,
+                    model_layer: layer_idx,
                 })
             } else {
                 LayerKind::ShortConv(ShortConvLayer {
@@ -1346,9 +1409,11 @@ impl QuantizedLfm2Backbone {
             .collect::<Vec<_>>();
         let execution = (|| -> Result<Tensor> {
             let mut hidden_states = input_embeds.clone();
-            for layer in &self.layers {
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                diagnostics::check_batch_layer(&hidden_states, "input", layer_idx, positions)?;
                 let residual = hidden_states.clone();
                 let hidden = layer.operator_norm.forward(&hidden_states)?;
+                diagnostics::check_batch_layer(&hidden, "operator norm", layer_idx, positions)?;
                 let hidden = match &layer.kind {
                     LayerKind::Attention(attention) => {
                         let cache_refs = caches.iter().map(|cache| &**cache).collect::<Vec<_>>();
@@ -1365,12 +1430,33 @@ impl QuantizedLfm2Backbone {
                         shortconv.forward_retained_decode_batch(&hidden, &mut refs)?
                     }
                 };
+                diagnostics::check_batch_layer(&hidden, "operator output", layer_idx, positions)?;
                 hidden_states = (&hidden + &residual)?;
+                diagnostics::check_batch_layer(&hidden_states, "residual", layer_idx, positions)?;
                 let residual = hidden_states.clone();
                 let hidden = layer.ffn_norm.forward(&hidden_states)?;
-                hidden_states = (&layer.mlp.forward(&hidden)? + &residual)?;
+                diagnostics::check_batch_layer(&hidden, "FFN norm", layer_idx, positions)?;
+                let mlp = layer.mlp.forward(&hidden)?;
+                diagnostics::check_batch_layer(&mlp, "MLP output", layer_idx, positions)?;
+                hidden_states = (&mlp + &residual)?;
+                diagnostics::check_batch_layer(
+                    &hidden_states,
+                    "MLP residual",
+                    layer_idx,
+                    positions,
+                )?;
             }
-            self.norm.forward(&hidden_states)
+            let normalized = self.norm.forward(&hidden_states)?;
+            if diagnostics::enabled() {
+                for (row, &position) in positions.iter().enumerate() {
+                    diagnostics::check(
+                        &normalized.narrow(0, row, 1)?,
+                        &format!("row {row} final norm"),
+                        position,
+                    )?;
+                }
+            }
+            Ok(normalized)
         })();
         let hidden = match execution {
             Ok(hidden) => hidden,
@@ -1522,21 +1608,30 @@ impl QuantizedLfm2Backbone {
         };
         let mut working = shortconv.clone();
         let mut hidden_states = input_embeds.clone();
-        for layer in &self.layers {
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            diagnostics::check_layer(&hidden_states, "input", layer_idx, index_pos)?;
             let residual = hidden_states.clone();
             let hidden = layer.operator_norm.forward(&hidden_states)?;
+            diagnostics::check_layer(&hidden, "operator norm", layer_idx, index_pos)?;
             let hidden = match &layer.kind {
                 LayerKind::Attention(attention) => {
                     attention.forward_physical(&hidden, index_pos, cache, &mut prepared)?
                 }
                 LayerKind::ShortConv(layer) => layer.forward_retained(&hidden, &mut working)?,
             };
+            diagnostics::check_layer(&hidden, "operator output", layer_idx, index_pos)?;
             hidden_states = (&hidden + &residual)?;
+            diagnostics::check_layer(&hidden_states, "residual", layer_idx, index_pos)?;
             let residual = hidden_states.clone();
             let hidden = layer.ffn_norm.forward(&hidden_states)?;
-            hidden_states = (&layer.mlp.forward(&hidden)? + &residual)?;
+            diagnostics::check_layer(&hidden, "FFN norm", layer_idx, index_pos)?;
+            let mlp = layer.mlp.forward(&hidden)?;
+            diagnostics::check_layer(&mlp, "MLP output", layer_idx, index_pos)?;
+            hidden_states = (&mlp + &residual)?;
+            diagnostics::check_layer(&hidden_states, "MLP residual", layer_idx, index_pos)?;
         }
         let hidden_states = self.norm.forward(&hidden_states)?;
+        diagnostics::check(&hidden_states, "final norm", index_pos)?;
         working.advance(seq_len)?;
         cache.commit_prepared(prepared)?;
         *shortconv = working;
@@ -1605,9 +1700,11 @@ impl QuantizedLfm2Backbone {
         )?;
         let output = shortconv.with_ring_depthwise_conv(&intent, |transaction| {
             let mut hidden_states = input_embeds.clone();
-            for layer in &self.layers {
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                diagnostics::check_layer(&hidden_states, "input", layer_idx, index_pos)?;
                 let residual = hidden_states.clone();
                 let hidden = layer.operator_norm.forward(&hidden_states)?;
+                diagnostics::check_layer(&hidden, "operator norm", layer_idx, index_pos)?;
                 let hidden = match &layer.kind {
                     LayerKind::Attention(attention) => {
                         attention.forward_physical(&hidden, index_pos, cache, &mut prepared)?
@@ -1616,14 +1713,22 @@ impl QuantizedLfm2Backbone {
                         shortconv.forward_physical(&hidden, transaction)?
                     }
                 };
+                diagnostics::check_layer(&hidden, "operator output", layer_idx, index_pos)?;
                 hidden_states = (&hidden + &residual)?;
+                diagnostics::check_layer(&hidden_states, "residual", layer_idx, index_pos)?;
 
                 let residual = hidden_states.clone();
                 let hidden = layer.ffn_norm.forward(&hidden_states)?;
                 let hidden = layer.mlp.forward(&hidden)?;
+                diagnostics::check_layer(&hidden, "MLP output", layer_idx, index_pos)?;
                 hidden_states = (&hidden + &residual)?;
+                diagnostics::check_layer(&hidden_states, "residual", layer_idx, index_pos)?;
             }
-            self.norm.forward(&hidden_states)
+            {
+                let normalized = self.norm.forward(&hidden_states)?;
+                diagnostics::check(&normalized, "final norm", index_pos)?;
+                Ok(normalized)
+            }
         })?;
         cache.commit_prepared(prepared)?;
         Ok(output)
@@ -1643,23 +1748,33 @@ impl QuantizedLfm2Backbone {
         };
 
         let mut hidden_states = input_embeds.clone();
-        for layer in &self.layers {
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            diagnostics::check_layer(&hidden_states, "input", layer_idx, 0)?;
             let residual = hidden_states.clone();
             let hidden = layer.operator_norm.forward(&hidden_states)?;
+            diagnostics::check_layer(&hidden, "operator norm", layer_idx, 0)?;
             let hidden = match &layer.kind {
                 LayerKind::Attention(attention) => {
                     attention.forward_stateless(&hidden, mask.as_ref(), 0)?
                 }
                 LayerKind::ShortConv(shortconv) => shortconv.forward_stateless(&hidden)?,
             };
+            diagnostics::check_layer(&hidden, "operator output", layer_idx, 0)?;
             hidden_states = (&hidden + &residual)?;
+            diagnostics::check_layer(&hidden_states, "residual", layer_idx, 0)?;
 
             let residual = hidden_states.clone();
             let hidden = layer.ffn_norm.forward(&hidden_states)?;
             let hidden = layer.mlp.forward(&hidden)?;
+            diagnostics::check_layer(&hidden, "MLP output", layer_idx, 0)?;
             hidden_states = (&hidden + &residual)?;
+            diagnostics::check_layer(&hidden_states, "residual", layer_idx, 0)?;
         }
-        self.norm.forward(&hidden_states)
+        {
+            let normalized = self.norm.forward(&hidden_states)?;
+            diagnostics::check(&normalized, "final norm", 0)?;
+            Ok(normalized)
+        }
     }
 
     fn mask(&self, seq_len: usize, device: &Device) -> Result<Tensor> {
