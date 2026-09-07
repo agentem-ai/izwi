@@ -17,6 +17,55 @@ use super::{
 
 static NEXT_FISH_S2_STATE_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Host ownership and accelerator workspace required before reference preparation.
+/// Heap bytes exclude allocator metadata, consistently with other resource charges.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FishS2PreparationMemory {
+    pub host_transient_bytes: u64,
+    pub retained_artifact_bytes: u64,
+    pub accelerator_workspace_bytes: u64,
+}
+
+impl FishS2PreparationMemory {
+    pub(crate) fn host_bytes(self) -> Result<u64> {
+        checked_bytes_sum(&[self.host_transient_bytes, self.retained_artifact_bytes])
+    }
+}
+
+fn checked_bytes_sum(values: &[u64]) -> Result<u64> {
+    values
+        .iter()
+        .try_fold(0u64, |sum, value| sum.checked_add(*value))
+        .ok_or_else(|| Error::Overloaded("Fish S2 preparation byte count overflow".into()))
+}
+
+fn allocation_bytes(count: usize, element_size: usize) -> Result<u64> {
+    count
+        .checked_mul(element_size)
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| Error::Overloaded("Fish S2 preparation allocation overflow".into()))
+}
+
+fn artifact_bound(num_codebooks: usize, tokens: usize) -> Result<u64> {
+    let rows = num_codebooks
+        .checked_add(1)
+        .ok_or_else(|| Error::Overloaded("Fish S2 artifact rows overflow".into()))?;
+    checked_bytes_sum(&[
+        allocation_bytes(rows, std::mem::size_of::<Vec<u32>>())?,
+        allocation_bytes(
+            rows.checked_mul(tokens)
+                .ok_or_else(|| Error::Overloaded("Fish S2 artifact shape overflow".into()))?,
+            4,
+        )?,
+        allocation_bytes(tokens, std::mem::size_of::<bool>())?,
+        // Include the Arc allocation's object and strong/weak counters once.
+        allocation_bytes(
+            1,
+            std::mem::size_of::<FishS2PreparedArtifact>() + 2 * std::mem::size_of::<usize>(),
+        )?,
+    ])
+}
+
 #[derive(Clone)]
 pub(crate) struct FishS2PreparedArtifact {
     model_identity: u64,
@@ -92,22 +141,46 @@ struct FishS2RetainedCheckpointPayload {
 }
 
 impl FishS2TtsModel {
+    pub(crate) fn preparation_memory(
+        &self,
+        text: &str,
+        reference: &FishS2Reference,
+        context_limit: usize,
+    ) -> Result<FishS2PreparationMemory> {
+        validate_preparation_inputs(text, reference)?;
+        preparation_memory_for_geometry(
+            &self.config,
+            text.len(),
+            reference.text.capacity(),
+            reference.audio_samples.len(),
+            reference.audio_samples.capacity(),
+            reference.sample_rate,
+            context_limit,
+        )
+    }
+
     pub(crate) fn prepare_retained_artifact(
         &self,
         text: &str,
         reference: FishS2Reference,
     ) -> Result<Arc<FishS2PreparedArtifact>> {
-        self.prepare_retained_artifact_with_cancel(text, reference, &|| Ok(()))
+        self.prepare_retained_artifact_with_cancel(
+            text,
+            reference,
+            self.config.max_seq_len,
+            &|| Ok(()),
+        )
     }
 
     pub(crate) fn prepare_retained_artifact_with_cancel(
         &self,
         text: &str,
         reference: FishS2Reference,
+        context_limit: usize,
         check: &dyn Fn() -> Result<()>,
     ) -> Result<Arc<FishS2PreparedArtifact>> {
         check()?;
-        validate_preparation_inputs(text, &reference)?;
+        self.preparation_memory(text, &reference, context_limit)?;
         let runtime = self.native_runtime()?;
         let started = Instant::now();
         let reference_codes = runtime.dac.encode_reference_audio_with_cancel(
@@ -117,11 +190,12 @@ impl FishS2TtsModel {
         )?;
         let reference_encode_ms = elapsed_ms(started);
         let started = Instant::now();
-        let prompt = runtime.tokenizer.build_reference_voice_prompt(
+        let prompt = runtime.tokenizer.build_reference_voice_prompt_bounded(
             &self.config,
             reference.text.trim(),
             reference_codes,
             text.trim(),
+            context_limit,
         )?;
         let prompt_build_ms = elapsed_ms(started);
         check()?;
@@ -424,19 +498,40 @@ impl FishS2TtsModel {
 }
 
 impl FishS2PreparedArtifact {
+    #[cfg(test)]
+    pub(crate) fn test_prompt(rows: usize, tokens: usize) -> Arc<Self> {
+        Arc::new(Self {
+            model_identity: 1,
+            prompt: FishS2ConditioningPrompt {
+                values: vec![vec![0; tokens]; rows],
+                vq_mask: vec![false; tokens],
+                prompt_length: tokens,
+            },
+            reference_encode_ms: 0.0,
+            prompt_build_ms: 0.0,
+        })
+    }
+
     pub(crate) const fn prompt_tokens(&self) -> usize {
         self.prompt.prompt_length
     }
 
     pub(crate) fn retained_bytes(&self) -> Result<u64> {
-        let rows = u64::try_from(self.prompt.values.len())
-            .map_err(|_| Error::Overloaded("Fish S2 artifact row count overflow".into()))?;
-        let tokens = u64::try_from(self.prompt.prompt_length)
-            .map_err(|_| Error::Overloaded("Fish S2 artifact token count overflow".into()))?;
-        rows.checked_mul(tokens)
-            .and_then(|elements| elements.checked_mul(4))
-            .and_then(|bytes| bytes.checked_add(tokens))
-            .ok_or_else(|| Error::Overloaded("Fish S2 artifact byte count overflow".into()))
+        let mut bytes = checked_bytes_sum(&[
+            allocation_bytes(
+                self.prompt.values.capacity(),
+                std::mem::size_of::<Vec<u32>>(),
+            )?,
+            allocation_bytes(self.prompt.vq_mask.capacity(), std::mem::size_of::<bool>())?,
+            allocation_bytes(
+                1,
+                std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>(),
+            )?,
+        ])?;
+        for row in &self.prompt.values {
+            bytes = checked_bytes_sum(&[bytes, allocation_bytes(row.capacity(), 4)?])?;
+        }
+        Ok(bytes)
     }
 }
 
@@ -605,6 +700,70 @@ fn slice_prompt(
     })
 }
 
+fn preparation_memory_for_geometry(
+    config: &super::FishS2Config,
+    text_bytes: usize,
+    reference_text_bytes: usize,
+    input_samples: usize,
+    input_capacity: usize,
+    sample_rate: u32,
+    context_limit: usize,
+) -> Result<FishS2PreparationMemory> {
+    let context = context_limit.min(config.max_seq_len);
+    let max_prompt = context
+        .checked_sub(1)
+        .filter(|limit| *limit > 0)
+        .ok_or_else(|| {
+            Error::InvalidInput(
+                "Fish S2 effective context requires a prompt and generation position".into(),
+            )
+        })?;
+    let dac = super::FishS2DacConfig::current();
+    let frames = dac.reference_frame_count(input_samples, sample_rate)?;
+    if frames > max_prompt {
+        return Err(Error::InvalidInput(
+            "Fish S2 reference frames exceed effective prompt context".into(),
+        ));
+    }
+    let prepared_samples = frames
+        .checked_mul(dac.samples_per_frame()?)
+        .ok_or_else(|| Error::Overloaded("Fish S2 prepared audio length overflow".into()))?;
+    let rendered_bytes = text_bytes
+        .checked_add(reference_text_bytes)
+        .and_then(|n| n.checked_add(512))
+        .ok_or_else(|| Error::Overloaded("Fish S2 rendered text length overflow".into()))?;
+    // The native byte-level tokenizer's Encoding owns ids, offsets, token
+    // strings and normalization/pretokenization scratch. Price these separately
+    // from the dense prompt, using a conservative per-UTF8-byte envelope plus
+    // fixed small-allocation allowance, as for codec workspace.
+    let tokenization = allocation_bytes(rendered_bytes, 256)?;
+    let code_elements = frames
+        .checked_mul(config.num_codebooks)
+        .ok_or_else(|| Error::Overloaded("Fish S2 code readback shape overflow".into()))?;
+    let host_transient_bytes = checked_bytes_sum(&[
+        allocation_bytes(input_capacity, 4)?,
+        allocation_bytes(reference_text_bytes, 1)?,
+        allocation_bytes(prepared_samples, 4 * 3)?,
+        super::codec::fft_workspace(
+            u64::try_from(input_samples)
+                .map_err(|_| Error::Overloaded("Fish S2 input samples overflow".into()))?,
+            sample_rate,
+        )?,
+        allocation_bytes(code_elements, 4 * 3)?,
+        allocation_bytes(max_prompt, 4)?,
+        tokenization,
+        16 * 1024 * 1024,
+    ])?;
+    Ok(FishS2PreparationMemory {
+        host_transient_bytes,
+        retained_artifact_bytes: artifact_bound(config.num_codebooks, max_prompt)?,
+        accelerator_workspace_bytes: super::codec::preparation_workspace_bytes(
+            input_samples,
+            sample_rate,
+        )?,
+    })
+}
+
 fn validate_preparation_inputs(text: &str, reference: &FishS2Reference) -> Result<()> {
     if text.trim().is_empty() {
         return Err(Error::InvalidInput(
@@ -662,6 +821,100 @@ mod tests {
             staged_step: None,
             completions_drained: true,
         }
+    }
+
+    #[test]
+    fn artifact_observation_counts_spare_capacity_and_arc_once() {
+        let mut artifact = (*FishS2PreparedArtifact::test_prompt(11, 17)).clone();
+        artifact.prompt.values[0].reserve(31);
+        artifact.prompt.vq_mask.reserve(31);
+        let expected = std::mem::size_of::<FishS2PreparedArtifact>()
+            + 2 * std::mem::size_of::<usize>()
+            + artifact.prompt.values.capacity() * std::mem::size_of::<Vec<u32>>()
+            + artifact
+                .prompt
+                .values
+                .iter()
+                .map(|row| row.capacity() * 4)
+                .sum::<usize>()
+            + artifact.prompt.vq_mask.capacity();
+        let shared = Arc::new(artifact);
+        let clone = shared.clone();
+        assert_eq!(shared.retained_bytes().unwrap(), expected as u64);
+        assert_eq!(
+            clone.retained_bytes().unwrap(),
+            shared.retained_bytes().unwrap()
+        );
+        assert!(shared.retained_bytes().unwrap() > artifact_bound(10, 17).unwrap());
+    }
+
+    #[test]
+    fn artifact_context_envelope_covers_exact_dense_allocations() {
+        let config = super::super::config::current_config();
+        for tokens in [1, 17, config.max_seq_len - 1] {
+            let artifact = FishS2PreparedArtifact::test_prompt(config.num_codebooks + 1, tokens);
+            assert_eq!(
+                artifact.retained_bytes().unwrap(),
+                artifact_bound(config.num_codebooks, tokens).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn preparation_contract_prices_native_resampled_and_capacity_bytes() {
+        let config = super::super::config::current_config();
+        let native =
+            preparation_memory_for_geometry(&config, 32, 64, 44_100, 44_100, 44_100, 1024).unwrap();
+        let spare =
+            preparation_memory_for_geometry(&config, 32, 64, 44_100, 44_200, 44_100, 1024).unwrap();
+        let resampled =
+            preparation_memory_for_geometry(&config, 32, 64, 16_000, 16_000, 16_000, 1024).unwrap();
+        assert_eq!(
+            spare.host_transient_bytes - native.host_transient_bytes,
+            400
+        );
+        assert_eq!(
+            native.retained_artifact_bytes,
+            resampled.retained_artifact_bytes
+        );
+        assert!(resampled.host_transient_bytes > 16 * 1024 * 1024);
+        assert_eq!(
+            native.host_bytes().unwrap(),
+            native.host_transient_bytes + native.retained_artifact_bytes
+        );
+    }
+
+    #[test]
+    fn preparation_contract_rejects_invalid_geometry_and_overflow() {
+        let config = super::super::config::current_config();
+        for (samples, rate, context) in [
+            (0, 44_100, 1024),
+            (1, 0, 1024),
+            (1, u32::MAX, 1024),
+            (44_100, 44_100, 2),
+            (1, 44_100, 1),
+            (usize::MAX, 1, 1024),
+        ] {
+            assert!(preparation_memory_for_geometry(
+                &config, 1, 1, samples, samples, rate, context
+            )
+            .is_err());
+        }
+        assert!(
+            preparation_memory_for_geometry(&config, usize::MAX, 1, 1, 1, 44_100, 1024).is_err()
+        );
+        assert!(
+            preparation_memory_for_geometry(&config, 1, 1, 1, usize::MAX, 44_100, 1024).is_err()
+        );
+        assert!(artifact_bound(usize::MAX, 1).is_err());
+        assert!(artifact_bound(10, usize::MAX).is_err());
+        assert!(FishS2PreparationMemory {
+            host_transient_bytes: u64::MAX,
+            retained_artifact_bytes: 1,
+            accelerator_workspace_bytes: 0
+        }
+        .host_bytes()
+        .is_err());
     }
 
     #[test]

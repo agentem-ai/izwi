@@ -41,7 +41,8 @@ pub use fast::{FishS2FastConfig, FishS2FastDecoder, FishS2GeneratedFrame, FishS2
 pub(crate) use physical::{FishS2PhysicalStateSpec, FISH_S2_SLOW_STATE_GROUP};
 #[allow(unused_imports)]
 pub(crate) use retained::{
-    FishS2PreparedArtifact, FishS2RetainedCheckpoint, FishS2RetainedState, FishS2RetainedStep,
+    FishS2PreparationMemory, FishS2PreparedArtifact, FishS2RetainedCheckpoint, FishS2RetainedState,
+    FishS2RetainedStep,
 };
 pub use slow::{FishS2SlowConfig, FishS2SlowOutput, FishS2SlowTransformer};
 pub use tokenizer::{

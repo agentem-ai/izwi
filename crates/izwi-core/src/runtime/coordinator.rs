@@ -5356,3 +5356,7 @@ Pages free: 10.\n";
         }
     }
 }
+
+#[cfg(test)]
+#[path = "fish_s2_preparation_tests.rs"]
+mod fish_s2_preparation_tests;

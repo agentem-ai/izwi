@@ -141,8 +141,27 @@ impl FishS2PromptTokenizer {
         reference_codes: FishS2VqCodes,
         target_text: &str,
     ) -> Result<FishS2ConditioningPrompt> {
+        self.build_reference_voice_prompt_bounded(
+            config,
+            reference_text,
+            reference_codes,
+            target_text,
+            config.max_seq_len,
+        )
+    }
+
+    pub(crate) fn build_reference_voice_prompt_bounded(
+        &self,
+        config: &FishS2Config,
+        reference_text: &str,
+        reference_codes: FishS2VqCodes,
+        target_text: &str,
+        context_limit: usize,
+    ) -> Result<FishS2ConditioningPrompt> {
         let parts = reference_voice_prompt_parts(reference_text, reference_codes, target_text)?;
-        encode_prompt_parts_for_inference(&self.tokenizer, config, &parts)
+        encode_prompt_parts_bounded_with(config, &parts, context_limit, |text| {
+            self.tokenizer.encode(text)
+        })
     }
 }
 
@@ -215,73 +234,90 @@ fn ensure_reference_speaker_tag(reference_text: &str) -> String {
     }
 }
 
-fn encode_prompt_parts_for_inference(
-    tokenizer: &Tokenizer,
-    config: &FishS2Config,
-    parts: &[FishS2PromptPart],
-) -> Result<FishS2ConditioningPrompt> {
-    encode_prompt_parts_for_inference_with(config, parts, |text| tokenizer.encode(text))
-}
-
+#[cfg(test)]
 fn encode_prompt_parts_for_inference_with<F>(
     config: &FishS2Config,
     parts: &[FishS2PromptPart],
+    encode_text: F,
+) -> Result<FishS2ConditioningPrompt>
+where
+    F: FnMut(&str) -> Result<Vec<u32>>,
+{
+    encode_prompt_parts_bounded_with(config, parts, config.max_seq_len, encode_text)
+}
+
+fn encode_prompt_parts_bounded_with<F>(
+    config: &FishS2Config,
+    parts: &[FishS2PromptPart],
+    context_limit: usize,
     mut encode_text: F,
 ) -> Result<FishS2ConditioningPrompt>
 where
     F: FnMut(&str) -> Result<Vec<u32>>,
 {
-    let mut row0 = Vec::new();
-    let mut vq_mask = Vec::new();
-    let mut vq_segments = Vec::new();
-
+    let limit = context_limit.min(config.max_seq_len);
+    let mut length = 0usize;
+    // Tokenize once and borrow VQ rows. Validate the complete shape before any
+    // dense codebook/mask allocation; retain one position for generation.
+    let mut text_ids = Vec::with_capacity(parts.len());
     for part in parts {
-        match part {
-            FishS2PromptPart::Text(text) => {
-                let ids = encode_text(text)?;
-                let len = ids.len();
-                row0.extend(ids);
-                vq_mask.extend(std::iter::repeat_n(false, len));
-            }
+        let ids = match part {
+            FishS2PromptPart::Text(text) => Some(encode_text(text)?),
             FishS2PromptPart::Vq(codes) => {
                 validate_vq_codes(config, codes)?;
-                let frames = codes.frame_count();
-                for frame_idx in 0..frames {
-                    row0.push(semantic_token_id(config, codes.codebooks[0][frame_idx])?);
-                    vq_mask.push(true);
+                None
+            }
+        };
+        let count = match (part, &ids) {
+            (_, Some(ids)) => ids.len(),
+            (FishS2PromptPart::Vq(codes), None) => codes.frame_count(),
+            _ => unreachable!(),
+        };
+        length = length
+            .checked_add(count)
+            .ok_or_else(|| Error::InvalidInput("Fish S2 prompt length overflow".into()))?;
+        if length >= limit {
+            return Err(Error::InvalidInput(format!("Fish S2 prompt length {length} exceeds effective context {limit} (one generation position required)")));
+        }
+        text_ids.push(ids);
+    }
+    if length == 0 {
+        return Err(Error::InvalidInput("Fish S2 prompt cannot be empty".into()));
+    }
+    let rows = config
+        .num_codebooks
+        .checked_add(1)
+        .ok_or_else(|| Error::Overloaded("Fish S2 prompt row count overflow".into()))?;
+    rows.checked_mul(length)
+        .and_then(|n| n.checked_mul(std::mem::size_of::<u32>()))
+        .ok_or_else(|| Error::Overloaded("Fish S2 prompt allocation overflow".into()))?;
+    let mut values = vec![vec![0u32; length]; rows];
+    let mut vq_mask = vec![false; length];
+    let mut cursor = 0;
+    for (part, ids) in parts.iter().zip(text_ids) {
+        match part {
+            FishS2PromptPart::Text(_) => {
+                let ids = ids.expect("text was tokenized");
+                values[0][cursor..cursor + ids.len()].copy_from_slice(&ids);
+                cursor += ids.len();
+            }
+            FishS2PromptPart::Vq(codes) => {
+                for frame in 0..codes.frame_count() {
+                    let col = cursor + frame;
+                    values[0][col] = semantic_token_id(config, codes.codebooks[0][frame])?;
+                    vq_mask[col] = true;
+                    for (dst, src) in values[1..].iter_mut().zip(&codes.codebooks) {
+                        dst[col] = src[frame];
+                    }
                 }
-                vq_segments.push(codes.clone());
+                cursor += codes.frame_count();
             }
         }
     }
-
-    if row0.is_empty() {
-        return Err(Error::InvalidInput(
-            "Fish S2 prompt cannot be empty".to_string(),
-        ));
-    }
-
-    let mut values = vec![vec![0u32; row0.len()]; config.num_codebooks + 1];
-    values[0].clone_from(&row0);
-
-    let mut cursor = 0usize;
-    for segment in vq_segments {
-        while cursor < vq_mask.len() && !vq_mask[cursor] {
-            cursor += 1;
-        }
-        for frame_idx in 0..segment.frame_count() {
-            let col = cursor + frame_idx;
-            for codebook_idx in 0..config.num_codebooks {
-                values[codebook_idx + 1][col] = segment.codebooks[codebook_idx][frame_idx];
-            }
-        }
-        cursor += segment.frame_count();
-    }
-
     Ok(FishS2ConditioningPrompt {
         values,
         vq_mask,
-        prompt_length: row0.len(),
+        prompt_length: length,
     })
 }
 
@@ -333,6 +369,41 @@ impl FishS2VqCodes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effective_context_is_enforced_before_dense_prompt_construction() {
+        let config = crate::models::architectures::fish_s2::config::current_config();
+        let parts = [
+            FishS2PromptPart::Text("a".into()),
+            FishS2PromptPart::Text("b".into()),
+        ];
+        let mut calls = 0;
+        let error = encode_prompt_parts_bounded_with(&config, &parts, 4, |_| {
+            calls += 1;
+            Ok(vec![1; 4])
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("effective context 4"));
+        assert_eq!(
+            calls, 1,
+            "oversize must stop before further tokenization/allocation"
+        );
+        for tokens in [1, 17, config.max_seq_len - 1] {
+            let prompt = encode_prompt_parts_bounded_with(&config, &parts[..1], tokens + 1, |_| {
+                Ok(vec![1; tokens])
+            })
+            .unwrap();
+            assert_eq!(prompt.prompt_length, tokens);
+            assert_eq!(prompt.vq_mask.capacity(), tokens);
+            assert!(prompt.values.iter().all(|row| row.capacity() == tokens));
+        }
+        assert!(
+            encode_prompt_parts_bounded_with(&config, &parts[..1], usize::MAX, |_| Ok(
+                vec![1; config.max_seq_len]
+            ))
+            .is_err()
+        );
+    }
 
     #[test]
     fn validates_chatml_template_markers() {

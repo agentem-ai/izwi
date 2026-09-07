@@ -701,6 +701,44 @@ fn asr_encoder_retained_resources(
     retained_artifact_resources(backend, host_bytes, accelerator_bytes)
 }
 
+/// Fish's request lease owns host preparation buffers and the eventual artifact.
+/// Codec tensor workspace is leased separately by the physical batch runner.
+pub(super) fn fish_s2_preparation_resources(
+    backend: BackendKind,
+    request_bytes: u64,
+    preparation_host_bytes: u64,
+) -> Result<ResourceVector> {
+    let host_bytes = request_bytes
+        .checked_add(preparation_host_bytes)
+        .ok_or_else(|| Error::Overloaded("Fish S2 preparation host reservation overflow".into()))?;
+    retained_artifact_resources(backend, host_bytes, 0)
+}
+
+pub(super) fn fish_s2_artifact_resources(
+    backend: BackendKind,
+    artifact_bytes: u64,
+) -> Result<ResourceVector> {
+    retained_artifact_resources(backend, artifact_bytes, 0)
+}
+
+pub(super) fn add_fish_s2_artifact_to_admission(
+    backend: BackendKind,
+    spec: &mut JobSpec,
+    observation: &mut JobResourceObservation,
+    artifact_bytes: u64,
+) -> Result<()> {
+    let resources = spec
+        .resources
+        .checked_add(fish_s2_artifact_resources(backend, artifact_bytes)?)?;
+    let host_bytes = observation
+        .host_bytes
+        .checked_add(artifact_bytes)
+        .ok_or_else(|| Error::Overloaded("Fish S2 execution host observation overflow".into()))?;
+    spec.resources = resources;
+    observation.host_bytes = host_bytes;
+    Ok(())
+}
+
 fn kokoro_synthesis_resources(
     backend: BackendKind,
     text: &str,
@@ -907,6 +945,35 @@ struct QwenAsrEncoderPending {
     retained_host_bytes: u64,
     cancellation: PreparationCancellation,
     response: Option<oneshot::Sender<QwenAsrEncoderOutcome>>,
+}
+
+/// Keep decoded inputs covered when row sealing or dispatch fails. Field order
+/// frees physical inputs before the final lease clone, including during unwind.
+pub(super) struct PreparationOwnedInputs<T> {
+    inputs: T,
+    lease: JobLease,
+}
+
+impl<T> PreparationOwnedInputs<T> {
+    pub(super) fn new(inputs: T, lease: JobLease) -> Self {
+        Self { inputs, lease }
+    }
+
+    pub(super) fn run<R>(self, operation: impl FnOnce(T) -> Result<R>) -> Result<R> {
+        let Self { inputs, lease } = self;
+        let result = operation(inputs);
+        drop(lease);
+        result
+    }
+}
+
+pub(super) fn release_failed_preparation<T>(
+    failure: crate::runtime::coordinator::PreparationAdmissionFailure,
+    inputs: T,
+) -> Error {
+    drop(inputs);
+    drop(failure.bridge);
+    failure.error
 }
 
 struct PreparationCancellationGuard {
@@ -3331,7 +3398,20 @@ impl RuntimeService {
                 estimate,
             )?)?;
         }
-        Ok((spec, host_input_observation(input_bytes)?))
+        let mut observation = host_input_observation(input_bytes)?;
+        if request.task_type == TaskType::TTS
+            && request.model_variant == Some(ModelVariant::FishAudioS2Pro)
+        {
+            if let Some(artifact) = request.prepared_fish_s2_tts_artifact_for_executor()? {
+                add_fish_s2_artifact_to_admission(
+                    self.backend_router.context().backend_kind,
+                    &mut spec,
+                    &mut observation,
+                    artifact.retained_bytes()?,
+                )?;
+            }
+        }
+        Ok((spec, observation))
     }
 
     /// Load or pin a model under the admitted request's absolute deadline.
@@ -5283,11 +5363,17 @@ impl RuntimeService {
             ..FishS2GenerationParams::default()
         };
         params.validate()?;
-        let codec_workspace =
-            crate::models::architectures::fish_s2::codec::preparation_workspace_bytes(
-                reference.audio_samples.len(),
-                reference.sample_rate,
-            )?;
+        let memory = model.preparation_memory(&text, &reference, context_limit)?;
+        // The text clone and decoded reference were constructed under the initial
+        // input/audio-decode lease. Keep their ownership covered across the bridge;
+        // subsequent codec/tokenizer allocations begin only after admission.
+        let preparation_host_bytes = memory
+            .host_bytes()?
+            .checked_add(u64::try_from(text.capacity()).map_err(|_| {
+                Error::Overloaded("Fish S2 preparation text capacity exceeds u64".into())
+            })?)
+            .ok_or_else(|| Error::Overloaded("Fish S2 preparation host bytes overflow".into()))?;
+        let codec_workspace = memory.accelerator_workspace_bytes;
         let decode_workspace =
             crate::models::architectures::fish_s2::codec::decode_workspace_bytes(
                 params.max_frames,
@@ -5295,19 +5381,19 @@ impl RuntimeService {
         let retained_request_bytes = u64::try_from(retained_engine_request_input_bytes(&request)?)
             .map_err(|_| Error::Overloaded("Fish S2 TTS retained request exceeds u64".into()))?;
         job.record_materialized_usage(JobResourceObservation::host(retained_request_bytes))?;
-        let bridge = self.coordinator.bridge_preparation_admission(job)?;
         let preparation_spec = JobSpec {
             request_id: request.id.clone(),
             lane: CoordinatorLane::Atomic,
             priority: request.priority,
             workload_class: request.workload_class,
             deadline: request.deadline,
-            resources: asr_encoder_retained_resources(
+            resources: fish_s2_preparation_resources(
                 self.backend_router.context().backend_kind,
                 retained_request_bytes,
-                codec_workspace,
+                preparation_host_bytes,
             )?,
         };
+        let bridge = self.coordinator.bridge_preparation_admission(job)?;
         let preparation_job = match self
             .coordinator
             .admit_observed_from_preparation(
@@ -5318,8 +5404,17 @@ impl RuntimeService {
             .await
         {
             Ok(job) => job,
-            Err(failure) => return Err(failure.error),
+            Err(failure) => {
+                return Err(release_failed_preparation(
+                    failure,
+                    (request, text, reference),
+                ))
+            }
         };
+        let request_id = request.id.clone();
+        let codec_deadline = request.deadline;
+        let owned_inputs =
+            PreparationOwnedInputs::new((request, text, reference), preparation_job.clone());
         let work = WorkUnit::PreSequencePreparation {
             kind: "tts.prepare.fish_s2".into(),
         };
@@ -5343,8 +5438,7 @@ impl RuntimeService {
         )?;
         let model_for_preparation = model.clone();
         let cancellation_for_codec = cancellation.clone();
-        let codec_request_id = request.id.clone();
-        let codec_deadline = request.deadline;
+        let codec_request_id = request_id.clone();
         let mut cancellation_guard = PreparationCancellationGuard {
             cancellation,
             armed: true,
@@ -5357,26 +5451,31 @@ impl RuntimeService {
                         "Fish S2 TTS preparation must remain scalar".into(),
                     ));
                 }
-                let artifact = model_for_preparation.prepare_retained_artifact_with_cancel(
-                    &text,
-                    reference,
-                    &|| {
-                        if cancellation_for_codec.is_cancelled() {
-                            return Err(Error::Cancelled(codec_request_id.clone()));
-                        }
-                        if codec_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                            return Err(Error::Timeout(codec_request_id.clone()));
-                        }
-                        Ok(())
-                    },
-                )?;
-                let retained_host_bytes = retained_request_bytes
-                    .checked_add(artifact.retained_bytes()?)
-                    .ok_or_else(|| Error::Overloaded("Fish S2 retained bytes overflow".into()))?;
-                Ok(vec![Ok(PreparationArtifact {
-                    retained: JobResourceObservation::host(retained_host_bytes),
-                    value: artifact,
-                })])
+                owned_inputs.run(|(request, text, reference)| {
+                    let artifact = model_for_preparation.prepare_retained_artifact_with_cancel(
+                        &text,
+                        reference,
+                        context_limit,
+                        &|| {
+                            if cancellation_for_codec.is_cancelled() {
+                                return Err(Error::Cancelled(codec_request_id.clone()));
+                            }
+                            if codec_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                                return Err(Error::Timeout(codec_request_id.clone()));
+                            }
+                            Ok(())
+                        },
+                    )?;
+                    let retained_host_bytes = retained_request_bytes
+                        .checked_add(artifact.retained_bytes()?)
+                        .ok_or_else(|| {
+                            Error::Overloaded("Fish S2 retained bytes overflow".into())
+                        })?;
+                    Ok(vec![Ok(PreparationArtifact {
+                        retained: JobResourceObservation::host(retained_host_bytes),
+                        value: (request, artifact),
+                    })])
+                })
             })
             .await?;
         cancellation_guard.armed = false;
@@ -5384,16 +5483,16 @@ impl RuntimeService {
             Error::InferenceError("Fish S2 TTS preparation returned no outcome".into())
         })? {
             PreparationRowOutcome::Committed { artifact, bridge } => (artifact, bridge),
-            PreparationRowOutcome::Cancelled => return Err(Error::Cancelled(request.id.clone())),
-            PreparationRowOutcome::TimedOut => return Err(Error::Timeout(request.id.clone())),
+            PreparationRowOutcome::Cancelled => return Err(Error::Cancelled(request_id.clone())),
+            PreparationRowOutcome::TimedOut => return Err(Error::Timeout(request_id.clone())),
             PreparationRowOutcome::Failed(error) => return Err(error),
         };
         let retained = artifact.retained;
-        let mut prepared = request;
+        let (mut prepared, prepared_artifact) = artifact.value;
         prepared.install_fish_s2_tts_execution_model(
             variant,
             model,
-            artifact.value,
+            prepared_artifact,
             params,
             context_limit,
         )?;
@@ -5415,7 +5514,7 @@ impl RuntimeService {
             .await
         {
             Ok(job) => Ok((prepared, job)),
-            Err(failure) => Err(failure.error),
+            Err(failure) => Err(release_failed_preparation(failure, prepared)),
         }
     }
 
