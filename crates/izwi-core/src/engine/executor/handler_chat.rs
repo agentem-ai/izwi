@@ -171,6 +171,23 @@ impl StreamDeltaBatch {
     }
 }
 
+// Correlate model-local diagnostics with the serving request without logging
+// prompt/response content. Error paths already carry the request's executor ID.
+fn record_lfm_completion(
+    state: &NativeChatDecodeState,
+    request: &EngineCoreRequest,
+    step: &NativeChatDecodeStep,
+) {
+    if let NativeChatDecodeState::Lfm2(state) = state {
+        if step.finished {
+            tracing::info!(request_id = %request.id, model = ?request.model_variant,
+                stop_reason = state.stop_reason(), generated_tokens = step.tokens_generated,
+                prompt_tokens = request.num_prompt_tokens(), max_new_tokens = request.params.max_tokens,
+                raw_chars = step.text.chars().count(), "LFM2 generation completed");
+        }
+    }
+}
+
 fn canonical_chat_terminal_text(streamed_text: &str, terminal_text: String) -> String {
     if streamed_text.is_empty() {
         terminal_text
@@ -603,6 +620,13 @@ impl NativeExecutor {
         state_lease.mark_dirty();
         let (step, final_text, finished, managed_cache_completions) = {
             let active_state = state_lease.require_state_mut()?;
+            if matches!(active_state.state, NativeChatDecodeState::Lfm2(_))
+                && crate::models::architectures::lfm2::diagnostics::enabled()
+            {
+                tracing::info!(request_id = %request.id, model = ?request.model_variant,
+                    prompt_tokens = request.num_prompt_tokens(), max_new_tokens = request.params.max_tokens,
+                    prefill = scheduled.is_prefill, "LFM2 quantum diagnostic context");
+            }
             let step = if let (Some(_), Some((start, end))) = (replay_tokens, resumable_span) {
                 let (NativeChatModel::Qwen38(qwen), NativeChatDecodeState::Qwen38(state)) =
                     (model.as_ref(), &mut active_state.state)
@@ -647,6 +671,7 @@ impl NativeExecutor {
                 )));
             }
 
+            record_lfm_completion(&active_state.state, request, &step);
             let step_tokens_generated = step
                 .tokens_generated
                 .saturating_sub(active_state.last_tokens_generated);
@@ -901,6 +926,15 @@ impl NativeExecutor {
         for (_, _, lease, _) in &mut active_states.rows {
             lease.mark_dirty();
         }
+        if matches!(model.as_ref(), NativeChatModel::Lfm2(_))
+            && crate::models::architectures::lfm2::diagnostics::enabled()
+        {
+            for (row, (index, _, _, _)) in active_states.rows.iter().enumerate() {
+                let request = ordered_requests[*index];
+                tracing::info!(request_id = %request.id, row, prompt_tokens = request.num_prompt_tokens(),
+                    max_new_tokens = request.params.max_tokens, "LFM2 batch diagnostic row");
+            }
+        }
         let mut state_refs = active_states
             .rows
             .iter_mut()
@@ -943,6 +977,7 @@ impl NativeExecutor {
         for ((index, _, lease, _), step) in active_states.rows.iter_mut().zip(steps) {
             let request = ordered_requests[*index];
             let active_state = lease.require_state_mut()?;
+            record_lfm_completion(&active_state.state, request, &step);
             let step_tokens_generated = step
                 .tokens_generated
                 .saturating_sub(active_state.last_tokens_generated);

@@ -11,6 +11,7 @@ use candle_core::{DType, IndexOp, Tensor, D};
 use serde::Deserialize;
 use tracing::info;
 
+use super::diagnostics;
 use crate::backends::state::{
     PhysicalStateSequenceId, PhysicalStateTransactionId, TensorStateArena,
 };
@@ -22,9 +23,10 @@ use crate::kv::{InferenceStateCapability, InferenceStateContractProvider};
 use crate::model::ModelVariant;
 use crate::models::shared::attention::physical::PhysicalPagedKvCache;
 use crate::models::shared::chat::{ChatGenerationConfig, ChatMessage, ChatRole};
+use crate::models::shared::sampling::ChatSampler;
 use crate::models::shared::telemetry::record_prefill_sequence_span;
 use crate::models::shared::weights::gguf::GgufLoader;
-use crate::tokenizer::Tokenizer;
+use crate::tokenizer::{IncrementalDecoder, Tokenizer};
 
 use super::backbone::{Lfm2ShortConvRuntimeState, QuantizedLfm2Backbone};
 use super::config::{parse_lfm2_backbone_config, Lfm2BackboneConfig};
@@ -39,6 +41,10 @@ pub struct ChatDecodeState {
     unconsumed_output: Option<Tensor>,
     pending_token: Option<u32>,
     generated_ids: Vec<u32>,
+    sampler: ChatSampler,
+    greedy: bool,
+    decoder: IncrementalDecoder,
+    stop_reason: Option<&'static str>,
     assembled: String,
     max_new_tokens: usize,
     finished: bool,
@@ -52,9 +58,14 @@ pub(crate) struct Lfm2ChatDecodeCheckpoint {
     unconsumed_output: Option<Tensor>,
     pending_token: Option<u32>,
     generated_ids: Vec<u32>,
+    sampler: ChatSampler,
+    greedy: bool,
+    decoder: IncrementalDecoder,
+    stop_reason: Option<&'static str>,
     assembled: String,
     finished: bool,
     position: usize,
+    prefill_progress: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +78,10 @@ pub struct ChatDecodeStep {
 }
 
 impl ChatDecodeState {
+    pub(crate) fn stop_reason(&self) -> Option<&'static str> {
+        self.stop_reason
+    }
+
     pub(crate) fn prefill_progress(&self) -> usize {
         self.prefill_progress
     }
@@ -88,9 +103,14 @@ impl ChatDecodeState {
             unconsumed_output: self.unconsumed_output.clone(),
             pending_token: self.pending_token,
             generated_ids: self.generated_ids.clone(),
+            sampler: self.sampler.clone(),
+            greedy: self.greedy,
+            decoder: self.decoder.clone(),
+            stop_reason: self.stop_reason,
             assembled: self.assembled.clone(),
             finished: self.finished,
             position: self.position,
+            prefill_progress: self.prefill_progress,
         })
     }
 
@@ -115,9 +135,14 @@ impl ChatDecodeState {
         self.unconsumed_output = checkpoint.unconsumed_output;
         self.pending_token = checkpoint.pending_token;
         self.generated_ids = checkpoint.generated_ids;
+        self.sampler = checkpoint.sampler;
+        self.greedy = checkpoint.greedy;
+        self.decoder = checkpoint.decoder;
+        self.stop_reason = checkpoint.stop_reason;
         self.assembled = checkpoint.assembled;
         self.finished = checkpoint.finished;
         self.position = checkpoint.position;
+        self.prefill_progress = checkpoint.prefill_progress;
     }
 
     pub(crate) fn bind_tensor_sequence(&mut self, sequence: u64) -> Result<()> {
@@ -188,13 +213,15 @@ struct TokenizerConfig {
 #[derive(Debug, Deserialize)]
 struct AddedToken {
     content: String,
+    #[serde(default)]
+    special: bool,
 }
 
 struct ChatTokenizer {
     inner: Tokenizer,
     vocab_size: usize,
     specials: SpecialTokenIds,
-    decode_piece_cache: Vec<OnceLock<String>>,
+    non_generatable: Vec<u32>,
 }
 
 struct PromptScaffoldTokens {
@@ -328,10 +355,9 @@ fn should_prepend_default_system(
     match policy {
         Lfm2DefaultSystemPolicy::Always => true,
         Lfm2DefaultSystemPolicy::Never => false,
-        Lfm2DefaultSystemPolicy::Auto => {
-            !(messages.len() == 1
-                && matches!(messages.first().map(|m| &m.role), Some(ChatRole::User)))
-        }
+        // The checkpoint template adds only an explicitly supplied system
+        // message. Do not change instructions when a second user turn arrives.
+        Lfm2DefaultSystemPolicy::Auto => false,
     }
 }
 
@@ -415,6 +441,17 @@ impl ChatTokenizer {
         let config_str = fs::read_to_string(config_path)?;
         let config: TokenizerConfig = serde_json::from_str(&config_str)?;
 
+        for (id, token) in &config.added_tokens_decoder {
+            let expected = id.parse::<u32>().map_err(|_| {
+                Error::TokenizationError(format!("LFM2 invalid tokenizer metadata ID {id}"))
+            })?;
+            if inner.token_to_id(&token.content) != Some(expected) {
+                return Err(Error::TokenizationError(format!(
+                    "LFM2 tokenizer metadata disagrees with vocabulary for ID {expected}"
+                )));
+            }
+        }
+
         let id_for = |token: &str| -> Option<u32> {
             config.added_tokens_decoder.iter().find_map(|(id, entry)| {
                 if entry.content == token {
@@ -451,7 +488,19 @@ impl ChatTokenizer {
                 eos,
                 eos_alt,
             },
-            decode_piece_cache: (0..vocab_size).map(|_| OnceLock::new()).collect(),
+            non_generatable: config
+                .added_tokens_decoder
+                .iter()
+                .filter(|(_, token)| {
+                    token.special
+                        || matches!(
+                            token.content.as_str(),
+                            "<|pad|>" | "<|startoftext|>" | "<|im_start|>"
+                        )
+                })
+                .filter_map(|(id, _)| id.parse::<u32>().ok())
+                .filter(|id| *id != im_end && *id != eos && Some(*id) != eos_alt)
+                .collect(),
         })
     }
 
@@ -468,20 +517,23 @@ impl ChatTokenizer {
         self.inner.decode(&filtered)
     }
 
-    fn decode_token_piece(&self, token_id: u32) -> Result<&str> {
-        let idx = token_id as usize;
-        if idx >= self.vocab_size {
-            return Ok("");
+    fn validate_selection(&self, token: u32) -> Result<()> {
+        if token as usize >= self.vocab_size || self.non_generatable.contains(&token) {
+            return Err(Error::InferenceError(format!(
+                "LFM2 invalid generated token {token}: out-of-vocabulary or non-generatable control token"
+            )));
         }
-        if let Some(piece) = self.decode_piece_cache[idx].get() {
-            return Ok(piece.as_str());
+        Ok(())
+    }
+
+    fn validate_logits(&self, logits: &Tensor) -> Result<()> {
+        diagnostics::validate_finite(logits, "LFM2 raw logits before sampling")?;
+        if logits.dim(D::Minus1)? < self.vocab_size {
+            return Err(Error::InferenceError(
+                "LFM2 logits are smaller than tokenizer vocabulary".into(),
+            ));
         }
-        let decoded = self.inner.decode(&[token_id])?;
-        let _ = self.decode_piece_cache[idx].set(decoded);
-        Ok(self.decode_piece_cache[idx]
-            .get()
-            .map(String::as_str)
-            .unwrap_or(""))
+        Ok(())
     }
 }
 
@@ -526,6 +578,11 @@ impl Lfm2ChatModel {
             GgufLoader::from_path_with_backend(&gguf_path, BackendKind::from(device.kind))?;
         let config = parse_lfm2_backbone_config(&loader)?;
         let text_model = QuantizedLfm2Backbone::load(&loader, config.clone(), &device.device)?;
+        if tokenizer.vocab_size == 0 || tokenizer.vocab_size > text_model.vocab_size() {
+            return Err(Error::ModelLoadError(
+                "LFM2 tokenizer vocabulary exceeds model embeddings".into(),
+            ));
+        }
         let prompt_scaffold = PromptScaffoldTokens::load(&tokenizer)?;
 
         info!(
@@ -580,12 +637,22 @@ impl Lfm2ChatModel {
         &self,
         prompt_ids: &[u32],
         max_new_tokens: usize,
-        _config: &ChatGenerationConfig,
+        config: &ChatGenerationConfig,
         cache: PhysicalPagedKvCache,
     ) -> Result<ChatDecodeState> {
         if prompt_ids.is_empty() || cache.context_len() != 0 {
             return Err(Error::InvalidInput(
                 "LFM2 managed prefill requires a non-empty prompt and empty cache".into(),
+            ));
+        }
+        validate_generation_config(config)?;
+        if config
+            .stop_token_ids
+            .iter()
+            .any(|&id| id as usize >= self.tokenizer.vocab_size)
+        {
+            return Err(Error::InvalidInput(
+                "LFM2 configured stop ID exceeds vocabulary".into(),
             ));
         }
         Ok(ChatDecodeState {
@@ -595,6 +662,10 @@ impl Lfm2ChatModel {
             unconsumed_output: None,
             pending_token: None,
             generated_ids: Vec::with_capacity(max_new_tokens.max(1)),
+            sampler: ChatSampler::new(config.clone(), prompt_ids),
+            greedy: is_plain_greedy(config),
+            decoder: IncrementalDecoder::new(true),
+            stop_reason: None,
             assembled: String::new(),
             max_new_tokens: max_new_tokens.max(1),
             finished: false,
@@ -650,8 +721,15 @@ impl Lfm2ChatModel {
     pub fn decode_step(&self, state: &mut ChatDecodeState) -> Result<ChatDecodeStep> {
         if state.finished || state.generated_ids.len() >= state.max_new_tokens {
             state.finished = true;
+            let reason = *state.stop_reason.get_or_insert("length");
+            let delta = self
+                .tokenizer
+                .inner
+                .finish_incremental_decode(&mut state.decoder)?;
+            state.assembled.push_str(&delta);
+            validate_terminal_text(&state.assembled, reason, state.generated_ids.len())?;
             return Ok(ChatDecodeStep {
-                delta: String::new(),
+                delta,
                 text: state.assembled.trim().to_string(),
                 tokens_generated: state.generated_ids.len(),
                 input_tokens_committed: 0,
@@ -674,27 +752,73 @@ impl Lfm2ChatModel {
         let logits = state.unconsumed_output.take().ok_or_else(|| {
             Error::InferenceError("LFM2 decode state has no sampleable output".into())
         })?;
-        let next = argmax(&logits)?;
-        let is_stop = next == self.tokenizer.specials.im_end
+        self.tokenizer.validate_logits(&logits)?;
+        let next = state.sampler.sample(&logits, self.tokenizer.vocab_size)?;
+        self.accept_token(state, next, committed)
+    }
+
+    fn accept_token(
+        &self,
+        state: &mut ChatDecodeState,
+        next: u32,
+        committed: usize,
+    ) -> Result<ChatDecodeStep> {
+        if diagnostics::enabled() && state.generated_ids.len() < 64 {
+            tracing::info!(
+                position = state.position,
+                generated = state.generated_ids.len(),
+                token_id = next,
+                "LFM2 selected token (bounded diagnostic trace)"
+            );
+        }
+        if next as usize >= self.tokenizer.vocab_size {
+            return Err(Error::InferenceError(format!(
+                "LFM2 out-of-vocabulary selected ID {next}"
+            )));
+        }
+        let reason = if next == self.tokenizer.specials.im_end
             || next == self.tokenizer.specials.eos
-            || self.tokenizer.specials.eos_alt == Some(next);
-        let delta = if is_stop {
-            state.finished = true;
-            String::new()
+            || self.tokenizer.specials.eos_alt == Some(next)
+        {
+            Some("eos")
+        } else if state.sampler.is_configured_stop(next) {
+            Some("configured_stop")
         } else {
-            let delta = self.tokenizer.decode_token_piece(next)?.to_string();
+            None
+        };
+        let mut delta = String::new();
+        if reason.is_none() {
+            self.tokenizer.validate_selection(next)?;
+            delta = self
+                .tokenizer
+                .inner
+                .decode_incrementally(&mut state.decoder, next)?;
             state.generated_ids.push(next);
             state.assembled.push_str(&delta);
-            if (should_check_repetition_loop(state.generated_ids.len())
-                && has_token_repetition_loop(&state.generated_ids))
-                || state.generated_ids.len() >= state.max_new_tokens
+        }
+        state.stop_reason = reason.or_else(|| {
+            if should_check_repetition_loop(state.generated_ids.len())
+                && has_token_repetition_loop(&state.generated_ids)
             {
-                state.finished = true;
+                Some("repetition")
+            } else if state.generated_ids.len() >= state.max_new_tokens {
+                Some("length")
             } else {
-                state.pending_token = Some(next);
+                None
             }
-            delta
-        };
+        });
+        if let Some(reason) = state.stop_reason {
+            let suffix = self
+                .tokenizer
+                .inner
+                .finish_incremental_decode(&mut state.decoder)?;
+            state.assembled.push_str(&suffix);
+            delta.push_str(&suffix);
+            state.finished = true;
+            validate_terminal_text(&state.assembled, reason, state.generated_ids.len())?;
+        } else {
+            state.pending_token = Some(next);
+        }
         Ok(ChatDecodeStep {
             delta,
             text: if state.finished {
@@ -746,41 +870,24 @@ impl Lfm2ChatModel {
         )?;
         drop(shortconv);
         drop(caches);
-        let next_tokens = argmax_batch(&logits)?;
+        self.tokenizer.validate_logits(&logits)?;
+        let next_tokens = if states.iter().all(|state| state.greedy) {
+            argmax_batch(&logits.narrow(D::Minus1, 0, self.tokenizer.vocab_size)?)?
+        } else {
+            states
+                .iter_mut()
+                .enumerate()
+                .map(|(row, state)| {
+                    state
+                        .sampler
+                        .sample(&logits.i(row)?, self.tokenizer.vocab_size)
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
         let mut steps = Vec::with_capacity(states.len());
         for (state, next) in states.iter_mut().zip(next_tokens) {
             state.position = state.position.saturating_add(1);
-            let is_stop = next == self.tokenizer.specials.im_end
-                || next == self.tokenizer.specials.eos
-                || self.tokenizer.specials.eos_alt == Some(next);
-            let delta = if is_stop {
-                state.finished = true;
-                String::new()
-            } else {
-                let delta = self.tokenizer.decode_token_piece(next)?.to_string();
-                state.generated_ids.push(next);
-                state.assembled.push_str(&delta);
-                if should_check_repetition_loop(state.generated_ids.len())
-                    && has_token_repetition_loop(&state.generated_ids)
-                    || state.generated_ids.len() >= state.max_new_tokens
-                {
-                    state.finished = true;
-                } else {
-                    state.pending_token = Some(next);
-                }
-                delta
-            };
-            steps.push(ChatDecodeStep {
-                delta,
-                text: if state.finished {
-                    state.assembled.trim().to_string()
-                } else {
-                    String::new()
-                },
-                tokens_generated: state.generated_ids.len(),
-                input_tokens_committed: 1,
-                finished: state.finished,
-            });
+            steps.push(self.accept_token(state, next, 1)?);
         }
         Ok(steps)
     }
@@ -828,31 +935,40 @@ impl Lfm2ChatModel {
         let max_new_tokens = max_new_tokens.max(1);
         let mut generated_ids = Vec::with_capacity(max_new_tokens);
         let mut assembled = String::with_capacity(max_new_tokens.saturating_mul(4));
+        let mut decoder = IncrementalDecoder::new(true);
+        let mut stop_reason = "length";
         let decode_started = Instant::now();
         let mut first_delta_ms: Option<f64> = None;
 
         while generated_ids.len() < max_new_tokens {
-            let next = argmax(&logits)?;
+            self.tokenizer.validate_logits(&logits)?;
+            let next = argmax(&logits.narrow(D::Minus1, 0, self.tokenizer.vocab_size)?)?;
+            self.tokenizer.validate_selection(next)?;
             if next == self.tokenizer.specials.im_end
                 || next == self.tokenizer.specials.eos
                 || self.tokenizer.specials.eos_alt == Some(next)
             {
+                stop_reason = "eos";
                 break;
             }
 
-            let delta = self.tokenizer.decode_token_piece(next)?;
+            let delta = self
+                .tokenizer
+                .inner
+                .decode_incrementally(&mut decoder, next)?;
             generated_ids.push(next);
             if !delta.is_empty() {
                 if first_delta_ms.is_none() {
                     first_delta_ms = Some(total_started.elapsed().as_secs_f64() * 1000.0);
                 }
-                on_delta(delta);
+                on_delta(&delta);
             }
-            assembled.push_str(delta);
+            assembled.push_str(&delta);
 
             if should_check_repetition_loop(generated_ids.len())
                 && has_token_repetition_loop(&generated_ids)
             {
+                stop_reason = "repetition";
                 break;
             }
 
@@ -882,6 +998,15 @@ impl Lfm2ChatModel {
             );
         }
 
+        let suffix = self
+            .tokenizer
+            .inner
+            .finish_incremental_decode(&mut decoder)?;
+        assembled.push_str(&suffix);
+        validate_terminal_text(&assembled, stop_reason, generated_ids.len())?;
+        if !suffix.is_empty() {
+            on_delta(&suffix);
+        }
         Ok(ChatGenerationOutput {
             text: assembled.trim().to_string(),
             tokens_generated: generated_ids.len(),
@@ -1028,6 +1153,40 @@ impl InferenceStateContractProvider for Lfm2ChatModel {
             lfm2_managed_cache_contract(&self.config)?,
         ))
     }
+}
+
+fn validate_generation_config(config: &ChatGenerationConfig) -> Result<()> {
+    if !config.temperature.is_finite()
+        || config.temperature < 0.0
+        || !config.top_p.is_finite()
+        || !(0.0..=1.0).contains(&config.top_p)
+        || config.top_p == 0.0
+        || !config.repetition_penalty.is_finite()
+        || config.repetition_penalty < 1.0
+        || !config.presence_penalty.is_finite()
+    {
+        return Err(Error::InvalidInput(
+            "LFM2 invalid sampling configuration (repetition penalty must be >= 1)".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_plain_greedy(config: &ChatGenerationConfig) -> bool {
+    config.temperature <= 1e-5
+        && config.top_k == 0
+        && config.top_p >= 1.0
+        && (config.repetition_penalty - 1.0).abs() <= f32::EPSILON
+        && config.presence_penalty.abs() <= f32::EPSILON
+}
+
+fn validate_terminal_text(text: &str, reason: &str, generated: usize) -> Result<()> {
+    if text.trim().is_empty() || reason == "repetition" {
+        return Err(Error::InferenceError(format!(
+            "LFM2 generation did not produce a valid answer: stop_reason={reason}, generated_tokens={generated}, raw_chars={}", text.chars().count()
+        )));
+    }
+    Ok(())
 }
 
 fn argmax_batch(logits: &Tensor) -> Result<Vec<u32>> {
@@ -1239,7 +1398,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_default_system_policy_skips_single_turn_user_prompt() {
+    fn auto_default_system_policy_preserves_instructions_across_turns() {
         let single_turn = vec![ChatMessage {
             role: ChatRole::User,
             content: "hello".to_string(),
@@ -1259,7 +1418,7 @@ mod tests {
                 content: "hi".to_string(),
             },
         ];
-        assert!(should_prepend_default_system(
+        assert!(!should_prepend_default_system(
             &multi_turn,
             Lfm2DefaultSystemPolicy::Auto
         ));
@@ -1324,3 +1483,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "chat_integrity_tests.rs"]
+mod integrity_tests;
