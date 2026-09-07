@@ -34,11 +34,15 @@ on the deployment GPU. No additional custom CUDA kernel was introduced.
 Build/link checks, device numerical checks and model performance evidence are
 separate requirements. The portable tests alone satisfy neither CUDA compilation
 nor GPU qualification. With the CUDA toolkit and an NVIDIA device, run the
-explicit kernel tests (these fail if the device is unavailable):
+explicit kernel and generation-guard tests (these fail if the device is unavailable):
 
 ```bash
 cargo test --locked -p izwi-core --lib --features cuda \
   cuda_lfm2_batched_rotary_matches_scalar_at_ragged_positions -- --ignored
+cargo test --locked -p izwi-core --lib --features cuda \
+  cuda_lfm2_finite_validation_rejects_nonfinite_values -- --ignored
+cargo test --locked -p izwi-core --lib --features cuda \
+  cuda_lfm2_decode_rejects_nonfinite_logits_before_argmax -- --ignored
 cargo test --locked -p izwi-core --lib --features cuda \
   cuda_candle_conformer_operations_and_depthwise_match_reference -- --ignored
 cargo test --locked -p izwi-core --lib --features cuda \
@@ -80,8 +84,101 @@ stream output boundaries. The manifest does not cover that route.
   Test raw KV finiteness and long-generation quality. F16's narrower exponent
   range needs separate evidence. Dense audio precision is another experiment.
 - Batch audio heads only across requests at the same dependent codebook step.
-  Preserve stochastic sampling and first-codebook EOS. Chat generation currently
-  remains greedy; sampling-policy changes need their own API correctness work.
+  Preserve stochastic sampling and first-codebook EOS.
 - Share ASR/response encoder preparation only when preprocessing and long-form
   chunking agree. Establish detokenizer dependencies before adding incremental
   streaming state. Profile existing graph/provider paths before new kernels.
+
+## Multi-turn incident replay
+
+Use the bounded replay on an already running, dedicated CUDA server. It does not
+build, deploy, load models, or certify model quality. Provision both text models,
+start the server with `IZWI_LFM2_DIAGNOSTICS=1`, and retain its logs. The script
+checks `/v1/health` for the supplied build SHA, CUDA selection, compiled support
+and device usability, and `/v1/metrics` for each model's actual CUDA placement.
+Run against the exact baseline and changed deployment, using separate output
+folders:
+
+```bash
+python3 scripts/bench/run-lfm-cuda-replay.py \
+  --server http://127.0.0.1:8080 --expected-sha FULL_DEPLOYED_COMMIT_SHA \
+  --output target/lfm-replay-baseline --server-log /path/to/server.log
+```
+
+The built-in cases preserve the user prompts from the Thinking and Instruct
+incident screenshots, including their original spelling. Each case runs once
+with streaming and once without it, in independent server conversations, and
+uses the model's actual replies as subsequent history. The script saves the
+persisted conversation before deleting only the temporary conversations it
+created. Use `--route stateless` to repeat through `/v1/chat/completions`, supplying
+that same generated history explicitly.
+
+Each turn retains its request, raw response/SSE, response headers, final parsed
+result and client-observed elapsed time. Health and metrics snapshots preserve
+only telemetry the server actually exposes; enabled features are not treated as
+provider observations. `--server-log` copies bytes appended during the run from
+a log on the harness host: use a server-side copy when the server is remote.
+The report does not invent kernel counts, GPU timings or logits diagnostics when
+those are absent. Capture server diagnostics separately if the log is unavailable.
+
+Requests default to a 512-token diagnostic cap and a 120-second absolute deadline
+per HTTP exchange, with an 8 MiB response bound. `--max-tokens`, `--timeout` and
+`--temperature` make these controls explicit. A cap is a diagnostic constraint,
+not evidence that the model completed its reasoning. HTTP/SSE failures, missing
+stream completion, reasoning-only or empty answers, exact long repeated answers,
+and repeated suffixes fail the smoke gate. Repetition is a review flag and can be
+legitimate; a passing report still requires human review for relevance and
+accuracy. Reasoning text alone never satisfies the visible-answer gate.
+
+For a fixed-history comparison, pass `--route stateless --cases fixture.json`:
+
+```json
+[
+  {
+    "name": "fixed-history",
+    "model": "LFM2.5-1.2B-Instruct-GGUF",
+    "history": [
+      {"role": "user", "content": "Tell me about victoria falls"},
+      {"role": "assistant", "content": "PASTE THE CAPTURED BASELINE ANSWER HERE"}
+    ],
+    "turns": ["Where is it"]
+  }
+]
+```
+
+Fixture history must be copied from captured evidence for a teacher-forced
+comparison. Subsequent replies within the fixture still come from the model.
+Portable harness checks: `python3 scripts/bench/test-lfm-cuda-replay.py`.
+These fixtures exercise parsing and acceptance; they are not device evidence.
+
+## Response integrity and sampling
+
+LFM validates raw logits with Candle finite-value reductions before sampling.
+NaN/infinity, invalid control selections, empty terminal text and repetition-stop
+failures return explicit inference errors rather than successful blank responses.
+Padding is not treated as an implicit end token. Declared stop IDs are honored.
+Successful terminal logs include request ID, model, stop reason (`eos`,
+`configured_stop`, or `length`), prompt/output counts and resolved output budget.
+
+Managed generation uses the existing shared ChatSampler for temperature, top-k,
+top-p, repetition/presence penalties and seed. Repetition penalties below 1 are
+explicitly rejected because that shared path only supports penalties of 1 or
+higher. Default direct generation remains greedy. The default greedy batched
+path retains packed token readback; sampled rows retain independent RNG history.
+Sampler, incremental UTF-8 decoder and prefill cursor are part of rollback.
+Automatic prompt policy no longer adds new system instructions on the second
+turn; explicit system messages and `IZWI_LFM2_DEFAULT_SYSTEM_POLICY=always` remain
+available.
+
+`IZWI_LFM2_DIAGNOSTICS=1` additionally checks intermediate norms, projections,
+attention, recurrent convolution and MLP outputs. It logs layer/row/position,
+shape, dtype, device and scalar min/max, plus at most the first 64 selected IDs
+per request attempt. Request/row context logs associate these with serving work.
+This mode intentionally synchronizes and can substantially slow inference;
+disable it for performance measurement. It does not log full prompt or response
+text, but token IDs and captured replay artifacts can reveal user content.
+
+No CUDA operator or precision repair is claimed without a failing trace. The
+fixed-history harness compares prompt replays; it does not force every generated
+token or prove per-layer CUDA/CPU equivalence. Use the activation trace to locate
+the first failing layer before selecting an operator-specific repair.
