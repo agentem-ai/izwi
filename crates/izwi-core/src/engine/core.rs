@@ -2222,6 +2222,7 @@ impl EngineCore {
         request: &EngineCoreRequest,
         work: &WorkUnit,
         stage: Option<&super::StageDescriptor>,
+        backend: crate::backends::BackendKind,
     ) -> Result<WorkCost> {
         if let WorkUnit::RealtimePreparation { operation_id, .. } = work {
             return request.realtime_asr_preparation_cost(*operation_id);
@@ -2335,6 +2336,60 @@ impl EngineCore {
             WorkUnit::RealtimeDecodeContinuation { .. } | WorkUnit::RealtimeCompletion { .. } => 1,
             WorkUnit::AtomicJob { .. } | WorkUnit::PipelineStage { .. } => 1,
         };
+        // Fish codec finalization is scalar. Native tensor-stage costs require
+        // a bound batchable stage, so derive this workspace from the sealed
+        // generation geometry only after the execution plan has its binding.
+        if request.task_type == super::TaskType::TTS
+            && request.model_variant == Some(ModelVariant::FishAudioS2Pro)
+            && matches!(work, WorkUnit::SequenceFinalize { .. })
+        {
+            let binding = request.execution_adapter_binding().ok_or_else(|| {
+                Error::InvalidInput("Fish S2 finalization requires a loaded adapter binding".into())
+            })?;
+            let stage = stage
+                .filter(|stage| {
+                    stage.selector == super::StageWorkSelector::SequenceFinalize
+                        && stage.batch_mode == NativeBatchMode::None
+                        && binding.stages.contains(stage)
+                })
+                .ok_or_else(|| {
+                    Error::InvalidInput(
+                        "Fish S2 finalization requires its exact bound scalar stage".into(),
+                    )
+                })?;
+            let params = request
+                .fish_s2_tts_generation_params_for_executor()?
+                .ok_or_else(|| {
+                    Error::InvalidInput(
+                        "Fish S2 finalization requires sealed generation parameters".into(),
+                    )
+                })?;
+            let bytes = crate::models::architectures::fish_s2::codec::decode_workspace_bytes(
+                params.max_frames,
+            )?;
+            if logical_units > stage.max_work_units || bytes > stage.max_workspace_bytes {
+                return Err(Error::Overloaded(
+                    "Fish S2 finalization exceeds its loaded stage workspace or work limit".into(),
+                ));
+            }
+            let mut workspace = super::ResourceVector::zero();
+            match backend {
+                crate::backends::BackendKind::Cpu => {
+                    workspace.host_bytes = ResourceAmount::Known(bytes)
+                }
+                crate::backends::BackendKind::Metal => {
+                    workspace.unified_bytes = ResourceAmount::Known(bytes)
+                }
+                crate::backends::BackendKind::Cuda => {
+                    workspace.device_bytes = ResourceAmount::Known(bytes)
+                }
+            }
+            return Ok(WorkCost::with_workspace(
+                logical_units,
+                logical_units,
+                workspace,
+            ));
+        }
         let workspace_bytes = stage.map_or(Ok(0), |stage| {
             stage
                 .workspace_per_work_unit_bytes
@@ -2557,7 +2612,12 @@ impl EngineCore {
                         scheduled.plan_id
                     ))
                 })?;
-            let cost = Self::work_cost(&request, &plan.work, plan.stage.as_ref())?;
+            let cost = Self::work_cost(
+                &request,
+                &plan.work,
+                plan.stage.as_ref(),
+                plan.batch_key.backend,
+            )?;
             let lane = Self::batch_lane(&plan, cost);
             let (mut budget, shape_policy) = Self::batch_budget(&plan)?;
             if let Some(cap) = self.workspace_row_limits.get(&plan.session) {
@@ -7802,7 +7862,7 @@ mod tests {
             auxiliary_state: None,
         };
 
-        let cost = EngineCore::work_cost(&request, &work, Some(&stage)).unwrap();
+        let cost = EngineCore::work_cost(&request, &work, Some(&stage), BackendKind::Cpu).unwrap();
         assert_eq!(cost.logical_units, 4);
         assert_eq!(cost.tensor_elements, 512);
         assert_eq!(cost.workspace.workspace_bytes().unwrap(), 32);
@@ -7820,6 +7880,7 @@ mod tests {
                 max_cache_append: 8,
             },
             None,
+            BackendKind::Cpu,
         )
         .unwrap();
         assert_eq!(push, WorkCost::new(160, 160, 0));
@@ -7832,6 +7893,7 @@ mod tests {
                 max_cache_append: 8,
             },
             None,
+            BackendKind::Cpu,
         )
         .unwrap();
         assert_eq!(finish, WorkCost::new(8, 8, 0));
@@ -7866,6 +7928,7 @@ mod tests {
                 auxiliary_state: None,
             },
             None,
+            BackendKind::Cpu,
         )
         .unwrap();
 
@@ -10069,3 +10132,7 @@ mod decode_timing_tests {
         assert_eq!(timing.post_first_token_ms(), None);
     }
 }
+
+#[cfg(test)]
+#[path = "fish_s2_finalization_tests.rs"]
+mod fish_s2_finalization_tests;

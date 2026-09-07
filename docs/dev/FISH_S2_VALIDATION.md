@@ -145,6 +145,17 @@ The retained observation counts actual buffer capacities, the outer row vector
 and the shared artifact allocation once. Execution admission carries that exact
 host charge independently of generic request/output allowances.
 
+Scalar codec finalization derives its workspace from the sealed frame budget
+when the engine plans the exact bound finalization stage. Preparation leaves
+native tensor-stage costs empty: those costs require an already-bound batchable
+stage and cannot represent Fish's scalar codec. The finalization regression
+covers artifact installation before binding, request validation after binding,
+and workspace admission for CPU, CUDA and Metal:
+
+```sh
+cargo test -p izwi-core --lib fish_s2_finalization_tests
+```
+
 Decoded inputs stay covered while row sealing and dispatch run, and failed
 handoffs free owned buffers before releasing their reservation. Resource errors
 retain their strict guard and report reservation ID/class, operation, authorized

@@ -144,6 +144,30 @@ const RAS_HIGH_TOP_P: f32 = 0.9;
 static NEXT_FISH_S2_MODEL_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
 impl FishS2TtsModel {
+    /// Metadata-only fixture for request preparation and admission tests.
+    /// Native inference remains unavailable, as for `load_metadata`.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            model_identity: 1,
+            variant: ModelVariant::FishAudioS2Pro,
+            config: config::current_config(),
+            artifacts: FishS2ArtifactManifest {
+                model_dir: Default::default(),
+                shard_files: Vec::new(),
+                tensor_count: 0,
+                text_tensor_count: 0,
+                audio_decoder_tensor_count: 0,
+                codec_path: Default::default(),
+            },
+            codec: FishS2CodecArtifact {
+                path: Default::default(),
+                support: codec::FishS2CodecSupport::NativePthStateDict,
+            },
+            runtime: None,
+        }
+    }
+
     pub fn load_metadata(model_dir: &Path, variant: ModelVariant) -> Result<Self> {
         if variant != ModelVariant::FishAudioS2Pro {
             return Err(Error::InvalidInput(format!(

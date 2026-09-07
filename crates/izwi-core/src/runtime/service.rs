@@ -5374,10 +5374,6 @@ impl RuntimeService {
             })?)
             .ok_or_else(|| Error::Overloaded("Fish S2 preparation host bytes overflow".into()))?;
         let codec_workspace = memory.accelerator_workspace_bytes;
-        let decode_workspace =
-            crate::models::architectures::fish_s2::codec::decode_workspace_bytes(
-                params.max_frames,
-            )?;
         let retained_request_bytes = u64::try_from(retained_engine_request_input_bytes(&request)?)
             .map_err(|_| Error::Overloaded("Fish S2 TTS retained request exceeds u64".into()))?;
         job.record_materialized_usage(JobResourceObservation::host(retained_request_bytes))?;
@@ -5495,17 +5491,6 @@ impl RuntimeService {
             prepared_artifact,
             params,
             context_limit,
-        )?;
-        prepared.install_prepared_stage_cost(
-            crate::engine::StageId::new(3),
-            crate::engine::WorkCost::with_workspace(
-                1,
-                1,
-                lfm25_audio_tts_preparation_workspace(
-                    self.backend_router.context().backend_kind,
-                    decode_workspace,
-                ),
-            ),
         )?;
         let (execution, _) = self.coordinator_job_for_request(&prepared)?;
         match self
