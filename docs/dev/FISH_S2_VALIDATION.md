@@ -129,3 +129,114 @@ CUDA performance measurement was performed. This 16 GiB host cannot comfortably
 hold the F32 model plus its inference state. Use the protocol above on an
 appropriately sized device before certifying audible quality, peak memory or
 throughput. No custom kernel or dependency upgrade was introduced.
+
+## Preparation reservation contract
+
+Fish preparation now reserves host scratch and the maximum retained prompt
+before codec/tokenizer work. The physical batch runner exclusively owns codec
+tensor workspace; the request does not reserve a second copy of that workspace.
+CUDA keeps these host and device budgets separate. CPU and Metal map the same
+ownership to host and unified memory respectively.
+
+The dense conditioning prompt is bounded by the smaller of loaded-model and
+fitted context, leaving a generation position. Text is tokenized once, and the
+complete prompt length is checked before allocating codebook rows and the mask.
+The retained observation counts actual buffer capacities, the outer row vector
+and the shared artifact allocation once. Execution admission carries that exact
+host charge independently of generic request/output allowances.
+
+Decoded inputs stay covered while row sealing and dispatch run, and failed
+handoffs free owned buffers before releasing their reservation. Resource errors
+retain their strict guard and report reservation ID/class, operation, authorized
+and observed domains; preparation observations add bounded request correlation,
+backend and commit stage without logging speech text or reference audio.
+
+Host scratch includes decoded audio capacity, resampling/FFT buffers, VQ
+readback and tokenization. Tokenizer scratch uses a conservative envelope of
+256 bytes per rendered UTF-8 byte plus a 16 MiB small-buffer allowance; it is
+not a measured allocator peak. Real CUDA peak memory and speech quality remain
+part of device qualification below.
+
+Portable regression entry points:
+
+```sh
+cargo test -p izwi-core --lib fish_s2_preparation_tests
+cargo test -p izwi-core --lib models::architectures::fish_s2::
+cargo test -p izwi-core --lib materialization_diagnostics
+```
+
+## Reservation incident API replay
+
+`scripts/bench/run-fish-cuda-replay.py` exercises the saved-voice preparation
+boundary implicated in the September 7 CUDA reservation incident. Run it only
+against an authorized, reviewed deployment with the saved voice available. The
+script creates persistent speech-history records and retains reference audio,
+transcripts and generated audio in a new private evidence directory. It does not
+deploy, delete records or certify CUDA merely from a successful HTTP response.
+
+Prepare a JSON metadata file from **the deployed build and runtime logs**, with:
+
+```json
+{
+  "deployed_sha": "FULL_40_CHARACTER_DEPLOYED_GIT_SHA",
+  "gpu": "Actual GPU model and memory",
+  "backend": "cuda",
+  "dtype": "Actual runtime dtype(s), including codec",
+  "effective_context": 4096,
+  "service_concurrency": 2,
+  "runtime_versions": "Driver, CUDA, cuDNN, build features and model revision"
+}
+```
+
+Replace all examples with observed values. Metadata is explicitly labeled
+operator-supplied; the replay does not infer the remote SHA from a local checkout.
+From the repository root, run:
+
+```sh
+python3 scripts/bench/run-fish-cuda-replay.py \
+  --server https://brizdigital--izwi-cuda-serve.modal.run \
+  --metadata /tmp/fish-deployed-metadata.json \
+  --output /tmp/fish-cuda-reservation-evidence \
+  --sequential 3 --concurrency 2 --cancel
+```
+
+The default voice is `55fc6c39-ed9d-495e-93fb-87ea76d3a955` and the default target
+is `Tell me something funny, I stay laughing`; override with `--saved-voice-id`
+and `--text`. The runner fetches that voice's exact stored audio and transcript
+for the direct-reference case, so the two paths use the same conditioning pair.
+It warms the saved-voice path, repeats sequentially, runs the direct-reference
+case and submits one bounded concurrent wave. Set `--concurrency` to the actual
+configured service concurrency to qualify its limit. Each case retains the
+created record, polls, final record, HTTP headers, errors and WAV. Successful
+speech requires completed status, nonempty fully readable PCM WAV frames, a
+finite positive recorded duration and agreement with the decoded duration.
+This does not measure audible quality or establish simultaneous GPU execution.
+
+`--cancel` also creates and immediately cancels a pending job. The API currently
+represents cancellation as `failed` with `Cancelled by speech history request`;
+the runner requires both the cancellation acknowledgement and that final reason.
+A completion race fails the cancellation check; rerun on an appropriate workload
+and retain both traces. This pending-job check does **not** prove cancellation
+after conditioning has materialized. Separately exercise cancellation during
+preparation and execution under logs, checking release after work unwinds.
+
+If a metrics endpoint is exposed, add `--metrics-path /ACTUAL/METRICS/PATH` to
+retain snapshots after warmup, after completion and after cancellation. The
+runner does not assume metrics expose per-request ownership or that an immediate
+snapshot proves quiescence. On an otherwise idle service, wait for cleanup and
+compare coordinator request/artifact reservation counts, authorized vectors and
+materialized vectors with the warmed baseline in logs/metrics. Attach correlation
+IDs, operation/stage and host/device values for any failures. Do not confuse
+persistent model allocations with per-request ownership; exclude unrelated
+traffic. If these fields are not exposed, collect internal runtime logs. Missing
+lease evidence remains an open qualification gate.
+
+Exit zero means the automatic API/audio checks passed. `hardware_qualified`
+remains false in `summary.json`: deployment identity, actual CUDA backend/device,
+lease return to baseline (including in-flight cancellation), peak memory and
+listening quality require reviewed hardware evidence. No live CUDA qualification
+is implied by the offline fixtures:
+
+```sh
+python3 scripts/bench/test-fish-cuda-replay.py
+```
