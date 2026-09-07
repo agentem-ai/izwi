@@ -1022,9 +1022,20 @@ impl ProjectionHead {
     }
 
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        let diagnose = diagnostics::enabled();
+        if diagnose {
+            diagnostics::validate_finite(hidden_states, "LFM2 output projection input")?;
+        }
         let projected = self.weight.forward(hidden_states)?;
+        if diagnose {
+            diagnostics::validate_finite(&projected, "LFM2 output projection QMatMul")?;
+        }
         if let Some(bias) = &self.bias {
-            projected.broadcast_add(bias).map_err(Error::from)
+            let output = projected.broadcast_add(bias)?;
+            if diagnose {
+                diagnostics::validate_finite(&output, "LFM2 output projection bias addition")?;
+            }
+            Ok(output)
         } else {
             Ok(projected)
         }

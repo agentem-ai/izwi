@@ -71,6 +71,7 @@ services:
       - IZWI_UI_DIR=/app/ui/dist
       - IZWI_MODELS_DIR=/app/models
       - IZWI_BACKEND=cuda
+      - IZWI_LFM2_DIAGNOSTICS=${IZWI_LFM2_DIAGNOSTICS:-0}
       - HF_HOME=/app/models/huggingface
       - TRANSFORMERS_CACHE=/app/models/huggingface
       - NVIDIA_VISIBLE_DEVICES=all

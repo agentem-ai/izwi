@@ -96,6 +96,25 @@ build, deploy, load models, or certify model quality. Provision both text models
 start the server with `IZWI_LFM2_DIAGNOSTICS=1`, and retain its logs. The script
 checks `/v1/health` for the supplied build SHA, CUDA selection, compiled support
 and device usability, and `/v1/metrics` for each model's actual CUDA placement.
+For the repository CUDA Compose service, explicitly pass the diagnostic setting
+and recreate the container (exporting a host variable does not update an already
+running server):
+
+```sh
+IZWI_LFM2_DIAGNOSTICS=1 docker compose --profile cuda up -d --build --force-recreate izwi-cuda
+docker compose --profile cuda exec -T izwi-cuda printenv IZWI_LFM2_DIAGNOSTICS
+# Reproduce the failing chat, then collect logs:
+docker compose --profile cuda logs --since 10m izwi-cuda > /tmp/lfm-diagnostics.log
+```
+
+The `printenv` result must be `1`. Reproduce the failing chat before collecting
+the log. For a direct binary or another container launcher, set the variable in
+that server's environment and restart it. Layer checks include output-projection
+input, Candle QMatMul and optional bias; raw-logit errors also state whether
+activation diagnostics were enabled. Capture the first failing stage, preceding
+finite stage, request context, deployed SHA and GPU/driver. Do not infer a failing
+operator from the final-logit error alone.
+
 Run against the exact baseline and changed deployment, using separate output
 folders:
 

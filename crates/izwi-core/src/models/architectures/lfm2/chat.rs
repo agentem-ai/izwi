@@ -527,7 +527,12 @@ impl ChatTokenizer {
     }
 
     fn validate_logits(&self, logits: &Tensor) -> Result<()> {
-        diagnostics::validate_finite(logits, "LFM2 raw logits before sampling")?;
+        let stage = if diagnostics::enabled() {
+            "LFM2 raw logits before sampling (activation diagnostics enabled)"
+        } else {
+            "LFM2 raw logits before sampling (activation diagnostics disabled; set IZWI_LFM2_DIAGNOSTICS=1 in the server process)"
+        };
+        diagnostics::validate_finite(logits, stage)?;
         if logits.dim(D::Minus1)? < self.vocab_size {
             return Err(Error::InferenceError(
                 "LFM2 logits are smaller than tokenizer vocabulary".into(),
