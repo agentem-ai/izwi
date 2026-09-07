@@ -337,6 +337,12 @@ impl ChatStore {
             return Err(anyhow!("Chat turn requires a thread id"));
         }
 
+        if assistant_content.trim().is_empty() {
+            return Err(anyhow!(
+                "Cannot persist a chat turn with an empty assistant response"
+            ));
+        }
+
         let db = self.db.connection().await?;
         let tx = db
             .begin()
@@ -784,6 +790,58 @@ mod tests {
                 .await
                 .expect_err("missing thread should fail");
             assert!(err.to_string().contains("Thread not found"));
+            clear_env();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn empty_assistant_turn_is_not_persisted_but_reasoning_is_preserved() {
+        with_env_lock(async {
+            let (_temp, store) = setup_store();
+            let thread = store.create_thread(None, None).await.unwrap();
+            let pending = store
+                .prepare_user_message(thread.id.clone(), "hello".into(), None)
+                .await
+                .unwrap();
+            for text in ["", " \n\t"] {
+                let result = store
+                    .append_turn_with_system_prompt(
+                        pending.clone(),
+                        text.into(),
+                        "LFM2.5-1.2B-Thinking-GGUF".into(),
+                        48,
+                        224.0,
+                        Some("new prompt".into()),
+                    )
+                    .await;
+                assert!(result.is_err());
+                assert!(store
+                    .list_messages(thread.id.clone())
+                    .await
+                    .unwrap()
+                    .is_empty());
+                assert!(store
+                    .get_thread(thread.id.clone())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .system_prompt
+                    .is_none());
+            }
+            let reasoning = "<think>unfinished reasoning";
+            let (_, assistant) = store
+                .append_turn_with_system_prompt(
+                    pending,
+                    reasoning.into(),
+                    "LFM2.5-1.2B-Thinking-GGUF".into(),
+                    8,
+                    100.0,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(assistant.content, reasoning);
             clear_env();
         })
         .await;

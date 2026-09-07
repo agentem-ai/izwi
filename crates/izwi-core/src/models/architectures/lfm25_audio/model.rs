@@ -1908,6 +1908,7 @@ impl Lfm25AudioModel {
         system_prompt: Option<&str>,
         generation_config: &Lfm25AudioGenerationConfig,
         stream_config: &Lfm25AudioStreamConfig,
+        decode_partial_audio: bool,
         cache: &mut PhysicalPagedKvCache,
         shortconv: &mut InvocationTensorLease,
         depthformer_cache: &mut PhysicalPagedKvCache,
@@ -2043,11 +2044,12 @@ impl Lfm25AudioModel {
                         last_hidden = last_hidden_state(&step_hidden)?;
                         logits = main_backbone.project_last_hidden(&step_hidden)?;
 
-                        let should_decode_partial = !audio_codes[0].is_empty()
-                            && (is_end
-                                || !in_audio
-                                || audio_codes[0].len() % stride_frames == 0
-                                || tokens_generated >= max_new_tokens);
+                        let should_decode_partial = partial_audio_decode_due(
+                            decode_partial_audio,
+                            audio_codes[0].len(),
+                            stride_frames,
+                            is_end || !in_audio || tokens_generated >= max_new_tokens,
+                        );
                         if should_decode_partial {
                             let partial =
                                 self.detokenizer.decode(&audio_codes, &self.device.device)?;
@@ -2864,6 +2866,17 @@ fn resample_linear(audio: &[f32], src_rate: u32, dst_rate: u32) -> Result<Vec<f3
     Ok(out)
 }
 
+// Final-only responses still decode the complete waveform after generation.
+// Partial prefix decoding is useful only while emitting a stream.
+fn partial_audio_decode_due(
+    enabled: bool,
+    frames: usize,
+    stride_frames: usize,
+    flush: bool,
+) -> bool {
+    enabled && frames > 0 && (flush || frames.is_multiple_of(stride_frames.max(1)))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -2871,6 +2884,20 @@ mod tests {
     use super::*;
     use crate::backends::DeviceProfile;
     use crate::model::ModelVariant;
+
+    #[test]
+    fn lfm25_partial_audio_decode_requires_streaming_and_ready_frames() {
+        for frames in [0, 1, 4, 5, 8] {
+            for flush in [false, true] {
+                assert!(!partial_audio_decode_due(false, frames, 4, flush));
+            }
+        }
+        assert!(!partial_audio_decode_due(true, 0, 4, true));
+        assert!(!partial_audio_decode_due(true, 3, 4, false));
+        assert!(partial_audio_decode_due(true, 4, 4, false));
+        assert!(partial_audio_decode_due(true, 3, 4, true));
+        assert!(partial_audio_decode_due(true, 1, 0, false));
+    }
 
     fn local_model_dir(name: &str) -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());

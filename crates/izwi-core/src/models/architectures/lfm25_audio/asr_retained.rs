@@ -109,6 +109,17 @@ impl Lfm25AudioAsrRetainedState {
                 "LFM2.5 Audio ASR prefill batch rows do not match".into(),
             ));
         }
+        // Reuse the span-capable scalar path for the normal singleton batch.
+        // It authenticates the same checkpoint and leaves commit/rollback to
+        // the caller, while avoiding one backbone launch per prompt token.
+        if batch == 1 {
+            let step =
+                states[0].prefill_step(backbone, caches[0], checkpoints[0], max_tokens[0])?;
+            return Ok(Lfm25AudioAsrPrefillBatch {
+                steps: vec![step],
+                launch_widths: vec![1],
+            });
+        }
         let mut positions = Vec::with_capacity(batch);
         let mut consumed = Vec::with_capacity(batch);
         let mut inputs = Vec::with_capacity(batch);

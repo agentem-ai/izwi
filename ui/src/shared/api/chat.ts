@@ -460,6 +460,7 @@ export class ChatApiClient {
 
     const startStream = async () => {
       let streamStatus: "open" | "completed" | "failed" = "open";
+      let sawNonemptyDelta = false;
       try {
         const response = await fetch(
           this.http.url(
@@ -525,9 +526,17 @@ export class ChatApiClient {
                 });
                 break;
               case "delta":
+                sawNonemptyDelta ||= event.delta.trim().length > 0;
                 callbacks.onDelta?.(event.delta);
                 break;
               case "done":
+                if (sawNonemptyDelta && !event.assistant_message.content?.trim()) {
+                  streamStatus = "failed";
+                  callbacks.onError?.(
+                    "Chat stream returned an empty final response after generating text. Please retry the message.",
+                  );
+                  break;
+                }
                 streamStatus = "completed";
                 callbacks.onDone?.({
                   threadId: event.thread_id,

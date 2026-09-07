@@ -114,6 +114,16 @@ impl Lfm25AudioTtsRetainedState {
                 "LFM2.5 Audio TTS prefill batch rows do not match".into(),
             ));
         }
+        // Reuse the span-capable scalar path for the normal singleton batch.
+        // It authenticates the same checkpoint and leaves commit/rollback to
+        // the caller, while avoiding one backbone launch per prompt token.
+        if batch == 1 {
+            let step = states[0].prefill_step(backbone, mains[0], checkpoints[0], max_tokens[0])?;
+            return Ok(Lfm25AudioTtsPrefillBatch {
+                steps: vec![step],
+                launch_widths: vec![1],
+            });
+        }
         let mut positions = Vec::with_capacity(batch);
         let mut consumed = Vec::with_capacity(batch);
         let mut inputs = Vec::with_capacity(batch);
@@ -605,14 +615,12 @@ impl Lfm25AudioTtsRetainedState {
                 "LFM2.5 Audio TTS sampled frame rows do not match".into(),
             ));
         }
-        let mut tokens = Vec::with_capacity(batch);
+        let tokens = Lfm25SampledAudioFrame::tokens_batch(&frames)?;
         let mut is_end = Vec::with_capacity(batch);
         let mut inputs = Vec::with_capacity(batch);
         let mut positions = Vec::with_capacity(batch);
         for (row, frame) in frames.iter().enumerate() {
-            let row_tokens = frame.tokens()?;
-            let row_is_end = row_tokens.first().copied() == Some(audio_head.audio_end_token_id());
-            tokens.push(row_tokens);
+            let row_is_end = tokens[row].first().copied() == Some(audio_head.audio_end_token_id());
             is_end.push(row_is_end);
             inputs.push(frame.embedding().clone());
             positions.push(states[row].retained.main_position());

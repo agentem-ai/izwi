@@ -505,7 +505,16 @@ impl ConformerConv {
         let x_b = x.i((.., hidden.., ..))?;
         x = x_a.broadcast_mul(&ops::sigmoid(&x_b)?)?;
 
-        x = if let Some(fused) = try_forward_depthwise_conv1d_affine_swish(
+        x = if use_cuda_depthwise_candidate(&self.depthwise_conv, &x) {
+            // Fold the inference affine transform before the activation, as on Metal.
+            candle_depthwise_conv1d(
+                &x,
+                &self.folded_depthwise_weight,
+                &self.folded_depthwise_bias,
+                CUDA_DEPTHWISE_PRODUCT_ELEMENTS,
+            )?
+            .silu()?
+        } else if let Some(fused) = try_forward_depthwise_conv1d_affine_swish(
             &self.depthwise_conv,
             &self.folded_depthwise_weight,
             &self.folded_depthwise_bias,
@@ -561,6 +570,55 @@ fn try_forward_depthwise_conv1d_affine_swish(
         cfg.stride,
         cfg.dilation,
     )
+}
+
+// Experimental CUDA path: at most 1 MiB of F32 products per chunk. This is
+// additional to the padded input, reduced chunks and concatenated output. Keep
+// opt-in until GPU profiling establishes a benefit and validates memory usage.
+const CUDA_DEPTHWISE_PRODUCT_ELEMENTS: usize = 1024 * 1024 / 4;
+
+fn use_cuda_depthwise_candidate(conv: &Conv1d, x: &Tensor) -> bool {
+    let cfg = conv.config();
+    x.device().is_cuda()
+        && x.dtype() == DType::F32
+        && cfg.padding == 4
+        && cfg.stride == 1
+        && cfg.dilation == 1
+        && x.dims().len() == 3
+        && x.dims()[0] > 0
+        && x.dims()[1] > 0
+        && x.dims()[2] > 0
+        && cfg.groups == x.dims()[1]
+        && conv.weight().dims() == [x.dims()[1], 1, 9]
+        && x.dims()[0].saturating_mul(x.dims()[1]).saturating_mul(9)
+            <= CUDA_DEPTHWISE_PRODUCT_ELEMENTS
+        && std::env::var("IZWI_LFM_CUDA_DEPTHWISE_CONV").is_ok_and(|value| value == "1")
+}
+
+// Candle's grouped Conv1d dispatches once per channel. Unfold instead keeps all
+// channels in each multiply/reduce, while chunks bound the expanded product.
+fn candle_depthwise_conv1d(
+    x: &Tensor,
+    weight: &Tensor,
+    bias: &Tensor,
+    max_product_elements: usize,
+) -> Result<Tensor> {
+    let (batch, channels, len) = x.dims3()?;
+    let chunk_len = (max_product_elements / (batch * channels * 9)).max(1);
+    let windows = x.pad_with_zeros(2, 4, 4)?.unfold(2, 9, 1)?;
+    let weight = weight.reshape((1, channels, 1, 9))?;
+    let bias = bias.reshape((1, channels, 1))?;
+    let mut chunks = Vec::with_capacity(len.div_ceil(chunk_len));
+    for offset in (0..len).step_by(chunk_len) {
+        let width = chunk_len.min(len - offset);
+        let y = windows
+            .narrow(2, offset, width)?
+            .broadcast_mul(&weight)?
+            .sum(3)?
+            .broadcast_add(&bias)?;
+        chunks.push(y);
+    }
+    Tensor::cat(&chunks, 2).map_err(Error::from)
 }
 
 fn forward_depthwise_conv1d(conv: &Conv1d, x: &Tensor) -> Result<Tensor> {
@@ -774,7 +832,11 @@ impl RelPosSelfAttention {
         let scores = matrix_ac
             .broadcast_add(&matrix_bd)?
             .affine(1.0 / (self.head_dim as f64).sqrt(), 0.0)?;
-        let attn = ops::softmax(&scores, 3)?;
+        let attn = if scores.device().is_cuda() {
+            ops::softmax_last_dim(&scores.contiguous()?)?
+        } else {
+            ops::softmax(&scores, 3)?
+        };
         let out = attn.matmul(&v)?;
         let out = out.transpose(1, 2)?.contiguous()?.reshape((
             batch,
@@ -1224,10 +1286,17 @@ fn rel_shift(x: &Tensor) -> Result<Tensor> {
 }
 
 fn swish(x: &Tensor) -> Result<Tensor> {
+    if x.device().is_cuda() {
+        return x.silu().map_err(Error::from);
+    }
     x.broadcast_mul(&ops::sigmoid(x)?).map_err(Error::from)
 }
 
 fn gelu(x: &Tensor) -> Result<Tensor> {
+    if x.device().is_cuda() {
+        // Candle gelu uses the same tanh approximation (gelu_erf does not).
+        return x.gelu().map_err(Error::from);
+    }
     let coeff = 0.044715f32;
     let sqrt_2_over_pi = (2.0f32 / std::f32::consts::PI).sqrt();
     let dtype = x.dtype();
@@ -1302,6 +1371,149 @@ mod tests {
         PathBuf::from(home)
             .join("Library/Application Support/izwi/models")
             .join(name)
+    }
+
+    fn assert_close(actual: &Tensor, expected: &Tensor, tolerance: f32) {
+        assert_eq!(actual.dims(), expected.dims());
+        let actual = actual.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let expected = expected.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        for (index, (a, b)) in actual.iter().zip(&expected).enumerate() {
+            assert!((a - b).abs() <= tolerance, "index {index}: {a} != {b}");
+        }
+    }
+
+    #[test]
+    fn native_candle_conformer_operations_match_portable_formulations() {
+        let device = Device::Cpu;
+        let x = Tensor::from_vec(
+            (0..257)
+                .map(|i| -8.0f32 + i as f32 / 16.0)
+                .collect::<Vec<_>>(),
+            (1, 257),
+            &device,
+        )
+        .unwrap();
+        assert_close(&x.silu().unwrap(), &super::swish(&x).unwrap(), 1e-6);
+        assert_close(&x.gelu().unwrap(), &super::gelu(&x).unwrap(), 1e-6);
+        // Non-contiguous scores exercise the layout normalization required by
+        // Candle's dedicated last-dimension softmax kernel.
+        let scores = Tensor::from_vec(
+            (0..3 * 257)
+                .map(|i| (i as f32 * 0.17).sin() * 8.0)
+                .collect::<Vec<_>>(),
+            (3, 257),
+            &device,
+        )
+        .unwrap()
+        .transpose(0, 1)
+        .unwrap();
+        assert_close(
+            &candle_nn::ops::softmax_last_dim(&scores.contiguous().unwrap()).unwrap(),
+            &candle_nn::ops::softmax(&scores, 1).unwrap(),
+            1e-6,
+        );
+    }
+
+    fn check_chunked_depthwise(device: Device) {
+        for (batch, channels, len) in [(1, 1, 1), (1, 3, 7), (2, 3, 13), (2, 4, 16), (3, 5, 31)] {
+            let input = Tensor::from_vec(
+                (0..batch * channels * len)
+                    .map(|i| (i as f32 * 0.13).sin())
+                    .collect::<Vec<_>>(),
+                (batch, channels, len),
+                &device,
+            )
+            .unwrap();
+            let weight = Tensor::from_vec(
+                (0..channels * 9)
+                    .map(|i| (i as f32 * 0.21).cos())
+                    .collect::<Vec<_>>(),
+                (channels, 1, 9),
+                &device,
+            )
+            .unwrap();
+            let bias = Tensor::from_vec(
+                (0..channels).map(|i| i as f32 * 0.1).collect::<Vec<_>>(),
+                channels,
+                &device,
+            )
+            .unwrap();
+            let conv = Conv1d::new(
+                weight,
+                Some(bias),
+                Conv1dConfig {
+                    padding: 4,
+                    groups: channels,
+                    ..Default::default()
+                },
+            );
+            let affine = AffineNorm1d {
+                weight: Tensor::from_vec(
+                    (0..channels)
+                        .map(|i| if i % 2 == 0 { 1.25f32 } else { -0.75 })
+                        .collect::<Vec<_>>(),
+                    channels,
+                    &device,
+                )
+                .unwrap(),
+                bias: Tensor::from_vec(vec![0.2f32; channels], channels, &device).unwrap(),
+            };
+            let expected =
+                super::swish(&affine.forward(&conv.forward(&input).unwrap()).unwrap()).unwrap();
+            let (weight, bias) = fold_depthwise_conv_affine(&conv, &affine).unwrap();
+            for chunk in [1, 5, len] {
+                let actual = super::candle_depthwise_conv1d(
+                    &input,
+                    &weight,
+                    &bias,
+                    batch * channels * 9 * chunk,
+                )
+                .unwrap()
+                .silu()
+                .unwrap();
+                assert_close(&actual, &expected, 1e-5);
+            }
+            if !device.is_cuda() {
+                assert!(!super::use_cuda_depthwise_candidate(&conv, &input));
+            }
+        }
+    }
+
+    #[test]
+    fn chunked_candle_depthwise_matches_grouped_convolution_and_affine() {
+        check_chunked_depthwise(Device::Cpu);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    #[ignore = "requires an NVIDIA GPU; run explicitly with --ignored"]
+    fn cuda_candle_conformer_operations_and_depthwise_match_reference() {
+        let device = Device::new_cuda(0).expect("CUDA device required");
+        check_chunked_depthwise(device.clone());
+        let reference = Tensor::from_vec(
+            (0..257)
+                .map(|i| -8.0f32 + i as f32 / 16.0)
+                .collect::<Vec<_>>(),
+            (1, 257),
+            &Device::Cpu,
+        )
+        .unwrap();
+        let input = reference.to_device(&device).unwrap();
+        assert_close(
+            &super::swish(&input).unwrap(),
+            &super::swish(&reference).unwrap(),
+            2e-6,
+        );
+        assert_close(
+            &super::gelu(&input).unwrap(),
+            &super::gelu(&reference).unwrap(),
+            2e-6,
+        );
+        assert_close(
+            &candle_nn::ops::softmax_last_dim(&input).unwrap(),
+            &candle_nn::ops::softmax(&reference, 1).unwrap(),
+            1e-6,
+        );
     }
 
     #[test]

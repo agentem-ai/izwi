@@ -6689,6 +6689,39 @@ mod tests {
     }
 
     #[test]
+    fn lfm_cuda_manifest_covers_text_audio_streaming_and_concurrency() {
+        let manifest: BenchmarkManifest = toml::from_str(include_str!(
+            "../../../../benchmarks/manifests/lfm-cuda.toml"
+        ))
+        .unwrap();
+        let cases = expand_manifest_cases(&manifest).unwrap();
+        assert_eq!(cases.len(), 32);
+        for (model, command) in [
+            ("LFM2.5-1.2B-Instruct-GGUF", "chat"),
+            ("LFM2.5-1.2B-Thinking-GGUF", "chat"),
+            ("LFM2.5-Audio-1.5B-GGUF", "asr"),
+            ("LFM2.5-Audio-1.5B-GGUF", "tts"),
+        ] {
+            for concurrent in [1, 2, 4, 8] {
+                for stream in [false, true] {
+                    assert_eq!(
+                        cases
+                            .iter()
+                            .filter(|case| {
+                                case.model.as_deref() == Some(model)
+                                    && case.command == command
+                                    && case.concurrent == Some(concurrent)
+                                    && case.stream == Some(stream)
+                            })
+                            .count(),
+                        1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn manifest_matrix_expands_cartesian_cases() {
         let manifest: BenchmarkManifest = toml::from_str(
             r#"

@@ -1115,4 +1115,62 @@ describe("ChatPlayground", () => {
 
     expect(screen.getByText("reasoning first")).toBeInTheDocument();
   });
+  it.each([
+    ["LFM2.5-1.2B-Instruct-GGUF", false, " \n", "No visible answer was generated. Please retry the message."],
+    ["LFM2.5-1.2B-Instruct-GGUF", false, "<think>unfinished reasoning", "No visible answer was generated. Please retry the message."],
+    ["LFM2.5-1.2B-Thinking-GGUF", true, "<think>unfinished reasoning", "No final answer was generated."],
+    ["LFM2.5-1.2B-Thinking-GGUF", true, "<think>reasoning only</think>", "No final answer was generated."],
+  ])("shows completed no-answer feedback for %s (%s, %s)", async (model, thinking, content, expected) => {
+    const thread = {
+      id: "empty-thread", title: "Empty answer", model_id: model,
+      created_at: 1, updated_at: 2, last_message_preview: null, message_count: 2,
+    };
+    apiMocks.listChatThreads.mockResolvedValue([thread]);
+    apiMocks.getChatThread.mockResolvedValue({ thread, messages: [
+      { id: "user-1", thread_id: thread.id, role: "user", content: "Hello", created_at: 1,
+        tokens_generated: null, generation_time_ms: null },
+      { id: "assistant-1", thread_id: thread.id, role: "assistant", content, created_at: 2,
+        tokens_generated: 48, generation_time_ms: 224 },
+    ] });
+    render(<MemoryRouter initialEntries={["/chat?threadId=empty-thread"]}>
+      <ChatPlayground selectedModel={model} selectedModelReady={true}
+        supportsThinking={thinking} modelLabel={model}
+        modelOptions={[{ value: model, label: model, statusLabel: "Ready", isReady: true }]}
+        onSelectModel={vi.fn()} onOpenModelManager={vi.fn()} onModelRequired={vi.fn()} />
+    </MemoryRouter>);
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+    expect(screen.queryByText("Thinking...")).not.toBeInTheDocument();
+  });
+
+  it("keeps failed streamed text visible when history refreshes", async () => {
+    const model = "LFM2.5-1.2B-Instruct-GGUF";
+    const thread = { id: "failed-thread", title: "Failed answer", model_id: model,
+      created_at: 1, updated_at: 2, last_message_preview: null, message_count: 0 };
+    apiMocks.listChatThreads.mockResolvedValue([thread]);
+    apiMocks.getChatThread.mockResolvedValue({ thread, messages: [] });
+    apiMocks.sendChatThreadMessageStream.mockReturnValue(new AbortController());
+    render(<MemoryRouter initialEntries={["/chat?threadId=failed-thread"]}>
+      <ChatPlayground selectedModel={model} selectedModelReady={true}
+        supportsThinking={false} modelLabel={model}
+        modelOptions={[{ value: model, label: model, statusLabel: "Ready", isReady: true }]}
+        onSelectModel={vi.fn()} onOpenModelManager={vi.fn()} onModelRequired={vi.fn()} />
+    </MemoryRouter>);
+    await waitFor(() => expect(apiMocks.getChatThread).toHaveBeenCalled());
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(apiMocks.sendChatThreadMessageStream).toHaveBeenCalledOnce());
+    const callbacks = apiMocks.sendChatThreadMessageStream.mock.calls[0][2];
+    const historyReads = apiMocks.getChatThread.mock.calls.length;
+    act(() => {
+      callbacks.onDelta("Meaningful partial answer");
+      callbacks.onError("Empty final response");
+      callbacks.onClose();
+    });
+    expect(await screen.findByText("Meaningful partial answer")).toBeInTheDocument();
+    expect(screen.getByText("Empty final response")).toBeInTheDocument();
+    await waitFor(() => expect(apiMocks.listChatThreads.mock.calls.length).toBeGreaterThan(1));
+    expect(apiMocks.getChatThread).toHaveBeenCalledTimes(historyReads);
+    expect(screen.getByText("Meaningful partial answer")).toBeInTheDocument();
+  });
+
 });

@@ -371,6 +371,47 @@ describe("ChatApiClient thread streaming", () => {
     expect(onDone).not.toHaveBeenCalled();
   });
 
+  it("rejects an empty terminal after text without erasing the streamed answer", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([
+      { event: "delta", delta: "Visible partial answer" },
+      { event: "done", thread_id: "thread-1", model_id: "test-model",
+        assistant_message: { content: " \n" },
+        stats: { tokens_generated: 48, generation_time_ms: 224 } },
+      "[DONE]",
+    ])));
+    const client = new ChatApiClient(new ApiHttpClient("http://localhost/v1"));
+    const onDelta = vi.fn();
+    const onDone = vi.fn();
+    const onError = vi.fn();
+    const onClose = vi.fn();
+    client.sendChatThreadMessageStream("thread-1", { content: "Hello" }, {
+      onDelta, onDone, onError, onClose,
+    });
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(onDelta).toHaveBeenCalledWith("Visible partial answer");
+    expect(onDone).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError.mock.calls[0][0]).toContain("empty final response");
+  });
+
+  it("preserves reasoning-only terminal responses", async () => {
+    const reasoning = "<think>unfinished reasoning";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([
+      { event: "delta", delta: reasoning },
+      { event: "done", thread_id: "thread-1", model_id: "test-model",
+        assistant_message: { content: reasoning },
+        stats: { tokens_generated: 8, generation_time_ms: 100 } },
+      "[DONE]",
+    ])));
+    const client = new ChatApiClient(new ApiHttpClient("http://localhost/v1"));
+    const onDone = vi.fn();
+    const onError = vi.fn();
+    client.sendChatThreadMessageStream("thread-1", { content: "Hello" }, { onDone, onError });
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(onError).not.toHaveBeenCalled();
+    expect(onDone.mock.calls[0][0].assistantMessage.content).toBe(reasoning);
+  });
+
   it("ignores a read failure after a completed thread terminal", async () => {
     const stream = controlledSseResponse();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));

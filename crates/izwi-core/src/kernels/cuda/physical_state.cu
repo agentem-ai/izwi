@@ -194,9 +194,10 @@ __device__ void izwi_paged_decode_attention(
                  izwi_to_float(values[value_base + second_dim]) *
                      token_weight;
     }
-    __syncthreads();
     running_sum = reduction[2];
     running_max = reduction[3];
+    // Complete every shared read before the next iteration reuses reduction.
+    __syncthreads();
   }
 
   if (threadIdx.x < value_dim) {
@@ -379,9 +380,10 @@ __device__ void izwi_paged_prefill_attention(
                  izwi_to_float(values[value_base + second_dim]) *
                      token_weight;
     }
-    __syncthreads();
     running_sum = reduction[2];
     running_max = reduction[3];
+    // Complete every shared read before the next iteration reuses reduction.
+    __syncthreads();
   }
 
   if (threadIdx.x < value_dim) {
@@ -545,9 +547,10 @@ __device__ void izwi_paged_decode_attention_partition(
       output_1 = output_1 * previous_weight +
                  izwi_to_float(values[value_base + second_dim]) * token_weight;
     }
-    __syncthreads();
     running_sum = reduction[2];
     running_max = reduction[3];
+    // Complete every shared read before the next iteration reuses reduction.
+    __syncthreads();
   }
 
   if (threadIdx.x == 0) {
@@ -613,9 +616,10 @@ __device__ void izwi_paged_decode_attention_reduce(
       output_1 = output_1 * reduction[0] +
                  partials[partial_base + 2 + second_dim] * reduction[1];
     }
-    __syncthreads();
     running_sum = reduction[2];
     running_max = reduction[3];
+    // Complete every shared read before the next iteration reuses reduction.
+    __syncthreads();
   }
 
   if (threadIdx.x < value_dim) {

@@ -1,0 +1,39 @@
+# Run on an NVIDIA host with preprovisioned models using run-model-evidence.sh.
+# This is a qualification workload, not evidence of measured CUDA performance.
+
+[[benchmarks]]
+name = "lfm-chat-cuda"
+command = "chat"
+iterations = 8
+warmup = true
+prompt = "Explain in two sentences how a cache avoids repeated computation."
+max_tokens = 128
+
+[benchmarks.matrix]
+model = ["LFM2.5-1.2B-Instruct-GGUF", "LFM2.5-1.2B-Thinking-GGUF"]
+concurrent = [1, 2, 4, 8]
+stream = [false, true]
+
+[[benchmarks]]
+name = "lfm-asr-cuda"
+command = "asr"
+model = "LFM2.5-Audio-1.5B-GGUF"
+file = "../../data/test.wav"
+iterations = 8
+warmup = true
+
+[benchmarks.matrix]
+concurrent = [1, 2, 4, 8]
+stream = [false, true]
+
+[[benchmarks]]
+name = "lfm-tts-cuda"
+command = "tts"
+model = "LFM2.5-Audio-1.5B-GGUF"
+text = "Continuous audio batching should remain responsive and clear."
+iterations = 8
+warmup = true
+
+[benchmarks.matrix]
+concurrent = [1, 2, 4, 8]
+stream = [false, true]
