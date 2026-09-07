@@ -178,7 +178,51 @@ This mode intentionally synchronizes and can substantially slow inference;
 disable it for performance measurement. It does not log full prompt or response
 text, but token IDs and captured replay artifacts can reveal user content.
 
-No CUDA operator or precision repair is claimed without a failing trace. The
-fixed-history harness compares prompt replays; it does not force every generated
-token or prove per-layer CUDA/CPU equivalence. Use the activation trace to locate
-the first failing layer before selecting an operator-specific repair.
+The native attention synchronization repair below addresses a code-level race;
+its relationship to application nonfinite logits still requires hardware evidence.
+The fixed-history harness compares prompt replays; it does not force every
+generated token or prove per-layer CUDA/CPU equivalence. Use the activation trace
+to locate the first failing layer before selecting further operator or precision
+changes.
+
+### Native paged-attention synchronization qualification
+
+The native CUDA attention kernels reuse shared reduction storage between tokens
+and partitions. Their trailing barrier must follow every read of that storage
+before the next iteration can overwrite it. This correctness repair does not by
+itself establish the source of an application's nonfinite logits.
+
+On an NVIDIA host with Compute Sanitizer installed, compile and run the explicit
+hardware regression under Racecheck:
+
+```sh
+cargo test --locked -p izwi-core --features cuda --lib --no-run \
+  --message-format=json > /tmp/izwi-cuda-test-build.jsonl
+lfm_cuda_test_binary=$(python3 - <<'PY'
+import json
+from pathlib import Path
+executables = []
+for line in Path('/tmp/izwi-cuda-test-build.jsonl').read_text().splitlines():
+    message = json.loads(line)
+    if (message.get('reason') == 'compiler-artifact'
+            and message.get('target', {}).get('name') == 'izwi_core'
+            and message.get('profile', {}).get('test')
+            and message.get('executable')):
+        executables.append(message['executable'])
+assert len(executables) == 1, executables
+print(executables[0])
+PY
+)
+compute-sanitizer --tool racecheck --error-exitcode 1 \
+  "$lfm_cuda_test_binary" \
+  kernels::cuda::tests::cuda_native_paged_attention_scratch_reuse_matches_candle \
+  --ignored --exact --test-threads=1
+```
+
+The test requires CUDA device 0 and fails if unavailable. It repeatedly compares
+F32 native causal prefill, one-pass decode and forced partitioned decode/reduction
+with CPU Candle attention using nontrivial inputs and multiple warps. Record the
+GPU, build SHA, numerical result and sanitizer output; portable compilation or a
+passing numerical run alone does not establish absence of a shared-memory race.
+Then rerun the model conversation replay and capture the first failing activation
+if nonfinite logits persist.

@@ -3304,6 +3304,109 @@ mod tests {
 
     #[cfg(feature = "cuda")]
     #[test]
+    #[ignore = "requires NVIDIA hardware; run explicitly under compute-sanitizer racecheck"]
+    fn cuda_native_paged_attention_scratch_reuse_matches_candle() -> candle_core::Result<()> {
+        // Do not silently pass when the required hardware is missing. Multiple
+        // token/partition iterations exercise shared scratch reuse in all four
+        // native kernels; racecheck supplies the synchronization evidence.
+        let device = candle_core::Device::new_cuda(0)?;
+        let cpu = candle_core::Device::Cpu;
+        let (context, steps, heads, dim, pages) = (65, 4, 2, 64, 5);
+        let data = |count: usize, period: usize| {
+            (0..count)
+                .map(|index| ((index % period) as f32 - (period / 2) as f32) / 31.0)
+                .collect::<Vec<_>>()
+        };
+        let queries = Tensor::from_vec(data(steps * heads * dim, 53), (steps, heads, dim), &cpu)?;
+        let keys = Tensor::from_vec(data(pages * 16 * dim, 59), (pages * 16, dim), &cpu)?;
+        let values = Tensor::from_vec(data(pages * 16 * dim, 61), (pages * 16, dim), &cpu)?;
+        let scale = 1.0 / (dim as f32).sqrt();
+        let mut reference = Vec::new();
+        for row in 0..steps {
+            let visible = context - steps + row + 1;
+            let key = keys.narrow(0, 0, visible)?.t()?.contiguous()?;
+            let value = values.narrow(0, 0, visible)?.contiguous()?;
+            for head in 0..heads {
+                let query = queries
+                    .narrow(0, row, 1)?
+                    .narrow(1, head, 1)?
+                    .reshape((1, dim))?;
+                let scores = (query.matmul(&key)? * scale as f64)?;
+                let output = candle_nn::ops::softmax_last_dim(&scores)?.matmul(&value)?;
+                reference.extend(output.flatten_all()?.to_vec1::<f32>()?);
+            }
+        }
+        let queries = queries.to_device(&device)?;
+        let keys = keys.reshape((pages, 16, 1, dim))?.to_device(&device)?;
+        let values = values.reshape((pages, 16, 1, dim))?.to_device(&device)?;
+        let prefill_metadata = Tensor::from_vec(vec![0_u32, 4, 65, 0, 0, 1, 2, 3, 4], 9, &device)?;
+        let decode_metadata = Tensor::from_vec(vec![65_u32, 0, 0, 1, 2, 3, 4], 7, &device)?;
+        let decode_query = queries.narrow(0, steps - 1, 1)?.contiguous()?;
+        let check = |output: Tensor, expected: &[f32]| -> candle_core::Result<()> {
+            let actual = output.to_device(&cpu)?.flatten_all()?.to_vec1::<f32>()?;
+            assert_eq!(actual.len(), expected.len());
+            for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+                assert!(actual.is_finite(), "nonfinite attention output at {index}");
+                assert!(
+                    (actual - expected).abs() <= 2e-4,
+                    "attention mismatch at {index}: {actual} != {expected}"
+                );
+            }
+            Ok(())
+        };
+        assert!(matches!(
+            cuda_paged_decode_strategy(context, 1, heads, dim, Some((1, 16)))?,
+            CudaPagedDecodeStrategy::Partitioned { partitions: 5 }
+        ));
+        for _ in 0..8 {
+            check(
+                paged_prefill_attention(
+                    &queries,
+                    &keys,
+                    &values,
+                    &prefill_metadata,
+                    1,
+                    steps,
+                    heads,
+                    1,
+                    16,
+                    pages,
+                    dim,
+                    dim,
+                    scale,
+                    None,
+                    None,
+                )?,
+                &reference,
+            )?;
+            for tuning in [None, Some((1, 16))] {
+                check(
+                    paged_decode_attention(
+                        &decode_query,
+                        &keys,
+                        &values,
+                        &decode_metadata,
+                        1,
+                        heads,
+                        1,
+                        16,
+                        pages,
+                        dim,
+                        dim,
+                        scale,
+                        None,
+                        context,
+                        tuning,
+                    )?,
+                    &reference[(steps - 1) * heads * dim..],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
     fn cuda_paged_decode_softcap_matches_reference_for_supported_dtypes() {
         let Ok(device) = candle_core::Device::new_cuda(0) else {
             return;
