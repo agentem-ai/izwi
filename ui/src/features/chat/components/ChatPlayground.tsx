@@ -936,6 +936,7 @@ export function ChatPlayground({
     setIsStreaming(true);
     setStreamingThreadId(targetThreadId);
 
+    let streamFailed = false;
     try {
       streamAbortRef.current = api.sendChatThreadMessageStream(
         targetThreadId,
@@ -1030,6 +1031,7 @@ export function ChatPlayground({
             }
           },
           onError: (message) => {
+            streamFailed = true;
             setError(message);
             setMessages((previous) =>
               previous.filter(
@@ -1046,6 +1048,9 @@ export function ChatPlayground({
             setStreamingThreadId(null);
             streamAbortRef.current = null;
             void refreshThreadList(targetThreadId);
+            // Failed partial text is useful feedback but is deliberately absent
+            // from persisted history. Keep it visible until the user navigates.
+            if (streamFailed) return;
             void api
               .getChatThread(targetThreadId)
               .then((detail) => {
@@ -1723,11 +1728,15 @@ export function ChatPlayground({
                                         ? "Thinking..."
                                         : "No final answer was generated."}
                                     </div>
-                                  ) : (
+                                  ) : assistantDisplayContent.trim().length > 0 ? (
                                     <MarkdownContent
                                       content={assistantDisplayContent}
                                     />
-                                  )}
+                                  ) : !isLastAssistant ? (
+                                    <div className="italic text-muted-foreground opacity-70">
+                                      No visible answer was generated. Please retry the message.
+                                    </div>
+                                  ) : null}
 
                                   {parsed &&
                                     parsed.hasThink &&

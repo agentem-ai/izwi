@@ -24,6 +24,24 @@ use crate::state::AppState;
 use izwi_core::{ChatMediaInput, ChatMessage, ChatReasoningEffort, ChatRole, ChatTemplateKwargs};
 
 const CHAT_STREAM_INTERRUPTED_ERROR: &str = "Chat stream ended before a terminal event";
+const CHAT_EMPTY_RESPONSE_ERROR: &str =
+    "The model generated no visible response. Please retry the message.";
+const CHAT_EMPTY_TERMINAL_ERROR: &str =
+    "Chat stream returned an empty final response after generating text. Please retry the message.";
+
+fn validate_thread_response(text: &str, saw_nonempty_delta: bool) -> Result<(), &'static str> {
+    // Reasoning-only output is still valid raw model content. Rendering decides
+    // whether it has a visible final answer; do not strip reasoning in the API.
+    if text.trim().is_empty() {
+        Err(if saw_nonempty_delta {
+            CHAT_EMPTY_TERMINAL_ERROR
+        } else {
+            CHAT_EMPTY_RESPONSE_ERROR
+        })
+    } else {
+        Ok(())
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct ChatThreadListResponse {
@@ -337,6 +355,7 @@ pub async fn create_thread_message(
     }
 
     let generation = generate_chat(&state, execution_request).await?;
+    validate_thread_response(&generation.text, false).map_err(ApiError::internal)?;
 
     let (user_message, assistant_message) = state
         .chat_store
@@ -384,6 +403,7 @@ async fn create_streaming_thread_message(
     let stream = async_stream::stream! {
         let mut stream_completion = Some(stream_completion);
         let mut saw_terminal = false;
+        let mut saw_nonempty_delta = false;
         while let Some(event) = event_rx.recv().await {
             let (payload, terminal) = match event {
                 ChatStreamEvent::Started => (
@@ -396,40 +416,49 @@ async fn create_streaming_thread_message(
                     .unwrap_or_default(),
                     false,
                 ),
-                ChatStreamEvent::Delta(delta) => (
-                    serde_json::to_string(&ThreadStreamDeltaEvent {
-                        event: "delta",
-                        delta,
-                    })
-                    .unwrap_or_default(),
-                    false,
-                ),
-                ChatStreamEvent::Completed(generation) => {
-                    let payload = match chat_store
-                        .append_turn_with_system_prompt(
-                            user_message_for_start.clone(),
-                            generation.text.clone(),
-                            model_id_for_task.clone(),
-                            generation.tokens_generated,
-                            generation.generation_time_ms,
-                            system_prompt_update.clone(),
-                        )
-                        .await
-                    {
-                        Ok((_user_message, assistant_message)) => serde_json::to_string(&ThreadStreamDoneEvent {
-                            event: "done",
-                            thread_id: thread_id_for_task.clone(),
-                            model_id: model_id_for_task.clone(),
-                            assistant_message,
-                            stats: ChatGenerationStats {
-                                tokens_generated: generation.tokens_generated,
-                                generation_time_ms: generation.generation_time_ms,
-                            },
+                ChatStreamEvent::Delta(delta) => {
+                    saw_nonempty_delta |= !delta.trim().is_empty();
+                    (
+                        serde_json::to_string(&ThreadStreamDeltaEvent {
+                            event: "delta",
+                            delta,
                         })
                         .unwrap_or_default(),
-                        Err(err) => thread_stream_error_payload(format!(
-                            "Failed to persist assistant message: {err}"
-                        )),
+                        false,
+                    )
+                }
+                ChatStreamEvent::Completed(generation) => {
+                    let payload = if let Err(error) =
+                        validate_thread_response(&generation.text, saw_nonempty_delta)
+                    {
+                        thread_stream_error_payload(error)
+                    } else {
+                        match chat_store
+                            .append_turn_with_system_prompt(
+                                user_message_for_start.clone(),
+                                generation.text.clone(),
+                                model_id_for_task.clone(),
+                                generation.tokens_generated,
+                                generation.generation_time_ms,
+                                system_prompt_update.clone(),
+                            )
+                            .await
+                        {
+                            Ok((_user_message, assistant_message)) => serde_json::to_string(&ThreadStreamDoneEvent {
+                                event: "done",
+                                thread_id: thread_id_for_task.clone(),
+                                model_id: model_id_for_task.clone(),
+                                assistant_message,
+                                stats: ChatGenerationStats {
+                                    tokens_generated: generation.tokens_generated,
+                                    generation_time_ms: generation.generation_time_ms,
+                                },
+                            })
+                            .unwrap_or_default(),
+                            Err(err) => thread_stream_error_payload(format!(
+                                "Failed to persist assistant message: {err}"
+                            )),
+                        }
                     };
                     (payload, true)
                 }
@@ -491,6 +520,14 @@ fn build_runtime_messages(
             .map_err(|err| {
                 ApiError::internal(format!("Invalid stored chat message payload: {err}"))
             })?;
+        if role == ChatRole::Assistant
+            && flattened.runtime_text.trim().is_empty()
+            && !flattened.has_media()
+        {
+            // Older versions persisted empty successful responses. They are
+            // not model answers and must not become assistant prompt turns.
+            continue;
+        }
         media_inputs.extend(flattened.media_inputs);
         messages.push(ChatMessage {
             role,
@@ -592,6 +629,54 @@ mod tests {
         assert!(flattened.display_text.is_empty());
         assert!(flattened.runtime_text.contains("<|image_pad|>"));
         assert_eq!(flattened.media_inputs.len(), 1);
+    }
+
+    #[test]
+    fn empty_thread_responses_fail_in_both_modes_without_stripping_reasoning() {
+        assert_eq!(
+            validate_thread_response(" \n", false),
+            Err(CHAT_EMPTY_RESPONSE_ERROR)
+        );
+        assert_eq!(
+            validate_thread_response("", true),
+            Err(CHAT_EMPTY_TERMINAL_ERROR)
+        );
+        for streamed in [false, true] {
+            assert!(validate_thread_response("<think>reasoning only</think>", streamed).is_ok());
+            assert!(validate_thread_response("Visible answer", streamed).is_ok());
+        }
+    }
+
+    #[test]
+    fn runtime_history_skips_legacy_empty_assistant_entries() {
+        let existing = ["", " \n", "<think>reasoning</think>", "Answer"]
+            .iter()
+            .enumerate()
+            .map(|(index, content)| ChatThreadMessage {
+                id: format!("message-{index}"),
+                thread_id: "thread-1".into(),
+                role: "assistant".into(),
+                content: (*content).into(),
+                content_parts: None,
+                created_at: index as u64,
+                tokens_generated: Some(48),
+                generation_time_ms: Some(224.0),
+            })
+            .collect::<Vec<_>>();
+        let (messages, _) = build_runtime_messages(
+            &existing,
+            &FlattenedMultimodalContent {
+                display_text: "Next question".into(),
+                runtime_text: "Next question".into(),
+                media_inputs: Vec::new(),
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].content, "<think>reasoning</think>");
+        assert_eq!(messages[1].content, "Answer");
+        assert_eq!(messages[2].role, ChatRole::User);
     }
 
     #[test]
