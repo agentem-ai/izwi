@@ -11,8 +11,8 @@ use crate::backends::kv::managed_kv_backend_compiled;
 use crate::backends::BackendKind;
 use crate::config::ContextLengthPreference;
 use crate::engine::{
-    AdapterInstanceId, CacheMode, ReservationClass, ReservationOwner, ResourceAmount,
-    ResourceLease, ResourceVector,
+    AdapterInstanceId, CacheMode, ModelInstanceId, ReservationClass, ReservationOwner,
+    ResourceAmount, ResourceLease, ResourceVector, StageDescriptor,
 };
 use crate::error::{Error, Result};
 use crate::kv::v2::{
@@ -24,8 +24,11 @@ use crate::kv::v2::{
 };
 use crate::kv::InferenceStateContractProvider;
 use crate::model::ModelVariant;
+use crate::models::architectures::fish_s2::FishS2PhysicalStateSpec;
 use crate::models::registry::NativeAsrModel;
-use crate::runtime::adapters::{CapabilityKind, LoadedExecutionContract, LoadedStatePublication};
+use crate::runtime::adapters::{
+    CapabilityKind, LoadedExecutionContract, LoadedModelBundleDraft, LoadedStatePublication,
+};
 use crate::runtime::lifecycle::controller::{
     ModelLifecycleController, SharedLoadFailure, SharedLoadOutcome,
 };
@@ -785,6 +788,89 @@ fn validate_scratch_only_invocation_publication(
 }
 
 impl ModelLifecycleController {
+    /// Seal each advertised Fish route against its own adapter identity. Slow
+    /// retained state is model-scoped and reused; invocation backing is per adapter.
+    async fn load_fish_s2_state_publications(
+        &self,
+        model_instance_id: ModelInstanceId,
+        bundle_draft: &LoadedModelBundleDraft,
+        max_sequence_tokens: usize,
+        physical_state_spec: impl Fn(&[&[StageDescriptor]]) -> Result<FishS2PhysicalStateSpec>,
+    ) -> Result<HashMap<CapabilityKind, LoadedStatePublication>> {
+        let variant = ModelVariant::FishAudioS2Pro;
+        let mut publications = HashMap::new();
+        let mut retained_runtime: Option<Arc<crate::engine::ManagedKvModelRuntime>> = None;
+        for capability in [CapabilityKind::Tts, CapabilityKind::StreamingTts] {
+            let contracts = bundle_draft.execution_contracts(capability)?;
+            let stage_graphs = contracts
+                .iter()
+                .map(|contract| contract.stages.as_ref())
+                .collect::<Vec<_>>();
+            let physical_spec = physical_state_spec(&stage_graphs)?;
+            let retained_contract = physical_spec.retained.as_ref().ok_or_else(|| {
+                Error::ModelLoadError(
+                    "Fish S2 TTS normal graph did not publish retained state".into(),
+                )
+            })?;
+            // Fit and allocate slow state once. Refitting after its allocation
+            // would incorrectly price another copy against remaining headroom.
+            let retained = match &retained_runtime {
+                Some(retained) => {
+                    if retained.state_plan_v2().contract_fingerprint
+                        != retained_contract.fingerprint()?
+                    {
+                        return Err(Error::ModelLoadError(
+                            "Fish capabilities disagree on retained state".into(),
+                        ));
+                    }
+                    retained.clone()
+                }
+                None => {
+                    let retained = self
+                        .core_engine
+                        .load_managed_model_state(
+                            model_instance_id,
+                            retained_contract,
+                            Some(max_sequence_tokens),
+                        )
+                        .await?;
+                    retained_runtime = Some(retained.clone());
+                    retained
+                }
+            };
+            self.model_registry
+                .publish_effective_context(variant, retained.logical_token_reach())?;
+            crate::runtime::rollout::validate_managed_state_plan_eligibility(
+                variant,
+                capability,
+                retained.state_plan_v2(),
+            )?;
+            let retained_uses = contracts
+                .iter()
+                .map(|contract| {
+                    let graph = stage_graph_fingerprint(&contract.stages)?;
+                    let retained_use = match contract.execution_profile.cache_mode {
+                        CacheMode::ExternalPaged => RetainedStateUseV2::ExternalPaged,
+                        CacheMode::None => RetainedStateUseV2::Inactive,
+                    };
+                    Ok((graph, retained_use))
+                })
+                .collect::<Result<HashMap<_, _>>>()?;
+            let publication = self
+                .load_invocation_workspace_publication(
+                    model_instance_id,
+                    &contracts,
+                    physical_spec.descriptor,
+                    &physical_spec.invocation,
+                    Some(retained.into()),
+                    retained_uses,
+                )
+                .await?;
+            publications.insert(capability, publication);
+        }
+        Ok(publications)
+    }
+
     fn load_scratch_only_workspace_publication(
         &self,
         executions: &[LoadedExecutionContract],
@@ -929,7 +1015,7 @@ impl ModelLifecycleController {
 
     async fn load_invocation_workspace_publication(
         &self,
-        model_instance_id: crate::engine::ModelInstanceId,
+        model_instance_id: ModelInstanceId,
         executions: &[LoadedExecutionContract],
         descriptor: CapabilityStateDescriptorV2,
         invocation_contract: &InferenceStateContract,
@@ -950,7 +1036,7 @@ impl ModelLifecycleController {
 
     async fn load_invocation_workspace_publication_with_remaining_groups(
         &self,
-        model_instance_id: crate::engine::ModelInstanceId,
+        model_instance_id: ModelInstanceId,
         executions: &[LoadedExecutionContract],
         mut descriptor: CapabilityStateDescriptorV2,
         invocation_contract: &InferenceStateContract,
@@ -2423,56 +2509,10 @@ impl ModelLifecycleController {
                             "loaded Fish S2 TTS model {variant} is missing from the registry"
                         ))
                     })?;
-                let contracts = bundle_draft.execution_contracts(CapabilityKind::Tts)?;
-                let stage_graphs = contracts
-                    .iter()
-                    .map(|contract| contract.stages.as_ref())
-                    .collect::<Vec<_>>();
-                let physical_spec = model.physical_state_spec(&stage_graphs)?;
-                let retained_contract = physical_spec.retained.as_ref().ok_or_else(|| {
-                    Error::ModelLoadError(
-                        "Fish S2 TTS normal graph did not publish retained state".into(),
-                    )
-                })?;
-                let retained = self
-                    .core_engine
-                    .load_managed_model_state(
-                        model_instance_id,
-                        retained_contract,
-                        Some(model.config().max_seq_len),
-                    )
-                    .await?;
-                self.model_registry.publish_effective_context(
-                    variant,
-                    retained.logical_token_reach(),
-                )?;
-                crate::runtime::rollout::validate_managed_state_plan_eligibility(
-                    variant,
-                    CapabilityKind::Tts,
-                    retained.state_plan_v2(),
-                )?;
-                let retained_uses = contracts
-                    .iter()
-                    .map(|contract| {
-                        let graph = stage_graph_fingerprint(&contract.stages)?;
-                        let retained_use = match contract.execution_profile.cache_mode {
-                            CacheMode::ExternalPaged => RetainedStateUseV2::ExternalPaged,
-                            CacheMode::None => RetainedStateUseV2::Inactive,
-                        };
-                        Ok((graph, retained_use))
-                    })
-                    .collect::<Result<HashMap<_, _>>>()?;
-                let publication = self
-                    .load_invocation_workspace_publication(
-                        model_instance_id,
-                        &contracts,
-                        physical_spec.descriptor,
-                        &physical_spec.invocation,
-                        Some(retained.into()),
-                        retained_uses,
-                    )
-                    .await?;
-                state_publications.insert(CapabilityKind::Tts, publication);
+                state_publications.extend(self.load_fish_s2_state_publications(
+                    model_instance_id, &bundle_draft, model.config().max_seq_len,
+                    |graphs| model.physical_state_spec(graphs),
+                ).await?);
             }
             if variant.family() == crate::catalog::ModelFamily::VoxtralTts {
                 if !managed_kv_backend_compiled(backend) {
@@ -2762,6 +2802,96 @@ mod tests {
     use std::time::{Duration, Instant};
     use tokio::sync::{oneshot, Barrier};
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn fish_s2_load_publishes_and_seals_both_tts_capabilities() {
+        use crate::models::architectures::fish_s2::{fish_s2_physical_state_spec, FishS2TtsModel};
+        use crate::runtime::adapters::LoadedModelBundleDraft;
+        use crate::runtime::adapters::StreamingRequirements;
+        let directory =
+            std::env::temp_dir().join(format!("izwi-fish-state-publication-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let runtime = RuntimeService::new(EngineConfig {
+            models_dir: directory.clone(),
+            backend: BackendPreference::Cpu,
+            max_sequence_length: ContextLengthPreference::explicit(32).unwrap(),
+            max_retained_sequences: 1,
+            max_staged_transactions: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        let variant = ModelVariant::FishAudioS2Pro;
+        let authority = vector_authority(all_memory_capacity(1024));
+        let lease = authority
+            .reserve(
+                ReservationOwner::new(ReservationClass::Model, "fish-load-publication"),
+                ResourceVector::zero(),
+            )
+            .unwrap();
+        let instance = runtime
+            .model_lifecycle
+            .install_loading_slot(variant, lease)
+            .unwrap();
+        let registry = RuntimeAdapterRegistry::built_in();
+        let draft = LoadedModelBundleDraft::build(
+            &registry,
+            ExecutionGroupId::new(991),
+            instance,
+            variant,
+            BackendKind::Cpu,
+        )
+        .unwrap();
+        // Use the model-authored physical contract with small neural geometry;
+        // no weights or inference mocks are needed to exercise publication.
+        let mut config = FishS2TtsModel::for_test().config().clone();
+        config.text_config.num_hidden_layers = 1;
+        config.text_config.hidden_size = 128;
+        config.text_config.num_attention_heads = 1;
+        config.text_config.num_key_value_heads = 1;
+        config.text_config.head_dim = Some(128);
+        config.audio_decoder_config.num_hidden_layers = 1;
+        config.audio_decoder_config.hidden_size = 128;
+        config.audio_decoder_config.num_attention_heads = 1;
+        config.audio_decoder_config.num_key_value_heads = 1;
+        config.audio_decoder_config.head_dim = Some(128);
+        let publications = runtime
+            .model_lifecycle
+            .load_fish_s2_state_publications(instance, &draft, 32, |graphs| {
+                fish_s2_physical_state_spec(&config, candle_core::DType::F32, graphs)
+            })
+            .await
+            .unwrap();
+        assert_eq!(publications.len(), 2);
+        let bundle = draft
+            .seal(publications)
+            .expect("all advertised capabilities must seal");
+        let mut bindings = Vec::new();
+        for capability in [CapabilityKind::Tts, CapabilityKind::StreamingTts] {
+            let binding = bundle
+                .capability_binding_for_streaming(capability, StreamingRequirements::NONE)
+                .unwrap();
+            assert_eq!(binding.execution.model_instance_id, instance);
+            assert!(binding.state.managed_kv_runtime().is_some());
+            assert!(binding
+                .execution
+                .stages
+                .iter()
+                .any(|stage| stage.selector == StageWorkSelector::SequenceAudioDecode));
+            bindings.push(binding);
+        }
+        assert_ne!(
+            bindings[0].execution.adapter_instance_id,
+            bindings[1].execution.adapter_instance_id
+        );
+        assert!(Arc::ptr_eq(
+            &bindings[0].state.managed_kv_runtime().unwrap(),
+            &bindings[1].state.managed_kv_runtime().unwrap()
+        ));
+        drop(bindings);
+        drop(bundle);
+        drop(runtime);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     fn invocation_execution(max_batch_size: usize) -> LoadedExecutionContract {
         let variant = ModelVariant::Qwen3Tts12Hz06BCustomVoice;

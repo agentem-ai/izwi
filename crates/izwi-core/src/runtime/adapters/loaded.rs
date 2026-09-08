@@ -916,8 +916,10 @@ fn is_vibevoice_physical_tts(metadata: AdapterMetadata) -> bool {
 }
 
 fn is_fish_s2_physical_tts(metadata: AdapterMetadata) -> bool {
-    metadata.capability == CapabilityKind::Tts
-        && metadata.model_variant.family() == crate::catalog::ModelFamily::FishS2Tts
+    matches!(
+        metadata.capability,
+        CapabilityKind::Tts | CapabilityKind::StreamingTts
+    ) && metadata.model_variant.family() == crate::catalog::ModelFamily::FishS2Tts
 }
 
 fn is_voxtral_physical_tts(metadata: AdapterMetadata) -> bool {
@@ -5941,8 +5943,7 @@ mod tests {
                             == crate::catalog::ModelFamily::Qwen3Tts;
                         let kokoro_tts = execution.metadata().capability == CapabilityKind::Tts
                             && variant.family() == crate::catalog::ModelFamily::KokoroTts;
-                        let fish_s2_tts = execution.metadata().capability == CapabilityKind::Tts
-                            && variant.family() == crate::catalog::ModelFamily::FishS2Tts;
+                        let fish_s2_tts = is_fish_s2_physical_tts(execution.metadata());
                         let retained_tts = execution.metadata().capability == CapabilityKind::Tts
                             && matches!(
                                 variant.family(),
@@ -6868,6 +6869,56 @@ mod tests {
                 .workspace_bytes()
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn fish_s2_factory_binds_both_tts_capabilities_to_native_streaming_stages() {
+        let registry = RuntimeAdapterRegistry::built_in();
+        for backend in [BackendKind::Cpu, BackendKind::Metal, BackendKind::Cuda] {
+            let draft = LoadedModelBundleDraft::build(
+                &registry,
+                ExecutionGroupId::new(1),
+                ModelInstanceId::new(2),
+                ModelVariant::FishAudioS2Pro,
+                backend,
+            )
+            .unwrap();
+            for capability in [CapabilityKind::Tts, CapabilityKind::StreamingTts] {
+                let adapter = draft.capabilities.get(&capability).unwrap();
+                assert!(is_fish_s2_physical_tts(adapter.metadata()));
+                for streaming in [
+                    StreamingRequirements::NONE,
+                    StreamingRequirements::native(true),
+                ] {
+                    let contract = adapter.contract(streaming).unwrap();
+                    assert_eq!(contract.metadata.capability, capability);
+                    assert_eq!(contract.adapter_abi_revision, FISH_S2_TTS_ADAPTER_ABI);
+                    assert_eq!(contract.execution_profile.backend, backend);
+                    assert_eq!(contract.execution_profile.mode, ExecutionMode::Sequence);
+                    assert_eq!(
+                        contract.execution_profile.cache_mode,
+                        CacheMode::ExternalPaged
+                    );
+                    assert_eq!(
+                        contract
+                            .stages
+                            .iter()
+                            .map(|stage| stage.selector)
+                            .collect::<Vec<_>>(),
+                        vec![
+                            StageWorkSelector::PreSequencePreparation,
+                            StageWorkSelector::SequencePrefill,
+                            StageWorkSelector::SequenceDecode,
+                            StageWorkSelector::SequenceFinalize,
+                            StageWorkSelector::SequenceAudioDecode,
+                        ]
+                    );
+                    assert!(contract.stages.iter().all(|stage| {
+                        stage.output_visibility == OutputVisibility::AfterQuantumCommit
+                    }));
+                }
+            }
+        }
     }
 
     #[test]

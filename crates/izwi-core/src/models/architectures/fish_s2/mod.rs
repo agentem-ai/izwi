@@ -39,6 +39,8 @@ pub use contracts::{
 };
 pub use dac::{FishS2DacConfig, FishS2DacDecoder};
 pub use fast::{FishS2FastConfig, FishS2FastDecoder, FishS2GeneratedFrame, FishS2Sampler};
+#[cfg(test)]
+pub(crate) use physical::fish_s2_physical_state_spec;
 pub(crate) use physical::{FishS2PhysicalStateSpec, FISH_S2_SLOW_STATE_GROUP};
 #[allow(unused_imports)]
 pub(crate) use retained::{

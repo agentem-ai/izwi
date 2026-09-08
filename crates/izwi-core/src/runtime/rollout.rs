@@ -93,7 +93,10 @@ pub(crate) fn validate_managed_state_plan_eligibility(
                 CapabilityKind::Tts | CapabilityKind::StreamingTts
             )
             | (ModelFamily::VibeVoiceTts, CapabilityKind::Tts)
-            | (ModelFamily::FishS2Tts, CapabilityKind::Tts)
+            | (
+                ModelFamily::FishS2Tts,
+                CapabilityKind::Tts | CapabilityKind::StreamingTts
+            )
             | (ModelFamily::GraniteSpeechAsr, CapabilityKind::Asr)
     );
     if !route_validated {
@@ -229,6 +232,15 @@ mod tests {
             validate_managed_state_plan_eligibility(
                 ModelVariant::FishAudioS2Pro,
                 CapabilityKind::Tts,
+                &plan,
+            )
+            .unwrap(),
+            KvProviderEligibility::PortableRouteValidated
+        );
+        assert_eq!(
+            validate_managed_state_plan_eligibility(
+                ModelVariant::FishAudioS2Pro,
+                CapabilityKind::StreamingTts,
                 &plan,
             )
             .unwrap(),

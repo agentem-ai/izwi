@@ -387,3 +387,28 @@ compilation, guarded formatting and shell/evidence/concurrency fixtures.
 These results do not include full-checkpoint CUDA codec parity, real-weight
 runtime streaming, live browser audio, production peak-memory measurement or a
 paired performance benchmark. Those remain deployment qualification gates.
+
+
+### Streaming capability load publication regression
+
+Both `Tts` and `StreamingTts` must select the native Fish adapter, pass managed
+provider eligibility and receive explicit physical ABI-v2 publication before
+the model becomes Ready. Invocation workspaces are sealed separately to each
+adapter identity; the model-scoped retained slow cache is shared. Advertising
+streaming without these load-time publications fails model loading, including
+non-streaming requests.
+
+```sh
+cargo test --locked -p izwi-core --lib fish_s2_load_publishes_and_seals_both_tts_capabilities
+cargo test --locked -p izwi-core --lib fish_s2_factory_binds_both_tts_capabilities_to_native_streaming_stages
+```
+
+The first test runs the production publication helper and actual bundle sealing
+with small model-authored CPU state geometry; no neural weights are loaded. The
+second checks native factory routing and all five stages for both capabilities
+on CPU, Metal and CUDA contracts. These complement device qualification above.
+
+
+The loading fix passed the full core suite (2,569 tests; nine ignored and two
+optional local LFM weight loads excluded) and workspace hygiene. Actual CUDA
+model loading and deployment were not performed in this local verification.
