@@ -51,7 +51,7 @@ impl SpeechWavSpool {
 
     pub(crate) async fn append_pcm(&mut self, pcm: &[u8]) -> anyhow::Result<()> {
         use tokio::io::AsyncWriteExt;
-        anyhow::ensure!(pcm.len() % 2 == 0, "PCM16 chunk has an incomplete sample");
+        anyhow::ensure!(pcm.len().is_multiple_of(2), "PCM16 chunk has an incomplete sample");
         let next = self
             .pcm_bytes
             .checked_add(pcm.len())

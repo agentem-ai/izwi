@@ -3775,6 +3775,39 @@ impl NativeExecutor {
     }
 }
 
+fn check_fish_codec_request(request: &EngineCoreRequest) -> Result<()> {
+    if request.is_cancelled() {
+        return Err(Error::Cancelled(request.id.clone()));
+    }
+    if request
+        .deadline
+        .is_some_and(|deadline| Instant::now() >= deadline)
+    {
+        return Err(Error::Timeout(request.id.clone()));
+    }
+    Ok(())
+}
+
+fn fish_execution_timing(
+    active: &ActiveFishS2TtsDecode,
+    codec_ms: f64,
+    sampling_ms: f64,
+    first_audio_ms: Option<f64>,
+) -> super::ExecutorPhaseTiming {
+    let (prefill_ms, decode_ms) = active.state.phase_timings();
+    let (_, prefill_steps, decode_steps) = active.state.sampling_and_steps();
+    super::ExecutorPhaseTiming {
+        prefill_ms: Some(prefill_ms),
+        decode_ms: Some(decode_ms),
+        sampling_ms: Some(sampling_ms),
+        codec_ms: Some(codec_ms),
+        prefill_steps: Some(prefill_steps),
+        decode_steps: Some(decode_steps),
+        first_output_ms_since_start: first_audio_ms,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3988,38 +4021,5 @@ mod tests {
             error.to_string().contains("production limit"),
             "unexpected reference bound error: {error}"
         );
-    }
-}
-
-fn check_fish_codec_request(request: &EngineCoreRequest) -> Result<()> {
-    if request.is_cancelled() {
-        return Err(Error::Cancelled(request.id.clone()));
-    }
-    if request
-        .deadline
-        .is_some_and(|deadline| Instant::now() >= deadline)
-    {
-        return Err(Error::Timeout(request.id.clone()));
-    }
-    Ok(())
-}
-
-fn fish_execution_timing(
-    active: &ActiveFishS2TtsDecode,
-    codec_ms: f64,
-    sampling_ms: f64,
-    first_audio_ms: Option<f64>,
-) -> super::ExecutorPhaseTiming {
-    let (prefill_ms, decode_ms) = active.state.phase_timings();
-    let (_, prefill_steps, decode_steps) = active.state.sampling_and_steps();
-    super::ExecutorPhaseTiming {
-        prefill_ms: Some(prefill_ms),
-        decode_ms: Some(decode_ms),
-        sampling_ms: Some(sampling_ms),
-        codec_ms: Some(codec_ms),
-        prefill_steps: Some(prefill_steps),
-        decode_steps: Some(decode_steps),
-        first_output_ms_since_start: first_audio_ms,
-        ..Default::default()
     }
 }

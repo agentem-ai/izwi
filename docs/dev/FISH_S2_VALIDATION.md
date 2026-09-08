@@ -87,9 +87,9 @@ finite and non-silent output alone is insufficient.
 
 Use `benchmarks/manifests/cuda-family-api.toml` for family coverage and the
 `{cpu,metal,cuda}-audio-concurrency.toml` manifests for concurrency 1, 2, 4 and 8.
-Every Fish case provides the same matching reference voice/transcript. Fish
-currently returns a final waveform; a streaming-compatible response does not
-establish incremental codec streaming or native tensor batching.
+Every Fish case provides the same matching reference voice/transcript. Fish now decodes committed codebook frames incrementally through a resumable
+codec stage. Native tensor batching and AR/codec overlap remain separate,
+unimplemented optimizations.
 
 Measure warmed and cold preparation, prefill, semantic/codebook decode and codec
 finalization separately. Record time to first audio, real-time factor, peak
@@ -145,8 +145,9 @@ The retained observation counts actual buffer capacities, the outer row vector
 and the shared artifact allocation once. Execution admission carries that exact
 host charge independently of generic request/output allowances.
 
-Scalar codec finalization derives its workspace from the sealed frame budget
-when the engine plans the exact bound finalization stage. Preparation leaves
+Each scalar audio-decode quantum derives its workspace from its bounded frame
+count and the sealed request budget at the exact bound stage. Terminal flush
+reserves no full-waveform decode workspace. Preparation leaves
 native tensor-stage costs empty: those costs require an already-bound batchable
 stage and cannot represent Fish's scalar codec. The finalization regression
 covers artifact installation before binding, request validation after binding,
@@ -251,3 +252,138 @@ is implied by the offline fixtures:
 ```sh
 python3 scripts/bench/test-fish-cuda-replay.py
 ```
+
+
+## Incremental streaming implementation — 2026-09-08
+
+The scheduler yields after the first four committed semantic frames, then at
+most sixteen frames per codec quantum (2,048 mono samples per frame at 44.1 kHz).
+Causal convolution, transposed convolution and bounded-attention histories are
+retained between calls. The full decoder remains the numerical oracle. Flush
+emits no extra samples: the oracle trims transposed-convolution tails.
+
+Codec candidates and PCM are published only after the engine commits the
+quantum. Aborts restore the previous history and sequence number. Visible audio
+prevents sequence recomputation. Output ceilings still allow a pending codec
+quantum and the final flush; codec steps do not consume semantic-token budget.
+The 224-token prompt / 192-token first-prefill regression remains covered.
+
+Retained codec history reserves both committed and candidate snapshots in the
+backend's memory domain. Scalar transient workspace has one owner. Host output
+allows retained PCM and pending/transport copies. Reference code reuse has a
+separate 4 MiB model-owned host budget, with at most 32 entries, content-based
+keys and coalesced misses. It caches codes, never target-specific prompts. Model
+replacement invalidates the cache. Warm reference hits improve preparation and
+request latency; they do not by themselves improve execution-only RTF.
+
+The speech-history route streams PCM16 over SSE and spools those exact bytes to
+a temporary WAV. Success repairs the header and stores the file; failures and
+cancellation remove the spool. The spool limit follows the model/frame contract
+and planned long-form constituents; `IZWI_TTS_STREAM_MAX_PCM_BYTES` can tighten
+it. The current storage interface still requires a bounded final byte vector.
+Browser playback belongs to the route, survives modal closure, unlocks on the
+Generate gesture and applies backpressure at 30 seconds or 1,024 queued buffers.
+Navigation and cancellation stop playback and the stream.
+
+The OpenAI-compatible `/v1/audio/speech` streaming mode uses SSE
+(`stream: true` or `stream_format: "sse"`). Its WAV format encodes each chunk as
+a complete WAV; raw `pcm_i16`/`pcm_f32` chunks are separate options. This differs
+from a single progressively written WAV response.
+
+Terminal runtime metadata carries cumulative semantic-frame counts even when
+its PCM is empty. Server SSE timing distinguishes first/last PCM, request wall
+time and execution RTF. Model tracing reports reference encoding, prompt build,
+prefill, slow/fast AR, sampling and codec **host wall intervals**. Sampling is a
+subset of AR time; these are not additive GPU kernel timings. Use a CUDA profiler
+for synchronization, launch gaps and provider/kernel attribution.
+
+### Portable and device checks
+
+```sh
+cargo test --locked -p izwi-core --lib fish_s2
+cargo test --locked -p izwi-core --lib fish_pending
+cargo test --locked -p izwi-server --lib
+python3 scripts/bench/test-fish-streaming-benchmark.py
+```
+
+Explicit synthetic device parity and rollback checks use:
+
+```sh
+cargo test --locked -p izwi-core --features metal --lib \
+  metal_incremental_codec_matches_full_decode_and_rollback -- --ignored --nocapture
+cargo test --locked -p izwi-core --features cuda,cudnn,flash-attn --lib \
+  cuda_incremental_codec_matches_full_decode_and_rollback -- --ignored --nocapture
+```
+
+For the actual checkpoint, provide JSON containing all ten codebook rows, with
+more than 128 real frames and at most 4,096 frames. The CUDA test compares full
+decode with chunk sizes 1, 4, 16 and 32 (maximum absolute difference 1e-4):
+
+```sh
+IZWI_FISH_CODEC_PATH=/models/FishAudio-S2-Pro/codec.pth \
+IZWI_FISH_CODEBOOK_FIXTURE=/fixtures/fish-codes.json \
+cargo test --locked -p izwi-core --features cuda,cudnn,flash-attn --lib \
+  cuda_real_codec_streaming_matches_frozen_codebooks -- --ignored --nocapture
+```
+
+The real runtime test requires multiple nonempty PCM chunks before the runtime
+future completes, ordered sequences, frame/sample equality and terminal stats.
+It records TTFA, gaps and RTF; it does not certify audible quality or independently
+observe the internal AR completion frontier.
+
+```sh
+IZWI_FISH_S2_MODEL_DIR=/models/FishAudio-S2-Pro \
+IZWI_FISH_S2_BACKEND=cuda \
+IZWI_FISH_S2_REFERENCE_WAV=/fixtures/reference.wav \
+IZWI_FISH_S2_REFERENCE_TEXT='Exact matching transcript' \
+IZWI_FISH_S2_SMOKE_OUTPUT_WAV=/tmp/fish-stream.wav \
+cargo test --locked -p izwi-core --features cuda,cudnn,flash-attn --lib \
+  fish_s2_real_runtime_streaming_emits_pcm_before_completion -- --ignored --nocapture
+```
+
+### Deployment measurement gate
+
+Run against an authorized test deployment: the POST creates speech history.
+The request file is the exact speech-history body with `stream: true`. Metadata must name
+`deployed_sha`, `gpu`, `dtype`, `runtime_versions`, `checkpoint`, `build_features`,
+`attention_provider`, `effective_context`, `concurrency`, and `cache_state`.
+
+```sh
+python3 scripts/bench/run-fish-streaming-benchmark.py \
+  --url https://YOUR-TEST-SERVER/v1/text-to-speech \
+  --request /tmp/fish-request.json --metadata /tmp/fish-deployment.json \
+  --output /tmp/fish-stream-evidence
+```
+
+Use the deployed route's actual URL. The runner measures nonempty PCM arrival,
+validates sequence/sample accounting and retains audio and server timing. Run
+paired warm and cold cases with fixed content/sampling, short and long references,
+and supported concurrency. Compare against the baseline build on the same GPU;
+report failures, output duration and quality, not only successful-run averages.
+
+Production qualification remains required for every advertised backend. Before
+release, run actual checkpoint parity, end-to-end SSE and browser playback,
+listening/transcription, slow-consumer and in-flight cancellation checks, and
+peak-memory/lease-return measurements. A portable pass or successful build does
+not certify CUDA/Metal audio or speed.
+
+CUDA graphs, device sampling, codec precision/kernel changes, AR/codec overlap,
+multimodal prefix sharing and tensor batching remain gated on these profiles.
+The report's H200 RTF 0.195 is not a result achieved by this implementation. No
+throughput or TTFA improvement should be claimed without paired device evidence.
+
+
+### Local implementation verification
+
+On macOS arm64, the core suite passed 2,567 tests (nine ignored; two optional
+local LFM weight-loading tests excluded). All 405 server tests passed with the host physical-memory query available.
+The selected browser playback, route,
+creation-dialog and API suites passed 67 tests; TypeScript and targeted ESLint
+also passed. The six offline streaming benchmark fixtures passed. The small
+Metal incremental-codec parity and rollback probe passed on the actual device.
+Repository hygiene passed: workspace Clippy with warnings denied, all-target
+compilation, guarded formatting and shell/evidence/concurrency fixtures.
+
+These results do not include full-checkpoint CUDA codec parity, real-weight
+runtime streaming, live browser audio, production peak-memory measurement or a
+paired performance benchmark. Those remain deployment qualification gates.
