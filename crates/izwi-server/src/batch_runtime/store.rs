@@ -33,6 +33,8 @@ pub struct BatchRuntimeStore {
     db: StoreDatabase,
     #[cfg(test)]
     test_clock: Option<Arc<AtomicI64>>,
+    #[cfg(test)]
+    test_tts_admission_limits: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -377,6 +379,8 @@ impl BatchRuntimeStore {
             db,
             #[cfg(test)]
             test_clock: None,
+            #[cfg(test)]
+            test_tts_admission_limits: None,
         }
     }
 
@@ -570,8 +574,92 @@ impl BatchRuntimeStore {
         row.as_ref().map(map_text_asset).transpose()
     }
 
+    fn tts_admission_limits(&self) -> (usize, usize) {
+        #[cfg(test)]
+        if let Some(limits) = self.test_tts_admission_limits {
+            return limits;
+        }
+        let read = |key, default| {
+            std::env::var(key)
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(default)
+        };
+        (
+            read("IZWI_TTS_MAX_ACTIVE_JOBS", 256),
+            read("IZWI_TTS_MAX_ACTIVE_JOBS_PER_TENANT", 32),
+        )
+    }
+
+    async fn check_tts_admission(
+        &self,
+        tx: &sea_orm::DatabaseTransaction,
+        tenant: &str,
+    ) -> anyhow::Result<()> {
+        // The unique insert and row update serialize admission across processes and
+        // PostgreSQL connections; a read/count alone would allow concurrent overflow.
+        tx.execute_raw(raw::statement(tx,
+            "INSERT INTO runtime_admission_locks (id, lock_value) VALUES ('tts', 1) ON CONFLICT (id) DO NOTHING", vec![])?)
+            .await?;
+        tx.execute_raw(raw::statement(
+            tx,
+            "UPDATE runtime_admission_locks SET lock_value = 1 WHERE id = 'tts'",
+            vec![],
+        )?)
+        .await?;
+        let row = tx.query_one_raw(raw::statement(tx,
+            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN COALESCE(admission_tenant, 'anonymous') = ?1 THEN 1 ELSE 0 END), 0) FROM runtime_jobs WHERE job_kind = 'tts_speech' AND status IN ('created','queued','running','paused','retrying','postprocessing')",
+            vec![tenant.into()],
+        )?).await?.ok_or_else(|| anyhow!("Speech admission count returned no row"))?;
+        let active = u64::try_from(row.try_get_by_index::<i64>(0)?)?;
+        let owned = u64::try_from(row.try_get_by_index::<i64>(1)?)?;
+        let (global_limit, tenant_limit) = self.tts_admission_limits();
+        if active >= global_limit as u64 || owned >= tenant_limit as u64 {
+            bail!("Speech job admission capacity exhausted: active={active}/{global_limit}, tenant={owned}/{tenant_limit}");
+        }
+        Ok(())
+    }
+
+    /// Avoid expensive input ingestion during overload. The create transaction
+    /// still performs the authoritative check because preflight reserves no slot.
+    pub async fn preflight_speech_admission(
+        &self,
+        tenant_key: Option<[u8; 32]>,
+    ) -> anyhow::Result<()> {
+        let tenant = speech_admission_tenant(&json!({"tenant_key": tenant_key}))?;
+        let db = self.db.connection().await?;
+        let tx = db
+            .begin_with_options(runtime_write_transaction_options())
+            .await?;
+        self.check_tts_admission(&tx, &tenant).await?;
+        tx.rollback().await?;
+        Ok(())
+    }
+
+    pub async fn remove_unreferenced_text_asset(&self, id: &str) -> anyhow::Result<()> {
+        let db = self.db.connection().await?;
+        db.execute_raw(raw::statement(db,
+            "DELETE FROM text_assets WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM runtime_jobs WHERE input_text_asset_id = ?1) AND NOT EXISTS (SELECT 1 FROM runtime_artifacts WHERE text_asset_id = ?1)",
+            vec![id.into()],
+        )?).await?;
+        Ok(())
+    }
+
     pub async fn create_job(&self, input: NewRuntimeJob) -> anyhow::Result<RuntimeJob> {
         let db = self.db.connection().await?;
+        let tx = db
+            .begin_with_options(runtime_write_transaction_options())
+            .await?;
+        let admission_tenant = if input.job_kind == RuntimeJobKind::TtsSpeech {
+            let tenant = speech_admission_tenant(&input.request_json)?;
+            if !is_terminal_job_status(input.status) {
+                self.check_tts_admission(&tx, &tenant).await?;
+            }
+            Some(tenant)
+        } else {
+            None
+        };
         let now = self.now_millis();
         let id = new_uuid();
         let request_json = json_to_db_string(&input.request_json, "{}")?;
@@ -581,8 +669,8 @@ impl BatchRuntimeStore {
         let started_at = matches!(input.status, RuntimeJobStatus::Running).then_some(now);
         let finished_at = is_terminal_job_status(input.status).then_some(now);
 
-        db.execute_raw(raw::statement(
-            db,
+        tx.execute_raw(raw::statement(
+            &tx,
             r#"
             INSERT INTO runtime_jobs (
                 id,
@@ -610,9 +698,10 @@ impl BatchRuntimeStore {
                 retry_policy_json,
                 idempotency_key,
                 correlation_id,
-                cancellation_reason
+                cancellation_reason,
+                admission_tenant
             )
-            VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, NULL, NULL, 0, ?17, ?18, ?19, ?20, NULL)
+            VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, NULL, NULL, 0, ?17, ?18, ?19, ?20, NULL, ?21)
             "#,
             vec![
                 id.clone().into(),
@@ -635,11 +724,13 @@ impl BatchRuntimeStore {
                 retry_policy_json.into(),
                 opt_string(input.idempotency_key),
                 opt_string(input.correlation_id),
+                opt_string(admission_tenant),
             ],
         )?)
         .await
         .context("Failed to create runtime job")?;
 
+        tx.commit().await?;
         self.get_job(&id)
             .await?
             .ok_or_else(|| anyhow!("Created runtime job was not found"))
@@ -711,6 +802,43 @@ impl BatchRuntimeStore {
                   AND route_record_kind = ?2
                   AND route_record_id = ?3
                   AND status IN ('created', 'queued', 'running', 'paused', 'retrying', 'postprocessing')
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                "#,
+                vec![
+                    job_kind.as_db_value().into(),
+                    route_record_kind.into(),
+                    route_record_id.into(),
+                ],
+            )?)
+            .await
+            .context("Failed to load active runtime job for route record")?;
+
+        row.as_ref().map(map_runtime_job).transpose()
+    }
+
+    pub async fn get_latest_job_for_route_record(
+        &self,
+        job_kind: RuntimeJobKind,
+        route_record_kind: &str,
+        route_record_id: &str,
+    ) -> anyhow::Result<Option<RuntimeJob>> {
+        let db = self.db.connection().await?;
+        let row = db
+            .query_one_raw(raw::statement(
+                db,
+                r#"
+                SELECT id, created_at, updated_at, queued_at, started_at, finished_at,
+                       job_kind, status, priority, model_id, capability,
+                       route_record_kind, route_record_id, input_media_asset_id,
+                       input_text_asset_id, request_json, model_snapshot_json,
+                       progress_json, error_code, error_message, attempt_count,
+                       max_attempts, retry_policy_json, idempotency_key,
+                       correlation_id, cancellation_reason
+                FROM runtime_jobs
+                WHERE job_kind = ?1
+                  AND route_record_kind = ?2
+                  AND route_record_id = ?3
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
                 "#,
@@ -826,7 +954,9 @@ impl BatchRuntimeStore {
             tx.rollback().await?;
             return Ok(None);
         }
-        if job.attempt_count >= job.max_attempts {
+        if job.error_code.as_deref() == Some("speech_replay_expired")
+            || job.attempt_count >= job.max_attempts
+        {
             tx.rollback().await?;
             return Ok(None);
         }
@@ -856,6 +986,13 @@ impl BatchRuntimeStore {
             return Ok(None);
         }
 
+        let admission_tenant = if job.job_kind == RuntimeJobKind::TtsSpeech {
+            let tenant = speech_admission_tenant(&job.request_json)?;
+            self.check_tts_admission(&tx, &tenant).await?;
+            Some(tenant)
+        } else {
+            None
+        };
         let now = self.now_millis();
         let result = tx
             .execute_raw(raw::statement(
@@ -871,12 +1008,14 @@ impl BatchRuntimeStore {
                     error_code = NULL,
                     error_message = NULL,
                     attempt_count = attempt_count + 1,
-                    cancellation_reason = NULL
+                    cancellation_reason = NULL,
+                    admission_tenant = ?3
                 WHERE id = ?2
                   AND status IN ('failed', 'cancelled', 'expired')
+                  AND (error_code IS NULL OR error_code <> 'speech_replay_expired')
                   AND attempt_count < max_attempts
                 "#,
-                vec![now.into(), job_id.into()],
+                vec![now.into(), job_id.into(), opt_string(admission_tenant)],
             )?)
             .await
             .context("Failed to retry runtime job")?;
@@ -994,7 +1133,8 @@ impl BatchRuntimeStore {
                         AND predecessor.status NOT IN ('completed', 'skipped')
                   )
                   {claim_filter_sql}
-                ORDER BY j.priority DESC, s.sequence ASC, s.created_at ASC, s.id ASC
+                ORDER BY j.priority DESC, s.sequence ASC, COALESCE(s.available_at, s.created_at) ASC,
+                         CASE WHEN s.started_at IS NULL THEN 0 ELSE 1 END ASC, s.id ASC
                 LIMIT ?{limit_placeholder}
                 "#,
                 ),
@@ -1306,6 +1446,23 @@ impl BatchRuntimeStore {
             )?)
             .await
             .context("Failed to update runtime stage progress")?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Cooperative continuation consumes no retry attempt and rejoins the queue tail.
+    /// Progress/artifacts remain durable. The next claim mints a fresh attempt token,
+    /// so reusing the retry count cannot authorize any write from the old worker.
+    pub async fn yield_stage(&self, lease: &StageLease) -> anyhow::Result<bool> {
+        let db = self.db.connection().await?;
+        let now = self.now_millis();
+        let result = db.execute_raw(raw::statement(db, r#"
+            UPDATE job_stages SET status = 'queued', worker_id = NULL,
+                lease_expires_at = NULL, attempt_token = NULL,
+                attempt_count = attempt_count - 1, available_at = ?1, updated_at = ?1
+            WHERE id = ?2 AND worker_id = ?3 AND attempt_count = ?4 AND attempt_token = ?5
+                AND attempt_count > 0 AND status IN ('running','postprocessing') AND lease_expires_at > ?1
+                AND job_id IN (SELECT id FROM runtime_jobs WHERE status IN ('running','queued','retrying','postprocessing'))
+        "#, vec![now.into(), lease.stage_id.clone().into(), lease.worker_id.clone().into(), i64::from(lease.attempt_count).into(), opt_string(lease.attempt_token.clone())])?).await?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -2023,6 +2180,123 @@ impl BatchRuntimeStore {
             .await
             .context("Failed to list runtime job artifacts")?;
 
+        rows.iter().map(map_runtime_artifact).collect()
+    }
+
+    /// Claim expired replay for deletion before exposing storage keys to GC.
+    /// A terminal job loses retry eligibility atomically with this claim. Retrying
+    /// and GC both conditionally update the job row, fencing their race on every DB.
+    pub async fn expired_speech_pcm(&self, before: u64) -> anyhow::Result<Vec<RuntimeArtifact>> {
+        let db = self.db.connection().await?;
+        let tx = db
+            .begin_with_options(runtime_write_transaction_options())
+            .await?;
+        let cutoff = i64::try_from(before)?;
+        let sql = RUNTIME_ARTIFACT_LIST_FOR_JOB_SQL.replace(
+            "WHERE job_id = ?1 ORDER BY created_at ASC, id ASC",
+            "WHERE publication_key LIKE 'speech-pcm/%' AND job_id IN (SELECT id FROM runtime_jobs WHERE status IN ('completed','failed','cancelled','expired') AND updated_at < ?1) ORDER BY created_at ASC, id ASC LIMIT 64",
+        );
+        let rows = tx
+            .query_all_raw(raw::statement(&tx, sql, vec![cutoff.into()])?)
+            .await?;
+        let artifacts = rows
+            .iter()
+            .map(map_runtime_artifact)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let jobs = artifacts
+            .iter()
+            .map(|artifact| artifact.job_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut claimed = std::collections::HashSet::new();
+        for job in jobs {
+            let result = tx.execute_raw(raw::statement(&tx,
+                "UPDATE runtime_jobs SET error_code = 'speech_replay_expired' WHERE id = ?1 AND status IN ('completed','failed','cancelled','expired') AND updated_at < ?2",
+                vec![job.clone().into(), cutoff.into()],
+            )?).await?;
+            if result.rows_affected() == 1 {
+                claimed.insert(job);
+            }
+        }
+        tx.commit().await?;
+        Ok(artifacts
+            .into_iter()
+            .filter(|artifact| claimed.contains(&artifact.job_id))
+            .collect())
+    }
+
+    /// Permanently fence manual replay deletion against concurrent job retry.
+    /// The retry transition tests this marker in its conditional UPDATE too.
+    pub async fn fence_speech_replay_deletion(&self, job_id: &str) -> anyhow::Result<bool> {
+        let db = self.db.connection().await?;
+        let result = db.execute_raw(raw::statement(db,
+            "UPDATE runtime_jobs SET error_code = 'speech_replay_expired' WHERE id = ?1 AND status IN ('completed','failed','cancelled','expired')",
+            vec![job_id.into()],
+        )?).await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn remove_speech_pcm_artifact(&self, id: &str) -> anyhow::Result<()> {
+        let db = self.db.connection().await?;
+        db.execute_raw(raw::statement(
+            db,
+            "DELETE FROM runtime_artifacts WHERE id = ?1 AND publication_key LIKE 'speech-pcm/%'",
+            vec![id.into()],
+        )?)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn stage_output_for_key(
+        &self,
+        lease: &StageLease,
+        key: &str,
+    ) -> anyhow::Result<Option<RuntimeArtifact>> {
+        let db = self.db.connection().await?;
+        let sql = RUNTIME_ARTIFACT_COLUMNS_SQL.replace(
+            "WHERE id = ?1",
+            "WHERE stage_id = ?1 AND producer_attempt_token = ?2 AND publication_key = ?3",
+        );
+        let row = db
+            .query_one_raw(raw::statement(
+                db,
+                sql,
+                vec![
+                    lease.stage_id.clone().into(),
+                    opt_string(lease.attempt_token.clone()),
+                    key.into(),
+                ],
+            )?)
+            .await?;
+        row.as_ref().map(map_runtime_artifact).transpose()
+    }
+
+    /// Read a bounded page of committed speech PCM without loading the whole journal.
+    pub async fn speech_pcm_after(
+        &self,
+        job_id: &str,
+        after_sequence: Option<u64>,
+        limit: u32,
+    ) -> anyhow::Result<Vec<RuntimeArtifact>> {
+        let db = self.db.connection().await?;
+        let after_key = after_sequence
+            .map(super::speech_progress::pcm_publication_key)
+            .unwrap_or_else(|| "speech-pcm/".to_string());
+        let sql = RUNTIME_ARTIFACT_LIST_FOR_JOB_SQL.replace(
+            "ORDER BY created_at ASC, id ASC",
+            "AND publication_key > ?2 AND publication_key < 'speech-pcm0' ORDER BY publication_key ASC LIMIT ?3",
+        );
+        let rows = db
+            .query_all_raw(raw::statement(
+                db,
+                sql,
+                vec![
+                    job_id.into(),
+                    after_key.into(),
+                    i64::from(limit.clamp(1, 64)).into(),
+                ],
+            )?)
+            .await
+            .context("Failed to read speech PCM replay journal")?;
         rows.iter().map(map_runtime_artifact).collect()
     }
 
@@ -3189,6 +3463,17 @@ fn is_claimable_job_status(status: RuntimeJobStatus) -> bool {
 /// its write reservation before reading a snapshot: DEFERRED promotion can
 /// fail immediately with SQLITE_BUSY_SNAPSHOT when concurrent workers renew,
 /// finish, or relinquish leases. Other backends ignore the SQLite option.
+fn speech_admission_tenant(request: &serde_json::Value) -> anyhow::Result<String> {
+    match request.get("tenant_key").filter(|value| !value.is_null()) {
+        Some(value) => {
+            let key: [u8; 32] = serde_json::from_value(value.clone())
+                .context("Invalid server-authored speech tenant identity")?;
+            Ok(key.iter().map(|byte| format!("{byte:02x}")).collect())
+        }
+        None => Ok("anonymous".into()),
+    }
+}
+
 fn runtime_write_transaction_options() -> TransactionOptions {
     TransactionOptions {
         sqlite_transaction_mode: Some(SqliteTransactionMode::Immediate),
@@ -3260,6 +3545,336 @@ mod tests {
             .await
             .expect("test job");
         job
+    }
+
+    #[tokio::test]
+    async fn cooperative_yield_frees_worker_for_short_job_without_consuming_retries() {
+        let (mut store, _root) = build_store();
+        let clock = Arc::new(AtomicI64::new(1_000));
+        store.set_test_clock(clock);
+        let (_long_job, long_stage) = create_test_job_and_stage(&store, 0, "speech", 1).await;
+        let first = store
+            .claim_next_stage("worker", 60_000)
+            .await
+            .unwrap()
+            .unwrap();
+        let old = first.lease().unwrap();
+        let checkpoint = json!({"completed_segments": 1, "completed_text_bytes": 480});
+        assert!(store
+            .update_stage_progress(&old, checkpoint.clone())
+            .await
+            .unwrap());
+        let (_short_job, short_stage) = create_test_job_and_stage(&store, 0, "speech", 1).await;
+        assert!(store.yield_stage(&old).await.unwrap());
+        assert!(!store.yield_stage(&old).await.unwrap());
+        let next = store
+            .claim_next_stage("worker", 60_000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            next.stage.id, short_stage.id,
+            "same-millisecond arrivals must outrank the yielded job"
+        );
+        store
+            .complete_stage(&next.lease().unwrap(), vec![])
+            .await
+            .unwrap()
+            .unwrap();
+        let mut current = store
+            .claim_next_stage("worker", 60_000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.stage.id, long_stage.id);
+        assert_eq!(current.stage.progress_json, Some(checkpoint));
+        assert_eq!(current.stage.attempt_count, 1);
+        assert_ne!(current.stage.attempt_token, old.attempt_token);
+        assert!(!store
+            .update_stage_progress(&old, json!({"stale": true}))
+            .await
+            .unwrap());
+        assert!(store.complete_stage(&old, vec![]).await.unwrap().is_none());
+        assert!(store
+            .publish_stage_output_artifact(&old, test_stage_output("stale"))
+            .await
+            .unwrap()
+            .is_none());
+        // A one-attempt job may cooperatively continue many times and still finish.
+        for _ in 0..8 {
+            let lease = current.lease().unwrap();
+            assert!(store.yield_stage(&lease).await.unwrap());
+            current = store
+                .claim_next_stage("worker", 60_000)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(current.stage.attempt_count, 1);
+            assert_ne!(current.stage.attempt_token, lease.attempt_token);
+        }
+        store
+            .complete_stage(&current.lease().unwrap(), vec![])
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cooperative_yield_rejects_foreign_expired_and_cancelled_attempts() {
+        let (mut store, _root) = build_store();
+        let clock = Arc::new(AtomicI64::new(1_000));
+        store.set_test_clock(clock.clone());
+        let (job, _stage) = create_test_job_and_stage(&store, 0, "speech", 2).await;
+        let claim = store
+            .claim_next_stage("worker", 100)
+            .await
+            .unwrap()
+            .unwrap();
+        let lease = claim.lease().unwrap();
+        let foreign = StageLease {
+            attempt_token: Some("foreign".into()),
+            ..lease.clone()
+        };
+        assert!(!store.yield_stage(&foreign).await.unwrap());
+        clock.store(1_101, Ordering::SeqCst);
+        assert!(!store.yield_stage(&lease).await.unwrap());
+        clock.store(1_001, Ordering::SeqCst);
+        store
+            .cancel_job(&job.id, Some("user stop".into()))
+            .await
+            .unwrap();
+        assert!(!store.yield_stage(&lease).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn speech_replay_gc_fences_retry_before_storage_deletion() {
+        for retry_first in [false, true] {
+            let (mut store, _root) = build_store();
+            let clock = Arc::new(AtomicI64::new(1_000));
+            store.set_test_clock(clock.clone());
+            let (job, _) = create_test_job_and_stage(&store, 0, "speech", 3).await;
+            let claim = store
+                .claim_next_stage("worker", 60_000)
+                .await
+                .unwrap()
+                .unwrap();
+            let lease = claim.lease().unwrap();
+            let artifact = store
+                .publish_stage_output_artifact(
+                    &lease,
+                    test_stage_output("speech-pcm/00000000000000000000"),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            store
+                .fail_stage(
+                    &lease,
+                    false,
+                    Some("injected".into()),
+                    Some("original failure".into()),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            clock.store(10_000, Ordering::SeqCst);
+            if retry_first {
+                assert!(store.retry_job(&job.id).await.unwrap().is_some());
+                assert!(store.expired_speech_pcm(5_000).await.unwrap().is_empty());
+            } else {
+                let expired = store.expired_speech_pcm(5_000).await.unwrap();
+                assert_eq!(expired.len(), 1);
+                assert_eq!(expired[0].id, artifact.id);
+                assert!(store.retry_job(&job.id).await.unwrap().is_none());
+                let job = store.get_job(&job.id).await.unwrap().unwrap();
+                assert_eq!(job.error_code.as_deref(), Some("speech_replay_expired"));
+                assert_eq!(job.error_message.as_deref(), Some("original failure"));
+                // Interrupted deletion remains discoverable and cannot re-enable retry.
+                assert_eq!(store.expired_speech_pcm(5_000).await.unwrap().len(), 1);
+                store
+                    .remove_speech_pcm_artifact(&artifact.id)
+                    .await
+                    .unwrap();
+                assert!(store.expired_speech_pcm(5_000).await.unwrap().is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_speech_replay_deletion_fences_concurrent_retry() {
+        for retry_first in [false, true] {
+            let (store, _root) = build_store();
+            let (job, _) = create_test_job_and_stage(&store, 0, "speech", 3).await;
+            let claim = store
+                .claim_next_stage("worker", 60_000)
+                .await
+                .unwrap()
+                .unwrap();
+            let artifact = store
+                .publish_stage_output_artifact(
+                    &claim.lease().unwrap(),
+                    test_stage_output("speech-pcm/00000000000000000000"),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            store
+                .cancel_job(&job.id, Some("delete recording".into()))
+                .await
+                .unwrap()
+                .unwrap();
+            if retry_first {
+                assert!(store.retry_job(&job.id).await.unwrap().is_some());
+                assert!(!store.fence_speech_replay_deletion(&job.id).await.unwrap());
+                assert_eq!(
+                    store.speech_pcm_after(&job.id, None, 1).await.unwrap()[0].id,
+                    artifact.id
+                );
+            } else {
+                assert!(store.fence_speech_replay_deletion(&job.id).await.unwrap());
+                assert!(store.retry_job(&job.id).await.unwrap().is_none());
+                // Retrying an interrupted deletion keeps the fence in force.
+                assert!(store.fence_speech_replay_deletion(&job.id).await.unwrap());
+                store
+                    .remove_speech_pcm_artifact(&artifact.id)
+                    .await
+                    .unwrap();
+                assert!(store
+                    .speech_pcm_after(&job.id, None, 1)
+                    .await
+                    .unwrap()
+                    .is_empty());
+            }
+        }
+    }
+
+    fn admission_job(tenant: u8) -> NewRuntimeJob {
+        NewRuntimeJob {
+            job_kind: RuntimeJobKind::TtsSpeech,
+            status: RuntimeJobStatus::Queued,
+            priority: 0,
+            model_id: Some("FishAudio-S2-Pro".into()),
+            capability: Some("tts".into()),
+            route_record_kind: Some("text_to_speech".into()),
+            route_record_id: None,
+            input_media_asset_id: None,
+            input_text_asset_id: None,
+            request_json: json!({"tenant_key": vec![tenant; 32]}),
+            model_snapshot_json: json!({}),
+            retry_policy_json: json!({"max_attempts": 2}),
+            max_attempts: 2,
+            idempotency_key: None,
+            correlation_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn speech_admission_preflight_has_no_reservation_and_rejects_overload() {
+        let (mut store, _root) = build_store();
+        store.test_tts_admission_limits = Some((1, 1));
+        store
+            .preflight_speech_admission(Some([1; 32]))
+            .await
+            .unwrap();
+        store
+            .preflight_speech_admission(Some([1; 32]))
+            .await
+            .unwrap();
+        store.create_job(admission_job(1)).await.unwrap();
+        assert!(store
+            .preflight_speech_admission(Some([1; 32]))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Speech job admission capacity exhausted"));
+    }
+
+    #[tokio::test]
+    async fn speech_admission_serializes_concurrent_enqueue_and_terminal_releases_capacity() {
+        let (mut store, _root) = build_store();
+        store.test_tts_admission_limits = Some((2, 2));
+        store.connection().await.unwrap();
+        let mut tasks = Vec::new();
+        for tenant in 0..8 {
+            let store = store.clone();
+            tasks.push(tokio::spawn(async move {
+                store.create_job(admission_job(tenant)).await
+            }));
+        }
+        let mut admitted = Vec::new();
+        let mut rejected = 0;
+        for task in tasks {
+            match task.await.unwrap() {
+                Ok(job) => admitted.push(job),
+                Err(error) => {
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("Speech job admission capacity exhausted"),
+                        "{error}"
+                    );
+                    rejected += 1;
+                }
+            }
+        }
+        assert_eq!(admitted.len(), 2);
+        assert_eq!(rejected, 6);
+        store
+            .cancel_job(&admitted[0].id, Some("release slot".into()))
+            .await
+            .unwrap()
+            .unwrap();
+        store.create_job(admission_job(99)).await.unwrap();
+        assert!(store.create_job(admission_job(100)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn speech_admission_separates_tenants_and_retry_obeys_the_same_capacity() {
+        let (mut store, _root) = build_store();
+        store.test_tts_admission_limits = Some((3, 1));
+        let first = store.create_job(admission_job(1)).await.unwrap();
+        assert!(store.create_job(admission_job(1)).await.is_err());
+        let other = store.create_job(admission_job(2)).await.unwrap();
+        store.cancel_job(&other.id, None).await.unwrap();
+        store
+            .create_stage(NewJobStage {
+                job_id: first.id.clone(),
+                sequence: 0,
+                stage_kind: "speech".into(),
+                status: RuntimeStageStatus::Queued,
+                capability: Some("tts".into()),
+                model_id: None,
+                max_attempts: 2,
+                input_artifact_ids: vec![],
+            })
+            .await
+            .unwrap();
+        let claim = store
+            .claim_next_stage("worker", 60_000)
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .fail_stage(
+                &claim.lease().unwrap(),
+                false,
+                Some("injected".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let replacement = store.create_job(admission_job(1)).await.unwrap();
+        let error = store.retry_job(&first.id).await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Speech job admission capacity exhausted"));
+        assert_eq!(
+            store.get_job(&first.id).await.unwrap().unwrap().status,
+            RuntimeJobStatus::Failed
+        );
+        store.cancel_job(&replacement.id, None).await.unwrap();
+        assert!(store.retry_job(&first.id).await.unwrap().is_some());
     }
 
     fn test_stage_output(publication_key: &str) -> NewStageOutputArtifact {
@@ -4478,6 +5093,95 @@ mod tests {
             .expect("artifacts");
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].id, first.id);
+    }
+
+    #[tokio::test]
+    async fn speech_replay_is_cursor_ordered_bounded_and_attempt_fenced() {
+        let (store, _root) = build_store();
+        let (job, _) = create_test_job_and_stage(&store, 0, "fake_stage", 2).await;
+        let claimed = store
+            .claim_next_stage("worker-1", 60_000)
+            .await
+            .unwrap()
+            .unwrap();
+        let lease = claimed.lease().unwrap();
+        // Publish out of insertion order to prove cursor ordering, not timestamps.
+        for sequence in [10, 0, 2, 1] {
+            let key = super::super::speech_progress::pcm_publication_key(sequence);
+            let mut artifact = test_stage_output(&key);
+            artifact.artifact_role = RuntimeArtifactRole::OutputIntermediate;
+            store
+                .publish_stage_output_artifact(&lease, artifact)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        store
+            .publish_stage_output_artifact(&lease, test_stage_output("primary-result"))
+            .await
+            .unwrap()
+            .unwrap();
+        let first = store.speech_pcm_after(&job.id, None, 2).await.unwrap();
+        assert_eq!(first.len(), 2);
+        assert_eq!(
+            first[0].publication_key.as_deref(),
+            Some("speech-pcm/00000000000000000000")
+        );
+        assert_eq!(
+            first[1].publication_key.as_deref(),
+            Some("speech-pcm/00000000000000000001")
+        );
+        let remaining = store.speech_pcm_after(&job.id, Some(1), 64).await.unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(
+            remaining[0].publication_key.as_deref(),
+            Some("speech-pcm/00000000000000000002")
+        );
+        assert!(store
+            .speech_pcm_after("other-job", None, 64)
+            .await
+            .unwrap()
+            .is_empty());
+        let forged = StageLease {
+            attempt_token: Some("stale".to_string()),
+            ..lease.clone()
+        };
+        assert!(!store
+            .update_stage_progress(&forged, json!({"completed_segments": 999}))
+            .await
+            .unwrap());
+        assert!(store
+            .publish_stage_output_artifact(
+                &forged,
+                test_stage_output("speech-pcm/00000000000000000011")
+            )
+            .await
+            .unwrap()
+            .is_none());
+        store
+            .cancel_job(&job.id, Some("stop".to_string()))
+            .await
+            .unwrap();
+        assert!(!store
+            .update_stage_progress(&lease, json!({"completed_segments": 999}))
+            .await
+            .unwrap());
+        assert!(store
+            .publish_stage_output_artifact(
+                &lease,
+                test_stage_output("speech-pcm/00000000000000000011")
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .speech_pcm_after(&job.id, None, 64)
+                .await
+                .unwrap()
+                .len(),
+            4
+        );
     }
 
     #[tokio::test]

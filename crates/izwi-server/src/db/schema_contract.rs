@@ -11,6 +11,10 @@ struct RequiredSchemaTable {
 
 const REQUIRED_SCHEMA_TABLES: &[RequiredSchemaTable] = &[
     RequiredSchemaTable {
+        name: "runtime_admission_locks",
+        columns: &["id", "lock_value"],
+    },
+    RequiredSchemaTable {
         name: "chat_threads",
         columns: &[
             "id",
@@ -351,6 +355,7 @@ const REQUIRED_SCHEMA_TABLES: &[RequiredSchemaTable] = &[
     RequiredSchemaTable {
         name: "runtime_jobs",
         columns: &[
+            "admission_tenant",
             "id",
             "created_at",
             "updated_at",

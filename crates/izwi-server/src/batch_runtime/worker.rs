@@ -454,11 +454,19 @@ impl Drop for ActiveExecutionGuard {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("speech_stage_yield: committed segment boundary")]
+pub struct SpeechStageYield;
+
 #[async_trait]
 pub trait StageExecutor: Send + Sync {
     fn stage_kind(&self) -> &'static str;
 
     async fn execute(&self, claimed: ClaimedStage) -> anyhow::Result<StageExecutionOutcome>;
+
+    async fn maintenance(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     async fn execute_with_context(
         &self,
@@ -786,6 +794,12 @@ impl BatchWorkerRunner {
                 self.record_heartbeat("idle", None).await?;
             }
             StageExecutionResolution::Finished(Err(err)) => {
+                if err.downcast_ref::<SpeechStageYield>().is_some() {
+                    self.store.yield_stage(&lease).await?;
+                    drop(_active_execution);
+                    self.record_heartbeat("idle", None).await?;
+                    return Ok(true);
+                }
                 let message = err.to_string();
                 self.health.record_error(message.clone());
                 let failed = self
@@ -895,6 +909,9 @@ impl BatchWorkerRunner {
             .recover_expired_stage_leases()
             .await
             .context("Failed to recover expired runtime stage leases")?;
+        for executor in self.executors.values() {
+            executor.maintenance().await?;
+        }
         Ok(())
     }
 
@@ -1527,6 +1544,55 @@ mod tests {
         let remaining = runner.claim_filter().resources;
         assert_eq!(remaining.concurrency_slots, 4);
         assert_eq!(remaining.memory_bytes, Some(40));
+    }
+
+    struct YieldOnceExecutor {
+        calls: AtomicUsize,
+    }
+    #[async_trait]
+    impl StageExecutor for YieldOnceExecutor {
+        fn stage_kind(&self) -> &'static str {
+            "fake_stage"
+        }
+        async fn execute(&self, _claimed: ClaimedStage) -> anyhow::Result<StageExecutionOutcome> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(SpeechStageYield.into());
+            }
+            Ok(StageExecutionOutcome {
+                output_artifact_ids: vec![],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn cooperative_speech_yield_releases_slot_without_failure_or_retry_consumption() {
+        let store = build_store();
+        let (job_id, stage_id) = create_queued_fake_stage(&store, 1).await.unwrap();
+        let health = BatchWorkerHealth::new("yield-worker");
+        let runner = BatchWorkerRunner::new(
+            store.clone(),
+            vec![Arc::new(YieldOnceExecutor {
+                calls: AtomicUsize::new(0),
+            })],
+            BatchWorkerConfig::local("yield-worker"),
+            health.clone(),
+        );
+        assert!(runner.run_once().await.unwrap());
+        let stage = store.get_stage(&stage_id).await.unwrap().unwrap();
+        assert_eq!(stage.status, RuntimeStageStatus::Queued);
+        assert_eq!(stage.attempt_count, 0);
+        assert!(stage.attempt_token.is_none());
+        assert!(runner.active_executions.read().unwrap().is_empty());
+        assert!(health.snapshot().last_error.is_none());
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(runner.run_once().await.unwrap());
+        let stage = store.get_stage(&stage_id).await.unwrap().unwrap();
+        assert_eq!(stage.status, RuntimeStageStatus::Completed);
+        assert_eq!(stage.attempt_count, 1);
+        assert_eq!(
+            store.get_job(&job_id).await.unwrap().unwrap().status,
+            RuntimeJobStatus::Completed
+        );
     }
 
     #[tokio::test]
