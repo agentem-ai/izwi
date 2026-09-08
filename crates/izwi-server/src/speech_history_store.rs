@@ -28,16 +28,59 @@ pub(crate) struct SpeechWavSpool {
     sample_rate: u32,
     pcm_bytes: usize,
     max_pcm_bytes: usize,
+    reserved_pcm_bytes: Option<usize>,
     disk_reservation: crate::speech_resource_budget::ByteReservation,
 }
 
 impl SpeechWavSpool {
     pub(crate) fn new(sample_rate: u32, max_pcm_bytes: usize) -> anyhow::Result<Self> {
+        let reservation = crate::speech_resource_budget::spool_budget().reserve(44)?;
+        Self::with_reservation(sample_rate, max_pcm_bytes, None, reservation)
+    }
+
+    /// Finalization knows its entire PCM size from the durable journal. Reserve
+    /// all disk credits before rebuilding, waiting for other finalizers to finish.
+    pub(crate) async fn new_reserved(
+        sample_rate: u32,
+        max_pcm_bytes: usize,
+        exact_pcm_bytes: usize,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             sample_rate > 0 && sample_rate <= u32::MAX / 2,
             "Invalid WAV sample rate"
         );
-        let disk_reservation = crate::speech_resource_budget::spool_budget().reserve(44)?;
+        anyhow::ensure!(
+            exact_pcm_bytes > 0 && exact_pcm_bytes.is_multiple_of(2),
+            "Invalid finalized PCM byte count"
+        );
+        anyhow::ensure!(
+            exact_pcm_bytes <= max_pcm_bytes.min(u32::MAX as usize - 44),
+            "Streaming audio exceeds its WAV spool byte limit"
+        );
+        let total = exact_pcm_bytes
+            .checked_add(44)
+            .context("WAV spool size overflow")?;
+        let reservation = crate::speech_resource_budget::spool_budget()
+            .reserve_wait(total)
+            .await?;
+        Self::with_reservation(
+            sample_rate,
+            max_pcm_bytes,
+            Some(exact_pcm_bytes),
+            reservation,
+        )
+    }
+
+    fn with_reservation(
+        sample_rate: u32,
+        max_pcm_bytes: usize,
+        reserved_pcm_bytes: Option<usize>,
+        disk_reservation: crate::speech_resource_budget::ByteReservation,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            sample_rate > 0 && sample_rate <= u32::MAX / 2,
+            "Invalid WAV sample rate"
+        );
         let temporary = tempfile::NamedTempFile::new().context("Create speech WAV spool")?;
         let mut file = temporary.reopen()?;
         std::io::Write::write_all(&mut file, &[0; 44])?;
@@ -47,6 +90,7 @@ impl SpeechWavSpool {
             sample_rate,
             pcm_bytes: 0,
             max_pcm_bytes: max_pcm_bytes.min(u32::MAX as usize - 44),
+            reserved_pcm_bytes,
             disk_reservation,
         })
     }
@@ -65,7 +109,14 @@ impl SpeechWavSpool {
             next <= self.max_pcm_bytes,
             "Streaming audio exceeds its WAV spool byte limit"
         );
-        self.disk_reservation.grow(pcm.len())?;
+        if let Some(reserved) = self.reserved_pcm_bytes {
+            anyhow::ensure!(
+                next <= reserved,
+                "Finalized PCM exceeds its reserved sample count"
+            );
+        } else {
+            self.disk_reservation.grow(pcm.len())?;
+        }
         self.file
             .write_all(pcm)
             .await
@@ -79,6 +130,11 @@ impl SpeechWavSpool {
         anyhow::ensure!(
             self.pcm_bytes > 0,
             "Streaming generation produced no PCM audio"
+        );
+        anyhow::ensure!(
+            self.reserved_pcm_bytes
+                .is_none_or(|expected| expected == self.pcm_bytes),
+            "Finalized PCM does not match its reserved sample count"
         );
         let pcm_bytes = u32::try_from(self.pcm_bytes)?;
         let mut header = Vec::with_capacity(44);
@@ -1355,6 +1411,28 @@ mod tests {
         std::env::set_var("IZWI_MEDIA_DIR", &media_dir);
         let store = SpeechHistoryStore::initialize().expect("store");
         (temp_dir, store)
+    }
+
+    #[tokio::test]
+    async fn reserved_spool_accounts_once_and_requires_exact_pcm_length() {
+        let budget = crate::speech_resource_budget::ByteBudget::new(48);
+        let reservation = budget.reserve_wait(48).await.unwrap();
+        let mut spool =
+            SpeechWavSpool::with_reservation(44_100, 100, Some(4), reservation).unwrap();
+        // No free credits remain: append succeeds only if it doesn't reserve twice.
+        assert!(budget.reserve(1).is_err());
+        spool.append_pcm(&[0, 1, 2, 3]).await.unwrap();
+        assert!(spool.append_pcm(&[4, 5]).await.is_err());
+        let file = spool.finish_file().await.unwrap();
+        assert_eq!(file.len(), 48);
+        drop(file);
+        assert!(budget.reserve(48).is_ok());
+        let reservation = budget.reserve_wait(48).await.unwrap();
+        let mut short =
+            SpeechWavSpool::with_reservation(44_100, 100, Some(4), reservation).unwrap();
+        short.append_pcm(&[0, 1]).await.unwrap();
+        assert!(short.finish_file().await.is_err());
+        assert!(budget.reserve(48).is_ok());
     }
 
     #[tokio::test]
