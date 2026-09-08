@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SpeechPcmPlayer } from "./pcmPlayer";
 
-function audioFixture() {
+function audioFixture(sampleRate = 8000) {
   const sources: { buffer: AudioBuffer | null; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn>; onended: (() => void) | null }[] = [];
   const samples: Float32Array[] = [];
   const context = {
@@ -21,7 +21,7 @@ function audioFixture() {
   };
   const drained = vi.fn();
   const player = new SpeechPcmPlayer(context as unknown as AudioContext, drained, 1);
-  player.start("request", 8000, "pcm_i16");
+  player.start("request", sampleRate, "pcm_i16");
   const chunk = (sequence: number, count = 4000) => ({
     requestId: "request", sequence, sampleCount: count,
     audioBase64: btoa("\x00\x40".repeat(count)),
@@ -46,6 +46,27 @@ describe("progressive speech PCM playback", () => {
     expect(drained).not.toHaveBeenCalled();
     sources[1].onended?.();
     expect(drained).toHaveBeenCalledOnce();
+  });
+
+  it("plays Fish PCM at its source rate with matching sample values and duration", async () => {
+    const { player, context, sources, samples, chunk } = audioFixture(44100);
+    await player.push({ ...chunk(0, 11025), sampleRate: 44100 });
+    await player.push({ ...chunk(1, 11025), sampleRate: 44100 });
+    expect(context.createBuffer).toHaveBeenNthCalledWith(1, 1, 11025, 44100);
+    expect(sources[0].buffer?.duration).toBe(0.25);
+    expect(sources[1].start).toHaveBeenCalledWith(0.27);
+    expect(samples[0]).toEqual(new Float32Array(11025).fill(0.5));
+  });
+
+  it("rejects a mismatched source rate before queuing or decoding PCM", async () => {
+    const { player, context, chunk } = audioFixture(24000);
+    await expect(player.push({ ...chunk(0), sampleRate: 44100 }))
+      .rejects.toThrow("sample rate");
+    expect(context.createBuffer).not.toHaveBeenCalled();
+    await player.push({ ...chunk(0), sampleRate: 24000 });
+    await expect(player.push({ ...chunk(1), sampleRate: 44100 }))
+      .rejects.toThrow("sample rate");
+    expect(context.createBuffer).toHaveBeenCalledOnce();
   });
 
   it("backpressures a fast producer until playback frees space, without allocating pending PCM", async () => {

@@ -466,28 +466,6 @@ async fn stream_speech(
         }
 
         let fallback_sample_rate = engine.sample_rate().await;
-        let start_event = SpeechStreamEvent {
-            event: "audio.started",
-            timing: None,
-            request_id: Some(stream_request_id.clone()),
-            sequence: None,
-            audio_base64: None,
-            sample_count: None,
-            is_final: None,
-            sample_rate: Some(fallback_sample_rate),
-            audio_format: Some(stream_audio_format),
-            tokens_generated: None,
-            generation_time_ms: None,
-            audio_duration_secs: None,
-            rtf: None,
-            error: format_fallback
-                .as_ref()
-                .map(|fallback| format!("Requested format fallback: {fallback}")),
-        };
-        if send_stream_event(&event_tx, start_event).await.is_err() {
-            return;
-        }
-
         let (chunk_tx, mut chunk_rx) = mpsc::channel::<AudioChunk>(32);
         let generation_engine = engine.clone();
         let generation_task = tokio::spawn(async move {
@@ -505,9 +483,25 @@ async fn stream_speech(
         let stream_started = Instant::now();
         let mut client_closed = false;
         let mut stream_failed = false;
+        let mut audio_started = false;
         while let Some(chunk) = chunk_rx.recv().await {
             // A successful runtime terminal marker may contain statistics only.
             accumulate_stream_statistics(&mut terminal_statistics, &chunk);
+            if !audio_started {
+                if let Some(event) = speech_started_event(
+                    &chunk,
+                    &stream_request_id,
+                    fallback_sample_rate,
+                    stream_audio_format,
+                    format_fallback.as_deref(),
+                ) {
+                    if send_stream_event(&event_tx, event).await.is_err() {
+                        client_closed = true;
+                        break;
+                    }
+                    audio_started = true;
+                }
+            }
             if chunk.samples.is_empty() {
                 continue;
             }
@@ -810,6 +804,37 @@ fn resolve_streaming_mode(req: &SpeechRequest) -> Result<bool, ApiError> {
             other
         ))),
     }
+}
+
+// The runtime codec default may differ from the selected model's output rate.
+// Wait for real PCM before publishing playback metadata; empty terminal chunks
+// carry statistics, not a usable audio format.
+fn speech_started_event(
+    chunk: &AudioChunk,
+    request_id: &str,
+    fallback_sample_rate: u32,
+    audio_format: &'static str,
+    format_fallback: Option<&str>,
+) -> Option<SpeechStreamEvent> {
+    if chunk.samples.is_empty() {
+        return None;
+    }
+    Some(SpeechStreamEvent {
+        event: "audio.started",
+        timing: None,
+        request_id: Some(request_id.to_string()),
+        sequence: None,
+        audio_base64: None,
+        sample_count: None,
+        is_final: None,
+        sample_rate: Some(chunk.sample_rate_or(fallback_sample_rate).max(1)),
+        audio_format: Some(audio_format),
+        tokens_generated: None,
+        generation_time_ms: None,
+        audio_duration_secs: None,
+        rtf: None,
+        error: format_fallback.map(|fallback| format!("Requested format fallback: {fallback}")),
+    })
 }
 
 fn stream_audio_format_label(format: AudioFormat) -> &'static str {
@@ -1243,6 +1268,30 @@ mod tests {
             saved_voice_id: None,
         };
         assert!(resolve_streaming_mode(&req).expect("streaming mode"));
+    }
+
+    #[test]
+    fn speech_stream_start_waits_for_pcm_and_uses_model_rate_and_requested_format() {
+        let empty = AudioChunk::final_chunk("fish".into(), 0, Vec::new());
+        assert!(speech_started_event(&empty, "fish", 24_000, "pcm_i16", None).is_none());
+
+        let pcm = AudioChunk::new("fish".into(), 0, vec![0.25]).with_sample_rate(44_100);
+        for format in [AudioFormat::Wav, AudioFormat::RawI16, AudioFormat::RawF32] {
+            let label = stream_audio_format_label(format);
+            let event = speech_started_event(&pcm, "fish", 24_000, label, None).unwrap();
+            assert_eq!(event.event, "audio.started");
+            assert_eq!(event.sample_rate, Some(44_100));
+            assert_eq!(event.audio_format, Some(label));
+        }
+
+        let legacy_pcm = AudioChunk::new("legacy".into(), 0, vec![0.25]);
+        let event =
+            speech_started_event(&legacy_pcm, "legacy", 24_000, "wav", Some("mp3 to wav")).unwrap();
+        assert_eq!(event.sample_rate, Some(24_000));
+        assert_eq!(
+            event.error.as_deref(),
+            Some("Requested format fallback: mp3 to wav")
+        );
     }
 
     #[test]

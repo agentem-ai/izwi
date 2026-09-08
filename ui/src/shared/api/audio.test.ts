@@ -252,9 +252,9 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
       ": keep-",
       "alive\n\n",
       data({ event: "start", request_id: "request", sample_rate: 44100, audio_format: "pcm_i16" }),
-      data({ event: "chunk", request_id: "request", sequence: 0, audio_base64: "AAA=", sample_count: 1 }),
+      data({ event: "chunk", request_id: "request", sequence: 0, audio_base64: "AAA=", sample_count: 1, sample_rate: 44100 }),
       ": keep-alive\n\n",
-      data({ event: "chunk", request_id: "request", sequence: 1, audio_base64: "AAA=", sample_count: 1 }),
+      data({ event: "chunk", request_id: "request", sequence: 1, audio_base64: "AAA=", sample_count: 1, sample_rate: 44100 }),
       data({ event: "final", record: finalRecord, generation_time_ms: 20, audio_duration_secs: 1, rtf: 0.02, tokens_generated: 2 }),
       data({ event: "done" }),
     ];
@@ -287,8 +287,8 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
       requestId: "request", sampleRate: 44100, audioFormat: "pcm_i16",
     });
     expect(onChunk.mock.calls).toEqual([
-      [{ requestId: "request", sequence: 0, audioBase64: "AAA=", sampleCount: 1 }],
-      [{ requestId: "request", sequence: 1, audioBase64: "AAA=", sampleCount: 1 }],
+      [{ requestId: "request", sequence: 0, audioBase64: "AAA=", sampleCount: 1, sampleRate: 44100 }],
+      [{ requestId: "request", sequence: 1, audioBase64: "AAA=", sampleCount: 1, sampleRate: 44100 }],
     ]);
     expect(onFinal).toHaveBeenCalledExactlyOnceWith({
       record: finalRecord,

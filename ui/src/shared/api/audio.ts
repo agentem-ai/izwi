@@ -176,6 +176,7 @@ type SpeechHistoryRecordStreamEvent =
       sequence: number;
       audio_base64: string;
       sample_count: number;
+      sample_rate?: number;
     }
   | {
       event: "final";
@@ -201,6 +202,7 @@ export interface SpeechHistoryRecordStreamCallbacks {
     sequence: number;
     audioBase64: string;
     sampleCount: number;
+    sampleRate?: number;
   }) => void | Promise<void>;
   onFinal?: (event: {
     record: SpeechHistoryRecord;
@@ -1706,6 +1708,7 @@ export class AudioApiClient {
                   sequence: event.sequence,
                   audioBase64: event.audio_base64,
                   sampleCount: event.sample_count,
+                  sampleRate: event.sample_rate,
                 });
                 break;
               case "final":

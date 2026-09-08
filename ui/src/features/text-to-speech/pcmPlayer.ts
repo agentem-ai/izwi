@@ -31,10 +31,13 @@ export class SpeechPcmPlayer {
     this.sampleRate = sampleRate;
   }
 
-  async push(event: { requestId: string; sequence: number; audioBase64: string; sampleCount: number }): Promise<void> {
+  async push(event: { requestId: string; sequence: number; audioBase64: string; sampleCount: number; sampleRate?: number }): Promise<void> {
     if (this.stopped || this.finished || this.requestId !== event.requestId ||
         event.sequence !== this.sequence || !this.sampleRate) {
       throw new Error("Speech stream chunks arrived out of order.");
+    }
+    if (event.sampleRate !== undefined && event.sampleRate !== this.sampleRate) {
+      throw new Error("Speech stream sample rate does not match its audio format.");
     }
     const duration = event.sampleCount / this.sampleRate;
     if (!Number.isSafeInteger(event.sampleCount) || event.sampleCount <= 0 ||

@@ -335,6 +335,52 @@ async fn send_stream_event(
     .map_err(|_| STREAM_CLIENT_DISCONNECTED_MESSAGE)
 }
 
+// Bind playback and persisted WAV to the first actual PCM rate. The runtime's
+// default codec rate may differ from the selected model (Fish emits 44.1 kHz).
+async fn prepare_stream_pcm(
+    event_tx: &StreamEventSender,
+    request_id: &str,
+    chunk: &AudioChunk,
+    fallback_sample_rate: u32,
+    merged_sample_rate: &mut Option<u32>,
+) -> Result<Option<u32>, String> {
+    if chunk.samples.is_empty() {
+        return Ok(None);
+    }
+    let sample_rate = chunk.sample_rate_or(fallback_sample_rate).max(1);
+    if let Some(expected) = *merged_sample_rate {
+        if expected != sample_rate {
+            return Err(format!(
+                "Streaming sample rate changed from {expected} Hz to {sample_rate} Hz"
+            ));
+        }
+    } else {
+        send_stream_event(
+            event_tx,
+            SpeechStreamEvent {
+                event: "start",
+                timing: None,
+                request_id: Some(request_id.to_string()),
+                sequence: None,
+                audio_base64: None,
+                sample_count: None,
+                sample_rate: Some(sample_rate),
+                audio_format: Some("pcm_i16"),
+                tokens_generated: None,
+                generation_time_ms: None,
+                audio_duration_secs: None,
+                rtf: None,
+                record: None,
+                error: None,
+            },
+        )
+        .await
+        .map_err(str::to_string)?;
+        *merged_sample_rate = Some(sample_rate);
+    }
+    Ok(Some(sample_rate))
+}
+
 pub async fn list_text_to_speech_records(
     State(state): State<AppState>,
     Query(query): Query<CursorPaginationQuery>,
@@ -1648,38 +1694,6 @@ async fn stream_record_creation(
             .await;
 
         let fallback_sample_rate = runtime.sample_rate().await;
-        if let Err(message) = send_stream_event(
-            &event_tx,
-            SpeechStreamEvent {
-                event: "start",
-                timing: None,
-                request_id: Some(stream_request_id.clone()),
-                sequence: None,
-                audio_base64: None,
-                sample_count: None,
-                sample_rate: Some(fallback_sample_rate),
-                audio_format: Some("pcm_i16"),
-                tokens_generated: None,
-                generation_time_ms: None,
-                audio_duration_secs: None,
-                rtf: None,
-                record: None,
-                error: None,
-            },
-        )
-        .await
-        {
-            tracing::warn!(
-                request_id = %stream_request_id,
-                record_id = %placeholder_record_id,
-                elapsed_ms = stream_entry_started.elapsed().as_millis(),
-                error = message,
-                "Speech stream startup event delivery failed"
-            );
-            mark_failed(message.to_string()).await;
-            return;
-        }
-
         let mut total_samples = 0usize;
         let mut audio_duration_secs = 0.0f32;
         let mut total_tokens = 0usize;
@@ -1710,43 +1724,30 @@ async fn stream_record_creation(
                 // Terminal-only chunks carry committed frame counts and execution
                 // time; metadata must be consumed even when no PCM remains.
                 request_statistics.observe(&chunk);
-                if chunk.samples.is_empty() {
-                    continue;
-                }
-
-                let chunk_sample_rate = chunk.sample_rate_or(fallback_sample_rate).max(1);
-                match merged_sample_rate {
-                    Some(expected) if expected != chunk_sample_rate => {
-                        let message = format!(
-                            "Streaming sample rate changed from {expected} Hz to {chunk_sample_rate} Hz"
+                let chunk_sample_rate = match prepare_stream_pcm(
+                    &event_tx,
+                    &stream_request_id,
+                    &chunk,
+                    fallback_sample_rate,
+                    &mut merged_sample_rate,
+                )
+                .await
+                {
+                    Ok(Some(sample_rate)) => sample_rate,
+                    Ok(None) => continue,
+                    Err(message) => {
+                        tracing::warn!(
+                            request_id = %stream_request_id,
+                            record_id = %placeholder_record_id,
+                            elapsed_ms = stream_entry_started.elapsed().as_millis(),
+                            error = %message,
+                            "Speech stream format initialization failed"
                         );
-                        let _ = send_stream_event(
-                            &event_tx,
-                            SpeechStreamEvent {
-                                event: "error",
-                                timing: None,
-                                request_id: Some(stream_request_id.clone()),
-                                sequence: None,
-                                audio_base64: None,
-                                sample_count: None,
-                                sample_rate: None,
-                                audio_format: None,
-                                tokens_generated: None,
-                                generation_time_ms: None,
-                                audio_duration_secs: None,
-                                rtf: None,
-                                record: None,
-                                error: Some(message.clone()),
-                            },
-                        )
-                        .await;
                         encoding_failed = true;
                         failure_message = Some(message);
                         break;
                     }
-                    None => merged_sample_rate = Some(chunk_sample_rate),
-                    _ => {}
-                }
+                };
 
                 total_samples += chunk.samples.len();
                 audio_duration_secs += chunk.samples.len() as f32 / chunk_sample_rate as f32;
@@ -2372,6 +2373,89 @@ fn map_media_ingest_error(err: MediaIngestError) -> ApiError {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn stream_start_uses_first_pcm_rate_once_across_requests() {
+        for explicit_rate in [Some(44_100), None] {
+            let (sender, mut receiver) = mpsc::channel(4);
+            let event_tx = StreamEventSender {
+                sender,
+                budget: crate::speech_resource_budget::ByteBudget::new(4096),
+            };
+            let mut merged_rate = None;
+            // Metadata-only chunks must not start playback at a fallback rate.
+            let empty = AudioChunk::final_chunk("first".into(), 0, Vec::new());
+            assert_eq!(
+                prepare_stream_pcm(&event_tx, "stream", &empty, 24_000, &mut merged_rate)
+                    .await
+                    .unwrap(),
+                None
+            );
+            assert!(receiver.try_recv().is_err());
+            let mut first = AudioChunk::new("first".into(), 0, vec![0.25; 2048]);
+            if let Some(rate) = explicit_rate {
+                first = first.with_sample_rate(rate);
+            }
+            let rate = prepare_stream_pcm(&event_tx, "stream", &first, 24_000, &mut merged_rate)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(rate, explicit_rate.unwrap_or(24_000));
+            let event = receiver.recv().await.unwrap();
+            let start: serde_json::Value =
+                serde_json::from_str(event.payload.strip_prefix("data: ").unwrap().trim()).unwrap();
+            assert_eq!(start["event"], "start");
+            assert_eq!(start["sample_rate"], rate);
+            assert_eq!(start["audio_format"], "pcm_i16");
+            // Playback and the finalized WAV must interpret these same samples
+            // at the same rate; otherwise pitch and duration diverge.
+            let wav = AudioEncoder::new(rate, 1)
+                .encode(&first.samples, AudioFormat::Wav)
+                .unwrap();
+            let wav_rate = u32::from_le_bytes(wav[24..28].try_into().unwrap());
+            assert_eq!(start["sample_rate"], wav_rate);
+            assert_eq!(merged_rate, Some(rate));
+            let next = AudioChunk::new("second".into(), 0, vec![0.25; 2048]).with_sample_rate(rate);
+            assert_eq!(
+                prepare_stream_pcm(&event_tx, "stream", &next, 24_000, &mut merged_rate)
+                    .await
+                    .unwrap(),
+                Some(rate)
+            );
+            assert!(
+                receiver.try_recv().is_err(),
+                "split requests must not restart playback"
+            );
+            let changed = next.with_sample_rate(48_000);
+            assert!(
+                prepare_stream_pcm(&event_tx, "stream", &changed, 24_000, &mut merged_rate)
+                    .await
+                    .unwrap_err()
+                    .contains("Streaming sample rate changed")
+            );
+            assert_eq!(merged_rate, Some(rate));
+            assert!(receiver.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_start_delivery_failure_does_not_commit_format() {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+        let event_tx = StreamEventSender {
+            sender,
+            budget: crate::speech_resource_budget::ByteBudget::new(4096),
+        };
+        let mut merged_rate = None;
+        let chunk = AudioChunk::new("request".into(), 0, vec![0.25]).with_sample_rate(44_100);
+        assert_eq!(
+            prepare_stream_pcm(&event_tx, "stream", &chunk, 24_000, &mut merged_rate)
+                .await
+                .unwrap_err(),
+            STREAM_CLIENT_DISCONNECTED_MESSAGE
+        );
+        assert_eq!(merged_rate, None);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn sse_keepalive_survives_idle_preparation_then_delivers_data_and_eof() {
         use futures::StreamExt;
