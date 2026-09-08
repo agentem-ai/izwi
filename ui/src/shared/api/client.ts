@@ -34,6 +34,7 @@ const audioMethodNames = [
   "getTextToSpeechRecord",
   "createTextToSpeechRecord",
   "createTextToSpeechRecordStream",
+  "attachTextToSpeechRecordStream",
   "cancelTextToSpeechRecord",
   "textToSpeechRecordAudioUrl",
   "deleteTextToSpeechRecord",

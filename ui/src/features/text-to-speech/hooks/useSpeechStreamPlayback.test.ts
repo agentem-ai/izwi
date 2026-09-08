@@ -3,10 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SpeechHistoryRecord, SpeechHistoryRecordStreamCallbacks } from "@/api";
 import { useSpeechStreamPlayback } from "./useSpeechStreamPlayback";
 
-const mocks = vi.hoisted(() => ({ create: vi.fn(), cancel: vi.fn(), unlock: vi.fn(),
+const mocks = vi.hoisted(() => ({ create: vi.fn(), attach: vi.fn(), cancel: vi.fn(), unlock: vi.fn(),
   start: vi.fn(), push: vi.fn(), finish: vi.fn(), stop: vi.fn() }));
 vi.mock("@/api", () => ({ api: {
-  createTextToSpeechRecordStream: mocks.create, cancelTextToSpeechRecord: mocks.cancel,
+  createTextToSpeechRecordStream: mocks.create, attachTextToSpeechRecordStream: mocks.attach, cancelTextToSpeechRecord: mocks.cancel,
 } }));
 vi.mock("../pcmPlayer", () => ({ SpeechPcmPlayer: class {
   unlock = mocks.unlock; start = mocks.start; push = mocks.push;
@@ -57,6 +57,23 @@ describe("route-owned speech stream", () => {
     expect(mocks.finish).not.toHaveBeenCalled();
   });
 
+  it("unlocks replay on the listen gesture before attaching to an existing job", async () => {
+    mocks.attach.mockImplementation((_id, callbacks) => {
+      events = callbacks;
+      controller = new AbortController();
+      callbacks.onDurable?.();
+      callbacks.onCreated?.(record);
+      return controller;
+    });
+    const { result } = renderHook(() => useSpeechStreamPlayback("record", {}));
+    await act(async () => { await result.current.listen(record); });
+    expect(mocks.create).not.toHaveBeenCalled();
+    expect(mocks.attach).toHaveBeenCalledWith("record", expect.any(Object));
+    expect(mocks.unlock.mock.invocationCallOrder[0]).toBeLessThan(mocks.attach.mock.invocationCallOrder[0]);
+    act(() => result.current.stop());
+    expect(mocks.cancel).toHaveBeenCalledWith("record");
+  });
+
   it("keeps final queued audio playing and does not cancel completed history on unmount", async () => {
     const onFinal = vi.fn();
     const { result, unmount } = renderHook(() => useSpeechStreamPlayback(undefined, { onFinal }));
@@ -84,6 +101,39 @@ describe("route-owned speech stream", () => {
     expect(mocks.cancel).toHaveBeenCalledWith("record");
     await act(async () => { await events.onChunk?.({ requestId: "request", sequence: 0, sampleCount: 1, audioBase64: "AAA=" }); });
     expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it("detaches durable playback on navigation without cancelling the job", async () => {
+    const { result, rerender } = renderHook(({ id }: { id?: string }) => useSpeechStreamPlayback(id, {}), {
+      initialProps: { id: undefined as string | undefined },
+    });
+    await begin(result);
+    act(() => events.onDurable?.());
+    rerender({ id: "record" });
+    rerender({ id: "another" });
+    expect(controller.signal.aborted).toBe(true);
+    expect(mocks.cancel).not.toHaveBeenCalled();
+  });
+
+  it("explicit stop cancels durable generation and exposes segment progress", async () => {
+    const { result } = renderHook(() => useSpeechStreamPlayback(undefined, {}));
+    await begin(result);
+    act(() => {
+      events.onDurable?.();
+      events.onProgress?.({ completedSegments: 2, totalSegments: 10, processedTextBytes: 400 });
+    });
+    expect(result.current.progress?.completedSegments).toBe(2);
+    act(() => result.current.stop());
+    expect(mocks.cancel).toHaveBeenCalledWith("record");
+  });
+
+  it("a durable playback failure leaves generation running", async () => {
+    const { result } = renderHook(() => useSpeechStreamPlayback(undefined, {}));
+    await begin(result);
+    act(() => { events.onDurable?.(); events.onError?.("Network disconnected"); });
+    expect(result.current.error).toBe("Network disconnected");
+    expect(controller.signal.aborted).toBe(true);
+    expect(mocks.cancel).not.toHaveBeenCalled();
   });
 
   it("cancels navigation while waiting for the created event and ignores its late response", async () => {

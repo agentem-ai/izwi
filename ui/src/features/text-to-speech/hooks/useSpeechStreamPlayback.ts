@@ -9,6 +9,7 @@ interface Session {
   recordId?: string;
   originRecordId?: string;
   final: boolean;
+  durable: boolean;
   reject: (error: Error) => void;
 }
 
@@ -21,6 +22,7 @@ export function useSpeechStreamPlayback(
   const callbacksRef = useRef(callbacks);
   useLayoutEffect(() => { callbacksRef.current = callbacks; }, [callbacks]);
   const [status, setStatus] = useState<"idle" | "generating" | "playing">("idle");
+  const [progress, setProgress] = useState<{ completedSegments: number; totalSegments: number; processedTextBytes: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const dispose = useCallback((cancelGeneration: boolean, reason = "Speech generation was stopped.") => {
@@ -40,21 +42,22 @@ export function useSpeechStreamPlayback(
     setStatus("idle");
   }, [dispose]);
 
-  useEffect(() => () => dispose(true), [dispose]);
+  useEffect(() => () => dispose(!session.current?.durable), [dispose]);
   useEffect(() => {
     const current = session.current;
-    if (current && (current.recordId ?? current.originRecordId) !== recordId) stop();
+    if (current && (current.recordId ?? current.originRecordId) !== recordId) stop(!current.durable);
   }, [recordId, stop]);
 
-  const create = useCallback((request: SpeechHistoryRecordCreateRequest) => {
-    dispose(true);
+  const begin = useCallback((request?: SpeechHistoryRecordCreateRequest, existingRecord?: SpeechHistoryRecord) => {
+    dispose(!session.current?.durable);
+    setProgress(null);
     setError(null);
     setStatus("generating");
     return new Promise<SpeechHistoryRecord>((resolve, reject) => {
       let current: Session;
       const fail = (message: string) => {
         if (session.current !== current) return;
-        dispose(true, message);
+        dispose(!current.durable, message);
         setStatus("idle");
         setError(message);
         callbacksRef.current.onError?.(message);
@@ -67,12 +70,26 @@ export function useSpeechStreamPlayback(
           current.player.stop();
           setStatus("idle");
         });
-        current = { player, final: false, reject, originRecordId: recordId };
+        current = { player, final: false, durable: !!existingRecord, recordId: existingRecord?.id, reject, originRecordId: recordId };
         session.current = current;
         // resume() must run on the original user gesture, not in onStart.
         const unlocked = player.unlock();
         void unlocked.catch(() => fail("Browser audio playback could not start."));
-        current.controller = api.createTextToSpeechRecordStream(request, {
+        const events: SpeechHistoryRecordStreamCallbacks = {
+          onDurable: () => {
+            if (session.current !== current) return;
+            current.durable = true;
+            callbacksRef.current.onDurable?.();
+          },
+          onProgress: (value) => {
+            if (session.current !== current) return;
+            setProgress(value);
+            callbacksRef.current.onProgress?.(value);
+          },
+          onReconnecting: (attempt) => {
+            if (session.current !== current) return;
+            callbacksRef.current.onReconnecting?.(attempt);
+          },
           onCreated: (record) => {
             if (session.current !== current) return;
             current.recordId = record.id;
@@ -108,16 +125,22 @@ export function useSpeechStreamPlayback(
             if (!current.final) fail("Speech stream ended before generation completed.");
             else callbacksRef.current.onDone?.();
           },
-        });
+        };
+        current.controller = existingRecord
+          ? api.attachTextToSpeechRecordStream(existingRecord.id, events)
+          : api.createTextToSpeechRecordStream(request!, events);
         // Also handle synchronous transport callbacks used by adapters and tests.
         if (session.current !== current) current.controller?.abort();
       } catch (err) {
-        dispose(true);
+        dispose(!session.current?.durable);
         setStatus("idle");
         reject(err);
       }
     });
   }, [dispose, recordId]);
 
-  return { create, stop, status, error };
+  const create = useCallback((request: SpeechHistoryRecordCreateRequest) => begin(request), [begin]);
+  const listen = useCallback((record: SpeechHistoryRecord) => begin(undefined, record), [begin]);
+
+  return { create, listen, stop, status, error, progress };
 }

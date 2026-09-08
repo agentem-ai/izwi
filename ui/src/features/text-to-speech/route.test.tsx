@@ -15,6 +15,7 @@ const apiMocks = vi.hoisted(() => ({
   deleteTextToSpeechRecord: vi.fn(),
   createTextToSpeechRecord: vi.fn(),
   createTextToSpeechRecordStream: vi.fn(),
+  attachTextToSpeechRecordStream: vi.fn(),
   listSavedVoices: vi.fn(),
   downloadAudioFile: vi.fn(),
   cancelTextToSpeechRecord: vi.fn(),
@@ -67,6 +68,7 @@ vi.mock("@/api", () => ({
     deleteTextToSpeechRecord: apiMocks.deleteTextToSpeechRecord,
     createTextToSpeechRecord: apiMocks.createTextToSpeechRecord,
     createTextToSpeechRecordStream: apiMocks.createTextToSpeechRecordStream,
+    attachTextToSpeechRecordStream: apiMocks.attachTextToSpeechRecordStream,
     listSavedVoices: apiMocks.listSavedVoices,
     downloadAudioFile: apiMocks.downloadAudioFile,
     cancelTextToSpeechRecord: apiMocks.cancelTextToSpeechRecord,
@@ -237,6 +239,7 @@ describe("TextToSpeechPage", () => {
       }));
     });
     apiMocks.cancelTextToSpeechRecord.mockReset().mockResolvedValue({ record: buildRecord() });
+    apiMocks.attachTextToSpeechRecordStream.mockReset();
     apiMocks.listTextToSpeechRecords.mockReset();
     apiMocks.listTextToSpeechRecordPage.mockReset();
     apiMocks.getTextToSpeechRecord.mockReset();
@@ -952,13 +955,43 @@ describe("TextToSpeechPage", () => {
     );
   });
 
+  it("lets a reloaded Fish record attach playback from the beginning without creating a job", async () => {
+    const record = buildRecord({ id: "existing-fish", model_id: "FishAudio-S2-Pro", processing_status: "processing" });
+    apiMocks.getTextToSpeechRecord.mockResolvedValue(record);
+    const controller = new AbortController();
+    let events!: SpeechHistoryRecordStreamCallbacks;
+    apiMocks.attachTextToSpeechRecordStream.mockImplementation((_id, callbacks) => {
+      events = callbacks;
+      callbacks.onDurable?.();
+      callbacks.onCreated?.(record);
+      return controller;
+    });
+    renderRoute("/text-to-speech/existing-fish", {}, true);
+    const listen = await screen.findByRole("button", { name: "Listen from beginning" });
+    expect(apiMocks.attachTextToSpeechRecordStream).not.toHaveBeenCalled();
+    fireEvent.click(listen);
+    expect(apiMocks.attachTextToSpeechRecordStream).toHaveBeenCalledWith("existing-fish", expect.any(Object));
+    expect(apiMocks.createTextToSpeechRecordStream).not.toHaveBeenCalled();
+    await act(async () => {
+      events.onStart?.({ requestId: "existing-fish", sampleRate: 44100, audioFormat: "pcm_i16" });
+      await events.onChunk?.({ requestId: "existing-fish", sequence: 0, sampleCount: 1, audioBase64: "AAA=" });
+    });
+    expect(screen.getByText("Playing generated speech")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back to history" }));
+    expect(controller.signal.aborted).toBe(true);
+    expect(apiMocks.cancelTextToSpeechRecord).not.toHaveBeenCalled();
+  });
+
   it.each([
-    { withLayout: false, leave: false },
-    { withLayout: true, leave: false },
-    { withLayout: true, leave: true },
-  ])("keeps streaming through created navigation (layout: $withLayout, leave: $leave)", async ({ withLayout, leave }) => {
+    { withLayout: false, leave: false, durable: false },
+    { withLayout: true, leave: false, durable: false },
+    { withLayout: true, leave: true, durable: false },
+    { withLayout: true, leave: true, durable: true },
+    { withLayout: true, leave: false, durable: true },
+  ])("keeps streaming through created navigation (layout: $withLayout, leave: $leave, durable: $durable)", async ({ withLayout, leave, durable }) => {
     let streamEvents!: SpeechHistoryRecordStreamCallbacks;
     const controller = new AbortController();
+    if (durable) apiMocks.listTextToSpeechRecords.mockResolvedValue([buildSummary({ id: "tts-created-1", input_preview: "Durable narration" })]);
     apiMocks.getTextToSpeechRecord.mockResolvedValue(
       buildRecord({
         id: "tts-created-1",
@@ -968,6 +1001,7 @@ describe("TextToSpeechPage", () => {
     apiMocks.createTextToSpeechRecordStream.mockImplementation(
       (_request, callbacks) => {
         streamEvents = callbacks;
+        if (durable) callbacks.onDurable?.();
         callbacks.onCreated?.(
           buildRecord({
             id: "tts-created-1",
@@ -1012,7 +1046,19 @@ describe("TextToSpeechPage", () => {
       name: leave ? "Back to history" : "Stop generation and playback",
     }));
     expect(controller.signal.aborted).toBe(true);
-    expect(apiMocks.cancelTextToSpeechRecord).toHaveBeenCalledWith("tts-created-1");
+    if (durable && leave) {
+      expect(apiMocks.cancelTextToSpeechRecord).not.toHaveBeenCalled();
+      // Returning to the record must not revive stale transport callbacks or
+      // send a cancellation while the durable worker continues independently.
+      fireEvent.click(await screen.findByText("Durable narration"));
+      expect(await screen.findByRole("heading", { name: "Text-to-Speech Record" })).toBeInTheDocument();
+      expect(apiMocks.createTextToSpeechRecordStream).toHaveBeenCalledOnce();
+      await act(async () => { streamEvents.onError?.("late disconnected callback"); });
+      expect(apiMocks.cancelTextToSpeechRecord).not.toHaveBeenCalled();
+      expect(screen.queryByText("late disconnected callback")).not.toBeInTheDocument();
+    } else {
+      expect(apiMocks.cancelTextToSpeechRecord).toHaveBeenCalledWith("tts-created-1");
+    }
   });
 
   it("navigates to /text-to-speech/:id when stream emits final without created", async () => {

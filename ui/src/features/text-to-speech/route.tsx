@@ -423,10 +423,17 @@ export function TextToSpeechPage({
       {playback.status !== "idle" && (
         <div role="status" className="flex items-center justify-between gap-3 rounded-md border p-3">
           <span>{playback.status === "playing" ? "Playing generated speech" : "Waiting for first audio"}</span>
+          {playback.progress && <span role="status">{playback.progress.completedSegments} of {playback.progress.totalSegments} sections generated</span>}
           <Button variant="outline" size="sm" onClick={() => playback.stop()}>Stop generation and playback</Button>
         </div>
       )}
       {playback.error && <p role="alert" className="text-sm text-destructive">{playback.error}</p>}
+      {playback.status === "idle" && visibleRecord?.model_id === "FishAudio-S2-Pro" &&
+        (visibleRecord.processing_status === "pending" || visibleRecord.processing_status === "processing") && (
+        <Button variant="outline" onClick={() => { void playback.listen(visibleRecord).catch(() => {}); }}>
+          Listen from beginning
+        </Button>
+      )}
       {recordId ? (
         <>
           <PageHeader
