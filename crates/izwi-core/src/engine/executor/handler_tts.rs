@@ -1513,6 +1513,11 @@ impl NativeExecutor {
                 state,
                 last_frames_generated: 0,
                 stream_sequence: 0,
+                codec: Default::default(),
+                audio_samples: Vec::new(),
+                codec_ms: 0.0,
+                execution_started: Instant::now(),
+                first_audio_ms: None,
             })?;
             checkpoint
         } else {
@@ -1521,6 +1526,7 @@ impl NativeExecutor {
                 .state
                 .begin_managed_quantum(slow)?
         };
+        let sampling_before = lease.require_state_mut()?.state.sampling_and_steps().0;
         lease.mark_dirty();
         let result = (|| {
             let active = lease.require_state_mut()?;
@@ -1595,7 +1601,21 @@ impl NativeExecutor {
         let frames_generated = active.state.frames_generated();
         let generated = frames_generated.saturating_sub(active.last_frames_generated);
         active.last_frames_generated = frames_generated;
-        let codec_ready = matches!(step, Some(FishS2RetainedStep::Finished { .. }));
+        let pending_frames = frames_generated.saturating_sub(active.codec.decoded_frames());
+        let threshold = if active.codec.decoded_frames() == 0 {
+            crate::models::architectures::fish_s2::FISH_S2_FIRST_AUDIO_FRAMES
+        } else {
+            crate::models::architectures::fish_s2::FISH_S2_AUDIO_CHUNK_FRAMES
+        };
+        let audio_ready =
+            pending_frames >= threshold || (active.state.finished() && pending_frames > 0);
+        let codec_ready = active.state.finished() && pending_frames == 0;
+        let timing = fish_execution_timing(
+            active,
+            0.0,
+            active.state.sampling_and_steps().0 - sampling_before,
+            active.first_audio_ms,
+        );
         let sample_rate = model.diagnostics().sample_rate;
         lease.mark_clean();
         lease.restore()?;
@@ -1607,16 +1627,120 @@ impl NativeExecutor {
             tokens_processed: scheduled.num_tokens,
             tokens_generated: generated,
             finished: false,
-            phase_timing_override: None,
+            phase_timing_override: Some(timing),
             asr_diagnostics: None,
             error: None,
         };
-        let result = if codec_ready {
+        let result = if audio_ready {
+            ModelSessionResult::yielded(
+                output,
+                crate::engine::YieldReason::AwaitingAudioDecode {
+                    max_frames: pending_frames
+                        .min(crate::models::architectures::fish_s2::FISH_S2_AUDIO_CHUNK_FRAMES),
+                },
+            )
+        } else if codec_ready {
             ModelSessionResult::yielded(output, crate::engine::YieldReason::AwaitingFinalization)
         } else {
             ModelSessionResult::sequence(output)
         };
         Ok(result.with_managed_cache_completions(completions))
+    }
+
+    pub(super) fn fish_s2_tts_audio_decode_request(
+        &self,
+        request: &EngineCoreRequest,
+        scheduled: &ScheduledRequest,
+    ) -> Result<ModelSessionResult> {
+        let crate::engine::WorkUnit::SequenceAudioDecode { max_frames } = scheduled.work else {
+            return Err(Error::InvalidInput(
+                "Fish codec requires audio decode work".into(),
+            ));
+        };
+        check_fish_codec_request(request)?;
+        let variant = Self::resolve_variant(request)?;
+        let model = request
+            .prepared_fish_s2_tts_model_lease_for_executor()?
+            .ok_or_else(|| Error::InferenceError("Fish codec lost model binding".into()))?;
+        let mut lease = ExecutorStateLease::checkout(
+            &self.fish_s2_tts_decode_states,
+            scheduled.session_key(),
+            variant,
+            "Fish streaming codec",
+        )?;
+        let active = lease.require_state_mut()?;
+        if active.variant != variant || !Arc::ptr_eq(&active.model.model_arc(), &model.model_arc())
+        {
+            return Err(Error::InferenceError(
+                "Fish codec crossed its model fence".into(),
+            ));
+        }
+        // Retain the committed codec snapshot until work and staged delivery succeed.
+        let mut codec = active.codec.clone();
+        let started = Instant::now();
+        let samples =
+            model.decode_retained_audio_chunk(&active.state, &mut codec, max_frames, &|| {
+                check_fish_codec_request(request)
+            })?;
+        check_fish_codec_request(request)?;
+        let sample_rate = model.diagnostics().sample_rate;
+        let mut sequence = active.stream_sequence;
+        if let Some(tx) = Self::stream_sender(request) {
+            Self::stream_audio_with_policy(
+                &tx,
+                request.stream_policy,
+                &request.id,
+                &mut sequence,
+                samples.clone(),
+                sample_rate,
+                false,
+            )?;
+        }
+        let pending = active
+            .state
+            .frames_generated()
+            .saturating_sub(codec.decoded_frames());
+        let done = active.state.finished();
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let first_audio_ms = active
+            .first_audio_ms
+            .or_else(|| Some(active.execution_started.elapsed().as_secs_f64() * 1000.0));
+        let timing = fish_execution_timing(active, elapsed_ms, 0.0, first_audio_ms);
+        self.fish_s2_pending.stage(
+            scheduled.plan_id,
+            scheduled.session_key(),
+            lease,
+            super::FishCodecCommit {
+                codec,
+                samples,
+                stream_sequence: sequence,
+                codec_ms: elapsed_ms,
+                first_audio_ms,
+            },
+        )?;
+        let output = ExecutorOutput {
+            request_id: request.id.clone(),
+            audio: Some(AudioOutput::new(Vec::new(), sample_rate)),
+            text: None,
+            input_transcription: None,
+            tokens_processed: 0,
+            tokens_generated: 0,
+            finished: false,
+            phase_timing_override: Some(timing),
+            asr_diagnostics: None,
+            error: None,
+        };
+        let reason = if pending > 0 {
+            crate::engine::YieldReason::AwaitingAudioDecode {
+                max_frames: pending
+                    .min(crate::models::architectures::fish_s2::FISH_S2_AUDIO_CHUNK_FRAMES),
+            }
+        } else if done {
+            crate::engine::YieldReason::AwaitingFinalization
+        } else {
+            crate::engine::YieldReason::QuantumExhausted
+        };
+        Ok(ModelSessionResult::yielded(output, reason).requiring_pending_quantum())
     }
 
     pub(super) fn fish_s2_tts_finalize_request(
@@ -1655,33 +1779,41 @@ impl NativeExecutor {
                 "Fish S2 codec crossed its model fence".into(),
             ));
         }
-        // Decoding is read-only with respect to committed AR state, so a failed
-        // or cancelled codec quantum cannot publish or partially mutate it.
-        let output = model.finalize_retained_state_with_cancel(&active.state, &|| {
-            if request.is_cancelled() {
-                return Err(Error::Cancelled(request.id.clone()));
-            }
-            if request
-                .deadline
-                .is_some_and(|deadline| Instant::now() >= deadline)
-            {
-                return Err(Error::Timeout(request.id.clone()));
-            }
-            Ok(())
-        })?;
-        if request.is_cancelled() {
-            return Err(Error::Cancelled(request.id.clone()));
+        if active.state.frames_generated() == 0
+            || !active.state.finished()
+            || active.codec.decoded_frames() != active.state.frames_generated()
+        {
+            return Err(Error::InferenceError(
+                "Fish finalization has undecoded frames".into(),
+            ));
         }
+        check_fish_codec_request(request)?;
+        let _tail = active.codec.flush();
+        let sample_rate = model.diagnostics().sample_rate;
+        let timing = fish_execution_timing(active, 0.0, 0.0, active.first_audio_ms);
+        active.state.trace_timings(&request.id, active.codec_ms);
+        if let Some(tx) = Self::stream_sender(request) {
+            Self::stream_audio_with_policy(
+                &tx,
+                request.stream_policy,
+                &request.id,
+                &mut active.stream_sequence,
+                Vec::new(),
+                sample_rate,
+                true,
+            )?;
+        }
+        let samples = std::mem::take(&mut active.audio_samples);
         lease.release()?;
         Ok(ModelSessionResult::sequence(ExecutorOutput {
             request_id: request.id.clone(),
-            audio: Some(AudioOutput::new(output.samples, output.sample_rate)),
+            audio: Some(AudioOutput::new(samples, sample_rate)),
             text: None,
             input_transcription: None,
             tokens_processed: 0,
             tokens_generated: 0,
             finished: true,
-            phase_timing_override: None,
+            phase_timing_override: Some(timing),
             asr_diagnostics: None,
             error: None,
         }))
@@ -3856,5 +3988,38 @@ mod tests {
             error.to_string().contains("production limit"),
             "unexpected reference bound error: {error}"
         );
+    }
+}
+
+fn check_fish_codec_request(request: &EngineCoreRequest) -> Result<()> {
+    if request.is_cancelled() {
+        return Err(Error::Cancelled(request.id.clone()));
+    }
+    if request
+        .deadline
+        .is_some_and(|deadline| Instant::now() >= deadline)
+    {
+        return Err(Error::Timeout(request.id.clone()));
+    }
+    Ok(())
+}
+
+fn fish_execution_timing(
+    active: &ActiveFishS2TtsDecode,
+    codec_ms: f64,
+    sampling_ms: f64,
+    first_audio_ms: Option<f64>,
+) -> super::ExecutorPhaseTiming {
+    let (prefill_ms, decode_ms) = active.state.phase_timings();
+    let (_, prefill_steps, decode_steps) = active.state.sampling_and_steps();
+    super::ExecutorPhaseTiming {
+        prefill_ms: Some(prefill_ms),
+        decode_ms: Some(decode_ms),
+        sampling_ms: Some(sampling_ms),
+        codec_ms: Some(codec_ms),
+        prefill_steps: Some(prefill_steps),
+        decode_steps: Some(decode_steps),
+        first_output_ms_since_start: first_audio_ms,
+        ..Default::default()
     }
 }

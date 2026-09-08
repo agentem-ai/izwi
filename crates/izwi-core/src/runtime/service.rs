@@ -3370,7 +3370,7 @@ impl RuntimeService {
                 .max_tokens
                 .clamp(1, ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES);
             let output_bytes = (frames as u64)
-                .checked_mul(2048 * 4)
+                .checked_mul(2048 * 4 * 3)
                 .ok_or_else(|| Error::Overloaded("Fish S2 output reservation overflow".into()))?;
             let mut output = ResourceVector::zero();
             match self.backend_router.context().backend_kind {
@@ -3380,6 +3380,19 @@ impl RuntimeService {
                 }
             }
             spec.resources = spec.resources.checked_add(output)?;
+            // Current history and immutable rollback history coexist during a push.
+            let history_bytes =
+                crate::models::architectures::fish_s2::dac::FishS2DacConfig::current()
+                    .streaming_history_bound_bytes()?
+                    .checked_mul(2)
+                    .ok_or_else(|| {
+                        Error::Overloaded("Fish codec history reservation overflow".into())
+                    })?;
+            spec.resources = spec.resources.checked_add(asr_encoder_retained_resources(
+                self.backend_router.context().backend_kind,
+                0,
+                history_bytes,
+            )?)?;
         }
         if request.task_type == TaskType::Chat && !request.chat_config.media_inputs.is_empty() {
             if !request

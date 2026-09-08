@@ -41,7 +41,7 @@ const GRANITE_SPEECH_ASR_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::n
 const LFM25_AUDIO_ASR_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(23);
 const LFM25_AUDIO_TTS_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(24);
 const VIBEVOICE_TTS_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(26);
-const FISH_S2_TTS_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(28);
+const FISH_S2_TTS_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(29);
 const VOXTRAL_TTS_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(28);
 const PARAKEET_ASR_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(28);
 pub(crate) const VOXTRAL_REALTIME_ADAPTER_ABI: AdapterAbiRevision =
@@ -2744,9 +2744,30 @@ impl LoadedExecutionAdapter for FishS2TtsExecutionAdapter {
         finalize.max_batch_size = 1;
         finalize.concurrency = ConcurrencyClass::Exclusive;
         finalize.max_work_units = 1;
-        finalize.max_workspace_bytes =
-            crate::models::architectures::fish_s2::codec::maximum_decode_workspace_bytes()?;
-        for stage in [&mut preparation, &mut prefill, &mut decode, &mut finalize] {
+        finalize.max_workspace_bytes = 0;
+        let mut audio_decode = StageDescriptor::from_execution_profile(
+            StageId::new(4),
+            crate::models::architectures::fish_s2::FISH_S2_TTS_AUDIO_DECODE_STAGE,
+            &profile,
+            NativeBatchMode::None,
+        );
+        audio_decode.selector = StageWorkSelector::SequenceAudioDecode;
+        audio_decode.progress = StageProgressKind::Iterative;
+        audio_decode.shape_policy = StageShapePolicy::Exact;
+        audio_decode.concurrency = ConcurrencyClass::Exclusive;
+        audio_decode.max_work_units =
+            crate::models::architectures::fish_s2::FISH_S2_AUDIO_CHUNK_FRAMES as u64;
+        audio_decode.max_workspace_bytes =
+            crate::models::architectures::fish_s2::codec::streaming_decode_workspace_bytes(
+                crate::models::architectures::fish_s2::FISH_S2_AUDIO_CHUNK_FRAMES,
+            )?;
+        for stage in [
+            &mut preparation,
+            &mut prefill,
+            &mut decode,
+            &mut finalize,
+            &mut audio_decode,
+        ] {
             stage.output_visibility = OutputVisibility::AfterQuantumCommit;
             stage.validate()?;
         }
@@ -2757,7 +2778,7 @@ impl LoadedExecutionAdapter for FishS2TtsExecutionAdapter {
             adapter_abi_revision: self.adapter_abi_revision(),
             metadata: self.metadata,
             execution_profile: profile,
-            stages: Arc::from([preparation, prefill, decode, finalize]),
+            stages: Arc::from([preparation, prefill, decode, finalize, audio_decode]),
         })
     }
 }
@@ -6873,7 +6894,7 @@ mod tests {
             .iter()
             .find(|contract| contract.execution_profile.mode == ExecutionMode::Sequence)
             .unwrap();
-        assert_eq!(retained.stages.len(), 4);
+        assert_eq!(retained.stages.len(), 5);
         let finalize = retained
             .stages
             .iter()

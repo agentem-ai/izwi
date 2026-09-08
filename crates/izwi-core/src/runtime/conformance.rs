@@ -9,7 +9,7 @@ use crate::catalog::{CudaSupportLevel, ModelFamily, ModelVariant};
 use super::adapters::{CapabilityKind, RuntimeAdapterRegistry};
 
 pub(crate) const EXPECTED_CATALOG_VARIANT_COUNT: usize = 51;
-pub(crate) const EXPECTED_CATALOG_CAPABILITY_BINDING_COUNT: usize = 74;
+pub(crate) const EXPECTED_CATALOG_CAPABILITY_BINDING_COUNT: usize = 75;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ConformanceCapability {
@@ -379,7 +379,7 @@ fn retained_state_expectation(
             _ => unexpected_capability(variant, capability),
         },
         ModelFamily::FishS2Tts => match capability {
-            Capability::Tts => Stateless,
+            Capability::Tts | Capability::StreamingTts => Stateless,
             _ => unexpected_capability(variant, capability),
         },
         ModelFamily::VoxtralTts => match capability {
@@ -613,7 +613,7 @@ mod tests {
                 .iter()
                 .filter(|case| case.retained_state == Stateless)
                 .count(),
-            17
+            18
         );
 
         assert_eq!(

@@ -91,7 +91,7 @@ fn certified_topology(
         (KokoroTts, Tts | StreamingTts) => Stateless,
         (VoxtralTts, Tts) => InvocationPaged,
         (VibeVoiceTts, Tts) => RetainedPagedPagedTensorAndInvocationPagedPagedTensor,
-        (FishS2Tts, Tts) => RetainedPagedAndInvocationPaged,
+        (FishS2Tts, Tts | StreamingTts) => RetainedPagedAndInvocationPaged,
 
         // Qwen ASR commits decoder pages and immutable prepared inputs under
         // one retained transaction; long-form leases invocation pages only.

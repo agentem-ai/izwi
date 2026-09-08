@@ -1,7 +1,8 @@
 use super::*;
 use crate::engine::{ExecutionAdapterBinding, StageDescriptor, StageWorkSelector};
 use crate::models::architectures::fish_s2::{
-    codec::decode_workspace_bytes, FishS2GenerationParams, FishS2PreparedArtifact, FishS2TtsModel,
+    codec::streaming_decode_workspace_bytes, FishS2GenerationParams, FishS2PreparedArtifact,
+    FishS2TtsModel,
 };
 use crate::models::registry::FishS2TtsModelLease;
 use crate::runtime::{CapabilityKind, LoadedModelBundleDraft, RuntimeAdapterRegistry};
@@ -43,7 +44,7 @@ fn loaded_binding(backend: BackendKind) -> (ExecutionAdapterBinding, StageDescri
     let stage = contract
         .stages
         .iter()
-        .find(|stage| stage.selector == StageWorkSelector::SequenceFinalize)
+        .find(|stage| stage.selector == StageWorkSelector::SequenceAudioDecode)
         .unwrap()
         .clone();
     (contract.adapter_binding().unwrap(), stage)
@@ -56,9 +57,7 @@ fn finalize_cost(
 ) -> Result<WorkCost> {
     EngineCore::work_cost(
         request,
-        &WorkUnit::SequenceFinalize {
-            max_output_steps: 1,
-        },
+        &WorkUnit::SequenceAudioDecode { max_frames: 1 },
         stage,
         backend,
     )
@@ -76,7 +75,7 @@ fn fish_s2_preparation_binds_then_prices_scalar_codec_on_each_backend() {
             request.bind_execution_adapter(binding).unwrap();
             request.validate_execution_preparation().unwrap();
             let cost = finalize_cost(&request, Some(&stage), backend).unwrap();
-            let bytes = decode_workspace_bytes(frames).unwrap();
+            let bytes = streaming_decode_workspace_bytes(1).unwrap();
             let mut expected = ResourceVector::zero();
             match backend {
                 BackendKind::Cpu => expected.host_bytes = ResourceAmount::Known(bytes),
@@ -161,9 +160,7 @@ fn fish_s2_codec_cost_rejects_unsupported_frame_and_work_bounds() {
     request.bind_execution_adapter(binding).unwrap();
     assert!(EngineCore::work_cost(
         &request,
-        &WorkUnit::SequenceFinalize {
-            max_output_steps: 2
-        },
+        &WorkUnit::SequenceAudioDecode { max_frames: 17 },
         Some(&stage),
         BackendKind::Cpu,
     )
@@ -232,6 +229,39 @@ fn fish_s2_exact_prompt_fits_admission_generation_and_codec_budget() {
     request.validate_execution_preparation().unwrap();
     let cost = finalize_cost(&request, Some(&stage), BackendKind::Cuda).unwrap();
     let mut workspace = ResourceVector::zero();
-    workspace.device_bytes = ResourceAmount::Known(decode_workspace_bytes(32).unwrap());
+    workspace.device_bytes = ResourceAmount::Known(streaming_decode_workspace_bytes(1).unwrap());
     assert_eq!(cost, WorkCost::with_workspace(1, 1, workspace));
+}
+
+#[test]
+fn fish_terminal_flush_never_reserves_whole_waveform_codec_work() {
+    let mut request = prepared_request(ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES);
+    let (binding, _) = loaded_binding(BackendKind::Cuda);
+    let stage = binding
+        .stages
+        .iter()
+        .find(|s| s.selector == StageWorkSelector::SequenceFinalize)
+        .unwrap()
+        .clone();
+    request.bind_execution_adapter(binding).unwrap();
+    let cost = EngineCore::work_cost(
+        &request,
+        &WorkUnit::SequenceFinalize {
+            max_output_steps: 1,
+        },
+        Some(&stage),
+        BackendKind::Cuda,
+    )
+    .unwrap();
+    assert_eq!(cost, WorkCost::with_workspace(1, 1, ResourceVector::zero()));
+    assert_eq!(stage.max_workspace_bytes, 0);
+    assert!(EngineCore::work_cost(
+        &request,
+        &WorkUnit::SequenceFinalize {
+            max_output_steps: 2
+        },
+        Some(&stage),
+        BackendKind::Cuda
+    )
+    .is_err());
 }

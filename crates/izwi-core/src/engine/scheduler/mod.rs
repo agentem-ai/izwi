@@ -579,6 +579,8 @@ struct RunningRequest {
     prefill_in_flight: bool,
     /// A committed decoder quantum requested a distinct terminal model stage.
     finalize_pending: bool,
+    audio_decode_pending: Option<usize>,
+    audio_decode_in_flight: bool,
     /// The exact finalization quantum has been planned but not yet committed.
     finalize_in_flight: bool,
     /// Scheduler-visible incremental-prefill quanta committed for this request.
@@ -750,6 +752,8 @@ impl Scheduler {
                 prefill_complete: true,
                 prefill_in_flight: false,
                 finalize_pending: false,
+                audio_decode_pending: None,
+                audio_decode_in_flight: false,
                 finalize_in_flight: false,
                 incremental_prefill_quanta_committed: 0,
                 priority: request.priority,
@@ -1047,8 +1051,9 @@ impl Scheduler {
             .running
             .iter()
             .filter(|(id, running)| {
-                running.finalize_pending
+                (running.finalize_pending || running.audio_decode_pending.is_some())
                     && !running.finalize_in_flight
+                    && !running.audio_decode_in_flight
                     && !self.realtime_sessions.contains_key(*id)
             })
             .filter_map(|(id, running)| {
@@ -1078,9 +1083,19 @@ impl Scheduler {
             }
             let plan_id = self.next_plan_id;
             self.next_plan_id = self.next_plan_id.saturating_add(1);
-            if let Some(running) = self.running.get_mut(&request_id) {
-                running.finalize_in_flight = true;
-            }
+            let work = if let Some(running) = self.running.get_mut(&request_id) {
+                if let Some(max_frames) = running.audio_decode_pending {
+                    running.audio_decode_in_flight = true;
+                    WorkUnit::SequenceAudioDecode { max_frames }
+                } else {
+                    running.finalize_in_flight = true;
+                    WorkUnit::SequenceFinalize {
+                        max_output_steps: 1,
+                    }
+                }
+            } else {
+                continue;
+            };
             result.decode_requests.push(ScheduledRequest {
                 plan_id,
                 request_id,
@@ -1088,9 +1103,7 @@ impl Scheduler {
                 num_tokens: 1,
                 is_prefill: false,
                 num_computed_tokens,
-                work: WorkUnit::SequenceFinalize {
-                    max_output_steps: 1,
-                },
+                work,
             });
             remaining_decode_budget = remaining_decode_budget.saturating_sub(1);
             remaining_batch -= 1;
@@ -1101,7 +1114,9 @@ impl Scheduler {
         let mut decode_candidates: Vec<_> = self
             .running
             .iter()
-            .filter(|(_, r)| r.prefill_complete && !r.finalize_pending)
+            .filter(|(_, r)| {
+                r.prefill_complete && !r.finalize_pending && r.audio_decode_pending.is_none()
+            })
             .filter(|(id, _)| !self.realtime_sessions.contains_key(*id))
             .filter_map(|(id, r)| {
                 let metadata = self.requests.get(id)?;
@@ -1541,6 +1556,8 @@ impl Scheduler {
                 prefill_complete: false,
                 prefill_in_flight: true,
                 finalize_pending: false,
+                audio_decode_pending: None,
+                audio_decode_in_flight: false,
                 finalize_in_flight: false,
                 incremental_prefill_quanta_committed: 0,
                 priority: metadata.priority,
@@ -1607,6 +1624,11 @@ impl Scheduler {
             .get(request_id)
             .is_some_and(|metadata| metadata.cache_policy.prefill == PrefillMode::Incremental);
         if let Some(running) = self.running.get_mut(request_id) {
+            if running.audio_decode_in_flight {
+                running.audio_decode_in_flight = false;
+                running.audio_decode_pending = None;
+            }
+
             let committed_incremental_prefill =
                 incremental_prefill && !running.prefill_complete && tokens_processed > 0;
             running.prefill_in_flight = false;
@@ -1648,6 +1670,28 @@ impl Scheduler {
         self.update_dynamic_budget();
     }
 
+    pub(crate) fn request_sequence_audio_decode(
+        &mut self,
+        request_id: &RequestId,
+        max_frames: usize,
+    ) -> crate::error::Result<()> {
+        let running = self.running.get_mut(request_id).ok_or_else(|| {
+            crate::error::Error::InferenceError("audio decode request is not running".into())
+        })?;
+        if max_frames == 0
+            || !running.prefill_complete
+            || running.prefill_in_flight
+            || running.finalize_pending
+            || running.audio_decode_in_flight
+        {
+            return Err(crate::error::Error::InferenceError(
+                "audio decode requires a committed active sequence".into(),
+            ));
+        }
+        running.audio_decode_pending = Some(max_frames);
+        Ok(())
+    }
+
     /// Move one committed retained sequence onto its load-sealed finalization
     /// stage. This is deliberately independent of generated-token capacity:
     /// the final decoder frame may consume the request's last output token.
@@ -1666,7 +1710,9 @@ impl Scheduler {
             ));
         }
         running.finalize_pending = true;
+        running.audio_decode_pending = None;
         running.finalize_in_flight = false;
+        running.audio_decode_in_flight = false;
         running.paused = false;
         Ok(())
     }
@@ -1985,6 +2031,7 @@ impl Scheduler {
 
         running.prefill_in_flight = false;
         running.finalize_in_flight = false;
+        running.audio_decode_in_flight = false;
         running.prefill_complete = running.num_tokens_processed >= metadata.prefill_tokens();
         true
     }
@@ -2097,7 +2144,9 @@ impl Scheduler {
         running.prefill_complete = false;
         running.prefill_in_flight = false;
         running.finalize_pending = false;
+        running.audio_decode_pending = None;
         running.finalize_in_flight = false;
+        running.audio_decode_in_flight = false;
         running.paused = true;
         true
     }
@@ -2144,6 +2193,7 @@ impl Scheduler {
                     && candidate.epoch == running.sequence_id
                     && running.prefill_complete
                     && !running.finalize_in_flight
+                    && !running.audio_decode_in_flight
                     && !self.capacity_waiting(meta)
                     && (meta.priority < owner.priority
                         || meta.priority == owner.priority && meta.sequence_id > owner.sequence_id)
@@ -2180,7 +2230,9 @@ impl Scheduler {
         running.prefill_complete = false;
         running.prefill_in_flight = false;
         running.finalize_pending = false;
+        running.audio_decode_pending = None;
         running.finalize_in_flight = false;
+        running.audio_decode_in_flight = false;
         running.first_token_emitted = false;
         running.paused = true;
         true
@@ -5139,6 +5191,51 @@ mod tests {
         assert_eq!(retry.decode_requests.len(), 1);
         assert!(matches!(
             retry.decode_requests[0].work,
+            WorkUnit::SequenceFinalize { .. }
+        ));
+    }
+
+    #[test]
+    fn committed_audio_decode_retries_without_advancing_tokens_then_resumes() {
+        let mut scheduler = small_scheduler();
+        let mut request = build_request(TaskType::TTS, "tts-audio", Priority::Normal);
+        request.params.max_tokens = 2;
+        assert!(scheduler.add_request(&request));
+        assert!(scheduler
+            .request_sequence_audio_decode(&request.id, 4)
+            .is_err());
+        scheduler.schedule();
+        scheduler.update_after_step(&request.id, request.num_prompt_tokens(), 1, 1.0);
+        let before = scheduler.get_running_info(&request.id).unwrap();
+        scheduler
+            .request_sequence_audio_decode(&request.id, 1)
+            .unwrap();
+        let row = scheduler.schedule().decode_requests.remove(0);
+        assert!(matches!(
+            row.work,
+            WorkUnit::SequenceAudioDecode { max_frames: 1 }
+        ));
+        assert!(scheduler.schedule().decode_requests.is_empty());
+        assert!(scheduler.release_execution_quantum_for_retry(&row.session_key()));
+        let retry = scheduler.schedule().decode_requests.remove(0);
+        assert_eq!(retry.work, row.work);
+        scheduler.update_after_step(&request.id, 0, 0, 1.0);
+        assert_eq!(scheduler.get_running_info(&request.id).unwrap(), before);
+        let resumed = scheduler.schedule().decode_requests.remove(0);
+        assert!(matches!(resumed.work, WorkUnit::SequenceStep { .. }));
+        scheduler.update_after_step(&request.id, 1, 1, 1.0);
+        // The last audio chunk remains schedulable at the generation ceiling.
+        scheduler
+            .request_sequence_audio_decode(&request.id, 1)
+            .unwrap();
+        assert!(matches!(
+            scheduler.schedule().decode_requests[0].work,
+            WorkUnit::SequenceAudioDecode { .. }
+        ));
+        scheduler.update_after_step(&request.id, 0, 0, 1.0);
+        scheduler.request_sequence_finalize(&request.id).unwrap();
+        assert!(matches!(
+            scheduler.schedule().decode_requests[0].work,
             WorkUnit::SequenceFinalize { .. }
         ));
     }

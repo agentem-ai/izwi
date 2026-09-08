@@ -112,6 +112,13 @@ pub(crate) struct FishS2RetainedState {
     generated_codebooks: Vec<Vec<u32>>,
     recent_semantic_tokens: Vec<u32>,
     max_frames: usize,
+    prefill_ms: f64,
+    decode_ms: f64,
+    sampling_ms: f64,
+    fast_ar_ms: f64,
+    slow_ar_ms: f64,
+    prefill_steps: u32,
+    decode_steps: u32,
     stop_reason: String,
     finished: bool,
     active_quantum: Option<u64>,
@@ -132,7 +139,7 @@ struct FishS2RetainedCheckpointPayload {
     slow_output: Option<FishS2SlowOutput>,
     semantic_sampler: FishS2SemanticSampler,
     fast_sampler: FishS2Sampler,
-    generated_codebooks: Vec<Vec<u32>>,
+    generated_frames: usize,
     recent_semantic_tokens: Vec<u32>,
     stop_reason: String,
     finished: bool,
@@ -273,6 +280,13 @@ impl FishS2TtsModel {
             generated_codebooks: vec![Vec::new(); self.config.num_codebooks],
             recent_semantic_tokens: Vec::with_capacity(RAS_WIN_SIZE),
             max_frames,
+            prefill_ms: 0.0,
+            decode_ms: 0.0,
+            sampling_ms: 0.0,
+            fast_ar_ms: 0.0,
+            slow_ar_ms: 0.0,
+            prefill_steps: 0,
+            decode_steps: 0,
             stop_reason: "max_frames".into(),
             finished: false,
             active_quantum: None,
@@ -303,7 +317,7 @@ impl FishS2TtsModel {
                 slow_output: None,
                 semantic_sampler: state.semantic_sampler.clone(),
                 fast_sampler: state.fast_sampler.clone(),
-                generated_codebooks: vec![Vec::new(); self.config.num_codebooks],
+                generated_frames: 0,
                 recent_semantic_tokens: Vec::new(),
                 stop_reason: "max_frames".into(),
                 finished: false,
@@ -315,6 +329,18 @@ impl FishS2TtsModel {
     }
 
     pub(crate) fn retained_prefill_step(
+        &self,
+        state: &mut FishS2RetainedState,
+        max_tokens: usize,
+    ) -> Result<FishS2RetainedStep> {
+        let started = Instant::now();
+        let result = self.retained_prefill_step_inner(state, max_tokens);
+        state.prefill_ms += started.elapsed().as_secs_f64() * 1000.0;
+        state.prefill_steps = state.prefill_steps.saturating_add(1);
+        result
+    }
+
+    fn retained_prefill_step_inner(
         &self,
         state: &mut FishS2RetainedState,
         max_tokens: usize,
@@ -353,6 +379,18 @@ impl FishS2TtsModel {
         state: &mut FishS2RetainedState,
         fast_cache: &mut PhysicalPagedKvCache,
     ) -> Result<FishS2RetainedStep> {
+        let started = Instant::now();
+        let result = self.retained_decode_step_inner(state, fast_cache);
+        state.decode_ms += started.elapsed().as_secs_f64() * 1000.0;
+        state.decode_steps = state.decode_steps.saturating_add(1);
+        result
+    }
+
+    fn retained_decode_step_inner(
+        &self,
+        state: &mut FishS2RetainedState,
+        fast_cache: &mut PhysicalPagedKvCache,
+    ) -> Result<FishS2RetainedStep> {
         self.validate_retained_state(state)?;
         state.require_clean_quantum()?;
         if state.slow_position < state.artifact.prompt.prompt_length {
@@ -367,6 +405,7 @@ impl FishS2TtsModel {
         let slow = state.slow_output.as_ref().ok_or_else(|| {
             Error::InferenceError("Fish S2 retained state has no slow output".into())
         })?;
+        let sampling_started = Instant::now();
         let semantic_index = sample_semantic_token(
             &slow.logits,
             &runtime.semantic_allowed_mask,
@@ -377,6 +416,7 @@ impl FishS2TtsModel {
             &state.recent_semantic_tokens,
             &mut state.semantic_sampler,
         )?;
+        state.sampling_ms += sampling_started.elapsed().as_secs_f64() * 1000.0;
         let semantic = runtime.slow.token_id_from_logit(semantic_index)?;
         if semantic == runtime.tokenizer.specials().eos {
             // Complete the slow-token append authorized for this quantum even
@@ -388,6 +428,7 @@ impl FishS2TtsModel {
                 vq_mask: vec![false],
                 prompt_length: 1,
             };
+            let slow_started = Instant::now();
             let embeds = runtime.slow.embed_prompt(&prompt)?;
             state.slow_output = Some(runtime.slow.forward_embeds(
                 &embeds,
@@ -395,6 +436,7 @@ impl FishS2TtsModel {
                 &mut state.slow_cache,
                 false,
             )?);
+            state.slow_ar_ms += slow_started.elapsed().as_secs_f64() * 1000.0;
             state.slow_position += 1;
             state.completions_drained = false;
             state.stop_reason = "im_end".into();
@@ -403,17 +445,20 @@ impl FishS2TtsModel {
         }
         // The fast clock restarts inside this bounded invocation. Only complete
         // frames cross the scheduler's retained-state commit boundary.
+        let fast_started = Instant::now();
         let frame = runtime.fast.generate_frame(
             semantic,
             &slow.hidden_states,
             &mut state.fast_sampler,
             fast_cache,
         )?;
+        state.fast_ar_ms += fast_started.elapsed().as_secs_f64() * 1000.0;
         append_generated_frame(&mut state.generated_codebooks, &frame)?;
         state.recent_semantic_tokens.push(semantic_index);
         if state.recent_semantic_tokens.len() > RAS_WIN_SIZE {
             state.recent_semantic_tokens.remove(0);
         }
+        let slow_started = Instant::now();
         let frame_prompt = generated_frame_prompt(self.config.num_codebooks, &frame)?;
         let embeds = runtime.slow.embed_prompt(&frame_prompt)?;
         state.slow_output = Some(runtime.slow.forward_embeds(
@@ -422,6 +467,7 @@ impl FishS2TtsModel {
             &mut state.slow_cache,
             false,
         )?);
+        state.slow_ar_ms += slow_started.elapsed().as_secs_f64() * 1000.0;
         state.slow_position += 1;
         state.completions_drained = false;
         if state.frames_generated() >= state.max_frames {
@@ -431,6 +477,57 @@ impl FishS2TtsModel {
         state.stage(FishS2RetainedStep::Frame {
             frames_generated: state.frames_generated(),
         })
+    }
+
+    pub(crate) fn decode_retained_audio_chunk(
+        &self,
+        state: &FishS2RetainedState,
+        codec_state: &mut super::dac::FishS2DacStreamState,
+        max_frames: usize,
+        check: &dyn Fn() -> Result<()>,
+    ) -> Result<Vec<f32>> {
+        self.validate_retained_state(state)?;
+        if state.active_quantum.is_some()
+            || max_frames == 0
+            || max_frames > super::FISH_S2_AUDIO_CHUNK_FRAMES
+        {
+            return Err(Error::InvalidInput(
+                "Fish codec requires bounded committed frames".into(),
+            ));
+        }
+        let start = codec_state.decoded_frames();
+        let end = start
+            .saturating_add(max_frames)
+            .min(state.frames_generated());
+        if start >= end {
+            return Err(Error::InvalidInput(
+                "Fish codec has no committed frames to decode".into(),
+            ));
+        }
+        let codes = state
+            .generated_codebooks
+            .iter()
+            .map(|row| row[start..end].to_vec())
+            .collect::<Vec<_>>();
+        let mut next = codec_state.clone();
+        let samples = self
+            .native_runtime()?
+            .dac
+            .push_frames(&mut next, &codes, check)?;
+        if samples.len() != (end - start) * 2048 || samples.iter().any(|value| !value.is_finite()) {
+            return Err(Error::InferenceError(
+                "Fish streaming codec produced invalid PCM".into(),
+            ));
+        }
+        if next.retained_tensor_bytes()
+            > super::dac::FishS2DacConfig::current().streaming_history_bound_bytes()?
+        {
+            return Err(Error::InferenceError(
+                "Fish streaming codec exceeded retained history bound".into(),
+            ));
+        }
+        *codec_state = next;
+        Ok(samples)
     }
 
     pub(crate) fn finalize_retained_state(
@@ -491,10 +588,14 @@ impl FishS2TtsModel {
                 stop_reason: state.stop_reason.clone(),
                 reference_encode_ms: state.artifact.reference_encode_ms,
                 prompt_build_ms: state.artifact.prompt_build_ms,
-                slow_prefill_ms: 0.0,
-                ar_decode_ms: 0.0,
+                slow_prefill_ms: state.prefill_ms as f32,
+                ar_decode_ms: state.decode_ms as f32,
                 dac_decode_ms,
-                total_model_ms: 0.0,
+                total_model_ms: state.artifact.reference_encode_ms
+                    + state.artifact.prompt_build_ms
+                    + state.prefill_ms as f32
+                    + state.decode_ms as f32
+                    + dac_decode_ms,
             },
         })
     }
@@ -587,7 +688,7 @@ impl FishS2RetainedState {
                 slow_output: self.slow_output.clone(),
                 semantic_sampler: self.semantic_sampler.clone(),
                 fast_sampler: self.fast_sampler.clone(),
-                generated_codebooks: self.generated_codebooks.clone(),
+                generated_frames: self.frames_generated(),
                 recent_semantic_tokens: self.recent_semantic_tokens.clone(),
                 stop_reason: self.stop_reason.clone(),
                 finished: self.finished,
@@ -627,7 +728,9 @@ impl FishS2RetainedState {
         self.slow_output = payload.slow_output;
         self.semantic_sampler = payload.semantic_sampler;
         self.fast_sampler = payload.fast_sampler;
-        self.generated_codebooks = payload.generated_codebooks;
+        for row in &mut self.generated_codebooks {
+            row.truncate(payload.generated_frames);
+        }
         self.recent_semantic_tokens = payload.recent_semantic_tokens;
         self.stop_reason = payload.stop_reason;
         self.finished = payload.finished;
@@ -647,6 +750,18 @@ impl FishS2RetainedState {
         completions
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        FishS2TtsModel::for_test()
+            .new_retained_state(
+                FishS2PreparedArtifact::test_prompt(11, 3),
+                FishS2GenerationParams::default(),
+                super::physical::test_physical_cache(91, 1, 1, 1, 8),
+                8192,
+            )
+            .unwrap()
+    }
+
     pub(crate) const fn slow_position(&self) -> usize {
         self.slow_position
     }
@@ -657,6 +772,31 @@ impl FishS2RetainedState {
 
     pub(crate) fn params(&self) -> &FishS2GenerationParams {
         &self.params
+    }
+
+    pub(crate) fn sampling_and_steps(&self) -> (f64, u32, u32) {
+        (self.sampling_ms, self.prefill_steps, self.decode_steps)
+    }
+
+    pub(crate) fn trace_timings(&self, request_id: &str, codec_ms: f64) {
+        tracing::info!(
+            request_id,
+            timing_clock = "host_wall",
+            reference_encode_ms = self.artifact.reference_encode_ms,
+            prompt_build_ms = self.artifact.prompt_build_ms,
+            prefill_ms = self.prefill_ms,
+            ar_decode_ms = self.decode_ms,
+            semantic_sampling_ms = self.sampling_ms,
+            fast_ar_ms = self.fast_ar_ms,
+            slow_ar_ms = self.slow_ar_ms,
+            codec_ms,
+            frames = self.frames_generated(),
+            "Fish S2 execution timing (GPU work may cross host intervals)"
+        );
+    }
+
+    pub(crate) fn phase_timings(&self) -> (f64, f64) {
+        (self.prefill_ms, self.decode_ms)
     }
 
     pub(crate) fn frames_generated(&self) -> usize {
@@ -882,6 +1022,13 @@ mod tests {
             generated_codebooks: vec![Vec::new(), Vec::new()],
             recent_semantic_tokens: Vec::new(),
             max_frames: 4,
+            prefill_ms: 0.0,
+            decode_ms: 0.0,
+            sampling_ms: 0.0,
+            fast_ar_ms: 0.0,
+            slow_ar_ms: 0.0,
+            prefill_steps: 0,
+            decode_steps: 0,
             stop_reason: "max_frames".into(),
             finished: false,
             active_quantum: None,

@@ -44,6 +44,7 @@ pub(crate) fn decode_workspace_bytes(frames: usize) -> Result<u64> {
     decode_envelope(&FishS2DacConfig::current(), frames as u64)
 }
 
+#[cfg(test)]
 pub(crate) fn maximum_decode_workspace_bytes() -> Result<u64> {
     decode_workspace_bytes(FishS2DacConfig::MAX_QUANTIZER_FRAMES)
 }

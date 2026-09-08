@@ -100,6 +100,11 @@ pub(super) struct ActiveFishS2TtsDecode {
     pub(super) state: FishS2RetainedState,
     pub(super) last_frames_generated: usize,
     pub(super) stream_sequence: usize,
+    pub(super) codec: crate::models::architectures::fish_s2::dac::FishS2DacStreamState,
+    pub(super) audio_samples: Vec<f32>,
+    pub(super) codec_ms: f64,
+    pub(super) execution_started: std::time::Instant,
+    pub(super) first_audio_ms: Option<f64>,
 }
 
 pub(super) struct ActiveVoxtralTtsDecode {

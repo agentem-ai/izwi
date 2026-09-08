@@ -175,6 +175,7 @@ impl NativeExecutor {
                 && matches!(
                     scheduled_req.work,
                     crate::engine::WorkUnit::SequenceFinalize { .. }
+                        | crate::engine::WorkUnit::SequenceAudioDecode { .. }
                 )
             {
                 if managed_cache.is_some() {
@@ -182,7 +183,14 @@ impl NativeExecutor {
                         "Fish S2 codec unexpectedly received managed KV state".into(),
                     ));
                 }
-                return self.fish_s2_tts_finalize_request(request, scheduled_req);
+                return if matches!(
+                    scheduled_req.work,
+                    crate::engine::WorkUnit::SequenceAudioDecode { .. }
+                ) {
+                    self.fish_s2_tts_audio_decode_request(request, scheduled_req)
+                } else {
+                    self.fish_s2_tts_finalize_request(request, scheduled_req)
+                };
             }
             match managed_cache {
                 Some(reservation) if request.task_type == TaskType::Chat => {

@@ -15,8 +15,10 @@ use crate::models::shared::weights::pytorch::{PthTensorMap, PthTensorSpec};
 
 #[path = "workspace.rs"]
 mod workspace;
+#[cfg(test)]
+use workspace::maximum_decode_workspace_bytes;
 pub(crate) use workspace::{
-    decode_workspace_bytes, fft_workspace, maximum_decode_workspace_bytes, maximum_preparation_workspace_bytes,
+    decode_workspace_bytes, fft_workspace, maximum_preparation_workspace_bytes,
     preparation_workspace_bytes,
 };
 

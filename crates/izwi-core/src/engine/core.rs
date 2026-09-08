@@ -896,6 +896,7 @@ impl EngineCore {
         let work_kind = match &work {
             WorkUnit::PreSequencePreparation { kind } => kind.clone(),
             WorkUnit::SequenceStep { phase, .. } => format!("{phase:?}").to_ascii_lowercase(),
+            WorkUnit::SequenceAudioDecode { .. } => "sequence_audio_decode".to_string(),
             WorkUnit::SequenceFinalize { .. } => "sequence_finalize".to_string(),
             WorkUnit::RealtimePush { .. } => "realtime_push".to_string(),
             WorkUnit::RealtimeFinish { .. } => "realtime_finish".to_string(),
@@ -977,7 +978,9 @@ impl EngineCore {
                 phase: super::SequencePhase::Decode,
                 ..
             } => ExecutionState::Decoding,
-            WorkUnit::SequenceFinalize { .. } => ExecutionState::Decoding,
+            WorkUnit::SequenceAudioDecode { .. } | WorkUnit::SequenceFinalize { .. } => {
+                ExecutionState::Decoding
+            }
             WorkUnit::RealtimePush { .. } => ExecutionState::RealtimeRunning,
             WorkUnit::RealtimeFinish { .. } => ExecutionState::RealtimeFinishing,
             WorkUnit::RealtimePreparation {
@@ -2166,6 +2169,33 @@ impl EngineCore {
                         result.output.tokens_generated,
                         step_time_ms,
                     );
+                    if let ExecutionDisposition::Yielded(
+                        super::YieldReason::AwaitingAudioDecode { max_frames },
+                    ) = result.disposition
+                    {
+                        if let Err(error) = self
+                            .scheduler
+                            .request_sequence_audio_decode(&plan.session.request_id, max_frames)
+                        {
+                            return Some(CommittedExecutorOutput {
+                                session: plan.session,
+                                output: ExecutorOutput::error(
+                                    result.output.request_id,
+                                    error.to_string(),
+                                ),
+                                disposition: ExecutionDisposition::Failed(
+                                    ExecutionFailure::invalid_output(
+                                        "audio decode transition failed",
+                                    ),
+                                ),
+                                provenance: OutcomeProvenance::failure(
+                                    FailureOrigin::StateCommit,
+                                    result.provenance.dispatch_state,
+                                ),
+                                staged_stream_outputs: Vec::new(),
+                            });
+                        }
+                    }
                     if matches!(
                         result.disposition,
                         ExecutionDisposition::Yielded(super::YieldReason::AwaitingFinalization)
@@ -2204,6 +2234,18 @@ impl EngineCore {
         }
         result.output.request_id = plan.session.request_id.clone();
         if !result.staged_stream_outputs.is_empty() {
+            // AfterQuantumCommit PCM/text is just as irreversible as an
+            // IncrementalCommitted event. Fence recomputation before handing
+            // the committed outbox to delivery, which may already be audible
+            // when the next model quantum fails or needs capacity.
+            if result.staged_stream_outputs.iter().any(|output| {
+                !output.samples.is_empty()
+                    || output.text.as_ref().is_some_and(|text| !text.is_empty())
+                    || output.asr_progress.is_some()
+            }) {
+                self.incremental_stream_sessions
+                    .insert(plan.session.clone());
+            }
             if let Some(next_sequence) = staged_next_sequence {
                 self.stream_sequence_cursors
                     .insert(plan.session.clone(), next_sequence);
@@ -2274,7 +2316,10 @@ impl EngineCore {
                 })?;
                 input.max(output).max(1)
             }
-            WorkUnit::SequenceFinalize { max_output_steps } => u64::try_from(*max_output_steps)
+            WorkUnit::SequenceAudioDecode {
+                max_frames: max_output_steps,
+            }
+            | WorkUnit::SequenceFinalize { max_output_steps } => u64::try_from(*max_output_steps)
                 .map_err(|_| {
                     Error::Overloaded(
                         "sequence finalization output bound exceeds work accounting".into(),
@@ -2341,14 +2386,17 @@ impl EngineCore {
         // generation geometry only after the execution plan has its binding.
         if request.task_type == super::TaskType::TTS
             && request.model_variant == Some(ModelVariant::FishAudioS2Pro)
-            && matches!(work, WorkUnit::SequenceFinalize { .. })
+            && matches!(
+                work,
+                WorkUnit::SequenceFinalize { .. } | WorkUnit::SequenceAudioDecode { .. }
+            )
         {
             let binding = request.execution_adapter_binding().ok_or_else(|| {
                 Error::InvalidInput("Fish S2 finalization requires a loaded adapter binding".into())
             })?;
             let stage = stage
                 .filter(|stage| {
-                    stage.selector == super::StageWorkSelector::SequenceFinalize
+                    stage.selector.matches(work)
                         && stage.batch_mode == NativeBatchMode::None
                         && binding.stages.contains(stage)
                 })
@@ -2364,9 +2412,26 @@ impl EngineCore {
                         "Fish S2 finalization requires sealed generation parameters".into(),
                     )
                 })?;
-            let bytes = crate::models::architectures::fish_s2::codec::decode_workspace_bytes(
-                params.max_frames,
-            )?;
+            params.validate()?;
+            if params.max_frames > ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES {
+                return Err(Error::InvalidInput(
+                    "Fish S2 output exceeds the codec frame limit".into(),
+                ));
+            }
+            let frames = match work {
+                WorkUnit::SequenceAudioDecode { max_frames } => {
+                    (*max_frames).min(params.max_frames)
+                }
+                _ => params.max_frames,
+            };
+            let bytes = if matches!(work, WorkUnit::SequenceAudioDecode { .. }) {
+                crate::models::architectures::fish_s2::codec::streaming_decode_workspace_bytes(
+                    frames,
+                )?
+            } else {
+                // Terminal flush only moves retained PCM; neural work is complete.
+                0
+            };
             if logical_units > stage.max_work_units || bytes > stage.max_workspace_bytes {
                 return Err(Error::Overloaded(
                     "Fish S2 finalization exceeds its loaded stage workspace or work limit".into(),
@@ -8360,6 +8425,90 @@ mod tests {
             let retry_schedule = core.scheduler.schedule();
             assert!(retry_schedule.prefill_requests.is_empty());
             assert!(retry_schedule.decode_requests.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn staged_pcm_commit_fences_recompute_and_restart_without_replaying_audio() {
+        for restart in [false, true] {
+            let executor = UnifiedExecutor::new_for_test(Box::new(MockExecutor::new(Arc::new(
+                Mutex::new(Vec::new()),
+            ))));
+            let mut core = EngineCore::new_with_unified_executor(
+                EngineCoreConfig {
+                    max_batch_size: 1,
+                    max_tokens_per_step: 8,
+                    ..Default::default()
+                },
+                executor,
+            )
+            .unwrap();
+            let mut request = EngineCoreRequest::tts("committed PCM");
+            request.id = format!("staged-pcm-retry-{restart}");
+            request.prompt_tokens = vec![1];
+            request.streaming = true;
+            let (tx, _rx) = mpsc::channel(8);
+            request.streaming_tx = Some(tx);
+            core.add_request(request).unwrap();
+            core.refresh_scheduler_execution_profiles().await;
+            let prefill = core.scheduler.schedule().prefill_requests.remove(0);
+            let session = prefill.session_key();
+            core.begin_execution_plan(&prefill).await.unwrap();
+            let mut result = ExecutorStepResult::new(
+                &prefill,
+                MockExecutor::build_outputs(std::slice::from_ref(&prefill)).remove(0),
+            );
+            result
+                .staged_stream_outputs
+                .push(super::super::StreamingOutput {
+                    request_id: session.request_id.clone(),
+                    sequence: 0,
+                    samples: vec![0.25, 0.5],
+                    sample_rate: 44_100,
+                    is_final: false,
+                    text: None,
+                    stats: None,
+                    asr_progress: None,
+                });
+            let committed = core.commit_executor_result(result, 1.0).await.unwrap();
+            assert_eq!(committed.staged_stream_outputs.len(), 1);
+            assert!(core.incremental_stream_sessions.contains(&session));
+            assert_eq!(core.stream_sequence_cursors.get(&session), Some(&1));
+
+            let decode = core.scheduler.schedule().decode_requests.remove(0);
+            core.begin_execution_plan(&decode).await.unwrap();
+            let result = if restart {
+                ExecutorStepResult::from_session(
+                    &decode,
+                    super::super::executor::ModelSessionResult::restart_sequence(
+                        session.request_id.clone(),
+                        super::super::SequenceRestartReason::ModelFallback,
+                    ),
+                )
+            } else {
+                retryable_step_result(&decode, RetryDisposition::Recompute)
+            };
+            let rejected = core.commit_executor_result(result, 1.0).await.unwrap();
+            assert!(matches!(
+                rejected.disposition,
+                ExecutionDisposition::Failed(ExecutionFailure {
+                    retry: RetryDisposition::Never,
+                    ..
+                })
+            ));
+            assert!(rejected.staged_stream_outputs.is_empty());
+            assert!(rejected
+                .output
+                .error
+                .as_deref()
+                .is_some_and(|message| message.contains("unsafe")));
+            // Result commitment authenticates the failure; the step's output
+            // processing then begins terminal cleanup before another schedule.
+            let cause = EngineCore::terminal_release_cause(&rejected.disposition).unwrap();
+            core.begin_terminal_release(&session, cause).await;
+            let schedule = core.scheduler.schedule();
+            assert!(schedule.prefill_requests.is_empty());
+            assert!(schedule.decode_requests.is_empty());
         }
     }
 

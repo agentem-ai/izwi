@@ -56,6 +56,9 @@ pub(crate) use reference_cache::FISH_S2_REFERENCE_CACHE_BYTES;
 pub(crate) const FISH_S2_TTS_PREPARATION_STAGE: &str = "tts.prepare.fish_s2";
 pub(crate) const FISH_S2_TTS_PREFILL_STAGE: &str = "tts.prefill.fish_s2";
 pub(crate) const FISH_S2_TTS_DECODE_STAGE: &str = "tts.decode.fish_s2";
+pub(crate) const FISH_S2_AUDIO_CHUNK_FRAMES: usize = 16;
+pub(crate) const FISH_S2_FIRST_AUDIO_FRAMES: usize = 4;
+pub(crate) const FISH_S2_TTS_AUDIO_DECODE_STAGE: &str = "tts.audio_decode.fish_s2";
 pub(crate) const FISH_S2_TTS_FINALIZE_STAGE: &str = "tts.codec.fish_s2.scalar";
 
 pub struct FishS2TtsModel {
@@ -702,6 +705,9 @@ fn fish_s2_codec_support_name(support: FishS2CodecSupport) -> &'static str {
 
 #[cfg(test)]
 mod smoke;
+
+#[cfg(test)]
+mod streaming_smoke;
 
 #[cfg(test)]
 mod tests {
