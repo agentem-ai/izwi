@@ -21,8 +21,7 @@ use crate::{
 };
 
 /// Incremental mono PCM16 WAV spool. Drop removes partial output on any failure,
-/// cancellation or disconnect. Only `finish` materializes the bounded upload
-/// buffer required by the media-provider API.
+/// cancellation or disconnect. `finish_file` retains the file without an upload buffer.
 pub(crate) struct SpeechWavSpool {
     file: tokio::fs::File,
     temporary: tempfile::NamedTempFile,
@@ -75,8 +74,8 @@ impl SpeechWavSpool {
         Ok(())
     }
 
-    pub(crate) async fn finish(mut self) -> anyhow::Result<SpeechWavUpload> {
-        use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+    pub(crate) async fn finish_file(mut self) -> anyhow::Result<SpeechWavArtifact> {
+        use tokio::io::{AsyncSeekExt, AsyncWriteExt};
         anyhow::ensure!(
             self.pcm_bytes > 0,
             "Streaming generation produced no PCM audio"
@@ -98,25 +97,65 @@ impl SpeechWavSpool {
         self.file.seek(std::io::SeekFrom::Start(0)).await?;
         self.file.write_all(&header).await?;
         self.file.flush().await?;
-        self.file.seek(std::io::SeekFrom::Start(0)).await?;
-        let length = self.pcm_bytes + 44;
+        self.file.sync_all().await?;
+        drop(self.file);
+        Ok(SpeechWavArtifact {
+            temporary: self.temporary,
+            sample_rate: self.sample_rate,
+            pcm_bytes: self.pcm_bytes,
+            _disk_reservation: self.disk_reservation,
+        })
+    }
+
+    /// Compatibility adapter for consumers explicitly requiring bounded bytes.
+    pub(crate) async fn finish(self) -> anyhow::Result<SpeechWavUpload> {
+        use tokio::io::AsyncReadExt;
+        let artifact = self.finish_file().await?;
+        let length = artifact.len() as usize;
         let reservation = crate::speech_resource_budget::upload_budget().reserve(length)?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(length)
             .context("Reserve bounded WAV upload buffer")?;
         bytes.resize(length, 0);
-        self.file
+        artifact
+            .open()
+            .await?
             .read_exact(&mut bytes)
             .await
             .context("Read finalized WAV spool")?;
         // Keep the temporary owner until all asynchronous file work has finished.
-        drop(self.file);
-        drop(self.temporary);
+        drop(artifact);
         Ok(SpeechWavUpload {
             bytes,
             _reservation: reservation,
         })
+    }
+}
+
+/// Owns both the finalized file and its disk reservation through upload/response.
+pub(crate) struct SpeechWavArtifact {
+    temporary: tempfile::NamedTempFile,
+    sample_rate: u32,
+    pcm_bytes: usize,
+    _disk_reservation: crate::speech_resource_budget::ByteReservation,
+}
+
+impl SpeechWavArtifact {
+    pub(crate) fn path(&self) -> &std::path::Path {
+        self.temporary.path()
+    }
+    pub(crate) fn len(&self) -> u64 {
+        self.pcm_bytes as u64 + 44
+    }
+    pub(crate) fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    pub(crate) fn sample_count(&self) -> u64 {
+        self.pcm_bytes as u64 / 2
+    }
+    pub(crate) async fn open(&self) -> anyhow::Result<tokio::fs::File> {
+        Ok(tokio::fs::File::open(self.path()).await?)
     }
 }
 
@@ -138,6 +177,12 @@ impl AsRef<[u8]> for SpeechWavUpload {
     fn as_ref(&self) -> &[u8] {
         &self.bytes
     }
+}
+
+pub struct StoredSpeechAudioStream {
+    pub audio: izwi_hooks::StoredMediaStream,
+    pub audio_mime_type: String,
+    pub audio_filename: Option<String>,
 }
 
 const DEFAULT_LIST_LIMIT: usize = 200;
@@ -436,6 +481,47 @@ impl SpeechHistoryStore {
         }))
     }
 
+    pub async fn get_audio_stream(
+        &self,
+        route_kind: SpeechRouteKind,
+        record_id: String,
+    ) -> anyhow::Result<Option<StoredSpeechAudioStream>> {
+        let db = self.db.connection().await?;
+        let audio = db
+            .query_one_raw(raw::statement(
+                db,
+                r#"
+                SELECT audio_storage_path, audio_mime_type, audio_filename
+                FROM speech_history_records
+                WHERE route_kind = ?1 AND id = ?2
+                "#,
+                vec![route_kind.as_db_value().into(), record_id.into()],
+            )?)
+            .await
+            .context("Failed to load speech history audio metadata")?;
+        let Some(row) = audio else {
+            return Ok(None);
+        };
+
+        let audio_storage_path: Option<String> = row.try_get_by_index(0)?;
+        let audio_mime_type: String = row.try_get_by_index(1)?;
+        let audio_filename: Option<String> = row.try_get_by_index(2)?;
+        let Some(audio_storage_path) = sanitize_media_path(audio_storage_path.as_deref()) else {
+            return Ok(None);
+        };
+
+        let audio =
+            crate::persistence::read_media_stream(&self.media_storage, audio_storage_path.as_str())
+                .await
+                .context("Failed to read speech history media")?;
+
+        Ok(Some(StoredSpeechAudioStream {
+            audio,
+            audio_mime_type,
+            audio_filename,
+        }))
+    }
+
     pub async fn create_record(
         &self,
         record: NewSpeechHistoryRecord,
@@ -453,7 +539,7 @@ impl SpeechHistoryStore {
         let speed = record
             .speed
             .filter(|value| value.is_finite() && *value > 0.0);
-        let input_text = sanitize_required_text(record.input_text.as_str(), 20_000);
+        let input_text = record.input_text.trim().to_string();
         let voice_description = sanitize_optional_text(record.voice_description.as_deref(), 2_000);
         let reference_text = sanitize_optional_text(record.reference_text.as_deref(), 2_000);
         let generation_time_ms = if record.generation_time_ms.is_finite() {
@@ -744,7 +830,7 @@ impl SpeechHistoryStore {
         let speed = record
             .speed
             .filter(|value| value.is_finite() && *value > 0.0);
-        let input_text = sanitize_required_text(record.input_text.as_str(), 20_000);
+        let input_text = record.input_text.trim().to_string();
         let voice_description = sanitize_optional_text(record.voice_description.as_deref(), 2_000);
         let reference_text = sanitize_optional_text(record.reference_text.as_deref(), 2_000);
         let generation_time_ms = if record.generation_time_ms.is_finite() {
@@ -765,7 +851,9 @@ impl SpeechHistoryStore {
         let audio_mime_type = sanitize_audio_mime_type(record.audio_mime_type.as_str());
         let audio_filename = sanitize_optional_text(record.audio_filename.as_deref(), 260);
 
-        if record.audio_bytes.is_empty() {
+        if record.audio_bytes.is_empty()
+            && sanitize_media_path(record.preexisting_audio_storage_path.as_deref()).is_none()
+        {
             return Err(anyhow!(
                 "Audio payload cannot be empty when completing speech history records",
             ));
@@ -1131,15 +1219,6 @@ fn input_preview(content: &str) -> String {
     truncate_string(&normalized, 180)
 }
 
-fn sanitize_required_text(raw: &str, max_chars: usize) -> String {
-    let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        " ".to_string()
-    } else {
-        truncate_string(&normalized, max_chars)
-    }
-}
-
 fn sanitize_optional_text(raw: Option<&str>, max_chars: usize) -> Option<String> {
     let normalized = raw
         .unwrap_or("")
@@ -1276,6 +1355,48 @@ mod tests {
         std::env::set_var("IZWI_MEDIA_DIR", &media_dir);
         let store = SpeechHistoryStore::initialize().expect("store");
         (temp_dir, store)
+    }
+
+    #[tokio::test]
+    async fn file_spool_finalization_keeps_disk_owner_and_pcm_metadata() {
+        let mut spool = SpeechWavSpool::new(44_100, 8).unwrap();
+        spool.append_pcm(&[0, 1, 2, 3, 4, 5, 6, 7]).await.unwrap();
+        let artifact = spool.finish_file().await.unwrap();
+        let path = artifact.path().to_path_buf();
+        assert!(path.exists());
+        assert_eq!(artifact.len(), 52);
+        assert_eq!(artifact.sample_count(), 4);
+        assert_eq!(artifact.sample_rate(), 44_100);
+        let wav = tokio::fs::read(&path).await.unwrap();
+        assert_eq!(&wav[44..], &[0, 1, 2, 3, 4, 5, 6, 7]);
+        drop(artifact);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn file_spool_finalizes_above_legacy_upload_budget_without_materializing_bytes() {
+        // A sparse fixture verifies >256MiB finalization without allocating or writing
+        // hundreds of MiB. Production append_pcm reserves every actual disk byte.
+        let mut spool = SpeechWavSpool::new(44_100, 300 * 1024 * 1024).unwrap();
+        spool.pcm_bytes = 270 * 1024 * 1024;
+        spool
+            .file
+            .set_len((spool.pcm_bytes + 44) as u64)
+            .await
+            .unwrap();
+        let artifact = spool.finish_file().await.unwrap();
+        assert_eq!(artifact.len(), 270 * 1024 * 1024 + 44);
+        assert_eq!(
+            artifact
+                .open()
+                .await
+                .unwrap()
+                .metadata()
+                .await
+                .unwrap()
+                .len(),
+            artifact.len()
+        );
     }
 
     #[tokio::test]
@@ -1626,7 +1747,7 @@ mod tests {
         )
         .await
         .expect("published audio should persist");
-        let mut completion = completed_record(audio_bytes.clone());
+        let mut completion = completed_record(Vec::new());
         completion.preexisting_audio_storage_path = Some(storage_path.clone());
 
         store

@@ -506,6 +506,12 @@ pub struct StoredMediaBytes {
     pub metadata: MediaObjectMetadata,
 }
 
+/// A bounded reader; providers must not buffer the complete object before returning.
+pub struct StoredMediaStream {
+    pub reader: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+    pub metadata: MediaObjectMetadata,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaDeleteRequest {
     pub key: MediaObjectKey,
@@ -607,6 +613,26 @@ pub trait MediaStorageProvider: Send + Sync {
     ) -> HookResult<StoredMediaObject>;
 
     async fn get(&self, request: MediaReadRequest) -> HookResult<StoredMediaBytes>;
+
+    /// Persist a stable, finalized file without a duration-sized allocation.
+    /// Implementations must validate length and publish atomically; remote providers
+    /// should use bounded multipart upload and abort incomplete uploads on failure.
+    async fn put_file(
+        &self,
+        _request: MediaWriteRequest,
+        _path: std::path::PathBuf,
+        _content_length: u64,
+    ) -> HookResult<StoredMediaObject> {
+        Err(HookError::Failed(
+            "Media provider does not support bounded file uploads".into(),
+        ))
+    }
+
+    async fn get_stream(&self, _request: MediaReadRequest) -> HookResult<StoredMediaStream> {
+        Err(HookError::Failed(
+            "Media provider does not support streaming reads".into(),
+        ))
+    }
 
     async fn delete(&self, request: MediaDeleteRequest) -> HookResult<()>;
 }
