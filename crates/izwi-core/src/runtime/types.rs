@@ -314,7 +314,8 @@ pub struct AudioChunk {
     /// Whether this is the final chunk
     pub is_final: bool,
 
-    /// Generation statistics
+    /// Generation statistics. Final chunks report cumulative request totals,
+    /// including terminal markers with no PCM. Non-final statistics are deltas.
     pub stats: Option<ChunkStats>,
 }
 
@@ -367,9 +368,9 @@ impl AudioChunk {
 /// Statistics for a generated chunk
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkStats {
-    /// Time to generate this chunk (ms)
+    /// Execution time (ms): request total on final chunks, otherwise chunk delta.
     pub generation_time_ms: f32,
-    /// Tokens generated for this chunk
+    /// Committed model tokens (semantic frames for Fish), with the same total/delta convention.
     pub tokens_generated: usize,
     /// Real-time factor (< 1.0 means faster than real-time)
     pub rtf: f32,

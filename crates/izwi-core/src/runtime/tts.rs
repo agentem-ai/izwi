@@ -406,6 +406,31 @@ async fn send_direct_tts_chunk(
     }
 }
 
+/// Preserve the absolute request deadline after engine cleanup, while delivering
+/// terminal statistics. Dropping this future cancels the pending bounded send;
+/// closing the receiver wakes it immediately without requiring an engine lease.
+async fn send_terminal_tts_chunk(
+    chunk_tx: &mpsc::Sender<AudioChunk>,
+    chunk: AudioChunk,
+    deadline: Option<Instant>,
+) -> Result<()> {
+    let request_id = chunk.request_id.clone();
+    let sent = match deadline {
+        Some(deadline) => {
+            if deadline <= Instant::now() {
+                return Err(Error::Timeout(request_id));
+            }
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline.into()) => return Err(Error::Timeout(request_id)),
+                sent = chunk_tx.send(chunk) => sent,
+            }
+        }
+        None => chunk_tx.send(chunk).await,
+    };
+    sent.map_err(|_| Error::InferenceError("Streaming output channel closed".to_string()))
+}
+
 impl RuntimeService {
     fn record_direct_tts_observation(
         &self,
@@ -899,6 +924,16 @@ impl RuntimeService {
             .into_engine_request(core_params);
 
         let output = self.run_request(core_request).await?;
+        let diagnostics = Some(serde_json::json!({
+            "latency_breakdown": output.latency_breakdown,
+            "timing_basis": "engine_execution",
+            "token_unit": if resolved_variant == ModelVariant::FishAudioS2Pro {
+                "semantic_frames"
+            } else {
+                "model_tokens"
+            },
+            "split_request_count": 1,
+        }));
         let samples = output.audio.samples;
         let sample_rate = output.audio.sample_rate;
         let total_tokens = output.num_tokens;
@@ -916,7 +951,7 @@ impl RuntimeService {
             sample_rate,
             total_tokens,
             total_time_ms,
-            diagnostics: None,
+            diagnostics,
         })
     }
 
@@ -990,28 +1025,44 @@ impl RuntimeService {
         let core_request = TtsRuntimeRequest::from_generation(request, resolved_variant)?
             .into_engine_request(core_params);
 
-        self.run_streaming_request(core_request, |stream_chunk| {
-            let tx = chunk_tx.clone();
-            async move {
-                if stream_chunk.samples.is_empty() && !stream_chunk.is_final {
-                    return Ok(());
+        let terminal_deadline = core_request.deadline;
+        let mut next_sequence = 0usize;
+        let output = self
+            .run_streaming_request(core_request, |stream_chunk| {
+                let tx = chunk_tx.clone();
+                let sequence = next_sequence;
+                if !stream_chunk.samples.is_empty() {
+                    next_sequence += 1;
                 }
+                async move {
+                    if stream_chunk.samples.is_empty() {
+                        return Ok(());
+                    }
+                    let chunk = AudioChunk::new(
+                        stream_chunk.request_id.clone(),
+                        sequence,
+                        stream_chunk.samples,
+                    )
+                    .with_sample_rate(stream_chunk.sample_rate);
+                    tx.send(chunk).await.map_err(|_| {
+                        Error::InferenceError("Streaming output channel closed".to_string())
+                    })?;
+                    Ok(())
+                }
+            })
+            .await?;
 
-                let mut chunk = AudioChunk::new(
-                    stream_chunk.request_id.clone(),
-                    stream_chunk.sequence,
-                    stream_chunk.samples,
-                )
-                .with_sample_rate(stream_chunk.sample_rate);
-                chunk.is_final = stream_chunk.is_final;
-                tx.send(chunk).await.map_err(|_| {
-                    Error::InferenceError("Streaming output channel closed".to_string())
-                })?;
-                Ok(())
-            }
-        })
-        .await?;
-
+        // Completion statistics are cumulative and arrive after all committed PCM,
+        // including when the engine's terminal marker contains no audio.
+        let mut terminal =
+            AudioChunk::final_chunk(output.request_id.clone(), next_sequence, Vec::new())
+                .with_sample_rate(output.audio.sample_rate);
+        terminal.stats = Some(ChunkStats {
+            generation_time_ms: output.generation_time.as_secs_f32() * 1000.0,
+            tokens_generated: output.num_tokens,
+            rtf: output.rtf(),
+        });
+        send_terminal_tts_chunk(&chunk_tx, terminal, terminal_deadline).await?;
         info!("Streaming generation complete via core engine");
         Ok(())
     }
@@ -1352,6 +1403,38 @@ mod tests {
                 4,
             ),
             Err(Error::InvalidInput(message)) if message.contains("reference_text") && message.contains("32-character")
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminal_statistics_send_honors_deadline_and_closed_receiver() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.send(AudioChunk::new("terminal".into(), 0, vec![0.0]))
+            .await
+            .unwrap();
+        let terminal = || AudioChunk::final_chunk("terminal".into(), 1, Vec::new());
+        assert!(matches!(
+            send_terminal_tts_chunk(
+                &tx,
+                terminal(),
+                Some(Instant::now() + Duration::from_millis(5))
+            )
+            .await,
+            Err(Error::Timeout(_))
+        ));
+        assert!(!rx.recv().await.unwrap().is_final);
+        assert!(
+            rx.try_recv().is_err(),
+            "timed-out terminal marker must not arrive later"
+        );
+        assert!(matches!(
+            send_terminal_tts_chunk(&tx, terminal(), Some(Instant::now())).await,
+            Err(Error::Timeout(_))
+        ));
+        drop(rx);
+        assert!(matches!(
+            send_terminal_tts_chunk(&tx, terminal(), None).await,
+            Err(Error::InferenceError(_))
         ));
     }
 

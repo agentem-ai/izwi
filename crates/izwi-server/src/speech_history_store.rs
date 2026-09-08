@@ -20,6 +20,95 @@ use crate::{
     storage_layout,
 };
 
+/// Incremental mono PCM16 WAV spool. Drop removes partial output on any failure,
+/// cancellation or disconnect. Only `finish` materializes the bounded upload
+/// buffer required by the media-provider API.
+pub(crate) struct SpeechWavSpool {
+    file: tokio::fs::File,
+    temporary: tempfile::NamedTempFile,
+    sample_rate: u32,
+    pcm_bytes: usize,
+    max_pcm_bytes: usize,
+}
+
+impl SpeechWavSpool {
+    pub(crate) fn new(sample_rate: u32, max_pcm_bytes: usize) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            sample_rate > 0 && sample_rate <= u32::MAX / 2,
+            "Invalid WAV sample rate"
+        );
+        let temporary = tempfile::NamedTempFile::new().context("Create speech WAV spool")?;
+        let mut file = temporary.reopen()?;
+        std::io::Write::write_all(&mut file, &[0; 44])?;
+        Ok(Self {
+            file: tokio::fs::File::from_std(file),
+            temporary,
+            sample_rate,
+            pcm_bytes: 0,
+            max_pcm_bytes: max_pcm_bytes.min(u32::MAX as usize - 44),
+        })
+    }
+
+    pub(crate) async fn append_pcm(&mut self, pcm: &[u8]) -> anyhow::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        anyhow::ensure!(pcm.len() % 2 == 0, "PCM16 chunk has an incomplete sample");
+        let next = self
+            .pcm_bytes
+            .checked_add(pcm.len())
+            .context("WAV spool size overflow")?;
+        anyhow::ensure!(
+            next <= self.max_pcm_bytes,
+            "Streaming audio exceeds its WAV spool byte limit"
+        );
+        self.file
+            .write_all(pcm)
+            .await
+            .context("Write speech WAV spool")?;
+        self.pcm_bytes = next;
+        Ok(())
+    }
+
+    pub(crate) async fn finish(mut self) -> anyhow::Result<Vec<u8>> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+        anyhow::ensure!(
+            self.pcm_bytes > 0,
+            "Streaming generation produced no PCM audio"
+        );
+        let pcm_bytes = u32::try_from(self.pcm_bytes)?;
+        let mut header = Vec::with_capacity(44);
+        header.extend_from_slice(b"RIFF");
+        header.extend_from_slice(&(36 + pcm_bytes).to_le_bytes());
+        header.extend_from_slice(b"WAVEfmt ");
+        header.extend_from_slice(&16u32.to_le_bytes());
+        header.extend_from_slice(&1u16.to_le_bytes());
+        header.extend_from_slice(&1u16.to_le_bytes());
+        header.extend_from_slice(&self.sample_rate.to_le_bytes());
+        header.extend_from_slice(&(self.sample_rate * 2).to_le_bytes());
+        header.extend_from_slice(&2u16.to_le_bytes());
+        header.extend_from_slice(&16u16.to_le_bytes());
+        header.extend_from_slice(b"data");
+        header.extend_from_slice(&pcm_bytes.to_le_bytes());
+        self.file.seek(std::io::SeekFrom::Start(0)).await?;
+        self.file.write_all(&header).await?;
+        self.file.flush().await?;
+        self.file.seek(std::io::SeekFrom::Start(0)).await?;
+        let length = self.pcm_bytes + 44;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .context("Reserve bounded WAV upload buffer")?;
+        bytes.resize(length, 0);
+        self.file
+            .read_exact(&mut bytes)
+            .await
+            .context("Read finalized WAV spool")?;
+        // Keep the temporary owner until all asynchronous file work has finished.
+        drop(self.file);
+        drop(self.temporary);
+        Ok(bytes)
+    }
+}
+
 const DEFAULT_LIST_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -670,16 +759,21 @@ impl SpeechHistoryStore {
                 } else {
                     record_id.clone()
                 };
-                persist_audio_object(
-                    &self.media_storage,
-                    MediaNamespace::GeneratedSpeech,
-                    storage_record_id,
-                    audio_filename.as_deref(),
-                    audio_mime_type.as_str(),
-                    &record.audio_bytes,
-                    metadata,
-                )
-                .await?
+                self.media_storage
+                    .put(
+                        izwi_hooks::MediaWriteRequest {
+                            namespace: MediaNamespace::GeneratedSpeech,
+                            record_id: storage_record_id,
+                            preferred_filename: audio_filename.clone(),
+                            content_type: audio_mime_type.clone(),
+                            metadata,
+                        },
+                        record.audio_bytes,
+                    )
+                    .await
+                    .map_err(|err| anyhow!("Media storage write failed: {err}"))?
+                    .key
+                    .key
             }
         };
 
@@ -1151,6 +1245,91 @@ mod tests {
         std::env::set_var("IZWI_MEDIA_DIR", &media_dir);
         let store = SpeechHistoryStore::initialize().expect("store");
         (temp_dir, store)
+    }
+
+    #[tokio::test]
+    async fn stream_spool_persists_the_exact_emitted_pcm16_and_removes_tempfile() {
+        let _guard = env_lock();
+        let (_temp, store) = setup_store();
+        let pending = store
+            .create_record(NewSpeechHistoryRecord {
+                processing_status: SpeechHistoryProcessingStatus::Pending,
+                audio_bytes: Vec::new(),
+                ..ready_record()
+            })
+            .await
+            .unwrap();
+        let emitted: Vec<u8> = [i16::MIN, -1, 0, 1, i16::MAX]
+            .into_iter()
+            .flat_map(i16::to_le_bytes)
+            .collect();
+        let mut spool = SpeechWavSpool::new(44_100, emitted.len()).unwrap();
+        let path = spool.temporary.path().to_path_buf();
+        spool.append_pcm(&emitted[..4]).await.unwrap();
+        spool.append_pcm(&emitted[4..]).await.unwrap();
+        assert!(store
+            .get_audio(SpeechRouteKind::TextToSpeech, pending.id.clone())
+            .await
+            .unwrap()
+            .is_none());
+        let wav = spool.finish().await.unwrap();
+        assert!(!path.exists());
+        assert_eq!(&wav[44..], emitted.as_slice());
+        let reader = hound::WavReader::new(std::io::Cursor::new(&wav)).unwrap();
+        assert_eq!(reader.spec().sample_rate, 44_100);
+        assert_eq!(reader.spec().bits_per_sample, 16);
+        store
+            .complete_record(
+                SpeechRouteKind::TextToSpeech,
+                pending.id.clone(),
+                completed_record(wav),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let audio = store
+            .get_audio(SpeechRouteKind::TextToSpeech, pending.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&audio.audio_bytes[44..], emitted.as_slice());
+        clear_env();
+    }
+
+    #[tokio::test]
+    async fn stream_spool_drop_and_limit_failure_clean_partial_audio() {
+        let mut spool = SpeechWavSpool::new(24_000, 4).unwrap();
+        let path = spool.temporary.path().to_path_buf();
+        spool.append_pcm(&[1, 2, 3, 4]).await.unwrap();
+        assert!(spool.append_pcm(&[5, 6]).await.is_err());
+        assert_eq!(spool.pcm_bytes, 4);
+        assert!(spool.append_pcm(&[5]).await.is_err());
+        drop(spool);
+        assert!(!path.exists());
+        assert!(SpeechWavSpool::new(24_000, 4)
+            .unwrap()
+            .finish()
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn cancelling_spool_task_removes_partial_file() {
+        let (send_path, receive_path) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut spool = SpeechWavSpool::new(24_000, 4).unwrap();
+            spool.append_pcm(&[1, 2]).await.unwrap();
+            send_path
+                .send(spool.temporary.path().to_path_buf())
+                .unwrap();
+            std::future::pending::<()>().await;
+            drop(spool);
+        });
+        let path = receive_path.await.unwrap();
+        assert!(path.exists());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(!path.exists());
     }
 
     fn clear_env() {

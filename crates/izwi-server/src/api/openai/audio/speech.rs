@@ -87,6 +87,8 @@ pub struct SpeechRequest {
 struct SpeechStreamEvent {
     event: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    timing: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sequence: Option<usize>,
@@ -387,6 +389,7 @@ async fn stream_speech(
     variant: ModelVariant,
     resolved_format: ResolvedSpeechFormat,
 ) -> Result<Response<Body>, ApiError> {
+    let stream_entry_started = Instant::now();
     let format = resolved_format.format;
     let format_fallback = resolved_format.fallback;
     let mut gen_request = build_generation_request(&req, correlation_id, true, variant);
@@ -405,6 +408,7 @@ async fn stream_speech(
             Err(_) => {
                 let error_event = SpeechStreamEvent {
                     event: "audio.failed",
+                    timing: None,
                     request_id: Some(stream_request_id.clone()),
                     sequence: None,
                     audio_base64: None,
@@ -428,6 +432,7 @@ async fn stream_speech(
                 &event_tx,
                 SpeechStreamEvent {
                     event: "audio.failed",
+                    timing: None,
                     request_id: Some(stream_request_id.clone()),
                     sequence: None,
                     audio_base64: None,
@@ -449,6 +454,7 @@ async fn stream_speech(
         let fallback_sample_rate = engine.sample_rate().await;
         let start_event = SpeechStreamEvent {
             event: "audio.started",
+            timing: None,
             request_id: Some(stream_request_id.clone()),
             sequence: None,
             audio_base64: None,
@@ -477,17 +483,25 @@ async fn stream_speech(
         });
 
         let mut total_samples = 0usize;
+        let mut terminal_statistics = None;
+        let mut first_pcm_ms = None;
+        let mut last_pcm_ms = None;
         let mut audio_duration_secs = 0.0f32;
         let mut last_sample_rate = fallback_sample_rate;
         let stream_started = Instant::now();
         let mut client_closed = false;
         let mut stream_failed = false;
         while let Some(chunk) = chunk_rx.recv().await {
+            // A successful runtime terminal marker may contain statistics only.
+            accumulate_stream_statistics(&mut terminal_statistics, &chunk);
             if chunk.samples.is_empty() {
                 continue;
             }
 
             let chunk_sample_rate = chunk.sample_rate_or(fallback_sample_rate).max(1);
+            let pcm_ms = stream_entry_started.elapsed().as_secs_f64() * 1000.0;
+            first_pcm_ms.get_or_insert(pcm_ms);
+            last_pcm_ms = Some(pcm_ms);
             total_samples += chunk.samples.len();
             audio_duration_secs += chunk.samples.len() as f32 / chunk_sample_rate as f32;
             last_sample_rate = chunk_sample_rate;
@@ -496,6 +510,7 @@ async fn stream_speech(
                 Err(err) => {
                     let error_event = SpeechStreamEvent {
                         event: "audio.failed",
+                        timing: None,
                         request_id: Some(stream_request_id.clone()),
                         sequence: None,
                         audio_base64: None,
@@ -517,6 +532,7 @@ async fn stream_speech(
 
             let chunk_event = SpeechStreamEvent {
                 event: "audio.chunk",
+                timing: None,
                 request_id: Some(chunk.request_id.clone()),
                 sequence: Some(chunk.sequence),
                 audio_base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
@@ -546,6 +562,7 @@ async fn stream_speech(
             let _ = generation_task.await;
             let done_event = SpeechStreamEvent {
                 event: "done",
+                timing: None,
                 request_id: Some(stream_request_id),
                 sequence: None,
                 audio_base64: None,
@@ -567,7 +584,12 @@ async fn stream_speech(
         match generation_outcome {
             Ok(Ok(())) => {
                 let generation_time_ms = stream_started.elapsed().as_secs_f32() * 1000.0;
-                let tokens_generated = total_samples / 256;
+                let tokens_generated = terminal_statistics
+                    .as_ref()
+                    .map(|stats| stats.tokens_generated);
+                let execution_time_ms = terminal_statistics
+                    .as_ref()
+                    .map(|stats| stats.generation_time_ms);
                 let rtf = if audio_duration_secs > 0.0 {
                     (generation_time_ms / 1000.0) / audio_duration_secs
                 } else {
@@ -576,6 +598,20 @@ async fn stream_speech(
 
                 let final_event = SpeechStreamEvent {
                     event: "audio.done",
+                    timing: Some(serde_json::json!({
+                        "generation_time_basis": "post_admission_stream_wall",
+                        "request_timing_basis": "stream_handler_entry_after_request_validation",
+                        "execution_time_ms": execution_time_ms,
+                        "execution_rtf": execution_time_ms.filter(|_| audio_duration_secs > 0.0)
+                            .map(|ms| ms / 1000.0 / audio_duration_secs),
+                        "first_pcm_ms": first_pcm_ms,
+                        "request_to_last_pcm_ms": last_pcm_ms,
+                        "request_to_last_pcm_rtf": last_pcm_ms.filter(|_| audio_duration_secs > 0.0)
+                            .map(|ms| ms / 1000.0 / f64::from(audio_duration_secs)),
+                        "pcm_sample_count": total_samples,
+                        "token_unit": if variant == ModelVariant::FishAudioS2Pro { "semantic_frames" } else { "model_tokens" },
+                        "split_request_count": 1,
+                    })),
                     request_id: Some(stream_request_id.clone()),
                     sequence: None,
                     audio_base64: None,
@@ -583,7 +619,7 @@ async fn stream_speech(
                     is_final: None,
                     sample_rate: Some(last_sample_rate),
                     audio_format: None,
-                    tokens_generated: Some(tokens_generated),
+                    tokens_generated,
                     generation_time_ms: Some(generation_time_ms),
                     audio_duration_secs: Some(audio_duration_secs),
                     rtf: Some(rtf),
@@ -594,6 +630,7 @@ async fn stream_speech(
             Ok(Err(err)) => {
                 let error_event = SpeechStreamEvent {
                     event: "audio.failed",
+                    timing: None,
                     request_id: Some(stream_request_id.clone()),
                     sequence: None,
                     audio_base64: None,
@@ -612,6 +649,7 @@ async fn stream_speech(
             Err(err) => {
                 let error_event = SpeechStreamEvent {
                     event: "audio.failed",
+                    timing: None,
                     request_id: Some(stream_request_id.clone()),
                     sequence: None,
                     audio_base64: None,
@@ -765,6 +803,23 @@ fn stream_audio_format_label(format: AudioFormat) -> &'static str {
         AudioFormat::Wav => "wav",
         AudioFormat::RawF32 => "pcm_f32",
         AudioFormat::RawI16 => "pcm_i16",
+    }
+}
+
+/// Non-final statistics are deltas; terminal statistics are cumulative. Audio
+/// samples never imply a token count, because codec geometry varies by model.
+fn accumulate_stream_statistics(total: &mut Option<izwi_core::ChunkStats>, chunk: &AudioChunk) {
+    let Some(stats) = chunk.stats.as_ref() else {
+        return;
+    };
+    match total.as_mut() {
+        Some(total) if !chunk.is_final => {
+            total.tokens_generated = total
+                .tokens_generated
+                .saturating_add(stats.tokens_generated);
+            total.generation_time_ms += stats.generation_time_ms;
+        }
+        _ => *total = Some(stats.clone()),
     }
 }
 
@@ -1177,6 +1232,48 @@ mod tests {
     }
 
     #[test]
+    fn streaming_terminal_only_statistics_replace_deltas_and_unknown_stays_unknown() {
+        let mut statistics = None;
+        let mut first = AudioChunk::new("fish".into(), 0, vec![0.0; 2048]);
+        accumulate_stream_statistics(&mut statistics, &first);
+        assert!(statistics.is_none());
+        first.stats = Some(izwi_core::ChunkStats {
+            generation_time_ms: 10.0,
+            tokens_generated: 1,
+            rtf: 0.2,
+        });
+        accumulate_stream_statistics(&mut statistics, &first);
+        let mut terminal = AudioChunk::final_chunk("fish".into(), 1, Vec::new());
+        terminal.stats = Some(izwi_core::ChunkStats {
+            generation_time_ms: 25.0,
+            tokens_generated: 2,
+            rtf: 0.3,
+        });
+        accumulate_stream_statistics(&mut statistics, &terminal);
+        let statistics = statistics.unwrap();
+        assert_eq!(statistics.tokens_generated, 2);
+        assert_eq!(statistics.generation_time_ms, 25.0);
+    }
+
+    #[test]
+    fn streaming_wav_chunks_are_independent_containers_with_matching_raw_pcm() {
+        for samples in [&[0.0f32, 0.25][..], &[-0.25f32][..]] {
+            let wav = encode_speech_samples(samples, 44_100, AudioFormat::Wav).unwrap();
+            let raw = encode_speech_samples(samples, 44_100, AudioFormat::RawI16).unwrap();
+            assert_eq!(&wav[..4], b"RIFF");
+            let reader = hound::WavReader::new(Cursor::new(wav)).unwrap();
+            assert_eq!(reader.duration() as usize, samples.len());
+            let decoded = reader
+                .into_samples::<i16>()
+                .map(|sample| sample.unwrap())
+                .flat_map(i16::to_le_bytes)
+                .collect::<Vec<_>>();
+            assert_eq!(decoded, raw);
+            assert_eq!(raw.len(), samples.len() * 2);
+        }
+    }
+
+    #[test]
     fn speech_wav_encoding_uses_generated_sample_rate() {
         let bytes = encode_speech_samples(&[0.0, 0.25, -0.25], 16_000, AudioFormat::Wav)
             .expect("encode wav");
@@ -1190,6 +1287,7 @@ mod tests {
     fn speech_stream_chunk_event_includes_audio_rate_and_format() {
         let event = SpeechStreamEvent {
             event: "audio.chunk",
+            timing: None,
             request_id: Some("req".to_string()),
             sequence: Some(3),
             audio_base64: Some("AA==".to_string()),

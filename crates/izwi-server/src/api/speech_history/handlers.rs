@@ -42,7 +42,7 @@ use crate::media_ingest::{
 use crate::speech_history_store::{
     CompleteSpeechHistoryRecord, NewSpeechHistoryRecord, SpeechHistoryProcessingStatus,
     SpeechHistoryRecord, SpeechHistoryRecordListCursor, SpeechHistoryRecordSummary,
-    SpeechRouteKind, StoredSpeechAudio,
+    SpeechRouteKind, SpeechWavSpool, StoredSpeechAudio,
 };
 use crate::state::AppState;
 use izwi_core::audio::{inspect_audio_bytes, AudioEncoder, AudioFormat};
@@ -148,6 +148,8 @@ impl BatchSpeechRequest {
 struct SpeechStreamEvent {
     event: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    timing: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sequence: Option<usize>,
@@ -171,6 +173,73 @@ struct SpeechStreamEvent {
     record: Option<SpeechHistoryRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+/// Per constituent request: terminal totals replace earlier deltas, even when
+/// the final marker contains no audio. Long-form requests sum these totals.
+#[derive(Default)]
+struct StreamRequestStatistics {
+    measured: bool,
+    tokens: usize,
+    execution_ms: f32,
+}
+
+impl StreamRequestStatistics {
+    fn observe(&mut self, chunk: &AudioChunk) {
+        if let Some(stats) = chunk.stats.as_ref() {
+            self.measured = true;
+            if chunk.is_final {
+                self.tokens = stats.tokens_generated;
+                self.execution_ms = stats.generation_time_ms;
+            } else {
+                self.tokens = self.tokens.saturating_add(stats.tokens_generated);
+                self.execution_ms += stats.generation_time_ms;
+            }
+        }
+    }
+}
+
+/// Bound final provider upload memory using the existing generation allowance,
+/// including every long-form constituent and the largest supported slow-down.
+/// Models without a catalog duration bound use a 256 MiB fallback. Operators can
+/// deliberately impose a tighter limit with IZWI_TTS_STREAM_MAX_PCM_BYTES.
+fn stream_pcm_byte_allowance(
+    variant: ModelVariant,
+    sample_rate: u32,
+    request_count: usize,
+) -> usize {
+    let limit = match (
+        variant.tts_max_output_frames_hint(),
+        variant.tts_output_frame_rate_hz_hint(),
+    ) {
+        (Some(frames), Some(rate)) if rate > 0.0 => {
+            let frames = if variant == ModelVariant::Voxtral4BTts2603 {
+                frames.max(ModelVariant::VOXTRAL_TTS_CUDA_MAX_OUTPUT_FRAMES)
+            } else {
+                frames
+            };
+            // One frame of rounding/codec boundary slack per constituent.
+            (((frames + 1) as f64 / f64::from(rate))
+                * f64::from(sample_rate)
+                * 2.0
+                * 4.0
+                * request_count.max(1) as f64)
+                .ceil() as usize
+        }
+        _ => 256 * 1024 * 1024,
+    };
+    limit.min(u32::MAX as usize - 44)
+}
+
+fn stream_pcm_byte_limit(variant: ModelVariant, sample_rate: u32, request_count: usize) -> usize {
+    let limit = stream_pcm_byte_allowance(variant, sample_rate, request_count);
+    let configured = std::env::var("IZWI_TTS_STREAM_MAX_PCM_BYTES")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value >= 2);
+    configured
+        .map_or(limit, |configured| configured.min(limit))
+        .min(u32::MAX as usize - 44)
 }
 
 fn stream_event_queue_capacity() -> usize {
@@ -1355,6 +1424,7 @@ async fn stream_record_creation(
     input_text: String,
     placeholder: SpeechHistoryRecord,
 ) -> Result<Response, ApiError> {
+    let stream_entry_started = std::time::Instant::now();
     let generation_request = build_generation_request(
         req.clone(),
         ctx.correlation_id,
@@ -1376,6 +1446,7 @@ async fn stream_record_creation(
         &event_tx,
         SpeechStreamEvent {
             event: "created",
+            timing: None,
             request_id: Some(stream_request_id.clone()),
             sequence: None,
             audio_base64: None,
@@ -1411,6 +1482,7 @@ async fn stream_record_creation(
                     &event_tx,
                     SpeechStreamEvent {
                         event: "error",
+                        timing: None,
                         request_id: Some(stream_request_id),
                         sequence: None,
                         audio_base64: None,
@@ -1440,6 +1512,7 @@ async fn stream_record_creation(
                     &event_tx,
                     SpeechStreamEvent {
                         event: "done",
+                        timing: None,
                         request_id: Some(stream_request_id),
                         sequence: None,
                         audio_base64: None,
@@ -1481,6 +1554,7 @@ async fn stream_record_creation(
             &event_tx,
             SpeechStreamEvent {
                 event: "start",
+                timing: None,
                 request_id: Some(stream_request_id.clone()),
                 sequence: None,
                 audio_base64: None,
@@ -1505,13 +1579,19 @@ async fn stream_record_creation(
         let mut total_samples = 0usize;
         let mut audio_duration_secs = 0.0f32;
         let mut total_tokens = 0usize;
+        let mut execution_time_ms = 0.0f32;
+        let mut statistics_measured = true;
+        let split_request_count = planned_requests.len();
+        let mut first_pcm_ms = None;
+        let mut last_pcm_ms = None;
         let stream_started = std::time::Instant::now();
-        let mut merged_samples: Vec<f32> = Vec::new();
+        let mut wav_spool: Option<SpeechWavSpool> = None;
         let mut merged_sample_rate: Option<u32> = None;
         let mut global_sequence = 0usize;
         let mut failed = false;
         let mut failure_message: Option<String> = None;
         for request in planned_requests {
+            let mut request_statistics = StreamRequestStatistics::default();
             let (chunk_tx, mut chunk_rx) = mpsc::channel::<AudioChunk>(32);
             let generation_engine = runtime.clone();
             let generation_task = tokio::spawn(async move {
@@ -1523,6 +1603,9 @@ async fn stream_record_creation(
             let mut encoding_failed = false;
             let mut stream_closed = false;
             while let Some(chunk) = chunk_rx.recv().await {
+                // Terminal-only chunks carry committed frame counts and execution
+                // time; metadata must be consumed even when no PCM remains.
+                request_statistics.observe(&chunk);
                 if chunk.samples.is_empty() {
                     continue;
                 }
@@ -1537,6 +1620,7 @@ async fn stream_record_creation(
                             &event_tx,
                             SpeechStreamEvent {
                                 event: "error",
+                                timing: None,
                                 request_id: Some(stream_request_id.clone()),
                                 sequence: None,
                                 audio_base64: None,
@@ -1562,10 +1646,9 @@ async fn stream_record_creation(
 
                 total_samples += chunk.samples.len();
                 audio_duration_secs += chunk.samples.len() as f32 / chunk_sample_rate as f32;
-                if let Some(stats) = chunk.stats.as_ref() {
-                    total_tokens = total_tokens.saturating_add(stats.tokens_generated);
-                }
-                merged_samples.extend_from_slice(&chunk.samples);
+                let pcm_ms = stream_entry_started.elapsed().as_secs_f64() * 1000.0;
+                first_pcm_ms.get_or_insert(pcm_ms);
+                last_pcm_ms = Some(pcm_ms);
 
                 let stream_encoder = AudioEncoder::new(chunk_sample_rate, 1);
                 let chunk_bytes = match stream_encoder.encode(&chunk.samples, AudioFormat::RawI16) {
@@ -1575,6 +1658,7 @@ async fn stream_record_creation(
                             &event_tx,
                             SpeechStreamEvent {
                                 event: "error",
+                                timing: None,
                                 request_id: Some(stream_request_id.clone()),
                                 sequence: None,
                                 audio_base64: None,
@@ -1596,10 +1680,31 @@ async fn stream_record_creation(
                     }
                 };
 
+                let append_result = async {
+                    if wav_spool.is_none() {
+                        wav_spool = Some(SpeechWavSpool::new(
+                            chunk_sample_rate,
+                            stream_pcm_byte_limit(variant, chunk_sample_rate, split_request_count),
+                        )?);
+                    }
+                    wav_spool
+                        .as_mut()
+                        .expect("created WAV spool")
+                        .append_pcm(&chunk_bytes)
+                        .await
+                }
+                .await;
+                if let Err(err) = append_result {
+                    encoding_failed = true;
+                    failure_message = Some(format!("Failed to persist streaming PCM: {err}"));
+                    break;
+                }
+
                 if send_stream_event(
                     &event_tx,
                     SpeechStreamEvent {
                         event: "chunk",
+                        timing: None,
                         request_id: Some(stream_request_id.clone()),
                         sequence: Some(global_sequence),
                         audio_base64: Some(
@@ -1625,6 +1730,9 @@ async fn stream_record_creation(
                 global_sequence = global_sequence.saturating_add(1);
             }
 
+            total_tokens = total_tokens.saturating_add(request_statistics.tokens);
+            execution_time_ms += request_statistics.execution_ms;
+            statistics_measured &= request_statistics.measured;
             drop(chunk_rx);
             let generation_outcome = generation_task.await;
             if encoding_failed || stream_closed {
@@ -1655,18 +1763,19 @@ async fn stream_record_creation(
             mark_failed(stream_terminal_failure_message(failure_message)).await;
         } else {
             let generation_time_ms = stream_started.elapsed().as_secs_f32() * 1000.0;
-            if total_tokens == 0 {
-                total_tokens = total_samples / 256;
-            }
             let rtf = if audio_duration_secs > 0.0 {
                 (generation_time_ms / 1000.0) / audio_duration_secs
             } else {
                 0.0
             };
 
-            let record_sample_rate = merged_sample_rate.unwrap_or(fallback_sample_rate).max(1);
-            let wav_encoder = AudioEncoder::new(record_sample_rate, 1);
-            match wav_encoder.encode(merged_samples.as_slice(), AudioFormat::Wav) {
+            let wav_result = match wav_spool {
+                Some(spool) => spool.finish().await,
+                None => Err(anyhow::anyhow!(
+                    "Streaming generation produced no PCM audio"
+                )),
+            };
+            match wav_result {
                 Ok(wav_bytes) => {
                     let record_result = speech_store
                         .complete_record(
@@ -1684,7 +1793,7 @@ async fn stream_record_creation(
                                 generation_time_ms: generation_time_ms as f64,
                                 audio_duration_secs: Some(audio_duration_secs as f64),
                                 rtf: Some(rtf as f64),
-                                tokens_generated: Some(total_tokens),
+                                tokens_generated: statistics_measured.then_some(total_tokens),
                                 audio_mime_type: AudioEncoder::content_type(AudioFormat::Wav)
                                     .to_string(),
                                 audio_filename: Some(default_audio_filename(route_kind, "wav")),
@@ -1700,13 +1809,28 @@ async fn stream_record_creation(
                                 &event_tx,
                                 SpeechStreamEvent {
                                     event: "final",
+                                    timing: Some(serde_json::json!({
+                                        "generation_time_basis": "post_admission_stream_wall",
+                                        "request_timing_basis": "stream_handler_entry_after_record_creation",
+                                        "execution_time_ms": statistics_measured.then_some(execution_time_ms),
+                                        "execution_rtf": if statistics_measured && audio_duration_secs > 0.0 {
+                                            Some(execution_time_ms / 1000.0 / audio_duration_secs)
+                                        } else { None },
+                                        "first_pcm_ms": first_pcm_ms,
+                                        "request_to_last_pcm_ms": last_pcm_ms,
+                                        "request_to_last_pcm_rtf": last_pcm_ms.filter(|_| audio_duration_secs > 0.0)
+                                            .map(|ms| ms / 1000.0 / f64::from(audio_duration_secs)),
+                                        "split_request_count": split_request_count,
+                                        "pcm_sample_count": total_samples,
+                                        "token_unit": if model_id == "FishAudio-S2-Pro" { "semantic_frames" } else { "model_tokens" },
+                                    })),
                                     request_id: Some(stream_request_id.clone()),
                                     sequence: None,
                                     audio_base64: None,
                                     sample_count: None,
                                     sample_rate: None,
                                     audio_format: None,
-                                    tokens_generated: Some(total_tokens),
+                                    tokens_generated: statistics_measured.then_some(total_tokens),
                                     generation_time_ms: Some(generation_time_ms),
                                     audio_duration_secs: Some(audio_duration_secs),
                                     rtf: Some(rtf),
@@ -1726,7 +1850,7 @@ async fn stream_record_creation(
                     }
                 }
                 Err(err) => {
-                    mark_failed(format!("Failed to encode final WAV output: {err}")).await;
+                    mark_failed(format!("Failed to finalize streaming WAV output: {err}")).await;
                 }
             }
         }
@@ -1735,6 +1859,7 @@ async fn stream_record_creation(
             &event_tx,
             SpeechStreamEvent {
                 event: "done",
+                timing: None,
                 request_id: Some(stream_request_id),
                 sequence: None,
                 audio_base64: None,
@@ -2165,6 +2290,48 @@ mod tests {
             top_k: None,
             stream: None,
         }
+    }
+
+    #[test]
+    fn stream_spool_allowance_preserves_fish_full_output_and_long_form() {
+        let single = stream_pcm_byte_allowance(ModelVariant::FishAudioS2Pro, 44_100, 1);
+        let full_slow_pcm = ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES * 2048 * 2 * 4;
+        assert!(single >= full_slow_pcm);
+        let long_form = stream_pcm_byte_allowance(ModelVariant::FishAudioS2Pro, 44_100, 3);
+        assert!(long_form >= full_slow_pcm * 3);
+        assert!(long_form <= single * 3);
+        assert!(
+            stream_pcm_byte_allowance(ModelVariant::FishAudioS2Pro, 44_100, usize::MAX)
+                <= u32::MAX as usize - 44
+        );
+    }
+
+    #[test]
+    fn terminal_only_statistics_replace_chunk_deltas_without_guessing_frames() {
+        let mut statistics = StreamRequestStatistics::default();
+        let mut first = AudioChunk::new("request".into(), 0, vec![0.0; 2048]);
+        first.stats = Some(izwi_core::ChunkStats {
+            generation_time_ms: 10.0,
+            tokens_generated: 1,
+            rtf: 0.2,
+        });
+        statistics.observe(&first);
+        let mut terminal = AudioChunk::final_chunk("request".into(), 1, Vec::new());
+        terminal.stats = Some(izwi_core::ChunkStats {
+            generation_time_ms: 25.0,
+            tokens_generated: 2,
+            rtf: 0.3,
+        });
+        statistics.observe(&terminal);
+        assert_eq!(statistics.tokens, 2);
+        assert_eq!(statistics.execution_ms, 25.0);
+        let mut unknown = StreamRequestStatistics::default();
+        unknown.observe(&AudioChunk::final_chunk(
+            "unknown".into(),
+            0,
+            vec![0.0; 4096],
+        ));
+        assert_eq!(unknown.tokens, 0);
     }
 
     #[test]

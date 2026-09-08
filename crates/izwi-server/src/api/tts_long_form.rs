@@ -198,6 +198,9 @@ pub async fn generate_long_form_tts(
             .await;
     }
 
+    let started = std::time::Instant::now();
+    let split_request_count = planned_requests.len();
+    let mut constituent_diagnostics = Vec::with_capacity(split_request_count);
     let mut merged_samples: Vec<f32> = Vec::new();
     let mut sample_rate: Option<u32> = None;
     let mut total_tokens = 0usize;
@@ -218,6 +221,7 @@ pub async fn generate_long_form_tts(
         merged_samples.extend_from_slice(&output.samples);
         total_tokens = total_tokens.saturating_add(output.total_tokens);
         total_time_ms += output.total_time_ms;
+        constituent_diagnostics.push(output.diagnostics);
     }
 
     let sample_rate = sample_rate.ok_or_else(|| {
@@ -230,7 +234,12 @@ pub async fn generate_long_form_tts(
         sample_rate,
         total_tokens,
         total_time_ms,
-        diagnostics: None,
+        diagnostics: Some(serde_json::json!({
+            "timing_basis": "sum_of_engine_executions",
+            "split_request_count": split_request_count,
+            "request_wall_ms": started.elapsed().as_secs_f64() * 1000.0,
+            "constituents": constituent_diagnostics,
+        })),
     })
 }
 
