@@ -209,21 +209,21 @@ fn fish_s2_exact_prompt_fits_admission_generation_and_codec_budget() {
             FishS2TtsModelLease::for_test(FishS2TtsModel::for_test()),
             FishS2PreparedArtifact::test_prompt(11, 224),
             FishS2GenerationParams {
-                max_frames: 512,
+                max_frames: 31,
                 ..Default::default()
             },
             256,
         )
         .unwrap();
     request.validate_execution_preparation().unwrap();
-    assert_eq!(request.params.max_tokens, 32);
+    assert_eq!(request.params.max_tokens, 31);
     assert_eq!(
         request
             .fish_s2_tts_generation_params_for_executor()
             .unwrap()
             .unwrap()
             .max_frames,
-        32
+        31
     );
     let (binding, stage) = loaded_binding(BackendKind::Cuda);
     request.bind_execution_adapter(binding).unwrap();
@@ -265,4 +265,29 @@ fn fish_terminal_flush_never_reserves_whole_waveform_codec_work() {
         BackendKind::Cuda
     )
     .is_err());
+}
+
+#[test]
+fn fish_exact_preparation_rejects_output_shrink_without_installing_artifact() {
+    let mut request = EngineCoreRequest::tts("An oversized segment")
+        .with_model_variant(ModelVariant::FishAudioS2Pro);
+    let error = request
+        .install_fish_s2_tts_execution_model(
+            ModelVariant::FishAudioS2Pro,
+            FishS2TtsModelLease::for_test(FishS2TtsModel::for_test()),
+            FishS2PreparedArtifact::test_prompt(11, 224),
+            FishS2GenerationParams {
+                max_frames: 512,
+                ..Default::default()
+            },
+            256,
+        )
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("segment does not fit effective context"));
+    assert!(request
+        .prepared_fish_s2_tts_artifact_for_executor()
+        .unwrap()
+        .is_none());
 }

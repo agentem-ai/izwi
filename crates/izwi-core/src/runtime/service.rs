@@ -5393,7 +5393,6 @@ impl RuntimeService {
                 request
                     .params
                     .max_tokens
-                    .min(context_limit.saturating_sub(1))
                     .clamp(1, ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES)
             },
             temperature: request.params.temperature,

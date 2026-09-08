@@ -2049,6 +2049,7 @@ impl NativeExecutor {
                 "Fish finalization has undecoded frames".into(),
             ));
         }
+        active.state.require_complete()?;
         check_fish_codec_request(request)?;
         let _tail = active.codec.flush();
         let sample_rate = model.diagnostics().sample_rate;

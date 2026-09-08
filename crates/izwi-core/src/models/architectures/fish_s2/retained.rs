@@ -11,8 +11,8 @@ use crate::models::shared::attention::physical::PhysicalPagedKvCache;
 use super::{
     append_generated_frame, elapsed_ms, generated_frame_prompt, sample_semantic_token,
     FishS2ConditioningPrompt, FishS2GenerationOutput, FishS2GenerationParams, FishS2Reference,
-    FishS2Sampler, FishS2SemanticSampler, FishS2SlowOutput, FishS2TtsGenerationDiagnostics,
-    FishS2TtsModel, FishS2VqCodes, RAS_WIN_SIZE,
+    FishS2Sampler, FishS2SemanticSampler, FishS2SlowOutput, FishS2StopReason,
+    FishS2TtsGenerationDiagnostics, FishS2TtsModel, FishS2VqCodes, RAS_WIN_SIZE,
 };
 
 static NEXT_FISH_S2_STATE_ID: AtomicU64 = AtomicU64::new(1);
@@ -119,7 +119,7 @@ pub(crate) struct FishS2RetainedState {
     slow_ar_ms: f64,
     prefill_steps: u32,
     decode_steps: u32,
-    stop_reason: String,
+    stop_reason: FishS2StopReason,
     finished: bool,
     active_quantum: Option<u64>,
     next_quantum: u64,
@@ -149,7 +149,7 @@ struct FishS2RetainedCheckpointPayload {
     fast_sampler: FishS2Sampler,
     generated_frames: usize,
     recent_semantic_tokens: Vec<u32>,
-    stop_reason: String,
+    stop_reason: FishS2StopReason,
     finished: bool,
     staged_step: Option<FishS2RetainedStep>,
     completions_drained: bool,
@@ -295,7 +295,7 @@ impl FishS2TtsModel {
             slow_ar_ms: 0.0,
             prefill_steps: 0,
             decode_steps: 0,
-            stop_reason: "max_frames".into(),
+            stop_reason: FishS2StopReason::FrameLimit,
             finished: false,
             active_quantum: None,
             next_quantum: 1,
@@ -327,7 +327,7 @@ impl FishS2TtsModel {
                 fast_sampler: state.fast_sampler.clone(),
                 generated_frames: 0,
                 recent_semantic_tokens: Vec::new(),
-                stop_reason: "max_frames".into(),
+                stop_reason: FishS2StopReason::FrameLimit,
                 finished: false,
                 staged_step: None,
                 completions_drained: true,
@@ -447,7 +447,7 @@ impl FishS2TtsModel {
             state.slow_ar_ms += slow_started.elapsed().as_secs_f64() * 1000.0;
             state.slow_position += 1;
             state.completions_drained = false;
-            state.stop_reason = "im_end".into();
+            state.stop_reason = FishS2StopReason::EndOfSpeech;
             state.finished = true;
             return state.stage_finished();
         }
@@ -622,7 +622,7 @@ impl FishS2TtsModel {
                 }
                 state.finished = state.frames_generated() >= state.max_frames;
             } else {
-                state.stop_reason = "im_end".into();
+                state.stop_reason = FishS2StopReason::EndOfSpeech;
                 state.finished = true;
             }
             steps.push(if state.finished {
@@ -829,6 +829,7 @@ impl FishS2TtsModel {
                 "Fish S2 finalize requires a terminal committed frame boundary".into(),
             ));
         }
+        state.require_complete()?;
         let frames_generated = state.frames_generated();
         if frames_generated == 0 {
             return Err(Error::InferenceError(
@@ -865,7 +866,7 @@ impl FishS2TtsModel {
                 top_k: state.params.top_k,
                 seed: state.params.seed,
                 repetition_aware: state.params.repetition_aware,
-                stop_reason: state.stop_reason.clone(),
+                stop_reason: state.stop_reason,
                 reference_encode_ms: state.artifact.reference_encode_ms,
                 prompt_build_ms: state.artifact.prompt_build_ms,
                 slow_prefill_ms: state.prefill_ms as f32,
@@ -970,7 +971,7 @@ impl FishS2RetainedState {
                 fast_sampler: self.fast_sampler.clone(),
                 generated_frames: self.frames_generated(),
                 recent_semantic_tokens: self.recent_semantic_tokens.clone(),
-                stop_reason: self.stop_reason.clone(),
+                stop_reason: self.stop_reason,
                 finished: self.finished,
                 staged_step: self.staged_step.clone(),
                 completions_drained: self.completions_drained,
@@ -1035,7 +1036,10 @@ impl FishS2RetainedState {
         FishS2TtsModel::for_test()
             .new_retained_state_in_quantum(
                 FishS2PreparedArtifact::test_prompt(11, 3),
-                FishS2GenerationParams::default(),
+                FishS2GenerationParams {
+                    max_frames: 4092,
+                    ..Default::default()
+                },
                 super::physical::test_physical_cache(91, 1, 1, 1, 8),
                 8192,
             )
@@ -1047,7 +1051,10 @@ impl FishS2RetainedState {
         FishS2TtsModel::for_test()
             .new_retained_state(
                 FishS2PreparedArtifact::test_prompt(11, 3),
-                FishS2GenerationParams::default(),
+                FishS2GenerationParams {
+                    max_frames: 4092,
+                    ..Default::default()
+                },
                 super::physical::test_physical_cache(91, 1, 1, 1, 8),
                 8192,
             )
@@ -1056,6 +1063,10 @@ impl FishS2RetainedState {
 
     pub(crate) const fn slow_position(&self) -> usize {
         self.slow_position
+    }
+
+    pub(crate) fn require_complete(&self) -> Result<()> {
+        self.stop_reason.require_complete()
     }
 
     pub(crate) const fn finished(&self) -> bool {
@@ -1363,12 +1374,45 @@ mod tests {
     }
 
     #[test]
+    fn retained_finalization_rejects_frame_limit_and_accepts_eos() {
+        let mut state = FishS2RetainedState::for_test();
+        state.finished = true;
+        assert!(state
+            .require_complete()
+            .unwrap_err()
+            .to_string()
+            .contains("generation incomplete: frame_limit"));
+        state.stop_reason = FishS2StopReason::EndOfSpeech;
+        state.require_complete().unwrap();
+    }
+
+    #[test]
+    fn managed_generation_rejects_silent_output_budget_shrink() {
+        let model = FishS2TtsModel::for_test();
+        let error = model
+            .new_retained_state_in_quantum(
+                FishS2PreparedArtifact::test_prompt(11, 224),
+                FishS2GenerationParams {
+                    max_frames: 512,
+                    ..Default::default()
+                },
+                test_physical_cache(91, 1, 1, 1, 192),
+                256,
+            )
+            .err()
+            .expect("oversized budget must fail");
+        assert!(error
+            .to_string()
+            .contains("segment does not fit effective context"));
+    }
+
+    #[test]
     fn managed_generation_budget_uses_logical_context_not_first_chunk() {
         let model = FishS2TtsModel::for_test();
         for (prompt, context, requested, expected) in [
             (224, 8192, 512, 512),
             (160, 8192, 512, 512),
-            (224, 256, 512, 32),
+            (224, 256, 31, 31),
         ] {
             let (mut state, mut checkpoint) = model
                 .new_retained_state_in_quantum(
@@ -1440,7 +1484,7 @@ mod tests {
             slow_ar_ms: 0.0,
             prefill_steps: 0,
             decode_steps: 0,
-            stop_reason: "max_frames".into(),
+            stop_reason: FishS2StopReason::FrameLimit,
             finished: false,
             active_quantum: None,
             next_quantum: 1,

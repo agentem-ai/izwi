@@ -3611,7 +3611,7 @@ impl EngineCoreRequest {
         model_variant: ModelVariant,
         model: FishS2TtsModelLease,
         artifact: Arc<FishS2PreparedArtifact>,
-        mut params: FishS2GenerationParams,
+        params: FishS2GenerationParams,
         max_sequence_tokens: usize,
     ) -> Result<()> {
         if self.task_type != TaskType::TTS
@@ -3626,10 +3626,13 @@ impl EngineCoreRequest {
                 self.id
             )));
         }
-        // Seal one fitted output budget for admission, generation and codec costs.
-        params.max_frames = params
-            .max_frames
-            .min(max_sequence_tokens - artifact.prompt_tokens());
+        // Validate exact reference + text + full output room before admission.
+        crate::models::architectures::fish_s2::effective_frame_budget(
+            artifact.prompt_tokens(),
+            max_sequence_tokens,
+            max_sequence_tokens,
+            params.max_frames,
+        )?;
         self.prepared_stage_costs.clear();
         self.prepared_sequence_input_tokens = Some(artifact.prompt_tokens());
         self.params.max_tokens = params.max_frames;
