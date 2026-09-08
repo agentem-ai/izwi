@@ -796,7 +796,7 @@ impl ModelVariant {
                 supports_voice_description: false,
                 supports_streaming: true,
                 supports_speed_control: false,
-                supports_auto_long_form: false,
+                supports_auto_long_form: true,
             },
             _ => return None,
         };
@@ -1467,7 +1467,7 @@ mod tests {
                 supports_voice_description: false,
                 supports_streaming: true,
                 supports_speed_control: false,
-                supports_auto_long_form: false,
+                supports_auto_long_form: true,
             })
         );
     }

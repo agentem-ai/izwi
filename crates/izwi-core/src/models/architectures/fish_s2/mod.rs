@@ -66,6 +66,7 @@ pub(crate) const FISH_S2_TTS_FINALIZE_STAGE: &str = "tts.codec.fish_s2.scalar";
 
 pub struct FishS2TtsModel {
     model_identity: u64,
+    artifact_fingerprint: Option<String>,
     variant: ModelVariant,
     config: FishS2Config,
     artifacts: FishS2ArtifactManifest,
@@ -180,6 +181,7 @@ impl FishS2TtsModel {
     pub(crate) fn for_test() -> Self {
         Self {
             model_identity: 1,
+            artifact_fingerprint: None,
             variant: ModelVariant::FishAudioS2Pro,
             config: config::current_config(),
             artifacts: FishS2ArtifactManifest {
@@ -210,6 +212,7 @@ impl FishS2TtsModel {
         let codec = FishS2CodecArtifact::load(model_dir)?;
         Ok(Self {
             model_identity: next_fish_s2_model_identity()?,
+            artifact_fingerprint: None,
             variant,
             config,
             artifacts,
@@ -221,6 +224,7 @@ impl FishS2TtsModel {
 
     pub fn load(model_dir: &Path, variant: ModelVariant, device: DeviceProfile) -> Result<Self> {
         let mut model = Self::load_metadata(model_dir, variant)?;
+        model.artifact_fingerprint = Some(model.artifacts.content_fingerprint()?);
         model.runtime = Some(FishS2NativeRuntime::load(
             model_dir,
             &model.config,
@@ -228,6 +232,10 @@ impl FishS2TtsModel {
             device,
         )?);
         Ok(model)
+    }
+
+    pub fn artifact_fingerprint(&self) -> Option<&str> {
+        self.artifact_fingerprint.as_deref()
     }
 
     pub fn variant(&self) -> ModelVariant {

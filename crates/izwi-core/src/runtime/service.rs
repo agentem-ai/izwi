@@ -2829,6 +2829,16 @@ impl RuntimeService {
         }
     }
 
+    /// Content identity of the loaded Fish weights, codec and tokenizer. Native
+    /// loading computes this once; segment admission only clones the small hash.
+    pub async fn fish_s2_artifact_fingerprint(&self) -> Option<String> {
+        self.model_registry
+            .get_fish_s2_tts(ModelVariant::FishAudioS2Pro)
+            .await?
+            .artifact_fingerprint()
+            .map(str::to_owned)
+    }
+
     /// Machine-readable diagnostics for the currently loaded direct TTS model.
     pub async fn loaded_tts_model_diagnostics(&self) -> Option<serde_json::Value> {
         let variant = (*self.loaded_tts_variant.read().await)?;
