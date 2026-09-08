@@ -22,6 +22,7 @@ pub mod contracts;
 pub mod dac;
 pub mod fast;
 mod physical;
+mod reference_cache;
 mod retained;
 mod rotary;
 mod sampling;
@@ -50,6 +51,8 @@ pub use tokenizer::{
 };
 pub use weights::{FishS2TensorSpec, FishS2WeightIndex, FishS2Weights};
 
+pub(crate) use reference_cache::FISH_S2_REFERENCE_CACHE_BYTES;
+
 pub(crate) const FISH_S2_TTS_PREPARATION_STAGE: &str = "tts.prepare.fish_s2";
 pub(crate) const FISH_S2_TTS_PREFILL_STAGE: &str = "tts.prefill.fish_s2";
 pub(crate) const FISH_S2_TTS_DECODE_STAGE: &str = "tts.decode.fish_s2";
@@ -62,6 +65,7 @@ pub struct FishS2TtsModel {
     artifacts: FishS2ArtifactManifest,
     codec: FishS2CodecArtifact,
     runtime: Option<FishS2NativeRuntime>,
+    reference_cache: reference_cache::ReferenceCodeCache,
 }
 
 struct FishS2NativeRuntime {
@@ -165,6 +169,7 @@ impl FishS2TtsModel {
                 support: codec::FishS2CodecSupport::NativePthStateDict,
             },
             runtime: None,
+            reference_cache: Default::default(),
         }
     }
 
@@ -184,6 +189,7 @@ impl FishS2TtsModel {
             artifacts,
             codec,
             runtime: None,
+            reference_cache: Default::default(),
         })
     }
 

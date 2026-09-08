@@ -183,12 +183,28 @@ impl FishS2TtsModel {
         self.preparation_memory(text, &reference, context_limit)?;
         let runtime = self.native_runtime()?;
         let started = Instant::now();
-        let reference_codes = runtime.dac.encode_reference_audio_with_cancel(
+        let mut reference_encode_ms = 0.0;
+        let (reference_codes, cache_hit) = self.reference_cache.get_or_encode(
             &reference.audio_samples,
             reference.sample_rate,
             check,
+            || {
+                let encode_started = Instant::now();
+                let codes = runtime.dac.encode_reference_audio_with_cancel(
+                    &reference.audio_samples,
+                    reference.sample_rate,
+                    check,
+                );
+                reference_encode_ms = elapsed_ms(encode_started);
+                codes
+            },
         )?;
-        let reference_encode_ms = elapsed_ms(started);
+        tracing::debug!(
+            reference_cache_hit = cache_hit,
+            reference_lookup_total_ms = elapsed_ms(started),
+            reference_encode_ms,
+            "Fish reference code preparation"
+        );
         let started = Instant::now();
         let prompt = runtime.tokenizer.build_reference_voice_prompt_bounded(
             &self.config,

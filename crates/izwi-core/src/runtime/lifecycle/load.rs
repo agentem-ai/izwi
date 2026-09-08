@@ -492,7 +492,7 @@ fn qwen38_resource_plan(backend: BackendKind) -> ModelResourcePlan {
 fn fish_s2_resource_plan(
     backend: BackendKind,
     memory: crate::models::architectures::fish_s2::weights::FishS2ModelMemory,
-) -> ModelResourcePlan {
+) -> Result<ModelResourcePlan> {
     let mut plan = model_resource_plan(
         backend,
         ModelMemoryEstimate {
@@ -504,7 +504,22 @@ fn fish_s2_resource_plan(
         plan.load_authorization.host_bytes =
             ResourceAmount::Known(memory.cuda_host_load_peak_bytes);
     }
-    plan
+    // Reference VQ codes are immutable CPU data owned by this model instance,
+    // even when weights reside on CUDA or Metal. Reserve their complete bounded
+    // allocation before load and keep it charged until model unload.
+    let reference_cache = ResourceVector {
+        host_bytes: ResourceAmount::Known(
+            crate::models::architectures::fish_s2::FISH_S2_REFERENCE_CACHE_BYTES,
+        ),
+        ..ResourceVector::zero()
+    };
+    plan.load_authorization = plan.load_authorization.checked_add(reference_cache)?;
+    plan.resident_authorization = plan.resident_authorization.checked_add(reference_cache)?;
+    // Cache entries are populated lazily. Keep their promise unmaterialized so
+    // state fitting cannot consume this headroom before the first reference is
+    // encoded. As with lazy graph caches, this remains conservative once filled.
+    plan.deferred_resident_authorization = reference_cache;
+    Ok(plan)
 }
 
 #[derive(Debug, Clone)]
@@ -1088,7 +1103,7 @@ impl ModelLifecycleController {
                 model_path,
                 &self.backend_router.context().device,
             )?;
-            return Ok(fish_s2_resource_plan(backend, memory));
+            return fish_s2_resource_plan(backend, memory);
         }
         let estimate = if backend == BackendKind::Cuda {
             model_memory_estimate(variant)
@@ -3346,11 +3361,14 @@ mod tests {
             load_peak_bytes: 12_307_518_404,
             cuda_host_load_peak_bytes: 9_944_351_744,
         };
-        let plan = fish_s2_resource_plan(BackendKind::Cuda, memory);
+        let plan = fish_s2_resource_plan(BackendKind::Cuda, memory).unwrap();
         assert_eq!(
             plan.resident_authorization,
             ResourceVector {
                 device_bytes: ResourceAmount::Known(memory.resident_bytes),
+                host_bytes: ResourceAmount::Known(
+                    crate::models::architectures::fish_s2::FISH_S2_REFERENCE_CACHE_BYTES
+                ),
                 ..ResourceVector::zero()
             }
         );
@@ -3393,20 +3411,81 @@ mod tests {
     }
 
     #[test]
+    fn fish_s2_lazy_reference_cache_keeps_headroom_reserved_after_weight_load() {
+        let cache = crate::models::architectures::fish_s2::FISH_S2_REFERENCE_CACHE_BYTES;
+        let host = |n| ResourceVector {
+            host_bytes: ResourceAmount::Known(n),
+            ..ResourceVector::zero()
+        };
+        let plan = fish_s2_resource_plan(
+            BackendKind::Cpu,
+            FishS2ModelMemory {
+                resident_bytes: 100,
+                load_peak_bytes: 200,
+                cuda_host_load_peak_bytes: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.deferred_resident_authorization, host(cache));
+        let authority = Arc::new(ResourceAuthority::new(Arc::new(VectorCapacityProvider {
+            snapshot: PhysicalCapacitySnapshot {
+                capacity: host(cache + 1000),
+                available: host(cache + 200),
+                source: CapacitySource::Test,
+            },
+        })));
+        let mut lease = authority
+            .reserve(
+                ReservationOwner::new(ReservationClass::Model, "fish-weights-and-reference-cache"),
+                plan.load_authorization,
+            )
+            .unwrap();
+        lease
+            .reconcile_materialized(
+                plan.resident_authorization
+                    .checked_sub(plan.deferred_resident_authorization)
+                    .unwrap(),
+            )
+            .unwrap();
+        lease.resize(plan.resident_authorization).unwrap();
+        assert!(authority
+            .reserve(
+                ReservationOwner::new(ReservationClass::Cache, "oversized-state"),
+                host(201)
+            )
+            .is_err());
+        let state = authority
+            .reserve(
+                ReservationOwner::new(ReservationClass::Cache, "fitted-state"),
+                host(200),
+            )
+            .unwrap();
+        drop(state);
+        drop(lease);
+        assert_eq!(authority.snapshot().reserved, ResourceVector::zero());
+    }
+
+    #[test]
     fn fish_s2_portable_weight_plan_charges_the_expanded_representation() {
         let cpu_memory = FishS2ModelMemory {
             resident_bytes: 19_836_076_996,
             load_peak_bytes: 22_228_796_356,
             cuda_host_load_peak_bytes: 9_944_351_744,
         };
-        let cpu = fish_s2_resource_plan(BackendKind::Cpu, cpu_memory);
+        let cpu = fish_s2_resource_plan(BackendKind::Cpu, cpu_memory).unwrap();
         assert_eq!(
             cpu.resident_authorization.host_bytes,
-            ResourceAmount::Known(cpu_memory.resident_bytes)
+            ResourceAmount::Known(
+                cpu_memory.resident_bytes
+                    + crate::models::architectures::fish_s2::FISH_S2_REFERENCE_CACHE_BYTES
+            )
         );
         assert_eq!(
             cpu.load_authorization.host_bytes,
-            ResourceAmount::Known(cpu_memory.load_peak_bytes)
+            ResourceAmount::Known(
+                cpu_memory.load_peak_bytes
+                    + crate::models::architectures::fish_s2::FISH_S2_REFERENCE_CACHE_BYTES
+            )
         );
         assert_eq!(
             cpu.load_authorization.device_bytes,
@@ -3417,7 +3496,7 @@ mod tests {
             load_peak_bytes: 12_307_518_404,
             ..cpu_memory
         };
-        let metal = fish_s2_resource_plan(BackendKind::Metal, half_memory);
+        let metal = fish_s2_resource_plan(BackendKind::Metal, half_memory).unwrap();
         assert_eq!(
             metal.load_authorization.unified_bytes,
             ResourceAmount::Known(half_memory.load_peak_bytes)
@@ -3428,7 +3507,9 @@ mod tests {
         );
         assert_eq!(
             metal.load_authorization.host_bytes,
-            ResourceAmount::Known(0)
+            ResourceAmount::Known(
+                crate::models::architectures::fish_s2::FISH_S2_REFERENCE_CACHE_BYTES
+            )
         );
     }
 
