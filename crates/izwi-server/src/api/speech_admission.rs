@@ -70,10 +70,7 @@ pub(super) fn acquire(
         Err(_) => return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE),
     };
     // Distinguish namespaces so a principal ID cannot collide with a tenant ID.
-    let tenant = match &principal.tenant_id {
-        Some(tenant) => format!("tenant:{tenant}"),
-        None => format!("principal:{}", principal.id),
-    };
+    let tenant = super::principal_namespace(principal);
     ADMISSION
         .get_or_init(|| Arc::new(Admission::default()))
         .acquire(tenant, global, per_tenant)

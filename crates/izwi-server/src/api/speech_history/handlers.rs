@@ -121,6 +121,10 @@ pub struct CreateSpeechHistoryRecordRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BatchSpeechRequest {
+    /// Server-generated scheduler identity; this envelope is never accepted
+    /// from an HTTP client. Missing identity preserves legacy anonymous jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tenant_key: Option<[u8; 32]>,
     route_kind: SpeechRouteKind,
     model_id: String,
     input_text: String,
@@ -136,6 +140,7 @@ impl BatchSpeechRequest {
     ) -> Self {
         request.reference_audio = None;
         Self {
+            tenant_key: None,
             route_kind,
             model_id,
             input_text,
@@ -627,6 +632,7 @@ async fn create_record(
             route_kind,
             model_id,
             input_text,
+            ctx.tenant_key(),
             Some(ctx.correlation_id),
             idempotency_key,
         )
@@ -650,6 +656,7 @@ async fn create_record(
     let (record, _) = synthesize_record_internal(
         &state,
         &ctx,
+        ctx.tenant_key(),
         req,
         route_kind,
         variant,
@@ -797,13 +804,15 @@ async fn enqueue_batch_speech_job(
     route_kind: SpeechRouteKind,
     model_id: String,
     input_text: String,
+    tenant_key: Option<[u8; 32]>,
     correlation_id: Option<String>,
     idempotency_key: Option<String>,
 ) -> Result<(), ApiError> {
     let reference_ingest =
         ingest_batch_reference_audio(state, placeholder, route_kind, &req).await?;
-    let request_snapshot =
+    let mut request_snapshot =
         BatchSpeechRequest::for_durable_job(route_kind, model_id.clone(), input_text.clone(), req);
+    request_snapshot.tenant_key = tenant_key;
     let request_json = serde_json::to_value(&request_snapshot)
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
     let request_hash = durable_tts_request_hash(&request_json, reference_ingest.as_ref());
@@ -1066,6 +1075,7 @@ async fn execute_batch_tts_stage(
     let (_record, output_artifact) = match synthesize_record_internal(
         state,
         &ctx,
+        request.tenant_key,
         request.request,
         request.route_kind,
         variant,
@@ -1280,6 +1290,7 @@ pub(crate) async fn synthesize_record(
     synthesize_record_internal(
         state,
         ctx,
+        ctx.tenant_key(),
         req,
         route_kind,
         variant,
@@ -1298,6 +1309,7 @@ pub(crate) async fn synthesize_record(
 async fn synthesize_record_internal(
     state: &AppState,
     ctx: &RequestContext,
+    tenant_key: Option<[u8; 32]>,
     req: CreateSpeechHistoryRecordRequest,
     route_kind: SpeechRouteKind,
     variant: ModelVariant,
@@ -1330,7 +1342,9 @@ async fn synthesize_record_internal(
     );
     let permit = state.acquire_workload_permit(workload_class).await;
     state.runtime.load_model(variant).await?;
-    generation_request = generation_request.with_runtime_context(permit.runtime_context());
+    let mut runtime_context = permit.runtime_context();
+    runtime_context.tenant_key = tenant_key;
+    generation_request = generation_request.with_runtime_context(runtime_context);
     let planned_request_count =
         expand_generation_requests_for_long_form(&generation_request, variant).len();
     let timeout = Duration::from_secs(resolve_generation_timeout_secs(
@@ -1467,6 +1481,7 @@ async fn stream_record_creation(
     placeholder: SpeechHistoryRecord,
 ) -> Result<Response, ApiError> {
     let stream_entry_started = std::time::Instant::now();
+    let tenant_key = ctx.tenant_key();
     let generation_request = build_generation_request(
         req.clone(),
         ctx.correlation_id,
@@ -1587,7 +1602,8 @@ async fn stream_record_creation(
             mark_failed(err.to_string()).await;
             return;
         }
-        let runtime_context = permit.runtime_context();
+        let mut runtime_context = permit.runtime_context();
+        runtime_context.tenant_key = tenant_key;
         for request in &mut planned_requests {
             request.runtime_context = runtime_context;
         }
@@ -2431,6 +2447,7 @@ mod tests {
         request.reference_audio = Some("legacy-base64-audio".to_string());
         request.reference_text = Some("Reference words".to_string());
         let json = serde_json::to_value(BatchSpeechRequest {
+            tenant_key: None,
             route_kind: SpeechRouteKind::TextToSpeech,
             model_id: "Qwen3-TTS-12Hz-1.7B-Base".to_string(),
             input_text: "Hello".to_string(),
@@ -2443,6 +2460,35 @@ mod tests {
         assert_eq!(
             decoded.request.reference_audio.as_deref(),
             Some("legacy-base64-audio")
+        );
+    }
+
+    #[test]
+    fn durable_tenant_identity_roundtrips_and_public_payload_cannot_supply_it() {
+        let mut raw = serde_json::to_value(base_request()).unwrap();
+        raw["tenant_key"] = serde_json::json!(vec![19; 32]);
+        let public: CreateSpeechHistoryRecordRequest = serde_json::from_value(raw).unwrap();
+        let mut internal = BatchSpeechRequest::for_durable_job(
+            SpeechRouteKind::TextToSpeech,
+            "FishAudio-S2-Pro".into(),
+            "hello".into(),
+            public,
+        );
+        assert_eq!(
+            internal.tenant_key, None,
+            "public fields must not become trusted scheduling identity"
+        );
+        internal.tenant_key = Some([7; 32]);
+        let persisted = serde_json::to_value(&internal).unwrap();
+        let restored: BatchSpeechRequest = serde_json::from_value(persisted.clone()).unwrap();
+        assert_eq!(restored.tenant_key, Some([7; 32]));
+        let mut legacy = persisted;
+        legacy.as_object_mut().unwrap().remove("tenant_key");
+        assert_eq!(
+            serde_json::from_value::<BatchSpeechRequest>(legacy)
+                .unwrap()
+                .tenant_key,
+            None
         );
     }
 

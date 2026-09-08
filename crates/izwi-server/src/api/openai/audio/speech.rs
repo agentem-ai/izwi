@@ -147,8 +147,17 @@ pub async fn speech(
         req.allow_format_fallback.unwrap_or(false),
     )?;
 
+    let tenant_key = ctx.tenant_key();
     if streaming {
-        return stream_speech(state, req, ctx.correlation_id, variant, resolved_format).await;
+        return stream_speech(
+            state,
+            req,
+            ctx.correlation_id,
+            tenant_key,
+            variant,
+            resolved_format,
+        )
+        .await;
     }
 
     let permit = state
@@ -166,8 +175,10 @@ pub async fn speech(
     let format_fallback = resolved_format.fallback;
 
     let result = tokio::time::timeout(timeout, async {
+        let mut runtime_context = permit.runtime_context();
+        runtime_context.tenant_key = tenant_key;
         let gen_request = build_generation_request(&req, ctx.correlation_id, false, variant)
-            .with_runtime_context(permit.runtime_context());
+            .with_runtime_context(runtime_context);
         state.runtime.generate(gen_request).await
     })
     .await
@@ -386,6 +397,7 @@ async fn stream_speech(
     state: AppState,
     req: SpeechRequest,
     correlation_id: String,
+    tenant_key: Option<[u8; 32]>,
     variant: ModelVariant,
     resolved_format: ResolvedSpeechFormat,
 ) -> Result<Response<Body>, ApiError> {
@@ -426,7 +438,9 @@ async fn stream_speech(
                 return;
             }
         };
-        gen_request = gen_request.with_runtime_context(permit.runtime_context());
+        let mut runtime_context = permit.runtime_context();
+        runtime_context.tenant_key = tenant_key;
+        gen_request = gen_request.with_runtime_context(runtime_context);
         if let Err(err) = engine.load_model(variant).await {
             let _ = send_stream_event(
                 &event_tx,

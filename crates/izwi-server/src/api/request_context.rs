@@ -25,6 +25,25 @@ pub struct RequestContext {
     pub principal: Principal,
 }
 
+impl RequestContext {
+    /// Scheduling identity comes exclusively from the authenticated extension.
+    /// Legacy durable jobs and the local anonymous principal share None.
+    pub(crate) fn tenant_key(&self) -> Option<[u8; 32]> {
+        if self.principal == Principal::local_anonymous() {
+            return None;
+        }
+        use sha2::{Digest, Sha256};
+        Some(Sha256::digest(principal_namespace(&self.principal).as_bytes()).into())
+    }
+}
+
+pub(super) fn principal_namespace(principal: &Principal) -> String {
+    match &principal.tenant_id {
+        Some(tenant) => format!("tenant:{tenant}"),
+        None => format!("principal:{}", principal.id),
+    }
+}
+
 #[allow(dead_code)]
 pub async fn attach_request_context(mut req: Request, next: Next) -> Response {
     let correlation_id = req
@@ -320,6 +339,23 @@ fn header_to_string(value: &HeaderValue) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scheduling_tenant_identity_is_trusted_namespaced_and_anonymous_stable() {
+        let mut context = super::RequestContext {
+            correlation_id: "untrusted-header".into(),
+            principal: izwi_hooks::Principal::local_anonymous(),
+        };
+        assert_eq!(context.tenant_key(), None);
+        context.principal.id = "a".into();
+        let individual = context.tenant_key();
+        context.principal.tenant_id = Some("a".into());
+        let tenant = context.tenant_key();
+        assert_ne!(individual, tenant);
+        context.principal.id = "another-member".into();
+        context.correlation_id = "different-header".into();
+        assert_eq!(context.tenant_key(), tenant);
+    }
+
     use super::*;
     use axum::{
         body::Body,
