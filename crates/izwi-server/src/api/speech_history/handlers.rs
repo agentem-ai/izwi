@@ -1,3 +1,5 @@
+#[path = "durable.rs"]
+pub(crate) mod durable;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -482,8 +484,22 @@ pub async fn cancel_text_to_speech_record(
         &record_id,
         "Cancelled by speech history request",
     )
-    .await?
-    .ok_or_else(|| ApiError::bad_request("Speech history job is not cancellable"))?;
+    .await?;
+    let record = match record {
+        Some(record) => record,
+        None => state
+            .speech_history_store
+            .get_record(SpeechRouteKind::TextToSpeech, record_id.clone())
+            .await
+            .map_err(map_store_error)?
+            .filter(|record| {
+                matches!(
+                    record.processing_status,
+                    SpeechHistoryProcessingStatus::Ready | SpeechHistoryProcessingStatus::Failed
+                )
+            })
+            .ok_or_else(|| ApiError::bad_request("Speech history job is not cancellable"))?,
+    };
 
     Ok(Json(CancelSpeechHistoryRecordResponse {
         id: record_id,
@@ -583,11 +599,39 @@ async fn get_record_audio(
 ) -> Result<Response, ApiError> {
     let audio = state
         .speech_history_store
-        .get_audio(route_kind, record_id)
+        .get_audio_stream(route_kind, record_id)
         .await
         .map_err(map_store_error)?
         .ok_or_else(|| ApiError::not_found("History audio not found"))?;
-    Ok(audio_response(audio, as_attachment))
+    let mut reader = audio.audio.reader;
+    let mut response = audio_response(
+        StoredSpeechAudio {
+            audio_bytes: Vec::new(),
+            audio_mime_type: audio.audio_mime_type,
+            audio_filename: audio.audio_filename,
+        },
+        as_attachment,
+    );
+    let stream = async_stream::stream! {
+        use tokio::io::AsyncReadExt;
+        loop {
+            let mut buffer = vec![0u8; 64 * 1024];
+            let count = match reader.read(&mut buffer).await {
+                Ok(count) => count,
+                Err(error) => { yield Err::<bytes::Bytes, std::io::Error>(error); break; }
+            };
+            if count == 0 { break; }
+            buffer.truncate(count);
+            yield Ok(bytes::Bytes::from(buffer));
+        }
+    };
+    *response.body_mut() = Body::from_stream(stream);
+    if let Some(length) = audio.audio.metadata.content_length {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    }
+    Ok(response)
 }
 
 async fn delete_record(
@@ -602,6 +646,9 @@ async fn delete_record(
         "Cancelled because the speech history record was deleted",
     )
     .await?;
+    durable::cleanup_record_replay(&state, route_kind, &record_id)
+        .await
+        .map_err(map_store_error)?;
     let deleted = state
         .speech_history_store
         .delete_record(route_kind, record_id.clone())
@@ -637,12 +684,19 @@ async fn cancel_speech_history_job(
         return Ok(None);
     };
 
-    state
+    if state
         .batch_runtime_store
         .cancel_job(&job.id, Some(reason.to_string()))
         .await
         .map_err(map_store_error)?
-        .ok_or_else(|| ApiError::bad_request("Speech history job is no longer cancellable"))?;
+        .is_none()
+    {
+        return state
+            .speech_history_store
+            .get_record(route_kind, record_id.to_string())
+            .await
+            .map_err(map_store_error);
+    }
 
     state
         .speech_history_store
@@ -669,6 +723,12 @@ async fn create_record(
     let variant = parse_tts_model_variant(model_id.as_str())
         .map_err(|err| ApiError::bad_request(format!("Unsupported TTS model: {err}")))?;
 
+    if variant == ModelVariant::FishAudioS2Pro {
+        crate::api::tts_long_form::SpeechTextPlan::fish(
+            &input_text,
+            req.max_output_tokens.or(req.max_tokens).unwrap_or(0),
+        )?;
+    }
     validate_reference_voice_selection(&req)?;
     req = resolve_saved_voice_selection(&state, req).await?;
     req = normalize_for_model_capabilities(route_kind, variant, req)?;
@@ -688,7 +748,7 @@ async fn create_record(
         )
         .await?;
 
-        if req.stream.unwrap_or(false) {
+        if req.stream.unwrap_or(false) && variant != ModelVariant::FishAudioS2Pro {
             return stream_record_creation(
                 state,
                 ctx,
@@ -710,7 +770,7 @@ async fn create_record(
             model_id,
             input_text,
             ctx.tenant_key(),
-            Some(ctx.correlation_id),
+            Some(ctx.correlation_id.clone()),
             idempotency_key,
         )
         .await
@@ -724,9 +784,21 @@ async fn create_record(
                     Some(err.message.clone()),
                 )
                 .await;
+            if err
+                .message
+                .contains("Speech job admission capacity exhausted")
+            {
+                return Err(ApiError {
+                    status: StatusCode::TOO_MANY_REQUESTS,
+                    message: err.message,
+                });
+            }
             return Err(err);
         }
 
+        if req.stream.unwrap_or(false) {
+            return durable::replay_response(state, ctx.tenant_key(), placeholder.id, None).await;
+        }
         return Ok((StatusCode::ACCEPTED, Json(placeholder)).into_response());
     }
 
@@ -885,6 +957,11 @@ async fn enqueue_batch_speech_job(
     correlation_id: Option<String>,
     idempotency_key: Option<String>,
 ) -> Result<(), ApiError> {
+    state
+        .batch_runtime_store
+        .preflight_speech_admission(tenant_key)
+        .await
+        .map_err(map_store_error)?;
     let reference_ingest =
         ingest_batch_reference_audio(state, placeholder, route_kind, &req).await?;
     let mut request_snapshot =
@@ -911,7 +988,7 @@ async fn enqueue_batch_speech_job(
         .await
         .map_err(map_store_error)?;
 
-    let job = state
+    let job_result = state
         .batch_runtime_store
         .create_job(NewRuntimeJob {
             job_kind: RuntimeJobKind::TtsSpeech,
@@ -927,14 +1004,35 @@ async fn enqueue_batch_speech_job(
                 .map(|asset| asset.id.clone()),
             input_text_asset_id: Some(text_asset.id.clone()),
             request_json: request_json.clone(),
-            model_snapshot_json: serde_json::json!({}),
+            model_snapshot_json: serde_json::json!({
+                "version": 1,
+                "model_id": request_snapshot.model_id,
+                "request_sha256": sha256_hex(request_json.to_string().as_bytes()),
+                "text_sha256": sha256_hex(input_text.as_bytes()),
+                "reference_audio_sha256": reference_ingest.as_ref()
+                    .and_then(|ingest| ingest.source_asset.as_ref())
+                    .and_then(|asset| asset.sha256.as_deref()),
+                "reference_text_sha256": request_snapshot.request.reference_text.as_ref()
+                    .map(|text| sha256_hex(text.as_bytes())),
+            }),
             retry_policy_json: serde_json::json!({"max_attempts": 2}),
             max_attempts: 2,
             idempotency_key: idempotency_key.clone(),
             correlation_id,
         })
-        .await
-        .map_err(map_store_error)?;
+        .await;
+    let job = match job_result {
+        Ok(job) => job,
+        Err(error) => {
+            // If create committed but its response failed, the ownership query
+            // preserves the referenced text. Shared canonical media stays intact.
+            let _ = state
+                .batch_runtime_store
+                .remove_unreferenced_text_asset(&text_asset.id)
+                .await;
+            return Err(map_store_error(error));
+        }
+    };
 
     let text_input_artifact = state
         .batch_runtime_store
@@ -1076,6 +1174,10 @@ impl StageExecutor for BatchTtsStageExecutor {
         BATCH_TTS_STAGE_KIND
     }
 
+    async fn maintenance(&self) -> anyhow::Result<()> {
+        durable::cleanup_expired_replay(&self.state).await
+    }
+
     async fn execute(&self, claimed: ClaimedStage) -> anyhow::Result<StageExecutionOutcome> {
         execute_batch_tts_stage(&self.state, claimed, None).await
     }
@@ -1168,6 +1270,12 @@ async fn execute_batch_tts_stage(
     {
         Ok(record) => record,
         Err(err) => {
+            if err
+                .message
+                .contains("speech_stage_yield: committed segment boundary")
+            {
+                return Err(crate::batch_runtime::worker::SpeechStageYield.into());
+            }
             match projection_attempt.as_ref() {
                 Some(projection_attempt) => {
                     let _ = state
@@ -1244,6 +1352,18 @@ async fn hydrate_batch_reference_audio(
             .read_object(storage_key)
             .await
             .context("Failed to read canonical TTS reference artifact")?;
+        if let Some(expected) = artifact.sha256.as_deref() {
+            anyhow::ensure!(
+                sha256_hex(&stored.bytes) == expected,
+                "Canonical TTS reference checksum changed"
+            );
+        }
+        if let Some(expected) = artifact.size_bytes {
+            anyhow::ensure!(
+                stored.bytes.len() as u64 == expected,
+                "Canonical TTS reference size changed"
+            );
+        }
         request.reference_audio =
             Some(base64::engine::general_purpose::STANDARD.encode(stored.bytes));
         return Ok(());
@@ -1404,6 +1524,24 @@ async fn synthesize_record_internal(
     ),
     ApiError,
 > {
+    if variant == ModelVariant::FishAudioS2Pro {
+        return durable::synthesize_fish_record(
+            state,
+            ctx,
+            tenant_key,
+            req,
+            route_kind,
+            variant,
+            model_id,
+            input_text,
+            target_record_id,
+            workload_class,
+            attempt,
+            projection_attempt,
+            batch_publication,
+        )
+        .await;
+    }
     if let Some(attempt) = attempt {
         attempt
             .ensure_active()
@@ -1566,8 +1704,21 @@ async fn stream_record_creation(
         true,
         variant,
     );
-    let mut planned_requests =
-        expand_generation_requests_for_long_form(&generation_request, variant);
+    let planned_count = if variant == ModelVariant::FishAudioS2Pro {
+        crate::api::tts_long_form::SpeechTextPlan::fish(
+            &generation_request.text,
+            generation_request.config.options.max_tokens,
+        )?
+        .segments
+        .len()
+    } else {
+        expand_generation_requests_for_long_form(&generation_request, variant).len()
+    };
+    let mut planned_requests = if variant == ModelVariant::FishAudioS2Pro {
+        vec![generation_request.clone()]
+    } else {
+        expand_generation_requests_for_long_form(&generation_request, variant)
+    };
     let stream_request_id = generation_request.id.clone();
     let placeholder_record_id = placeholder.id.clone();
 
@@ -1693,13 +1844,19 @@ async fn stream_record_creation(
             )
             .await;
 
+        let _permit = if variant == ModelVariant::FishAudioS2Pro {
+            drop(permit);
+            None
+        } else {
+            Some(permit)
+        };
         let fallback_sample_rate = runtime.sample_rate().await;
         let mut total_samples = 0usize;
         let mut audio_duration_secs = 0.0f32;
         let mut total_tokens = 0usize;
         let mut execution_time_ms = 0.0f32;
         let mut statistics_measured = true;
-        let split_request_count = planned_requests.len();
+        let split_request_count = planned_count;
         let mut first_pcm_ms = None;
         let mut last_pcm_ms = None;
         let stream_started = std::time::Instant::now();
@@ -1712,10 +1869,22 @@ async fn stream_record_creation(
             let mut request_statistics = StreamRequestStatistics::default();
             let (chunk_tx, mut chunk_rx) = mpsc::channel::<AudioChunk>(32);
             let generation_engine = runtime.clone();
+            let runner_state = admission_state.clone();
             let generation_task = tokio::spawn(async move {
-                generation_engine
-                    .generate_streaming(request, chunk_tx)
+                if variant == ModelVariant::FishAudioS2Pro {
+                    crate::api::tts_long_form::generate_speech_plan_stream(
+                        &runner_state,
+                        variant,
+                        request,
+                        chunk_tx,
+                        WorkloadClass::Streaming,
+                    )
                     .await
+                } else {
+                    generation_engine
+                        .generate_streaming(request, chunk_tx)
+                        .await
+                }
             });
 
             let mut encoding_failed = false;
@@ -2080,7 +2249,11 @@ fn build_generation_request(
         &text,
         req.max_output_tokens.or(req.max_tokens),
     ) {
-        generation_config.options.max_tokens = max_tokens;
+        generation_config.options.max_tokens = if variant == ModelVariant::FishAudioS2Pro {
+            req.max_output_tokens.or(req.max_tokens).unwrap_or(0)
+        } else {
+            max_tokens
+        };
     }
     if let Some(top_k) = req.top_k {
         generation_config.options.top_k = top_k;

@@ -69,7 +69,9 @@ fn fish_s2_tts_auto_max_frames_for_text(text: &str) -> usize {
         .split_whitespace()
         .count()
         .max(non_space.saturating_sub(cjk).div_ceil(5));
-    let estimated_secs = (estimated_words as f32 / 2.6 + cjk as f32 / 4.0 + 2.0).clamp(4.0, 120.0);
+    // This is a per-segment ceiling, not a total-recording limit. Budget for
+    // slower narration and pauses; the model's EOS ends normal speech earlier.
+    let estimated_secs = (estimated_words as f32 / 1.8 + cjk as f32 / 2.5 + 4.0).clamp(6.0, 120.0);
     let frames = (estimated_secs * ModelVariant::FISH_S2_PRO_FRAME_RATE_HZ).ceil() as usize;
     frames.clamp(96, ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES)
 }

@@ -77,10 +77,13 @@ pub(super) fn acquire(
 }
 
 pub(super) fn is_speech_generation(method: &axum::http::Method, path: &str) -> bool {
-    method == axum::http::Method::POST
+    (method == axum::http::Method::POST
         && (path.ends_with("/audio/speech")
             || path.contains("/text-to-speech")
-            || path.contains("/voice-clone"))
+            || path.contains("/voice-clone")))
+        || (method == axum::http::Method::GET
+            && path.contains("/text-to-speech/")
+            && path.ends_with("/events"))
 }
 
 pub(super) fn guard_response(
@@ -100,6 +103,23 @@ pub(super) fn guard_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn replay_connections_share_speech_admission() {
+        use axum::http::Method;
+        assert!(is_speech_generation(
+            &Method::GET,
+            "/v1/text-to-speech/record/events"
+        ));
+        assert!(!is_speech_generation(
+            &Method::GET,
+            "/v1/text-to-speech/record"
+        ));
+        assert!(!is_speech_generation(
+            &Method::GET,
+            "/v1/text-to-speech/record/audio"
+        ));
+    }
+
     #[test]
     fn tenant_quota_preserves_peer_capacity_and_releases_all_metadata() {
         let admission = Arc::new(Admission::default());

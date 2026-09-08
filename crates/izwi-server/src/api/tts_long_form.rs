@@ -14,6 +14,127 @@ fn chunk_max_chars() -> usize {
         .unwrap_or(DEFAULT_CHUNK_MAX_CHARS)
 }
 
+/// A stable, versioned partition of the original UTF-8 input. Audio limits are
+/// assigned after partitioning, never used as a switch for complete-text planning.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub(crate) struct SpeechTextPlan {
+    pub version: u32,
+    pub text_sha256: String,
+    pub segments: Vec<std::ops::Range<usize>>,
+    pub max_output_frames: Option<usize>,
+}
+
+impl SpeechTextPlan {
+    pub fn fish(text: &str, max_output_frames: usize) -> Result<Self, izwi_core::Error> {
+        use sha2::{Digest, Sha256};
+        let max_bytes = std::env::var("IZWI_TTS_MAX_TEXT_BYTES")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(1024 * 1024);
+        if text.len() > max_bytes {
+            return Err(izwi_core::Error::InvalidInput(format!(
+                "Speech text exceeds configured limit of {max_bytes} bytes"
+            )));
+        }
+        let mut segments = Vec::new();
+        let mut start = 0;
+        let mut chars = 0;
+        let mut boundary = None;
+        let mut sentence_boundary = None;
+        // Keep Fish segments comfortably below its per-call context/output limit.
+        let target = chunk_max_chars().min(480);
+        for (offset, ch) in text.char_indices() {
+            if chars >= target {
+                let end = sentence_boundary
+                    .filter(|end| *end > start)
+                    .or_else(|| boundary.filter(|end| *end > start))
+                    .unwrap_or(offset);
+                segments.push(start..end);
+                start = end;
+                chars = text[start..offset].chars().count();
+                boundary = None;
+                sentence_boundary = None;
+            }
+            chars += 1;
+            if matches!(ch, '。' | '！' | '？' | '\n' | ';' | '；') {
+                sentence_boundary = Some(offset + ch.len_utf8());
+            } else if matches!(ch, '.' | '!' | '?')
+                && text[offset + ch.len_utf8()..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace)
+            {
+                let word = text[start..offset].split_whitespace().last().unwrap_or("");
+                if ch != '.' || word.chars().count() > 3 {
+                    sentence_boundary = Some(offset + ch.len_utf8());
+                }
+            }
+            if ch.is_whitespace() || matches!(ch, '。' | '！' | '？' | ';' | '；') {
+                boundary = Some(offset + ch.len_utf8());
+            }
+        }
+        if start < text.len() && !text[start..].trim().is_empty() {
+            segments.push(start..text.len());
+        } else if let Some(last) = segments.last_mut() {
+            last.end = text.len();
+        }
+        // Blank layout alone is not an inference segment. Byte ranges still
+        // identify original content for durable progress and recovery.
+        segments.retain(|range| !text[range.clone()].trim().is_empty());
+        let long_form_enabled = match std::env::var("IZWI_FISH_LONG_FORM_ENABLED").as_deref() {
+            Ok("false" | "0") => false,
+            Ok("true" | "1") | Err(std::env::VarError::NotPresent) => true,
+            _ => {
+                return Err(izwi_core::Error::InvalidInput(
+                    "Invalid IZWI_FISH_LONG_FORM_ENABLED configuration".into(),
+                ))
+            }
+        };
+        if segments.len() > 1 && !long_form_enabled {
+            return Err(izwi_core::Error::InvalidInput(
+                "Fish long-form generation is disabled by this deployment".into(),
+            ));
+        }
+        let estimated_frames = segments
+            .iter()
+            .try_fold(0usize, |total, range| {
+                total.checked_add(
+                    crate::api::tts_policy::resolve_tts_output_frames(
+                        ModelVariant::FishAudioS2Pro,
+                        &text[range.clone()],
+                        None,
+                    )
+                    .unwrap_or(4096),
+                )
+            })
+            .ok_or_else(|| izwi_core::Error::InvalidInput("Speech output size overflow".into()))?;
+        let estimated_frames = if max_output_frames > 0 {
+            estimated_frames.min(max_output_frames)
+        } else {
+            estimated_frames
+        };
+        let max_pcm_bytes = std::env::var("IZWI_TTS_STREAM_MAX_PCM_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(u32::MAX as usize - 44)
+            .min(u32::MAX as usize - 44);
+        if estimated_frames
+            .checked_mul(2048 * 2)
+            .is_none_or(|bytes| bytes > max_pcm_bytes)
+        {
+            return Err(izwi_core::Error::InvalidInput("Speech plan exceeds configured PCM/WAV output limit; shorten the text or raise the deployment limit within WAV capacity".into()));
+        }
+        Ok(Self {
+            version: 1,
+            text_sha256: format!("{:x}", Sha256::digest(text.as_bytes())),
+            segments,
+            max_output_frames: (max_output_frames > 0).then_some(max_output_frames),
+        })
+    }
+}
+
 fn should_enable_chunking(variant: ModelVariant, requested_max_tokens: usize) -> bool {
     let Some(model_max_frames) = variant.tts_max_output_frames_hint() else {
         return false;
@@ -142,6 +263,18 @@ pub fn split_tts_text_for_long_form(
         return Vec::new();
     }
 
+    if variant == ModelVariant::FishAudioS2Pro {
+        // Callers accepting work must validate SpeechTextPlan first. This legacy
+        // infallible splitter is also used by Studio's text editor.
+        return SpeechTextPlan::fish(trimmed, requested_max_tokens)
+            .map(|plan| {
+                plan.segments
+                    .into_iter()
+                    .map(|range| trimmed[range].to_string())
+                    .collect()
+            })
+            .unwrap_or_else(|_| vec![trimmed.to_string()]);
+    }
     if !should_enable_chunking(variant, requested_max_tokens) {
         return vec![trimmed.to_string()];
     }
@@ -170,7 +303,13 @@ pub fn expand_generation_requests_for_long_form(
     );
 
     if chunks.len() <= 1 {
-        return vec![base_request.clone()];
+        let mut request = base_request.clone();
+        if variant == ModelVariant::FishAudioS2Pro && request.config.options.max_tokens == 0 {
+            request.config.options.max_tokens =
+                crate::api::tts_policy::resolve_tts_output_frames(variant, &request.text, None)
+                    .unwrap_or(4096);
+        }
+        return vec![request];
     }
 
     chunks
@@ -180,6 +319,11 @@ pub fn expand_generation_requests_for_long_form(
             let mut req = base_request.clone();
             req.id = format!("{}:{}", base_request.id, idx + 1);
             req.text = text;
+            if variant == ModelVariant::FishAudioS2Pro {
+                req.config.options.max_tokens =
+                    crate::api::tts_policy::resolve_tts_output_frames(variant, &req.text, None)
+                        .unwrap_or(4096);
+            }
             req
         })
         .collect()
@@ -243,9 +387,322 @@ pub async fn generate_long_form_tts(
     })
 }
 
+/// One live inference segment per job. Consumers receive one ordered stream and
+/// one terminal total; neither PCM nor reference clones accumulate with duration.
+pub(crate) async fn generate_speech_plan_stream(
+    state: &crate::state::AppState,
+    variant: ModelVariant,
+    base: GenerationRequest,
+    output: tokio::sync::mpsc::Sender<izwi_core::AudioChunk>,
+    workload: izwi_core::WorkloadClass,
+) -> Result<(), izwi_core::Error> {
+    generate_speech_plan_stream_with_progress(state, variant, base, output, workload, None).await
+}
+
+pub(crate) async fn generate_speech_plan_stream_with_progress(
+    state: &crate::state::AppState,
+    variant: ModelVariant,
+    base: GenerationRequest,
+    output: tokio::sync::mpsc::Sender<izwi_core::AudioChunk>,
+    workload: izwi_core::WorkloadClass,
+    mut progress: Option<&mut crate::api::speech_history::DurableSpeechProgress>,
+) -> Result<(), izwi_core::Error> {
+    use izwi_core::{AudioChunk, ChunkStats};
+    let progress_error = |error: anyhow::Error| izwi_core::Error::InferenceError(error.to_string());
+    let expected_fingerprint = state
+        .runtime
+        .fish_s2_artifact_fingerprint()
+        .await
+        .ok_or_else(|| {
+            izwi_core::Error::ModelLoadError("Fish model fingerprint unavailable".into())
+        })?;
+    if progress
+        .as_deref()
+        .and_then(|p| p.artifact_fingerprint())
+        .is_some_and(|expected| expected != expected_fingerprint)
+    {
+        return Err(izwi_core::Error::InvalidInput(
+            "Fish model changed during speech recovery".into(),
+        ));
+    }
+    let plan = SpeechTextPlan::fish(&base.text, base.config.options.max_tokens)?;
+    let mut ranges: std::collections::VecDeque<_> = plan.segments.into();
+    let mut remaining = plan.max_output_frames.unwrap_or(usize::MAX);
+    let mut sequence = progress.as_deref().map_or(0, |p| p.next_sequence());
+    let mut segment = progress.as_deref().map_or(0, |p| p.completed_segments());
+    let mut tokens = progress.as_deref().map_or(0, |p| p.completed_tokens());
+    let mut execution_ms = progress
+        .as_deref()
+        .map_or(0.0, |p| p.completed_execution_ms());
+    let mut duration = progress
+        .as_deref()
+        .map_or(0.0, |p| p.completed_duration_secs());
+    remaining = remaining.saturating_sub(tokens);
+    let mut rate = None;
+    let completed = progress.as_deref().map_or(0, |p| p.completed_text_bytes());
+    if completed > base.text.len() || !base.text.is_char_boundary(completed) {
+        return Err(izwi_core::Error::InvalidInput(
+            "Invalid speech recovery text offset".into(),
+        ));
+    }
+    while let Some(mut range) = ranges.pop_front() {
+        if progress
+            .as_deref()
+            .is_some_and(|p| range.end <= p.completed_text_bytes())
+        {
+            continue;
+        }
+        // A previously completed adaptive split can end inside an original range.
+        // Resume only its suffix, never replay the already committed prefix.
+        if let Some(progress) = progress.as_deref() {
+            range.start = range.start.max(progress.completed_text_bytes());
+        }
+        if let Some(progress) = progress.as_deref_mut() {
+            progress
+                .begin_segment(segment, range.clone(), segment + 1 + ranges.len())
+                .await
+                .map_err(progress_error)?;
+        }
+        if output.is_closed() {
+            return Err(izwi_core::Error::InferenceError(
+                "Speech consumer disconnected".into(),
+            ));
+        }
+        if remaining == 0 {
+            return Err(izwi_core::Error::InvalidInput(
+                "Speech generation incomplete: output_limit".into(),
+            ));
+        }
+        if state
+            .runtime
+            .fish_s2_artifact_fingerprint()
+            .await
+            .as_deref()
+            != Some(expected_fingerprint.as_str())
+        {
+            return Err(izwi_core::Error::InvalidInput(
+                "Fish model changed during speech generation".into(),
+            ));
+        }
+        let mut request = base.clone();
+        request.id = format!("{}:{}", base.id, segment);
+        request.text = base.text[range.clone()].to_string();
+        request.config.streaming = true;
+        request.config.options.max_tokens =
+            crate::api::tts_policy::resolve_tts_output_frames(variant, &request.text, None)
+                .unwrap_or(4096)
+                .min(remaining);
+        let permit = state.acquire_workload_permit(workload).await;
+        let tenant = base.runtime_context.tenant_key;
+        request.runtime_context = permit.runtime_context();
+        request.runtime_context.tenant_key = tenant;
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<AudioChunk>(2);
+        let runtime = state.runtime.clone();
+        let task = tokio::spawn(async move { runtime.generate_streaming(request, sender).await });
+        let _abort = AbortSpeechTask(task.abort_handle());
+        let segment_timeout = std::env::var("IZWI_TTS_SEGMENT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(1800);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(segment_timeout);
+        let mut segment_duration = 0.0;
+        let mut emitted = false;
+        let mut segment_tokens = 0;
+        let mut segment_ms = 0.0;
+        while let Some(mut chunk) = tokio::select! {
+            chunk = receiver.recv() => chunk,
+            _ = tokio::time::sleep_until(deadline) => return Err(izwi_core::Error::InferenceError("Speech segment timed out".into())),
+            _ = output.closed() => return Err(izwi_core::Error::InferenceError("Speech consumer disconnected".into())),
+        } {
+            if let Some(stats) = &chunk.stats {
+                if chunk.is_final {
+                    segment_tokens = stats.tokens_generated;
+                    segment_ms = stats.generation_time_ms;
+                } else {
+                    segment_tokens += stats.tokens_generated;
+                    segment_ms += stats.generation_time_ms;
+                }
+            }
+            if chunk.samples.is_empty() {
+                continue;
+            }
+            let actual = chunk.sample_rate_or(state.runtime.sample_rate().await);
+            if rate.is_some_and(|expected| expected != actual) {
+                drop(receiver);
+                task.abort();
+                let _ = task.await;
+                return Err(izwi_core::Error::InferenceError(
+                    "Speech segment sample rate changed".into(),
+                ));
+            }
+            rate = Some(actual);
+            segment_duration += chunk.samples.len() as f32 / actual as f32;
+            chunk.request_id = base.id.clone();
+            chunk.sequence = sequence;
+            chunk.is_final = false;
+            chunk.stats = None;
+            if let Some(progress) = progress.as_deref_mut() {
+                progress
+                    .publish_chunk(&chunk)
+                    .await
+                    .map_err(progress_error)?;
+            }
+            if output.send(chunk).await.is_err() {
+                drop(receiver);
+                task.abort();
+                let _ = task.await;
+                return Err(izwi_core::Error::InferenceError(
+                    "Speech consumer disconnected".into(),
+                ));
+            }
+            emitted = true;
+            sequence += 1;
+        }
+        let result = task
+            .await
+            .map_err(|err| izwi_core::Error::InferenceError(err.to_string()))?;
+        drop(permit);
+        if let Err(error) = result {
+            // Exact tokenized reference+text fit is checked inside admitted model
+            // preparation. Replan only before this segment has published audio.
+            if !emitted
+                && (error
+                    .to_string()
+                    .contains("Fish S2 segment does not fit effective context")
+                    || error.to_string().contains("leaves no output room"))
+            {
+                let text = &base.text[range.clone()];
+                let count = text.chars().count();
+                if count > 1 {
+                    let middle = range.start + text.char_indices().nth(count / 2).unwrap().0;
+                    ranges.push_front(middle..range.end);
+                    ranges.push_front(range.start..middle);
+                    continue;
+                }
+            }
+            return Err(error);
+        }
+        if !emitted || segment_tokens == 0 {
+            return Err(izwi_core::Error::InferenceError(
+                "Speech segment completed without audio or accounting".into(),
+            ));
+        }
+        if let Some(progress) = progress.as_deref_mut() {
+            progress
+                .complete_segment(range.end, segment_tokens, segment_ms, segment_duration)
+                .await
+                .map_err(progress_error)?;
+        }
+        duration += segment_duration;
+        remaining = remaining.saturating_sub(segment_tokens);
+        tokens += segment_tokens;
+        execution_ms += segment_ms;
+        segment += 1;
+    }
+    let mut terminal =
+        AudioChunk::final_chunk(base.id, sequence, Vec::new()).with_sample_rate(rate.unwrap_or(0));
+    terminal.stats = Some(ChunkStats {
+        tokens_generated: tokens,
+        generation_time_ms: execution_ms,
+        rtf: if duration > 0.0 {
+            execution_ms / 1000.0 / duration
+        } else {
+            0.0
+        },
+    });
+    output
+        .send(terminal)
+        .await
+        .map_err(|_| izwi_core::Error::InferenceError("Speech consumer disconnected".into()))
+}
+
+/// Dropping a timed-out/cancelled job also cancels its current inference future.
+struct AbortSpeechTask(tokio::task::AbortHandle);
+impl Drop for AbortSpeechTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fish_plan_preserves_utf8_text_and_short_fast_path() {
+        for text in [
+            "Hello. A short paragraph!".to_string(),
+            "Dr. Smith paid $3.14. 中文🎵 no spaces 日本語\n".repeat(500),
+            "字".repeat(4000),
+        ] {
+            let plan = SpeechTextPlan::fish(&text, 0).unwrap();
+            let reconstructed: String = plan
+                .segments
+                .iter()
+                .map(|range| &text[range.clone()])
+                .collect();
+            assert_eq!(reconstructed, text);
+            assert!(plan
+                .segments
+                .iter()
+                .all(|range| text[range.clone()].chars().count() <= 480));
+            if text.len() < 480 {
+                assert_eq!(plan.segments.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn fish_plan_packs_short_sentences_and_prefers_sentence_boundaries() {
+        let paragraph = "First sentence. Second sentence. Third sentence.";
+        assert_eq!(
+            SpeechTextPlan::fish(paragraph, 0).unwrap().segments.len(),
+            1
+        );
+        let text = format!(
+            "{} {}",
+            "A reasonably sized sentence. ".repeat(14),
+            "word ".repeat(60)
+        );
+        let plan = SpeechTextPlan::fish(&text, 0).unwrap();
+        assert!(text[plan.segments[0].clone()].trim_end().ends_with('.'));
+    }
+
+    #[test]
+    fn fish_plan_never_generates_blank_layout_segments() {
+        let text = format!(
+            "{}Hello.{}World.{}",
+            " ".repeat(1000),
+            "\n".repeat(1000),
+            " ".repeat(1000)
+        );
+        let plan = SpeechTextPlan::fish(&text, 0).unwrap();
+        let spoken: String = plan
+            .segments
+            .iter()
+            .map(|range| &text[range.clone()])
+            .collect();
+        assert_eq!(
+            spoken.split_whitespace().collect::<String>(),
+            "Hello.World."
+        );
+        assert!(plan
+            .segments
+            .iter()
+            .all(|range| !text[range.clone()].trim().is_empty()));
+    }
+
+    #[test]
+    fn fish_long_text_splits_independently_of_output_budget() {
+        let text = "This sentence must all be spoken. ".repeat(1000);
+        let auto = SpeechTextPlan::fish(&text, 0).unwrap();
+        let limited = SpeechTextPlan::fish(&text, 2584).unwrap();
+        assert!(auto.segments.len() > 1);
+        assert_eq!(auto.segments, limited.segments);
+        assert_eq!(limited.max_output_frames, Some(2584));
+    }
 
     #[test]
     fn qwen_auto_chunking_splits_sentences() {
