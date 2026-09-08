@@ -4195,7 +4195,7 @@ mod tests {
     #[test]
     fn fish_batch_guard_discards_prior_staging_when_a_later_row_fails() {
         let (coordinator, session) = super::super::fish_pending::tests::staged();
-        let failure: crate::error::Result<()> = (|| {
+        let failure: crate::error::Result<()> = {
             let _guard = super::FishPendingBatchGuard {
                 coordinator: &coordinator,
                 staged: vec![(17, session.clone())],
@@ -4204,7 +4204,7 @@ mod tests {
             Err(crate::error::Error::InferenceError(
                 "later row rejected after first staged".into(),
             ))
-        })();
+        };
         assert!(failure.is_err());
         super::super::fish_pending::tests::assert_ready(&coordinator, &session, false);
         assert!(!super::super::PendingQuantumFinalizer::contains(

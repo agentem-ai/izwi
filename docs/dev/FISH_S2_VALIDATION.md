@@ -412,3 +412,11 @@ on CPU, Metal and CUDA contracts. These complement device qualification above.
 The loading fix passed the full core suite (2,569 tests; nine ignored and two
 optional local LFM weight loads excluded) and workspace hygiene. Actual CUDA
 model loading and deployment were not performed in this local verification.
+
+### Multi-user capacity qualification
+
+The HTTP runner now executes actual concurrent requests and bounded open-loop
+traffic. See [multi-user serving qualification](FISH_S2_MULTI_USER_SERVING.md)
+for workload arrays, failure-inclusive reports, load SLO evaluation and the
+heterogeneous replica deployment contract. Earlier single-request examples remain
+valid; set `--requests` and `--concurrency` for a real concurrent measurement.
