@@ -31,6 +31,7 @@ describe("viewport-safe creation dialogs", () => {
         onOpenModelManager={vi.fn()}
         onModelRequired={vi.fn()}
         onCreated={vi.fn()}
+        onCreateStream={vi.fn()}
       />,
     );
 

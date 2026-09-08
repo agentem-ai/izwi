@@ -201,7 +201,7 @@ export interface SpeechHistoryRecordStreamCallbacks {
     sequence: number;
     audioBase64: string;
     sampleCount: number;
-  }) => void;
+  }) => void | Promise<void>;
   onFinal?: (event: {
     record: SpeechHistoryRecord;
     stats: TTSGenerationStats;
@@ -1686,7 +1686,7 @@ export class AudioApiClient {
           return;
         }
 
-        await consumeDataStream(response, (data) => {
+        await consumeDataStream(response, async (data) => {
           try {
             const event = JSON.parse(data) as SpeechHistoryRecordStreamEvent;
             switch (event.event) {
@@ -1701,7 +1701,7 @@ export class AudioApiClient {
                 });
                 break;
               case "chunk":
-                callbacks.onChunk?.({
+                await callbacks.onChunk?.({
                   requestId: event.request_id,
                   sequence: event.sequence,
                   audioBase64: event.audio_base64,

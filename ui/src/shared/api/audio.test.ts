@@ -214,6 +214,34 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     );
   });
 
+  it("backpressures speech-history SSE until progressive playback accepts each chunk", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([
+      { event: "chunk", request_id: "request", sequence: 0, audio_base64: "AAA=", sample_count: 1 },
+      { event: "chunk", request_id: "request", sequence: 1, audio_base64: "AAA=", sample_count: 1 },
+      { event: "done" },
+    ])));
+    let release!: () => void;
+    let firstChunk!: () => void;
+    const first = new Promise<void>((resolve) => { firstChunk = resolve; });
+    const capacity = new Promise<void>((resolve) => { release = resolve; });
+    const seen: number[] = [];
+    let done!: () => void;
+    const completed = new Promise<void>((resolve) => { done = resolve; });
+    const client = new AudioApiClient(new ApiHttpClient());
+    client.createTextToSpeechRecordStream({ text: "Hello", model_id: "FishAudio-S2-Pro" }, {
+      onChunk: async ({ sequence }) => {
+        seen.push(sequence);
+        if (sequence === 0) { firstChunk(); await capacity; }
+      },
+      onDone: done,
+    });
+    await first;
+    expect(seen).toEqual([0]);
+    release();
+    await completed;
+    expect(seen).toEqual([0, 1]);
+  });
+
   it("parses direct TTS stream audio event names", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       sseResponse([

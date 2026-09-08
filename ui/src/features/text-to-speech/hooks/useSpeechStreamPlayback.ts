@@ -1,0 +1,123 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { api, type SpeechHistoryRecord, type SpeechHistoryRecordCreateRequest,
+  type SpeechHistoryRecordStreamCallbacks } from "@/api";
+import { SpeechPcmPlayer } from "../pcmPlayer";
+
+interface Session {
+  player: SpeechPcmPlayer;
+  controller?: AbortController;
+  recordId?: string;
+  originRecordId?: string;
+  final: boolean;
+  reject: (error: Error) => void;
+}
+
+/** Owned by the route: closing the creation dialog must not terminate playback. */
+export function useSpeechStreamPlayback(
+  recordId: string | undefined,
+  callbacks: SpeechHistoryRecordStreamCallbacks,
+) {
+  const session = useRef<Session | null>(null);
+  const callbacksRef = useRef(callbacks);
+  useLayoutEffect(() => { callbacksRef.current = callbacks; }, [callbacks]);
+  const [status, setStatus] = useState<"idle" | "generating" | "playing">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const dispose = useCallback((cancelGeneration: boolean, reason = "Speech generation was stopped.") => {
+    const current = session.current;
+    if (!current) return;
+    session.current = null;
+    current.controller?.abort();
+    current.player.stop();
+    current.reject(new Error(reason));
+    if (cancelGeneration && !current.final && current.recordId) {
+      void api.cancelTextToSpeechRecord(current.recordId).catch(() => {});
+    }
+  }, []);
+
+  const stop = useCallback((cancelGeneration = true) => {
+    dispose(cancelGeneration);
+    setStatus("idle");
+  }, [dispose]);
+
+  useEffect(() => () => dispose(true), [dispose]);
+  useEffect(() => {
+    const current = session.current;
+    if (current && (current.recordId ?? current.originRecordId) !== recordId) stop();
+  }, [recordId, stop]);
+
+  const create = useCallback((request: SpeechHistoryRecordCreateRequest) => {
+    dispose(true);
+    setError(null);
+    setStatus("generating");
+    return new Promise<SpeechHistoryRecord>((resolve, reject) => {
+      let current: Session;
+      const fail = (message: string) => {
+        if (session.current !== current) return;
+        dispose(true, message);
+        setStatus("idle");
+        setError(message);
+        callbacksRef.current.onError?.(message);
+        reject(new Error(message));
+      };
+      try {
+        const player = new SpeechPcmPlayer(new AudioContext(), () => {
+          if (session.current !== current) return;
+          // The final PCM can finish before the SSE done event arrives.
+          current.player.stop();
+          setStatus("idle");
+        });
+        current = { player, final: false, reject, originRecordId: recordId };
+        session.current = current;
+        // resume() must run on the original user gesture, not in onStart.
+        const unlocked = player.unlock();
+        void unlocked.catch(() => fail("Browser audio playback could not start."));
+        current.controller = api.createTextToSpeechRecordStream(request, {
+          onCreated: (record) => {
+            if (session.current !== current) return;
+            current.recordId = record.id;
+            resolve(record);
+          },
+          onStart: (event) => {
+            if (session.current !== current) return;
+            try {
+              player.start(event.requestId, event.sampleRate, event.audioFormat);
+              callbacksRef.current.onStart?.(event);
+            } catch (err) { fail((err as Error).message); }
+          },
+          onChunk: async (event) => {
+            if (session.current !== current) return;
+            try {
+              await unlocked;
+              if (session.current !== current) return;
+              await player.push(event);
+              if (session.current === current) setStatus("playing");
+            } catch (err) { fail((err as Error).message); }
+          },
+          onFinal: (event) => {
+            if (session.current !== current) return;
+            current.final = true;
+            current.recordId = event.record.id;
+            callbacksRef.current.onFinal?.(event);
+            resolve(event.record);
+            player.finish();
+          },
+          onError: fail,
+          onDone: () => {
+            if (session.current !== current) return;
+            if (!current.final) fail("Speech stream ended before generation completed.");
+            else callbacksRef.current.onDone?.();
+          },
+        });
+        // Also handle synchronous transport callbacks used by adapters and tests.
+        if (session.current !== current) current.controller?.abort();
+      } catch (err) {
+        dispose(true);
+        setStatus("idle");
+        reject(err);
+      }
+    });
+  }, [dispose, recordId]);
+
+  return { create, stop, status, error };
+}

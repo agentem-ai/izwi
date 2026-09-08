@@ -16,6 +16,7 @@ import { TextToSpeechHistoryTable } from "@/features/text-to-speech/components/T
 import { NewTextToSpeechModal } from "@/features/text-to-speech/components/NewTextToSpeechModal";
 import { TextToSpeechRecordDetail } from "@/features/text-to-speech/components/TextToSpeechRecordDetail";
 import { useTextToSpeechHistory } from "@/features/text-to-speech/hooks/useTextToSpeechHistory";
+import { useSpeechStreamPlayback } from "@/features/text-to-speech/hooks/useSpeechStreamPlayback";
 import { useTextToSpeechRecord } from "@/features/text-to-speech/hooks/useTextToSpeechRecord";
 import {
   normalizeSpeechProcessingStatus,
@@ -114,6 +115,21 @@ export function TextToSpeechPage({
     error: recordError,
     refresh: refreshRecord,
   } = useTextToSpeechRecord(recordId);
+
+  const playback = useSpeechStreamPlayback(recordId, {
+    onStart: () => {
+      setStreamingRecord((current) => current
+        ? { ...current, processing_status: "processing" } : current);
+    },
+    onFinal: ({ record: finalRecord }) => {
+      setStreamingRecord(finalRecord);
+      void refreshHistory();
+    },
+    onError: () => {
+      void refreshRecord();
+      void refreshHistory();
+    },
+  });
 
   const refreshSavedVoiceNames = useCallback(async () => {
     try {
@@ -305,7 +321,7 @@ export function TextToSpeechPage({
       case "processing":
         return "This generation is actively rendering audio.";
       case "failed":
-        return "This generation failed before audio became available.";
+        return "This generation failed. Any audio already played may be incomplete.";
       case "ready":
       default:
         return "Inspect status and generation details for this text-to-speech record.";
@@ -360,6 +376,7 @@ export function TextToSpeechPage({
     setRecordCancelPending(true);
     setRecordActionError(null);
     try {
+      playback.stop(false);
       const cancelled = await api.cancelTextToSpeechRecord(recordId);
       setStreamingRecord(cancelled.record);
       await Promise.all([refreshRecord(), refreshHistory()]);
@@ -391,17 +408,25 @@ export function TextToSpeechPage({
 
   const handleCancelRecord = useCallback(
     async (targetRecordId: string) => {
+      if (streamingRecord?.id === targetRecordId) playback.stop(false);
       await api.cancelTextToSpeechRecord(targetRecordId);
       if (streamingRecord?.id === targetRecordId) {
         setStreamingRecord(null);
       }
       await refreshHistory();
     },
-    [refreshHistory, streamingRecord?.id],
+    [playback, refreshHistory, streamingRecord?.id],
   );
 
   return (
     <PageShell>
+      {playback.status !== "idle" && (
+        <div role="status" className="flex items-center justify-between gap-3 rounded-md border p-3">
+          <span>{playback.status === "playing" ? "Playing generated speech" : "Waiting for first audio"}</span>
+          <Button variant="outline" size="sm" onClick={() => playback.stop()}>Stop generation and playback</Button>
+        </div>
+      )}
+      {playback.error && <p role="alert" className="text-sm text-destructive">{playback.error}</p>}
       {recordId ? (
         <>
           <PageHeader
@@ -514,23 +539,7 @@ export function TextToSpeechPage({
           navigate(`/text-to-speech/${createdRecord.id}`);
           void refreshHistory();
         }}
-        onStreamingStart={() => {
-          setStreamingRecord((current) =>
-            current
-              ? {
-                  ...current,
-                  processing_status: "processing",
-                }
-              : current,
-          );
-        }}
-        onStreamingFinal={(finalRecord) => {
-          setStreamingRecord(finalRecord);
-          void refreshHistory();
-        }}
-        onStreamingError={() => {
-          void refreshRecord();
-        }}
+        onCreateStream={playback.create}
       />
 
       <RouteModelModal
