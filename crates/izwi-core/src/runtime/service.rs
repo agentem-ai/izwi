@@ -5920,29 +5920,43 @@ impl RuntimeService {
         }
     }
 
+    /// Every admitted execution mode must install the same model-bound artifacts
+    /// before binding or engine admission. Keep the family pipeline in one place.
+    async fn prepare_request_for_binding(
+        &self,
+        request: EngineCoreRequest,
+        job: JobLease,
+        residency_lease: Option<&ModelResidencyLease>,
+    ) -> Result<(EngineCoreRequest, JobLease)> {
+        let (request, job) = self
+            .prepare_asr_shape_for_binding(request, job, residency_lease)
+            .await?;
+        let (request, job) = self
+            .prepare_kokoro_tts_for_binding(request, job, residency_lease)
+            .await?;
+        let (request, job) = self
+            .prepare_vibevoice_tts_for_binding(request, job, residency_lease)
+            .await?;
+        let (request, job) = self
+            .prepare_fish_s2_tts_for_binding(request, job, residency_lease)
+            .await?;
+        let (request, job) = self
+            .prepare_voxtral_tts_for_binding(request, job, residency_lease)
+            .await?;
+        let (request, job) = self
+            .prepare_lfm25_audio_tts_for_binding(request, job, residency_lease)
+            .await?;
+        Ok((request, job))
+    }
+
     async fn run_request_after_admission(
         &self,
         request: EngineCoreRequest,
         job: JobLease,
         residency_lease: Option<ModelResidencyLease>,
     ) -> Result<EngineOutput> {
-        let (request, job) = self
-            .prepare_asr_shape_for_binding(request, job, residency_lease.as_ref())
-            .await?;
-        let (request, job) = self
-            .prepare_kokoro_tts_for_binding(request, job, residency_lease.as_ref())
-            .await?;
-        let (request, job) = self
-            .prepare_vibevoice_tts_for_binding(request, job, residency_lease.as_ref())
-            .await?;
-        let (request, job) = self
-            .prepare_fish_s2_tts_for_binding(request, job, residency_lease.as_ref())
-            .await?;
-        let (request, job) = self
-            .prepare_voxtral_tts_for_binding(request, job, residency_lease.as_ref())
-            .await?;
         let (mut request, job) = self
-            .prepare_lfm25_audio_tts_for_binding(request, job, residency_lease.as_ref())
+            .prepare_request_for_binding(request, job, residency_lease.as_ref())
             .await?;
         let loaded_bundle = residency_lease
             .as_ref()
@@ -6228,11 +6242,8 @@ impl RuntimeService {
         F: FnMut(StreamingOutput) -> Fut,
         Fut: Future<Output = Result<()>>,
     {
-        let (request, job) = self
-            .prepare_asr_shape_for_binding(request, job, residency_lease.as_ref())
-            .await?;
         let (mut request, job) = self
-            .prepare_lfm25_audio_tts_for_binding(request, job, residency_lease.as_ref())
+            .prepare_request_for_binding(request, job, residency_lease.as_ref())
             .await?;
         let loaded_bundle = residency_lease
             .as_ref()
@@ -7699,13 +7710,30 @@ mod tests {
 
         let request_id = "streaming-admission-deadline".to_string();
         let deadline = Instant::now() + Duration::from_millis(25);
-        let residency_variant = ModelVariant::Kokoro82M;
+        let residency_variant = ModelVariant::FishAudioS2Pro;
         let mut request = EngineCoreRequest::tts("bounded streaming Engine admission")
             .with_model_variant(residency_variant)
             .with_deadline(Some(deadline));
         request.id = request_id.clone();
         request.prompt_tokens = vec![1];
         request.streaming = true;
+        request.mark_audio_streaming_only();
+        // The model-bound fixture has already completed preparation. This test
+        // isolates deadline handling while admission waits for the core lock.
+        request
+            .install_fish_s2_tts_execution_model(
+                residency_variant,
+                crate::models::registry::FishS2TtsModelLease::for_test(
+                    crate::models::architectures::fish_s2::FishS2TtsModel::for_test(),
+                ),
+                crate::models::architectures::fish_s2::FishS2PreparedArtifact::test_prompt(11, 16),
+                FishS2GenerationParams {
+                    max_frames: 32,
+                    ..Default::default()
+                },
+                128,
+            )
+            .unwrap();
         let (spec, observation) = runtime
             .coordinator_job_for_request(&request)
             .expect("job shape");
@@ -7714,10 +7742,10 @@ mod tests {
             .admit_observed(spec, observation)
             .await
             .expect("job admission");
+
         let residency_lease = runtime
             .model_manager
             .acquire_residency_lease(residency_variant);
-
         let err = tokio::time::timeout(
             Duration::from_secs(1),
             runtime.run_streaming_request_after_admission(
@@ -7731,7 +7759,10 @@ mod tests {
         .await
         .expect("streaming Engine admission waited for the core lock past its deadline")
         .expect_err("expired streaming Engine admission unexpectedly succeeded");
-        assert!(matches!(err, Error::Timeout(id) if id == request_id));
+        assert!(
+            matches!(err, Error::Timeout(ref id) if id == &request_id),
+            "expected admission timeout, got {err:?}"
+        );
         assert!(
             !step_lock.is_finished(),
             "the core lock was released too early"
@@ -7755,6 +7786,128 @@ mod tests {
             runtime.core_engine.request_session_key(&request_id).await,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn fish_streaming_runs_model_preparation_before_engine_admission() {
+        for model_streaming_required in [true, false] {
+            let runtime = RuntimeService::new(EngineConfig::default()).expect("runtime");
+            let mut request = EngineCoreRequest::tts("prepare streaming Fish")
+                .with_model_variant(ModelVariant::FishAudioS2Pro);
+            request.streaming = true;
+            request.mark_audio_streaming_only();
+            let request_id = request.id.clone();
+            let (spec, observation) = runtime.coordinator_job_for_request(&request).unwrap();
+            let job = runtime
+                .coordinator
+                .admit_observed(spec, observation)
+                .await
+                .unwrap();
+            let callback_invoked = Arc::new(AtomicBool::new(false));
+            let callback_observer = callback_invoked.clone();
+
+            // No weights are installed: reaching Fish preparation must fail here,
+            // before a request without its model lease can enter the executor.
+            let error = tokio::time::timeout(
+                Duration::from_secs(1),
+                runtime.run_streaming_request_after_admission(
+                    request,
+                    move |_| {
+                        callback_observer.store(true, Ordering::Release);
+                        std::future::ready(Ok(()))
+                    },
+                    job,
+                    None,
+                    model_streaming_required,
+                ),
+            )
+            .await
+            .expect("missing Fish model should fail before execution")
+            .expect_err("streaming Fish must prepare its model");
+            assert!(
+                matches!(error, Error::ModelNotFound(ref message) if message.contains("Fish S2 TTS")),
+                "expected the Fish preparation failure, got {error:?}"
+            );
+            assert!(!callback_invoked.load(Ordering::Acquire));
+            assert_eq!(runtime.coordinator_snapshot().active_jobs, 0);
+            assert_eq!(
+                runtime.core_engine.request_session_key(&request_id).await,
+                None
+            );
+            assert!(!runtime
+                .completion_waiters
+                .lock()
+                .await
+                .contains_key(&request_id));
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_preparation_preserves_fish_model_artifact_and_streaming_budget() {
+        use crate::models::architectures::fish_s2::{FishS2PreparedArtifact, FishS2TtsModel};
+        use crate::models::registry::FishS2TtsModelLease;
+
+        let runtime = RuntimeService::new(EngineConfig::default()).expect("runtime");
+        let model = FishS2TtsModelLease::for_test(FishS2TtsModel::for_test());
+        let model_identity = model.model_arc();
+        let artifact = FishS2PreparedArtifact::test_prompt(11, 16);
+        let mut request = EngineCoreRequest::tts("already prepared streaming Fish")
+            .with_model_variant(ModelVariant::FishAudioS2Pro);
+        request.streaming = true;
+        request.mark_audio_streaming_only();
+        request
+            .install_fish_s2_tts_execution_model(
+                ModelVariant::FishAudioS2Pro,
+                model,
+                artifact.clone(),
+                FishS2GenerationParams {
+                    max_frames: 32,
+                    ..Default::default()
+                },
+                128,
+            )
+            .unwrap();
+        let request_id = request.id.clone();
+        let queue_capacity = request.audio_stream_engine_queue_capacity;
+        let (spec, observation) = runtime.coordinator_job_for_request(&request).unwrap();
+        let job = runtime
+            .coordinator
+            .admit_observed(spec, observation)
+            .await
+            .unwrap();
+
+        let (prepared, job) = runtime
+            .prepare_request_for_binding(request, job, None)
+            .await
+            .unwrap();
+        let lease = prepared
+            .prepared_fish_s2_tts_model_lease_for_executor()
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&model_identity, &lease.model_arc()));
+        assert!(Arc::ptr_eq(
+            &artifact,
+            &prepared
+                .prepared_fish_s2_tts_artifact_for_executor()
+                .unwrap()
+                .unwrap()
+        ));
+        assert_eq!(prepared.id, request_id);
+        assert_eq!(prepared.params.max_tokens, 32);
+        assert_eq!(
+            prepared
+                .fish_s2_tts_generation_params_for_executor()
+                .unwrap()
+                .unwrap()
+                .max_frames,
+            32
+        );
+        assert!(prepared.streaming);
+        assert!(!prepared.collect_audio_samples);
+        assert_eq!(prepared.audio_stream_engine_queue_capacity, queue_capacity);
+        assert_eq!(job.spec.request_id, request_id);
+        drop(job);
+        assert_eq!(runtime.coordinator_snapshot().active_jobs, 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
