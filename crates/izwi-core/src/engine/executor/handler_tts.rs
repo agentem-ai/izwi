@@ -1500,8 +1500,13 @@ impl NativeExecutor {
             let params = request
                 .fish_s2_tts_generation_params_for_executor()?
                 .ok_or_else(|| Error::InferenceError("Fish S2 TTS lost geometry".into()))?;
+            let runtime = request.managed_cache_runtime().ok_or_else(|| {
+                Error::InferenceError("Fish S2 TTS lost managed context limit".into())
+            })?;
+            let max_sequence_tokens = usize::try_from(runtime.maximum_sequence_tokens())
+                .map_err(|_| Error::InvalidInput("Fish S2 context exceeds usize".into()))?;
             let (state, checkpoint) =
-                model.new_retained_state_in_quantum(artifact, params, slow)?;
+                model.new_retained_state_in_quantum(artifact, params, slow, max_sequence_tokens)?;
             lease.install_state(ActiveFishS2TtsDecode {
                 variant,
                 model: model.clone(),

@@ -200,3 +200,38 @@ fn fish_s2_decode_and_other_models_keep_generic_work_cost() {
     let cost = finalize_cost(&request, None, BackendKind::Cpu).unwrap();
     assert_eq!(cost, WorkCost::new(1, 1, 0));
 }
+
+#[test]
+fn fish_s2_exact_prompt_fits_admission_generation_and_codec_budget() {
+    let mut request = EngineCoreRequest::tts("A context-fitted request")
+        .with_model_variant(ModelVariant::FishAudioS2Pro);
+    request
+        .install_fish_s2_tts_execution_model(
+            ModelVariant::FishAudioS2Pro,
+            FishS2TtsModelLease::for_test(FishS2TtsModel::for_test()),
+            FishS2PreparedArtifact::test_prompt(11, 224),
+            FishS2GenerationParams {
+                max_frames: 512,
+                ..Default::default()
+            },
+            256,
+        )
+        .unwrap();
+    request.validate_execution_preparation().unwrap();
+    assert_eq!(request.params.max_tokens, 32);
+    assert_eq!(
+        request
+            .fish_s2_tts_generation_params_for_executor()
+            .unwrap()
+            .unwrap()
+            .max_frames,
+        32
+    );
+    let (binding, stage) = loaded_binding(BackendKind::Cuda);
+    request.bind_execution_adapter(binding).unwrap();
+    request.validate_execution_preparation().unwrap();
+    let cost = finalize_cost(&request, Some(&stage), BackendKind::Cuda).unwrap();
+    let mut workspace = ResourceVector::zero();
+    workspace.device_bytes = ResourceAmount::Known(decode_workspace_bytes(32).unwrap());
+    assert_eq!(cost, WorkCost::with_workspace(1, 1, workspace));
+}

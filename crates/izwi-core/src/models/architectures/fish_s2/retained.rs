@@ -218,6 +218,7 @@ impl FishS2TtsModel {
         artifact: Arc<FishS2PreparedArtifact>,
         params: FishS2GenerationParams,
         slow_cache: PhysicalPagedKvCache,
+        max_sequence_tokens: usize,
     ) -> Result<FishS2RetainedState> {
         params.validate()?;
         if artifact.model_identity != self.model_identity {
@@ -233,7 +234,7 @@ impl FishS2TtsModel {
         let max_frames = super::effective_frame_budget(
             artifact.prompt.prompt_length,
             self.config.max_seq_len,
-            slow_cache.capacity_tokens(),
+            max_sequence_tokens,
             params.max_frames,
         )?;
         let semantic_sampler = FishS2SemanticSampler::from_params(&params);
@@ -270,8 +271,11 @@ impl FishS2TtsModel {
         artifact: Arc<FishS2PreparedArtifact>,
         params: FishS2GenerationParams,
         slow_cache: PhysicalPagedKvCache,
+        max_sequence_tokens: usize,
     ) -> Result<(FishS2RetainedState, FishS2RetainedCheckpoint)> {
-        let mut state = self.new_retained_state(artifact, params, slow_cache)?;
+        // The cache contains only this quantum's pages, not the full sequence.
+        let mut state =
+            self.new_retained_state(artifact, params, slow_cache, max_sequence_tokens)?;
         state.active_quantum = Some(1);
         state.next_quantum = 2;
         let checkpoint = FishS2RetainedCheckpoint {
@@ -790,6 +794,54 @@ fn next_state_id() -> Result<u64> {
 mod tests {
     use super::*;
     use crate::models::architectures::fish_s2::physical::test_physical_cache;
+
+    #[test]
+    fn managed_generation_budget_uses_logical_context_not_first_chunk() {
+        let model = FishS2TtsModel::for_test();
+        for (prompt, context, requested, expected) in [
+            (224, 8192, 512, 512),
+            (160, 8192, 512, 512),
+            (224, 256, 512, 32),
+        ] {
+            let (mut state, mut checkpoint) = model
+                .new_retained_state_in_quantum(
+                    FishS2PreparedArtifact::test_prompt(11, prompt),
+                    FishS2GenerationParams {
+                        max_frames: requested,
+                        ..Default::default()
+                    },
+                    test_physical_cache(91, 1, 1, 1, 192),
+                    context,
+                )
+                .unwrap();
+            assert_eq!(state.max_frames, expected);
+            assert_eq!(state.slow_cache.capacity_tokens(), 192);
+            state.take_managed_write_completions();
+            state.commit_managed_quantum(&mut checkpoint).unwrap();
+            let _checkpoint = state
+                .begin_managed_quantum(test_physical_cache(91, 1, 1, 1, 256))
+                .unwrap();
+            assert_eq!(state.slow_cache.capacity_tokens(), 256);
+            assert_eq!(state.max_frames, expected);
+        }
+    }
+
+    #[test]
+    fn managed_generation_rejects_prompt_at_actual_context_limit() {
+        let model = FishS2TtsModel::for_test();
+        for context in [192, 224] {
+            let error = model
+                .new_retained_state_in_quantum(
+                    FishS2PreparedArtifact::test_prompt(11, 224),
+                    FishS2GenerationParams::default(),
+                    test_physical_cache(91, 1, 1, 1, 256),
+                    context,
+                )
+                .err()
+                .expect("actual context must leave output room");
+            assert!(error.to_string().contains("leaves no output room"));
+        }
+    }
 
     fn state() -> FishS2RetainedState {
         FishS2RetainedState {
