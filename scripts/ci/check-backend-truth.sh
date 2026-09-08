@@ -455,6 +455,7 @@ run_hygiene() {
     scripts/bench/test-run-cuda-model-load-evidence.sh
     PYTHONDONTWRITEBYTECODE=1 python3 scripts/bench/test-cuda-chat-concurrency.py
     PYTHONDONTWRITEBYTECODE=1 python3 scripts/bench/test-fish-streaming-benchmark.py
+    PYTHONDONTWRITEBYTECODE=1 python3 scripts/bench/test-fish-long-form-qualification.py
     PYTHONDONTWRITEBYTECODE=1 python3 scripts/bench/test-fish-serving-capacity.py
 }
 
