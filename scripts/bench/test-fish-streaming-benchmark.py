@@ -61,5 +61,86 @@ class Tests(unittest.TestCase):
             measure.result()
 
 
+
+class LoadTests(unittest.TestCase):
+    def test_closed_loop_runs_real_parallel_connections(self):
+        import http.server
+        import json
+        import tempfile
+        import threading
+        import time
+
+        state = {'active': 0, 'peak': 0, 'count': 0}
+        lock = threading.Lock()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                with lock:
+                    state['active'] += 1
+                    state['count'] += 1
+                    state['peak'] = max(state['peak'], state['active'])
+                try:
+                    time.sleep(.05)
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/event-stream')
+                    self.end_headers()
+                    for event in (chunk(), {'event': 'final', 'tokens_generated': 1,
+                                             'audio_duration_secs': 2048 / 44100}):
+                        self.wfile.write(('data: ' + json.dumps(event) + '\n\n').encode())
+                finally:
+                    with lock:
+                        state['active'] -= 1
+
+            def log_message(self, *_args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                result = benchmark.run_load(f'http://127.0.0.1:{server.server_port}', [{}],
+                                            Path(tmp), 5, 9, 3)
+                self.assertEqual(state['count'], 9)
+                self.assertGreater(state['peak'], 1)
+                self.assertLessEqual(state['peak'], 3)
+                self.assertEqual(result['outcomes']['completed'], 9)
+                self.assertTrue(result['passed'])
+                self.assertEqual(len(list(Path(tmp).glob('request-*/audio.wav'))), 9)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_open_loop_does_not_hide_saturation_in_executor_queue(self):
+        import tempfile
+        import time
+        from unittest.mock import patch
+
+        def slow(*_args):
+            time.sleep(.15)
+            return {'passed': True, 'outcome': 'completed', 'audio_duration_secs': 1}
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(benchmark, 'run_request', slow):
+            result = benchmark.run_load('unused', [{}], Path(tmp), 1, 12, 2, 1000)
+        self.assertEqual(result['outcomes']['completed'], 2)
+        self.assertEqual(result['outcomes']['generator_dropped'], 10)
+        self.assertEqual(result['outcomes']['rejected'], 0)
+        self.assertEqual(result['sent_requests'], 2)
+        self.assertFalse(result['passed'])
+
+    def test_failed_and_rejected_requests_remain_in_denominator(self):
+        result = benchmark.summarize([
+            {'outcome': 'completed', 'audio_duration_secs': 10, 'client_receipt_ttfa_ms': 50},
+            {'outcome': 'failed'}, {'outcome': 'rejected'}, {'outcome': 'generator_dropped'},
+        ], 5, 2, 'open_loop')
+        self.assertEqual(result['offered_requests'], 4)
+        self.assertEqual(result['sent_requests'], 3)
+        self.assertEqual(result['audio_seconds_per_wall_second'], 2)
+        self.assertEqual(result['percentile_sample_count'], 1)
+        self.assertFalse(result['passed'])
+
+
 if __name__ == '__main__':
     unittest.main()
