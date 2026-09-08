@@ -250,11 +250,53 @@ fn stream_event_queue_capacity() -> usize {
         .unwrap_or(DEFAULT_STREAM_EVENT_QUEUE_CAPACITY)
 }
 
+struct BudgetedStreamEvent {
+    payload: String,
+    _global_reservation: crate::speech_resource_budget::ByteReservation,
+    _stream_reservation: crate::speech_resource_budget::ByteReservation,
+}
+
+impl AsRef<[u8]> for BudgetedStreamEvent {
+    fn as_ref(&self) -> &[u8] {
+        self.payload.as_bytes()
+    }
+}
+
+#[derive(Clone)]
+struct StreamEventSender {
+    sender: mpsc::Sender<BudgetedStreamEvent>,
+    budget: Arc<crate::speech_resource_budget::ByteBudget>,
+}
+
 async fn send_stream_event(
-    event_tx: &mpsc::Sender<String>,
+    event_tx: &StreamEventSender,
     event: SpeechStreamEvent,
-) -> Result<(), ()> {
-    event_tx.send(to_stream_json(event)).await.map_err(|_| ())
+) -> Result<(), &'static str> {
+    let payload = format!("data: {}\n\n", to_stream_json(event));
+    let global_reservation = crate::speech_resource_budget::event_budget()
+        .reserve(payload.len())
+        .map_err(|_| "Speech stream output byte capacity exhausted")?;
+    let stream_reservation = event_tx
+        .budget
+        .reserve(payload.len())
+        .map_err(|_| "Speech stream output byte capacity exhausted")?;
+    let event = BudgetedStreamEvent {
+        payload,
+        _global_reservation: global_reservation,
+        _stream_reservation: stream_reservation,
+    };
+    let timeout_secs = std::env::var("IZWI_AUDIO_STREAM_STALL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(30);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        event_tx.sender.send(event),
+    )
+    .await
+    .map_err(|_| "Speech stream client stalled beyond its send deadline")?
+    .map_err(|_| STREAM_CLIENT_DISCONNECTED_MESSAGE)
 }
 
 pub async fn list_text_to_speech_records(
@@ -1441,7 +1483,17 @@ async fn stream_record_creation(
     let speech_store = state.speech_history_store.clone();
     let admission_state = state.clone();
 
-    let (event_tx, mut event_rx) = mpsc::channel::<String>(stream_event_queue_capacity());
+    let (sender, mut event_rx) =
+        mpsc::channel::<BudgetedStreamEvent>(stream_event_queue_capacity());
+    let byte_limit = std::env::var("IZWI_AUDIO_STREAM_MAX_EVENT_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(4 * 1024 * 1024);
+    let event_tx = StreamEventSender {
+        sender,
+        budget: crate::speech_resource_budget::ByteBudget::new(byte_limit),
+    };
     let _ = send_stream_event(
         &event_tx,
         SpeechStreamEvent {
@@ -1700,7 +1752,7 @@ async fn stream_record_creation(
                     break;
                 }
 
-                if send_stream_event(
+                if let Err(message) = send_stream_event(
                     &event_tx,
                     SpeechStreamEvent {
                         event: "chunk",
@@ -1722,8 +1774,8 @@ async fn stream_record_creation(
                     },
                 )
                 .await
-                .is_err()
                 {
+                    failure_message = Some(message.to_string());
                     stream_closed = true;
                     break;
                 }
@@ -1797,7 +1849,7 @@ async fn stream_record_creation(
                                 audio_mime_type: AudioEncoder::content_type(AudioFormat::Wav)
                                     .to_string(),
                                 audio_filename: Some(default_audio_filename(route_kind, "wav")),
-                                audio_bytes: wav_bytes,
+                                audio_bytes: wav_bytes.bytes,
                                 preexisting_audio_storage_path: None,
                             },
                         )
@@ -1879,7 +1931,9 @@ async fn stream_record_creation(
 
     let stream = async_stream::stream! {
         while let Some(payload) = event_rx.recv().await {
-            yield Ok::<_, Infallible>(format!("data: {payload}\n\n"));
+            // The byte reservation follows the HTTP body frame until the
+            // transport consumes or drops it, rather than ending at dequeue.
+            yield Ok::<_, Infallible>(bytes::Bytes::from_owner(payload));
         }
     };
 
@@ -2271,6 +2325,25 @@ fn map_media_ingest_error(err: MediaIngestError) -> ApiError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sse_byte_reservation_follows_transport_frame_and_clones() {
+        let budget = crate::speech_resource_budget::ByteBudget::new(16);
+        let other = crate::speech_resource_budget::ByteBudget::new(16);
+        let event = super::BudgetedStreamEvent {
+            payload: "data: test\n\n".to_string(),
+            _global_reservation: budget.reserve(16).unwrap(),
+            _stream_reservation: other.reserve(16).unwrap(),
+        };
+        let frame = bytes::Bytes::from_owner(event);
+        let in_transport = frame.clone();
+        drop(frame);
+        assert!(budget.reserve(1).is_err());
+        assert!(other.reserve(1).is_err());
+        drop(in_transport);
+        assert!(budget.reserve(16).is_ok());
+        assert!(other.reserve(16).is_ok());
+    }
+
     use super::*;
 
     fn base_request() -> CreateSpeechHistoryRecordRequest {

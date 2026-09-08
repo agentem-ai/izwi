@@ -40,6 +40,7 @@ mod onboarding_store;
 mod persistence;
 mod saved_voice_store;
 mod speech_history_store;
+mod speech_resource_budget;
 mod state;
 mod storage_layout;
 mod studio_project_store;
@@ -287,7 +288,8 @@ async fn run_with_args(args: ServerArgs, enterprise_hooks: EnterpriseHooks) -> a
 }
 
 fn start_batch_runtime_worker(state: &AppState) -> BatchWorkerSupervisor {
-    let mut config = BatchWorkerConfig::local("local-batch-worker");
+    let mut config =
+        BatchWorkerConfig::local(format!("local-batch-worker-{}", crate::ids::new_uuid()));
     config.queue_names = local_batch_worker_queue_names();
     config.capabilities = vec!["asr".to_string(), "tts".to_string()];
     config.stage_kinds = vec![
@@ -298,6 +300,18 @@ fn start_batch_runtime_worker(state: &AppState) -> BatchWorkerSupervisor {
     config.resources = local_batch_worker_resources(
         backend_context.backend_kind,
         backend_context.device.capabilities.available_memory_bytes,
+    );
+    // Durable requests feed the shared engine; this bounds admitted workers,
+    // independently of the physical tensor batch chosen by that engine.
+    config.resources.concurrency_slots = batch_worker_concurrency(
+        state
+            .runtime
+            .config()
+            .max_retained_sequences
+            .min(state.runtime.config().max_queued_requests),
+        std::env::var("IZWI_BATCH_WORKER_CONCURRENCY")
+            .ok()
+            .as_deref(),
     );
     config.execution_timeout = batch_stage_execution_timeout();
     config.drain_timeout = batch_worker_drain_timeout();
@@ -353,6 +367,23 @@ fn local_batch_worker_resources(
         memory_bytes: available_memory_bytes.and_then(|bytes| u64::try_from(bytes).ok()),
         concurrency_slots: 1,
         ..WorkerResourceCapacity::default()
+    }
+}
+
+fn batch_worker_concurrency(runtime_capacity: usize, configured: Option<&str>) -> u32 {
+    let capacity = u32::try_from(runtime_capacity).unwrap_or(u32::MAX).max(1);
+    match configured {
+        Some(value) => match value.parse::<u32>() {
+            Ok(limit) if limit > 0 => limit.min(capacity),
+            _ => {
+                tracing::warn!(
+                    value,
+                    "Invalid IZWI_BATCH_WORKER_CONCURRENCY; using runtime capacity"
+                );
+                capacity
+            }
+        },
+        None => capacity,
     }
 }
 
@@ -834,6 +865,15 @@ mod tests {
     use crate::test_support::env_lock;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn durable_worker_concurrency_tracks_runtime_and_operator_ceiling() {
+        assert_eq!(batch_worker_concurrency(64, None), 64);
+        assert_eq!(batch_worker_concurrency(64, Some("17")), 17);
+        assert_eq!(batch_worker_concurrency(3, Some("17")), 3);
+        assert_eq!(batch_worker_concurrency(3, Some("0")), 3);
+        assert_eq!(batch_worker_concurrency(0, None), 1);
+    }
 
     #[test]
     fn desktop_owner_pipe_monitor_returns_at_eof() {

@@ -89,7 +89,7 @@ impl BatchWorkerDrain {
 
     pub fn begin(&self) {
         if !self.inner.draining.swap(true, Ordering::AcqRel) {
-            self.inner.notify.notify_one();
+            self.inner.notify.notify_waiters();
         }
     }
 
@@ -100,6 +100,8 @@ impl BatchWorkerDrain {
     async fn wait(&self) {
         loop {
             let notified = self.inner.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if self.is_draining() {
                 return;
             }
@@ -319,10 +321,6 @@ impl StageCancellationSignal {
             notified.await;
         }
     }
-
-    fn same_signal(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
-    }
 }
 
 #[derive(Clone)]
@@ -434,33 +432,24 @@ enum StageExecutionResolution {
     Cancelled(StageCancellationReason),
 }
 
-struct ActiveExecutionGuard {
-    slot: Arc<RwLock<Option<StageCancellationSignal>>>,
+#[derive(Clone)]
+struct ActiveExecution {
     cancellation: StageCancellationSignal,
+    weight: u32,
+    memory_bytes: u64,
 }
 
-impl ActiveExecutionGuard {
-    fn new(
-        slot: Arc<RwLock<Option<StageCancellationSignal>>>,
-        cancellation: StageCancellationSignal,
-    ) -> Self {
-        *slot.write().unwrap_or_else(|poison| poison.into_inner()) = Some(cancellation.clone());
-        Self { slot, cancellation }
-    }
+struct ActiveExecutionGuard {
+    slots: Arc<RwLock<HashMap<String, ActiveExecution>>>,
+    stage_id: String,
 }
 
 impl Drop for ActiveExecutionGuard {
     fn drop(&mut self) {
-        let mut active = self
-            .slot
+        self.slots
             .write()
-            .unwrap_or_else(|poison| poison.into_inner());
-        if active
-            .as_ref()
-            .is_some_and(|current| current.same_signal(&self.cancellation))
-        {
-            *active = None;
-        }
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&self.stage_id);
     }
 }
 
@@ -487,7 +476,9 @@ pub struct BatchWorkerRunner {
     drain: BatchWorkerDrain,
     runtime_observer: Option<Arc<RuntimeService>>,
     last_maintenance_at: Arc<RwLock<Option<Instant>>>,
-    active_execution: Arc<RwLock<Option<StageCancellationSignal>>>,
+    active_executions: Arc<RwLock<HashMap<String, ActiveExecution>>>,
+    claim_lock: Arc<tokio::sync::Mutex<()>>,
+    heartbeat_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl BatchWorkerRunner {
@@ -529,7 +520,9 @@ impl BatchWorkerRunner {
             drain,
             runtime_observer: None,
             last_maintenance_at: Arc::new(RwLock::new(None)),
-            active_execution: Arc::new(RwLock::new(None)),
+            active_executions: Arc::new(RwLock::new(HashMap::new())),
+            claim_lock: Arc::new(tokio::sync::Mutex::new(())),
+            heartbeat_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -543,13 +536,13 @@ impl BatchWorkerRunner {
     }
 
     fn cancel_active_execution(&self, reason: StageCancellationReason) {
-        if let Some(active) = self
-            .active_execution
+        for active in self
+            .active_executions
             .read()
             .unwrap_or_else(|poison| poison.into_inner())
-            .clone()
+            .values()
         {
-            active.cancel(reason);
+            active.cancellation.cancel(reason);
         }
     }
 
@@ -572,7 +565,13 @@ impl BatchWorkerRunner {
             .await?;
             return Ok(false);
         }
+        // Serialize claim + local reservation, not execution. Every claim sees
+        // the remaining aggregate capacity, including weighted stages.
+        let claim_lock = self.claim_lock.lock().await;
         let claim_filter = self.claim_filter();
+        if self.drain.is_draining() || claim_filter.resources.concurrency_slots == 0 {
+            return Ok(false);
+        }
 
         let Some(claimed) = self
             .store
@@ -586,6 +585,24 @@ impl BatchWorkerRunner {
             return Ok(false);
         };
 
+        let cancellation = StageCancellationSignal::new();
+        let hints = &claimed.stage.resource_hints;
+        self.active_executions
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(
+                claimed.stage.id.clone(),
+                ActiveExecution {
+                    cancellation: cancellation.clone(),
+                    weight: hints.concurrency_weight.max(1),
+                    memory_bytes: hints.min_memory_bytes.unwrap_or(0),
+                },
+            );
+        let _active_execution = ActiveExecutionGuard {
+            slots: self.active_executions.clone(),
+            stage_id: claimed.stage.id.clone(),
+        };
+        drop(claim_lock);
         self.health.record_claim(claimed.stage.id.clone());
         self.record_stage_observation(&claimed, RuntimeStageOutcome::Claimed, None, None, None);
         self.record_heartbeat(
@@ -665,7 +682,6 @@ impl BatchWorkerRunner {
 
         self.record_stage_observation(&claimed, RuntimeStageOutcome::Started, None, None, None);
         let stage_started = Instant::now();
-        let cancellation = StageCancellationSignal::new();
         let deadline = self
             .config
             .execution_timeout
@@ -679,8 +695,6 @@ impl BatchWorkerRunner {
             store: self.store.clone(),
             runtime_observer: self.runtime_observer.clone(),
         };
-        let active_execution =
-            ActiveExecutionGuard::new(self.active_execution.clone(), cancellation.clone());
         let execution = executor.execute_with_context(context);
         tokio::pin!(execution);
         let deadline_wait = async move {
@@ -744,7 +758,6 @@ impl BatchWorkerRunner {
                 }
             }
         };
-        drop(active_execution);
         match execution_result {
             StageExecutionResolution::Finished(Ok(outcome)) => {
                 let output_artifact_count = outcome.output_artifact_ids.len();
@@ -835,6 +848,16 @@ impl BatchWorkerRunner {
             }
         }
 
+        drop(_active_execution);
+        self.record_heartbeat(
+            if self.drain.is_draining() {
+                "draining"
+            } else {
+                "idle"
+            },
+            None,
+        )
+        .await?;
         Ok(true)
     }
 
@@ -888,56 +911,21 @@ impl BatchWorkerRunner {
         let runner = self.clone();
         let handle = tokio::spawn(async move {
             info!(worker_id = %runner.config.worker_id, "Batch runtime worker started");
-            loop {
-                if runner.drain.is_draining() {
-                    break;
-                }
-
-                let iteration = runner.run_once();
-                tokio::pin!(iteration);
-                let result = tokio::select! {
-                    result = &mut iteration => result,
-                    _ = runner.drain.wait() => {
-                        match tokio::time::timeout(drain_timeout, &mut iteration).await {
-                            Ok(result) => result,
-                            Err(_) => {
-                                runner.cancel_active_execution(StageCancellationReason::DrainDeadline);
-                                match tokio::time::timeout(Duration::from_secs(1), &mut iteration).await {
-                                    Ok(result) => result,
-                                    Err(_) => Err(anyhow!("Batch worker drain cancellation did not settle")),
-                                }
-                            }
-                        }
-                    },
-                };
-                let should_pause = match result {
-                    Ok(true) => false,
-                    Ok(false) => true,
-                    Err(err) => {
-                        error!(worker_id = %runner.config.worker_id, error = %err, "Batch runtime worker iteration failed");
-                        runner.health.record_error(err.to_string());
-                        true
-                    }
-                };
-
-                if runner.drain.is_draining() {
-                    break;
-                }
-                if should_pause {
-                    tokio::select! {
-                        _ = tokio::time::sleep(runner.config.poll_interval) => {}
-                        _ = runner.drain.wait() => break,
-                    }
-                }
+            let slots = runner.config.resources.concurrency_slots.max(1);
+            let mut workers = futures::stream::FuturesUnordered::new();
+            for _ in 0..slots {
+                workers.push(runner.run_slot(drain_timeout));
             }
+            use futures::StreamExt;
+            while workers.next().await.is_some() {}
             if let Err(err) = runner.record_heartbeat("drained", None).await {
                 error!(worker_id = %runner.config.worker_id, error = %err, "Failed to record drained batch worker heartbeat");
-                runner.health.record_error(err.to_string());
+                runner.health.record_error(format!("{err:#}"));
             }
             runner.health.mark_stopped();
             if let Err(err) = runner.record_heartbeat("stopped", None).await {
                 error!(worker_id = %runner.config.worker_id, error = %err, "Failed to record stopped batch worker heartbeat");
-                runner.health.record_error(err.to_string());
+                runner.health.record_error(format!("{err:#}"));
             }
             debug!(worker_id = %runner.config.worker_id, "Batch runtime worker stopped");
         });
@@ -949,11 +937,58 @@ impl BatchWorkerRunner {
         }
     }
 
+    async fn run_slot(&self, drain_timeout: Duration) {
+        let runner = self;
+        loop {
+            if runner.drain.is_draining() {
+                break;
+            }
+
+            let iteration = runner.run_once();
+            tokio::pin!(iteration);
+            let result = tokio::select! {
+                result = &mut iteration => result,
+                _ = runner.drain.wait() => {
+                    match tokio::time::timeout(drain_timeout, &mut iteration).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            runner.cancel_active_execution(StageCancellationReason::DrainDeadline);
+                            match tokio::time::timeout(Duration::from_secs(1), &mut iteration).await {
+                                Ok(result) => result,
+                                Err(_) => Err(anyhow!("Batch worker drain cancellation did not settle")),
+                            }
+                        }
+                    }
+                },
+            };
+            let should_pause = match result {
+                Ok(true) => false,
+                Ok(false) => true,
+                Err(err) => {
+                    error!(worker_id = %runner.config.worker_id, error = %err, "Batch runtime worker iteration failed");
+                    runner.health.record_error(format!("{err:#}"));
+                    true
+                }
+            };
+
+            if runner.drain.is_draining() {
+                break;
+            }
+            if should_pause {
+                tokio::select! {
+                    _ = tokio::time::sleep(runner.config.poll_interval) => {}
+                    _ = runner.drain.wait() => break,
+                }
+            }
+        }
+    }
+
     async fn record_heartbeat(
         &self,
         status: &str,
         current: Option<(String, String)>,
     ) -> anyhow::Result<()> {
+        let _heartbeat_lock = self.heartbeat_lock.lock().await;
         let (current_job_id, current_stage_id) = current
             .map_or((None, None), |(job_id, stage_id)| {
                 (Some(job_id), Some(stage_id))
@@ -980,14 +1015,33 @@ impl BatchWorkerRunner {
             resources: self.config.resources.clone(),
             software_version: env!("CARGO_PKG_VERSION").to_string(),
         };
-        let active_lease_ids = current_stage_id.clone().into_iter().collect::<Vec<_>>();
+        let (mut active_lease_ids, used_slots) = {
+            let active = self
+                .active_executions
+                .read()
+                .unwrap_or_else(|poison| poison.into_inner());
+            (
+                active.keys().cloned().collect::<Vec<_>>(),
+                active
+                    .values()
+                    .fold(0u32, |sum, execution| sum.saturating_add(execution.weight)),
+            )
+        };
+        active_lease_ids.sort();
         let available_slots = if self.drain.is_draining() {
             0
         } else {
             self.config
                 .resources
                 .concurrency_slots
-                .saturating_sub(if active_lease_ids.is_empty() { 0 } else { 1 })
+                .saturating_sub(used_slots)
+        };
+        let status = if self.drain.is_draining() && !matches!(status, "stopped" | "drained") {
+            "draining"
+        } else if !active_lease_ids.is_empty() {
+            "running"
+        } else {
+            status
         };
         let details = RuntimeWorkerHeartbeatDetails {
             version: WORKER_HEARTBEAT_DETAILS_VERSION,
@@ -1025,6 +1079,21 @@ impl BatchWorkerRunner {
         filter.model_ids = normalized_claim_values(&self.config.model_ids);
         filter.stage_kinds = normalized_claim_values(&self.config.stage_kinds);
         filter.resources = self.config.resources.clone();
+        for active in self
+            .active_executions
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .values()
+        {
+            filter.resources.concurrency_slots = filter
+                .resources
+                .concurrency_slots
+                .saturating_sub(active.weight);
+            filter.resources.memory_bytes = filter
+                .resources
+                .memory_bytes
+                .map(|bytes| bytes.saturating_sub(active.memory_bytes));
+        }
         filter
     }
 
@@ -1316,6 +1385,99 @@ mod tests {
             })
             .await?;
         Ok((job.id, stage.id))
+    }
+
+    #[tokio::test]
+    async fn concurrent_worker_heartbeats_every_lease_and_drains_all_slots() {
+        let store = build_store();
+        let mut stage_ids = Vec::new();
+        for _ in 0..3 {
+            stage_ids.push(create_queued_fake_stage(&store, 2).await.unwrap().1);
+        }
+        let mut config = BatchWorkerConfig::local("concurrent-worker");
+        config.resources.concurrency_slots = 2;
+        config.poll_interval = Duration::from_millis(10);
+        config.lease_duration = Duration::from_millis(150);
+        config.drain_timeout = Duration::from_millis(50);
+        let runner = BatchWorkerRunner::new(
+            store.clone(),
+            vec![Arc::new(BlockingExecutor {
+                started: Arc::new(Notify::new()),
+                release: Arc::new(Notify::new()),
+            })],
+            config,
+            BatchWorkerHealth::new("concurrent-worker"),
+        );
+        let supervisor = runner.clone().spawn();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if runner.active_executions.read().unwrap().len() == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(runner.claim_filter().resources.concurrency_slots, 0);
+        assert!(!runner.run_once().await.unwrap());
+        // Both leases must stay alive for longer than the original lease.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut running = 0;
+        let mut queued = 0;
+        for id in &stage_ids {
+            let stage = store.get_stage(id).await.unwrap().unwrap();
+            if stage.status == RuntimeStageStatus::Running {
+                running += 1;
+            }
+            if stage.status == RuntimeStageStatus::Queued {
+                queued += 1;
+            }
+        }
+        assert_eq!((running, queued), (2, 1));
+        let heartbeat = store
+            .get_worker_heartbeat("concurrent-worker")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(heartbeat.details.active_lease_ids.len(), 2);
+        assert_eq!(heartbeat.details.available_slots, 0);
+        supervisor.shutdown().await.unwrap();
+        assert!(runner.active_executions.read().unwrap().is_empty());
+        for id in &stage_ids {
+            let stage = store.get_stage(id).await.unwrap().unwrap();
+            assert_ne!(
+                stage.status,
+                RuntimeStageStatus::Running,
+                "{} {:?}",
+                id,
+                runner.health.snapshot()
+            );
+        }
+    }
+
+    #[test]
+    fn weighted_active_claims_reduce_all_available_worker_resources() {
+        let mut config = BatchWorkerConfig::local("weighted-worker");
+        config.resources.concurrency_slots = 7;
+        config.resources.memory_bytes = Some(100);
+        let runner = BatchWorkerRunner::new(
+            build_store(),
+            vec![],
+            config,
+            BatchWorkerHealth::new("weighted-worker"),
+        );
+        runner.active_executions.write().unwrap().insert(
+            "active".into(),
+            ActiveExecution {
+                cancellation: StageCancellationSignal::new(),
+                weight: 3,
+                memory_bytes: 60,
+            },
+        );
+        let remaining = runner.claim_filter().resources;
+        assert_eq!(remaining.concurrency_slots, 4);
+        assert_eq!(remaining.memory_bytes, Some(40));
     }
 
     #[tokio::test]

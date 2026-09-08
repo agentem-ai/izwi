@@ -29,6 +29,7 @@ pub(crate) struct SpeechWavSpool {
     sample_rate: u32,
     pcm_bytes: usize,
     max_pcm_bytes: usize,
+    disk_reservation: crate::speech_resource_budget::ByteReservation,
 }
 
 impl SpeechWavSpool {
@@ -37,6 +38,7 @@ impl SpeechWavSpool {
             sample_rate > 0 && sample_rate <= u32::MAX / 2,
             "Invalid WAV sample rate"
         );
+        let disk_reservation = crate::speech_resource_budget::spool_budget().reserve(44)?;
         let temporary = tempfile::NamedTempFile::new().context("Create speech WAV spool")?;
         let mut file = temporary.reopen()?;
         std::io::Write::write_all(&mut file, &[0; 44])?;
@@ -46,12 +48,16 @@ impl SpeechWavSpool {
             sample_rate,
             pcm_bytes: 0,
             max_pcm_bytes: max_pcm_bytes.min(u32::MAX as usize - 44),
+            disk_reservation,
         })
     }
 
     pub(crate) async fn append_pcm(&mut self, pcm: &[u8]) -> anyhow::Result<()> {
         use tokio::io::AsyncWriteExt;
-        anyhow::ensure!(pcm.len().is_multiple_of(2), "PCM16 chunk has an incomplete sample");
+        anyhow::ensure!(
+            pcm.len().is_multiple_of(2),
+            "PCM16 chunk has an incomplete sample"
+        );
         let next = self
             .pcm_bytes
             .checked_add(pcm.len())
@@ -60,6 +66,7 @@ impl SpeechWavSpool {
             next <= self.max_pcm_bytes,
             "Streaming audio exceeds its WAV spool byte limit"
         );
+        self.disk_reservation.grow(pcm.len())?;
         self.file
             .write_all(pcm)
             .await
@@ -68,7 +75,7 @@ impl SpeechWavSpool {
         Ok(())
     }
 
-    pub(crate) async fn finish(mut self) -> anyhow::Result<Vec<u8>> {
+    pub(crate) async fn finish(mut self) -> anyhow::Result<SpeechWavUpload> {
         use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
         anyhow::ensure!(
             self.pcm_bytes > 0,
@@ -93,6 +100,7 @@ impl SpeechWavSpool {
         self.file.flush().await?;
         self.file.seek(std::io::SeekFrom::Start(0)).await?;
         let length = self.pcm_bytes + 44;
+        let reservation = crate::speech_resource_budget::upload_budget().reserve(length)?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(length)
@@ -105,7 +113,30 @@ impl SpeechWavSpool {
         // Keep the temporary owner until all asynchronous file work has finished.
         drop(self.file);
         drop(self.temporary);
-        Ok(bytes)
+        Ok(SpeechWavUpload {
+            bytes,
+            _reservation: reservation,
+        })
+    }
+}
+
+/// Keep this owner alive until media persistence finishes, including while its
+/// byte vector has been moved into the provider request.
+pub(crate) struct SpeechWavUpload {
+    pub(crate) bytes: Vec<u8>,
+    _reservation: crate::speech_resource_budget::ByteReservation,
+}
+
+impl std::ops::Deref for SpeechWavUpload {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl AsRef<[u8]> for SpeechWavUpload {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
     }
 }
 
@@ -1282,7 +1313,7 @@ mod tests {
             .complete_record(
                 SpeechRouteKind::TextToSpeech,
                 pending.id.clone(),
-                completed_record(wav),
+                completed_record(wav.bytes),
             )
             .await
             .unwrap()

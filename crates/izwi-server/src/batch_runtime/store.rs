@@ -13,7 +13,8 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Context};
 use sea_orm::{
-    ConnectionTrait, DatabaseConnection, DbBackend, QueryResult, TransactionTrait, Value,
+    ConnectionTrait, DatabaseConnection, DbBackend, QueryResult, SqliteTransactionMode,
+    TransactionOptions, TransactionTrait, Value,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -811,7 +812,7 @@ impl BatchRuntimeStore {
     pub async fn retry_job(&self, job_id: &str) -> anyhow::Result<Option<RuntimeJob>> {
         let db = self.db.connection().await?;
         let tx = db
-            .begin()
+            .begin_with_options(runtime_write_transaction_options())
             .await
             .context("Failed to start runtime job retry transaction")?;
         let Some(job) = get_job_with(&tx, job_id).await? else {
@@ -1029,7 +1030,7 @@ impl BatchRuntimeStore {
         lease_expires_at: i64,
     ) -> anyhow::Result<Option<ClaimedStage>> {
         let tx = db
-            .begin()
+            .begin_with_options(runtime_write_transaction_options())
             .await
             .context("Failed to start runtime stage claim transaction")?;
         let attempt_token = new_uuid();
@@ -1139,7 +1140,7 @@ impl BatchRuntimeStore {
     ) -> anyhow::Result<Option<JobStage>> {
         let db = self.db.connection().await?;
         let tx = db
-            .begin()
+            .begin_with_options(runtime_write_transaction_options())
             .await
             .context("Failed to start runtime stage completion transaction")?;
         let now = self.now_millis();
@@ -1327,7 +1328,7 @@ impl BatchRuntimeStore {
     ) -> anyhow::Result<Option<JobStage>> {
         let db = self.db.connection().await?;
         let tx = db
-            .begin()
+            .begin_with_options(runtime_write_transaction_options())
             .await
             .context("Failed to start runtime stage failure transaction")?;
         let Some(stage) = get_stage_with(&tx, &lease.stage_id).await? else {
@@ -1396,7 +1397,7 @@ impl BatchRuntimeStore {
     ) -> anyhow::Result<Option<RuntimeJob>> {
         let db = self.db.connection().await?;
         let tx = db
-            .begin()
+            .begin_with_options(runtime_write_transaction_options())
             .await
             .context("Failed to start runtime job cancellation transaction")?;
         let now = self.now_millis();
@@ -1481,7 +1482,7 @@ impl BatchRuntimeStore {
                 attempt_token: row.try_get_by_index(3)?,
             };
             let tx = db
-                .begin()
+                .begin_with_options(runtime_write_transaction_options())
                 .await
                 .context("Failed to start expired lease recovery transaction")?;
             let Some(stage) = get_stage_with(&tx, &lease.stage_id).await? else {
@@ -1843,7 +1844,7 @@ impl BatchRuntimeStore {
 
         let db = self.db.connection().await?;
         let tx = db
-            .begin()
+            .begin_with_options(runtime_write_transaction_options())
             .await
             .context("Failed to start runtime artifact publication transaction")?;
         let now = self.now_millis();
@@ -2355,7 +2356,7 @@ impl BatchRuntimeStore {
     ) -> anyhow::Result<RuntimeReconciliationReport> {
         let db = self.db.connection().await?;
         let tx = db
-            .begin()
+            .begin_with_options(runtime_write_transaction_options())
             .await
             .context("Failed to start runtime reconciliation transaction")?;
         let now = self.now_millis();
@@ -3182,6 +3183,17 @@ fn is_claimable_job_status(status: RuntimeJobStatus) -> bool {
             | RuntimeJobStatus::Retrying
             | RuntimeJobStatus::Postprocessing
     )
+}
+
+/// All transactions in this store write durable state. SQLite must acquire
+/// its write reservation before reading a snapshot: DEFERRED promotion can
+/// fail immediately with SQLITE_BUSY_SNAPSHOT when concurrent workers renew,
+/// finish, or relinquish leases. Other backends ignore the SQLite option.
+fn runtime_write_transaction_options() -> TransactionOptions {
+    TransactionOptions {
+        sqlite_transaction_mode: Some(SqliteTransactionMode::Immediate),
+        ..TransactionOptions::default()
+    }
 }
 
 #[cfg(test)]
