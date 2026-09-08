@@ -89,6 +89,143 @@ impl FishS2DacDecoder {
             ));
         }
         let codes = codebooks_to_tensor(codebooks, &self.config, self.decoder_device()?)?;
+        let mut candidate = state.clone();
+        let z = self.push_tensor(&mut candidate, &codes, check_cancelled)?;
+        let samples = z.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        check_cancelled()?;
+        *state = candidate;
+        Ok(samples)
+    }
+
+    /// Exact shape buckets share all codec projections/convolutions/attention.
+    /// Different stream ages remain separate buckets, never concatenated in time.
+    /// No candidate history is published unless every group and readback succeeds.
+    pub(crate) fn push_frames_batch(
+        &self,
+        states: &mut [FishS2DacStreamState],
+        codebooks: &[Vec<Vec<u32>>],
+        check_cancelled: CancelCheck<'_>,
+    ) -> Result<Vec<Vec<f32>>> {
+        if states.is_empty() || states.len() != codebooks.len() {
+            return Err(Error::InvalidInput(
+                "Fish codec batch rows do not match".into(),
+            ));
+        }
+        let mut groups = std::collections::BTreeMap::<(usize, usize), Vec<usize>>::new();
+        let mut tensors = Vec::with_capacity(states.len());
+        for (row, (state, codes)) in states.iter().zip(codebooks).enumerate() {
+            check_cancelled()?;
+            let incoming = codes.first().map(Vec::len).unwrap_or(0);
+            if state.finished
+                || incoming == 0
+                || state
+                    .frames
+                    .checked_add(incoming)
+                    .is_none_or(|n| n > FishS2DacConfig::MAX_QUANTIZER_FRAMES)
+            {
+                return Err(Error::InvalidInput(
+                    "Fish codec batch contains flushed or invalid-length row".into(),
+                ));
+            }
+            tensors.push(codebooks_to_tensor(
+                codes,
+                &self.config,
+                self.decoder_device()?,
+            )?);
+            groups
+                .entry((state.frames, incoming))
+                .or_default()
+                .push(row);
+        }
+        let mut candidates = states.to_vec();
+        let mut outputs = vec![Vec::new(); states.len()];
+        for rows in groups.values() {
+            let first = &states[rows[0]];
+            let mut combined = first.clone();
+            combined.histories = (0..first.histories.len())
+                .map(|history| {
+                    let tensors = rows
+                        .iter()
+                        .map(|&row| {
+                            states[row].histories.get(history).ok_or_else(|| {
+                                Error::InvalidInput("Fish codec history layouts differ".into())
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    Tensor::cat(&tensors, 0).map_err(Error::from)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            combined.attention = (0..first.attention.len())
+                .map(|layer| {
+                    let kv = rows
+                        .iter()
+                        .map(|&row| {
+                            states[row].attention.get(layer).ok_or_else(|| {
+                                Error::InvalidInput("Fish codec attention layouts differ".into())
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    let k = kv.iter().map(|(k, _)| k).collect::<Vec<_>>();
+                    let v = kv.iter().map(|(_, v)| v).collect::<Vec<_>>();
+                    Ok((Tensor::cat(&k, 0)?, Tensor::cat(&v, 0)?))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            for &row in rows {
+                if states[row].histories.len() != first.histories.len()
+                    || states[row].attention.len() != first.attention.len()
+                    || states[row].samples != first.samples
+                {
+                    return Err(Error::InvalidInput(
+                        "Fish codec batch history metadata differs".into(),
+                    ));
+                }
+            }
+            let codes = Tensor::cat(
+                &rows.iter().map(|&row| &tensors[row]).collect::<Vec<_>>(),
+                0,
+            )?;
+            tracing::debug!(
+                stage = "fish_codec",
+                native_rows = rows.len(),
+                history_frames = first.frames,
+                incoming_frames = codes.dim(2)?,
+                "Executing compatible codec tensor batch"
+            );
+            let audio = self
+                .push_tensor(&mut combined, &codes, check_cancelled)?
+                .to_dtype(DType::F32)?;
+            for (lane, &row) in rows.iter().enumerate() {
+                outputs[row] = audio.narrow(0, lane, 1)?.flatten_all()?.to_vec1::<f32>()?;
+                candidates[row] = FishS2DacStreamState {
+                    histories: combined
+                        .histories
+                        .iter()
+                        .map(|h| h.narrow(0, lane, 1)?.copy())
+                        .collect::<candle_core::Result<Vec<_>>>()?,
+                    attention: combined
+                        .attention
+                        .iter()
+                        .map(|(k, v)| {
+                            Ok((k.narrow(0, lane, 1)?.copy()?, v.narrow(0, lane, 1)?.copy()?))
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                    frames: combined.frames,
+                    samples: combined.samples,
+                    finished: false,
+                };
+            }
+        }
+        check_cancelled()?;
+        states.clone_from_slice(&candidates);
+        Ok(outputs)
+    }
+
+    fn push_tensor(
+        &self,
+        state: &mut FishS2DacStreamState,
+        codes: &Tensor,
+        check_cancelled: CancelCheck<'_>,
+    ) -> Result<Tensor> {
         let frames = codes.dim(2)?;
         let mut next = state.clone();
         let q = &self.quantizer;
@@ -154,12 +291,12 @@ impl FishS2DacDecoder {
             &mut cursor,
         )?
         .tanh()?;
-        let samples = z.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let samples = z.dim(2)?;
         check_cancelled()?;
         next.frames += frames;
-        next.samples += samples.len();
+        next.samples += samples;
         *state = next;
-        Ok(samples)
+        Ok(z)
     }
 }
 

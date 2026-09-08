@@ -15,6 +15,7 @@ use crate::engine::StageDescriptor;
 use crate::error::{Error, Result};
 use crate::models::shared::attention::physical::PhysicalPagedKvCache;
 
+mod batch;
 pub mod artifacts;
 pub mod codec;
 pub mod config;

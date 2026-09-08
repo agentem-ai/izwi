@@ -479,6 +479,217 @@ impl FishS2TtsModel {
         })
     }
 
+    /// Execute a complete frame per row under caller-owned managed checkpoints.
+    /// On any shared failure callers must roll back all participating rows.
+    pub(crate) fn retained_decode_batch(
+        &self,
+        states: &mut [&mut FishS2RetainedState],
+        fast_caches: &mut [&mut PhysicalPagedKvCache],
+    ) -> Result<Vec<FishS2RetainedStep>> {
+        if states.is_empty() || states.len() != fast_caches.len() {
+            return Err(Error::InvalidInput(
+                "Fish retained decode batch rows do not match".into(),
+            ));
+        }
+        for state in states.iter() {
+            self.validate_retained_state(state)?;
+            state.require_clean_quantum()?;
+            if state.finished
+                || state.slow_position < state.artifact.prompt.prompt_length
+                || state.slow_output.is_none()
+            {
+                return Err(Error::InvalidInput(
+                    "Fish decode batch contains a non-ready row".into(),
+                ));
+            }
+        }
+        let started = Instant::now();
+        let runtime = self.native_runtime()?;
+        let mut semantic_indices = Vec::with_capacity(states.len());
+        let mut semantics = Vec::with_capacity(states.len());
+        for state in states.iter_mut() {
+            let sampling_started = Instant::now();
+            let index = sample_semantic_token(
+                &state
+                    .slow_output
+                    .as_ref()
+                    .expect("validated slow output")
+                    .logits,
+                &runtime.semantic_allowed_mask,
+                runtime
+                    .slow
+                    .eos_logit_index(runtime.tokenizer.specials().eos),
+                state.frames_generated() > 0,
+                &state.recent_semantic_tokens,
+                &mut state.semantic_sampler,
+            )?;
+            state.sampling_ms += sampling_started.elapsed().as_secs_f64() * 1000.0;
+            semantic_indices.push(index);
+            semantics.push(runtime.slow.token_id_from_logit(index)?);
+        }
+        let eos = runtime.tokenizer.specials().eos;
+        let fast_started = Instant::now();
+        let mut frames = std::iter::repeat_with(|| None)
+            .take(states.len())
+            .collect::<Vec<_>>();
+        let active = semantics
+            .iter()
+            .enumerate()
+            .filter_map(|(row, &token)| (token != eos).then_some(row))
+            .collect::<Vec<_>>();
+        if !active.is_empty() {
+            let tokens = active.iter().map(|&row| semantics[row]).collect::<Vec<_>>();
+            let hiddens = active
+                .iter()
+                .map(|&row| {
+                    states[row]
+                        .slow_output
+                        .as_ref()
+                        .expect("validated slow output")
+                        .hidden_states
+                        .clone()
+                })
+                .collect::<Vec<_>>();
+            let hidden = candle_core::Tensor::cat(&hiddens, 0)?;
+            let mut samplers = states
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(row, state)| {
+                    (semantics[row] != eos).then_some(&mut state.fast_sampler)
+                })
+                .collect::<Vec<_>>();
+            let mut caches = fast_caches
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(row, cache)| (semantics[row] != eos).then_some(&mut **cache))
+                .collect::<Vec<_>>();
+            let generated =
+                runtime
+                    .fast
+                    .generate_frames_batch(&tokens, &hidden, &mut samplers, &mut caches)?;
+            for (row, frame) in active.into_iter().zip(generated) {
+                frames[row] = Some(frame);
+            }
+        }
+        let fast_ms = fast_started.elapsed().as_secs_f64() * 1000.0;
+        let mut prompts = Vec::with_capacity(states.len());
+        for (row, frame) in frames.iter().enumerate() {
+            if let Some(frame) = frame {
+                prompts.push(generated_frame_prompt(self.config.num_codebooks, frame)?);
+            } else {
+                let mut values = vec![vec![0]; self.config.num_codebooks + 1];
+                values[0][0] = semantics[row];
+                prompts.push(FishS2ConditioningPrompt {
+                    values,
+                    vq_mask: vec![false],
+                    prompt_length: 1,
+                });
+            }
+        }
+        let slow_started = Instant::now();
+        let embeds = runtime.slow.embed_prompt_batch(&prompts)?;
+        let mut caches = states
+            .iter_mut()
+            .map(|state| &mut state.slow_cache)
+            .collect::<Vec<_>>();
+        let outputs = runtime.slow.forward_embeds_batch(&embeds, &mut caches)?;
+        let slow_ms = slow_started.elapsed().as_secs_f64() * 1000.0;
+        let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+        let mut steps = Vec::with_capacity(states.len());
+        for (row, ((state, output), frame)) in
+            states.iter_mut().zip(outputs).zip(frames).enumerate()
+        {
+            state.slow_output = Some(output);
+            state.slow_position += 1;
+            state.completions_drained = false;
+            state.decode_ms += elapsed;
+            state.decode_steps = state.decode_steps.saturating_add(1);
+            state.slow_ar_ms += slow_ms;
+            if let Some(frame) = frame {
+                state.fast_ar_ms += fast_ms;
+                append_generated_frame(&mut state.generated_codebooks, &frame)?;
+                state.recent_semantic_tokens.push(semantic_indices[row]);
+                if state.recent_semantic_tokens.len() > RAS_WIN_SIZE {
+                    state.recent_semantic_tokens.remove(0);
+                }
+                state.finished = state.frames_generated() >= state.max_frames;
+            } else {
+                state.stop_reason = "im_end".into();
+                state.finished = true;
+            }
+            steps.push(if state.finished {
+                state.stage_finished()?
+            } else {
+                state.stage(FishS2RetainedStep::Frame {
+                    frames_generated: state.frames_generated(),
+                })?
+            });
+        }
+        Ok(steps)
+    }
+
+    /// Pack only each row's admitted prompt chunk; never pad to the longest prompt.
+    pub(crate) fn retained_prefill_batch(
+        &self,
+        states: &mut [&mut FishS2RetainedState],
+        max_tokens: &[usize],
+    ) -> Result<Vec<FishS2RetainedStep>> {
+        if states.is_empty() || states.len() != max_tokens.len() || max_tokens.contains(&0) {
+            return Err(Error::InvalidInput(
+                "Fish prefill batch bounds do not match".into(),
+            ));
+        }
+        let mut consumed = Vec::with_capacity(states.len());
+        let mut prompts = Vec::with_capacity(states.len());
+        for (state, &bound) in states.iter().zip(max_tokens) {
+            self.validate_retained_state(state)?;
+            state.require_clean_quantum()?;
+            let count = state
+                .artifact
+                .prompt
+                .prompt_length
+                .saturating_sub(state.slow_position)
+                .min(bound);
+            if count == 0 {
+                return Err(Error::InvalidInput(
+                    "Fish prefill batch row has no remaining prompt".into(),
+                ));
+            }
+            prompts.push(slice_prompt(
+                &state.artifact.prompt,
+                state.slow_position,
+                count,
+            )?);
+            consumed.push(count);
+        }
+        let started = Instant::now();
+        let runtime = self.native_runtime()?;
+        let embeds = runtime.slow.embed_prompt_batch(&prompts)?;
+        let mut caches = states
+            .iter_mut()
+            .map(|state| &mut state.slow_cache)
+            .collect::<Vec<_>>();
+        let outputs = runtime.slow.forward_embeds_batch(&embeds, &mut caches)?;
+        let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+        states
+            .iter_mut()
+            .zip(outputs)
+            .zip(consumed)
+            .map(|((state, output), consumed)| {
+                state.slow_output = Some(output);
+                state.slow_position += consumed;
+                state.completions_drained = false;
+                state.prefill_ms += elapsed;
+                state.prefill_steps = state.prefill_steps.saturating_add(1);
+                state.stage(FishS2RetainedStep::Prefill {
+                    consumed,
+                    position: state.slow_position,
+                    complete: state.slow_position == state.artifact.prompt.prompt_length,
+                })
+            })
+            .collect()
+    }
+
     pub(crate) fn decode_retained_audio_chunk(
         &self,
         state: &FishS2RetainedState,
@@ -528,6 +739,67 @@ impl FishS2TtsModel {
         }
         *codec_state = next;
         Ok(samples)
+    }
+
+    pub(crate) fn decode_retained_audio_batch(
+        &self,
+        states: &[&FishS2RetainedState],
+        codecs: &mut [super::dac::FishS2DacStreamState],
+        max_frames: &[usize],
+        check: &dyn Fn() -> Result<()>,
+    ) -> Result<Vec<Vec<f32>>> {
+        if states.is_empty() || states.len() != codecs.len() || states.len() != max_frames.len() {
+            return Err(Error::InvalidInput(
+                "Fish retained codec batch rows do not match".into(),
+            ));
+        }
+        let mut codes = Vec::with_capacity(states.len());
+        let mut counts = Vec::with_capacity(states.len());
+        for ((state, codec), &max) in states.iter().zip(codecs.iter()).zip(max_frames) {
+            check()?;
+            self.validate_retained_state(state)?;
+            if state.active_quantum.is_some() || max == 0 || max > super::FISH_S2_AUDIO_CHUNK_FRAMES
+            {
+                return Err(Error::InvalidInput(
+                    "Fish codec batch requires committed bounded rows".into(),
+                ));
+            }
+            let start = codec.decoded_frames();
+            let end = start.saturating_add(max).min(state.frames_generated());
+            if start >= end {
+                return Err(Error::InvalidInput(
+                    "Fish codec batch row has no pending frames".into(),
+                ));
+            }
+            codes.push(
+                state
+                    .generated_codebooks
+                    .iter()
+                    .map(|row| row[start..end].to_vec())
+                    .collect::<Vec<_>>(),
+            );
+            counts.push(end - start);
+        }
+        let mut next = codecs.to_vec();
+        let outputs = self
+            .native_runtime()?
+            .dac
+            .push_frames_batch(&mut next, &codes, check)?;
+        let history_bound =
+            super::dac::FishS2DacConfig::current().streaming_history_bound_bytes()?;
+        for ((output, codec), count) in outputs.iter().zip(&next).zip(counts) {
+            if output.len() != count * 2048
+                || output.iter().any(|sample| !sample.is_finite())
+                || codec.retained_tensor_bytes() > history_bound
+            {
+                return Err(Error::InferenceError(
+                    "Fish batched codec produced invalid PCM or history usage".into(),
+                ));
+            }
+        }
+        check()?;
+        codecs.clone_from_slice(&next);
+        Ok(outputs)
     }
 
     pub(crate) fn finalize_retained_state(
@@ -950,6 +1222,125 @@ fn next_state_id() -> Result<u64> {
 mod tests {
     use super::*;
     use crate::models::architectures::fish_s2::physical::test_physical_cache;
+
+    fn tiny_native_model() -> FishS2TtsModel {
+        let mut model = FishS2TtsModel::for_test();
+        model.config.num_codebooks = 2;
+        model.config.codebook_size = 8;
+        model.config.semantic_start_token_id = 20;
+        model.config.semantic_end_token_id = 27;
+        model.config.eos_token_id = 1;
+        model.config.max_seq_len = 16;
+        let slow = super::super::slow::tiny_for_batch_tests();
+        let mask = slow.semantic_allowed_mask(1).unwrap();
+        model.runtime = Some(super::super::FishS2NativeRuntime {
+            tokenizer: super::super::FishS2PromptTokenizer::for_batch_test(&model.config),
+            slow,
+            fast: super::super::fast::tiny_for_batch_tests(),
+            dac: super::super::dac::tiny_for_batch_tests(),
+            semantic_allowed_mask: mask,
+            dtype: candle_core::DType::F32,
+        });
+        model
+    }
+
+    fn next_quantum(state: &mut FishS2RetainedState) -> FishS2RetainedCheckpoint {
+        let view = PhysicalPagedKvCache::new(
+            state.slow_cache.arena().clone(),
+            vec![state.slow_cache.layer_binding(0).unwrap()],
+            state.slow_cache.blocks.clone(),
+            state.slow_position,
+        )
+        .unwrap();
+        state.begin_managed_quantum(view).unwrap()
+    }
+
+    #[test]
+    fn real_batched_frames_rollback_rng_and_eos_then_retry_in_different_order() {
+        let model = tiny_native_model();
+        let slow = super::super::physical::test_physical_caches(902, 1, 1, 2, 16, 7);
+        let mut fast = super::super::physical::test_physical_caches(903, 1, 1, 2, 2, 7);
+        let mut states = slow
+            .into_iter()
+            .enumerate()
+            .map(|(row, cache)| {
+                model
+                    .new_retained_state(
+                        FishS2PreparedArtifact::test_prompt(3, row % 3 + 1),
+                        FishS2GenerationParams {
+                            max_frames: 4,
+                            seed: row as u64 + 77,
+                            top_k: 0,
+                            ..Default::default()
+                        },
+                        cache,
+                        16,
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut checkpoints = states.iter_mut().map(next_quantum).collect::<Vec<_>>();
+        model
+            .retained_prefill_batch(&mut states.iter_mut().collect::<Vec<_>>(), &[3; 7])
+            .unwrap();
+        for (state, checkpoint) in states.iter_mut().zip(&mut checkpoints) {
+            assert!(state.take_staged_step().is_some());
+            assert_eq!(state.take_managed_write_completions().len(), 1);
+            state.commit_managed_quantum(checkpoint).unwrap();
+        }
+        // One row has already emitted a frame and may legally sample EOS.
+        states[0].generated_codebooks = vec![vec![1], vec![2]];
+        let mut logits = vec![-100f32; 32];
+        logits[1] = 100.;
+        states[0].slow_output.as_mut().unwrap().logits =
+            candle_core::Tensor::from_vec(logits, (1, 1, 32), &candle_core::Device::Cpu).unwrap();
+        let original = states
+            .iter()
+            .map(|s| (s.slow_position, s.generated_codebooks.clone()))
+            .collect::<Vec<_>>();
+        let mut checkpoints = states.iter_mut().map(next_quantum).collect::<Vec<_>>();
+        let steps = model
+            .retained_decode_batch(
+                &mut states.iter_mut().collect::<Vec<_>>(),
+                &mut fast.iter_mut().collect::<Vec<_>>(),
+            )
+            .unwrap();
+        assert!(matches!(steps[0], FishS2RetainedStep::Finished { .. }));
+        assert_eq!(fast[0].context_len(), 0, "EOS must skip Fast AR");
+        let expected = states
+            .iter()
+            .map(|s| (s.generated_codebooks.clone(), s.finished))
+            .collect::<Vec<_>>();
+        for ((state, checkpoint), before) in states.iter_mut().zip(&mut checkpoints).zip(original) {
+            state.rollback_managed_quantum(checkpoint).unwrap();
+            assert_eq!(
+                (state.slow_position, state.generated_codebooks.clone()),
+                before
+            );
+        }
+        states.reverse();
+        fast.reverse();
+        let mut checkpoints = states.iter_mut().map(next_quantum).collect::<Vec<_>>();
+        model
+            .retained_decode_batch(
+                &mut states.iter_mut().collect::<Vec<_>>(),
+                &mut fast.iter_mut().collect::<Vec<_>>(),
+            )
+            .unwrap();
+        for ((state, checkpoint), expected) in states
+            .iter_mut()
+            .zip(&mut checkpoints)
+            .zip(expected.into_iter().rev())
+        {
+            assert_eq!(
+                (state.generated_codebooks.clone(), state.finished),
+                expected
+            );
+            state.take_staged_step();
+            assert_eq!(state.take_managed_write_completions().len(), 1);
+            state.commit_managed_quantum(checkpoint).unwrap();
+        }
+    }
 
     #[test]
     fn managed_generation_budget_uses_logical_context_not_first_chunk() {

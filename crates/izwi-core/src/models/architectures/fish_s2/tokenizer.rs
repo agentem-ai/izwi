@@ -66,6 +66,20 @@ pub struct FishS2PromptTokenizer {
 }
 
 impl FishS2PromptTokenizer {
+    #[cfg(test)]
+    pub(super) fn for_batch_test(config: &FishS2Config) -> Self {
+        let tokenizer =
+            tokenizers::Tokenizer::new(tokenizers::models::wordlevel::WordLevel::default());
+        Self {
+            tokenizer: Tokenizer::from_hf_json_bytes(
+                tokenizer.to_string(false).unwrap().as_bytes(),
+            )
+            .unwrap(),
+            specials: FishS2SpecialTokens::from(config),
+            chat_template: String::new(),
+        }
+    }
+
     pub fn load(model_dir: &Path, config: &FishS2Config) -> Result<Self> {
         let tokenizer = Tokenizer::from_path_with_expected_vocab(
             model_dir,

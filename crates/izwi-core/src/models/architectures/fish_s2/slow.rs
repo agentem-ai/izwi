@@ -380,6 +380,127 @@ impl FishS2SlowTransformer {
         Ok(output)
     }
 
+    /// Packed ragged prefill or one-token decode. Dense work is shared across
+    /// all tokens; physical attention retains each row's own causal context.
+    pub(crate) fn forward_embeds_batch(
+        &self,
+        inputs: &[Tensor],
+        caches: &mut [&mut PhysicalPagedKvCache],
+    ) -> Result<Vec<FishS2SlowOutput>> {
+        if inputs.is_empty() || inputs.len() != caches.len() {
+            return Err(Error::InvalidInput(
+                "Fish slow batch rows do not match".into(),
+            ));
+        }
+        let mut counts = Vec::with_capacity(inputs.len());
+        let starts = caches
+            .iter()
+            .map(|cache| cache.context_len())
+            .collect::<Vec<_>>();
+        for ((x, cache), &start) in inputs.iter().zip(caches.iter()).zip(&starts) {
+            let (batch, count, hidden) = x.dims3()?;
+            if batch != 1
+                || count == 0
+                || hidden != self.cfg.hidden_size
+                || start
+                    .checked_add(count)
+                    .is_none_or(|end| end > self.cfg.max_seq_len || end > cache.capacity_tokens())
+            {
+                return Err(Error::InvalidInput(
+                    "Fish slow packed row exceeds its shape/context bound".into(),
+                ));
+            }
+            cache.validate_model(
+                self.cfg.num_hidden_layers,
+                self.cfg.num_key_value_heads,
+                self.cfg.head_dim,
+            )?;
+            counts.push(count);
+        }
+        let mut batch =
+            super::batch::FishPhysicalBatch::new(caches, &counts, self.cfg.num_hidden_layers)?;
+        let execution = (|| {
+            let mut hidden = Tensor::cat(inputs, 1)?;
+            for (index, layer) in self.layers.iter().enumerate() {
+                let norm = layer.input_layernorm.forward(&hidden)?;
+                let attn = layer
+                    .self_attn
+                    .forward_batch(&norm, &starts, &counts, caches[0], &mut batch, index)?;
+                hidden = hidden.broadcast_add(&attn)?;
+                let ff = layer
+                    .mlp
+                    .forward(&layer.post_attention_layernorm.forward(&hidden)?)?;
+                hidden = hidden.broadcast_add(&ff)?;
+            }
+            let hidden = self.norm.forward(&hidden)?;
+            let mut offset = 0;
+            let tails = counts
+                .iter()
+                .map(|&count| {
+                    offset += count;
+                    hidden.narrow(1, offset - 1, 1)
+                })
+                .collect::<candle_core::Result<Vec<_>>>()?;
+            let packed_tails = Tensor::cat(&tails, 0)?;
+            let logits = self.project_logits(&packed_tails)?;
+            (0..counts.len())
+                .map(|row| {
+                    Ok(FishS2SlowOutput {
+                        hidden_states: packed_tails.narrow(0, row, 1)?.copy()?,
+                        logits: logits.narrow(0, row, 1)?.copy()?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })();
+        batch.finish(caches, execution)
+    }
+
+    /// Share embedding lookups without padding independent prompts.
+    pub(crate) fn embed_prompt_batch(
+        &self,
+        prompts: &[FishS2ConditioningPrompt],
+    ) -> Result<Vec<Tensor>> {
+        if prompts.is_empty() {
+            return Err(Error::InvalidInput("Fish embedding batch is empty".into()));
+        }
+        let mut combined = FishS2ConditioningPrompt {
+            values: vec![Vec::new(); self.cfg.num_codebooks + 1],
+            vq_mask: Vec::new(),
+            prompt_length: 0,
+        };
+        for prompt in prompts {
+            if prompt.values.len() != combined.values.len()
+                || prompt.prompt_length == 0
+                || prompt
+                    .values
+                    .iter()
+                    .any(|row| row.len() != prompt.prompt_length)
+            {
+                return Err(Error::InvalidInput(
+                    "Fish embedding batch contains malformed prompt".into(),
+                ));
+            }
+            combined.prompt_length = combined
+                .prompt_length
+                .checked_add(prompt.prompt_length)
+                .ok_or_else(|| Error::InvalidInput("Fish embedding batch size overflow".into()))?;
+            for (dst, src) in combined.values.iter_mut().zip(&prompt.values) {
+                dst.extend_from_slice(src);
+            }
+            combined.vq_mask.extend_from_slice(&prompt.vq_mask);
+        }
+        let packed = self.embed_prompt(&combined)?;
+        let mut offset = 0;
+        prompts
+            .iter()
+            .map(|prompt| {
+                let row = packed.narrow(1, offset, prompt.prompt_length)?;
+                offset += prompt.prompt_length;
+                Ok(row)
+            })
+            .collect()
+    }
+
     pub fn forward_prompt(
         &self,
         prompt: &FishS2ConditioningPrompt,
@@ -493,6 +614,70 @@ impl FishS2PackedAttention {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn forward_batch(
+        &self,
+        x: &Tensor,
+        starts: &[usize],
+        counts: &[usize],
+        cache: &PhysicalPagedKvCache,
+        batch: &mut super::batch::FishPhysicalBatch,
+        layer: usize,
+    ) -> Result<Tensor> {
+        let total = x.dim(1)?;
+        let qsize = self.num_heads * self.head_dim;
+        let kvsize = self.num_kv_heads * self.head_dim;
+        let qkv = self.qkv_proj.forward(x)?;
+        let q = qkv
+            .narrow(2, 0, qsize)?
+            .reshape((1, total, self.num_heads, self.head_dim))?;
+        let k =
+            qkv.narrow(2, qsize, kvsize)?
+                .reshape((1, total, self.num_kv_heads, self.head_dim))?;
+        let v = qkv.narrow(2, qsize + kvsize, kvsize)?.reshape((
+            total,
+            self.num_kv_heads,
+            self.head_dim,
+        ))?;
+        let q = match &self.q_norm {
+            Some(norm) => norm.forward(&q)?,
+            None => q,
+        };
+        let k = match &self.k_norm {
+            Some(norm) => norm.forward(&k)?,
+            None => k,
+        };
+        let mut qs = Vec::new();
+        let mut ks = Vec::new();
+        let mut offset = 0;
+        for (&start, &count) in starts.iter().zip(counts) {
+            qs.push(
+                self.rotary
+                    .apply(&q.narrow(1, offset, count)?, start)?
+                    .squeeze(0)?,
+            );
+            ks.push(
+                self.rotary
+                    .apply(&k.narrow(1, offset, count)?, start)?
+                    .squeeze(0)?,
+            );
+            offset += count;
+        }
+        let q = Tensor::cat(&qs, 0)?.contiguous()?;
+        let k = Tensor::cat(&ks, 0)?.contiguous()?;
+        let out = batch.attend(
+            cache,
+            layer,
+            &q,
+            &k,
+            &v.contiguous()?,
+            1.0 / (self.head_dim as f32).sqrt(),
+        )?;
+        self.o_proj
+            .forward(&out.reshape((1, total, qsize))?)
+            .map_err(Error::from)
+    }
+
     fn forward(
         &self,
         x: &Tensor,
@@ -586,6 +771,11 @@ fn load_rms_norm_alias(dim: usize, eps: f64, vb: &VarBuilder, aliases: &[&str]) 
 }
 
 #[cfg(test)]
+pub(super) fn tiny_for_batch_tests() -> FishS2SlowTransformer {
+    tests::tiny_model(&candle_core::Device::Cpu)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use candle_core::{DType, Device, Shape};
@@ -615,7 +805,7 @@ mod tests {
         Tensor::full(value, shape, device).unwrap()
     }
 
-    fn tiny_model(device: &Device) -> FishS2SlowTransformer {
+    pub(super) fn tiny_model(device: &Device) -> FishS2SlowTransformer {
         let cfg = tiny_cfg();
         let mut tensors = HashMap::new();
         tensors.insert(
@@ -757,6 +947,94 @@ mod tests {
         assert_eq!(embeds.dims(), &[1, 3, 4]);
         let values = embeds.to_vec3::<f32>().unwrap();
         assert!(values[0][1][0] > values[0][0][0]);
+    }
+
+    #[test]
+    fn packed_batch_matches_scalar_ragged_prefill_and_permuted_decode_above_five() {
+        let model = tiny_model(&Device::Cpu);
+        let cfg = model.config();
+        let caches = || {
+            super::super::physical::test_physical_caches(
+                900,
+                cfg.num_hidden_layers,
+                cfg.num_key_value_heads,
+                cfg.head_dim,
+                cfg.max_seq_len,
+                7,
+            )
+        };
+        let mut batched = caches();
+        let mut scalar = caches();
+        let inputs = (0..7)
+            .map(|row| {
+                Tensor::from_vec(
+                    (0..(row % 3 + 1) * cfg.hidden_size)
+                        .map(|i| ((i * 3 + row * 7) as f32 * 0.2).sin())
+                        .collect::<Vec<_>>(),
+                    (1, row % 3 + 1, cfg.hidden_size),
+                    &Device::Cpu,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let expected = inputs
+            .iter()
+            .zip(&mut scalar)
+            .map(|(input, cache)| model.forward_embeds(input, 0, cache, false).unwrap())
+            .collect::<Vec<_>>();
+        let actual = model
+            .forward_embeds_batch(&inputs, &mut batched.iter_mut().collect::<Vec<_>>())
+            .unwrap();
+        for (a, b) in actual.iter().zip(expected) {
+            let a = a.logits.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+            let b = b.logits.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+            assert!(a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5));
+        }
+        for cache in &mut batched {
+            assert_eq!(cache.take_completed_writes().len(), 1);
+        }
+        batched.reverse();
+        scalar.reverse();
+        let inputs = (0..7)
+            .map(|row| {
+                Tensor::from_vec(
+                    vec![0.1 + row as f32, -0.4, 0.7, 0.2],
+                    (1, 1, 4),
+                    &Device::Cpu,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let expected = inputs
+            .iter()
+            .zip(&mut scalar)
+            .map(|(input, cache)| {
+                model
+                    .forward_embeds(input, cache.context_len(), cache, false)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let actual = model
+            .forward_embeds_batch(&inputs, &mut batched.iter_mut().collect::<Vec<_>>())
+            .unwrap();
+        for ((a, b), (batch, reference)) in
+            actual.iter().zip(expected).zip(batched.iter().zip(&scalar))
+        {
+            assert_eq!(batch.context_len(), reference.context_len());
+            let a = a
+                .hidden_states
+                .flatten_all()
+                .unwrap()
+                .to_vec1::<f32>()
+                .unwrap();
+            let b = b
+                .hidden_states
+                .flatten_all()
+                .unwrap()
+                .to_vec1::<f32>()
+                .unwrap();
+            assert!(a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5));
+        }
     }
 
     #[test]
