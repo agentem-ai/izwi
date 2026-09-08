@@ -1022,8 +1022,12 @@ impl RuntimeService {
             return self.qwen_tts_final_only_streaming(request, chunk_tx).await;
         }
         let core_params = core_params_from_generation(&request.config);
-        let core_request = TtsRuntimeRequest::from_generation(request, resolved_variant)?
+        let mut core_request = TtsRuntimeRequest::from_generation(request, resolved_variant)?
             .into_engine_request(core_params);
+        if resolved_variant == ModelVariant::FishAudioS2Pro {
+            core_request.audio_stream_external_queue_capacity = chunk_tx.max_capacity();
+            core_request.mark_audio_streaming_only();
+        }
 
         let terminal_deadline = core_request.deadline;
         let mut next_sequence = 0usize;

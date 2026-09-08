@@ -13,6 +13,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RuntimeRequestContext {
     pub workload_class: WorkloadClass,
+    /// Opaque hash of a trusted server tenant/principal namespace; never deserialized from public requests.
+    pub tenant_key: Option<[u8; 32]>,
     pub admission_ms: Option<f64>,
     pub priority: Priority,
     pub deadline: Option<Instant>,
@@ -22,10 +24,16 @@ impl RuntimeRequestContext {
     pub fn new(workload_class: WorkloadClass) -> Self {
         Self {
             workload_class,
+            tenant_key: None,
             admission_ms: None,
             priority: Priority::Normal,
             deadline: None,
         }
+    }
+
+    pub fn with_tenant_key(mut self, tenant_key: [u8; 32]) -> Self {
+        self.tenant_key = Some(tenant_key);
+        self
     }
 
     pub fn with_admission_ms(mut self, admission_ms: f64) -> Self {

@@ -795,6 +795,7 @@ impl ModelLifecycleController {
         model_instance_id: ModelInstanceId,
         bundle_draft: &LoadedModelBundleDraft,
         max_sequence_tokens: usize,
+        capacity: &crate::runtime::fish_capacity::ResolvedFishServingCapacity,
         physical_state_spec: impl Fn(&[&[StageDescriptor]]) -> Result<FishS2PhysicalStateSpec>,
     ) -> Result<HashMap<CapabilityKind, LoadedStatePublication>> {
         let variant = ModelVariant::FishAudioS2Pro;
@@ -828,10 +829,12 @@ impl ModelLifecycleController {
                 None => {
                     let retained = self
                         .core_engine
-                        .load_managed_model_state(
+                        .load_managed_model_state_with_row_limits(
                             model_instance_id,
                             retained_contract,
                             Some(max_sequence_tokens),
+                            capacity.active_rows,
+                            capacity.staged_rows,
                         )
                         .await?;
                     retained_runtime = Some(retained.clone());
@@ -2509,8 +2512,24 @@ impl ModelLifecycleController {
                             "loaded Fish S2 TTS model {variant} is missing from the registry"
                         ))
                     })?;
+                let headroom = match self.coordinator.resource_authority().planning_headroom_bytes(backend)? {
+                    ResourceAmount::Known(bytes) => Some(bytes),
+                    _ => None,
+                };
+                let native_batching = match std::env::var("IZWI_FISH_NATIVE_BATCHING").as_deref() {
+                    Ok("1" | "true") => true,
+                    Ok("0" | "false") | Err(_) => false,
+                    Ok(value) => return Err(Error::ConfigError(format!("invalid IZWI_FISH_NATIVE_BATCHING={value}; expected true or false"))),
+                };
+                let capacity = crate::runtime::fish_capacity::ResolvedFishServingCapacity::resolve(
+                    model.config(), &self.config, headroom, native_batching,
+                )?;
+                tracing::info!(?capacity, ?backend, "Sealing Fish serving capacity; device throughput qualification is separate");
+                bundle_draft.seal_fish_capacity(capacity.clone())?;
                 state_publications.extend(self.load_fish_s2_state_publications(
-                    model_instance_id, &bundle_draft, model.config().max_seq_len,
+                    model_instance_id, &bundle_draft,
+                    self.config.max_sequence_length.explicit_tokens().unwrap_or(model.config().max_seq_len).min(model.config().max_seq_len),
+                    &capacity,
                     |graphs| model.physical_state_spec(graphs),
                 ).await?);
             }
@@ -2815,8 +2834,8 @@ mod tests {
             models_dir: directory.clone(),
             backend: BackendPreference::Cpu,
             max_sequence_length: ContextLengthPreference::explicit(32).unwrap(),
-            max_retained_sequences: 1,
-            max_staged_transactions: 1,
+            max_retained_sequences: 2,
+            max_staged_transactions: 2,
             ..Default::default()
         })
         .unwrap();
@@ -2854,9 +2873,20 @@ mod tests {
         config.audio_decoder_config.num_attention_heads = 1;
         config.audio_decoder_config.num_key_value_heads = 1;
         config.audio_decoder_config.head_dim = Some(128);
+        let mut capacity =
+            crate::runtime::fish_capacity::ResolvedFishServingCapacity::scalar().unwrap();
+        capacity.ar_rows = 2;
+        capacity.codec_rows = 2;
+        capacity.active_rows = 2;
+        capacity.staged_rows = 2;
+        capacity.ar_workspace_per_row = 8192;
+        capacity.prefill_workspace_per_token = 8192;
+        capacity.codec_workspace_per_row = 8192;
+        capacity.native_batching = true;
+        draft.seal_fish_capacity(capacity.clone()).unwrap();
         let publications = runtime
             .model_lifecycle
-            .load_fish_s2_state_publications(instance, &draft, 32, |graphs| {
+            .load_fish_s2_state_publications(instance, &draft, 32, &capacity, |graphs| {
                 fish_s2_physical_state_spec(&config, candle_core::DType::F32, graphs)
             })
             .await
@@ -2871,6 +2901,16 @@ mod tests {
                 .capability_binding_for_streaming(capability, StreamingRequirements::NONE)
                 .unwrap();
             assert_eq!(binding.execution.model_instance_id, instance);
+            assert_eq!(
+                binding
+                    .execution
+                    .stages
+                    .iter()
+                    .find(|stage| stage.selector == StageWorkSelector::SequenceDecode)
+                    .unwrap()
+                    .max_batch_size,
+                2
+            );
             assert!(binding.state.managed_kv_runtime().is_some());
             assert!(binding
                 .execution

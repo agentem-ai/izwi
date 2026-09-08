@@ -18,6 +18,10 @@ use crate::backends::{
 };
 use crate::catalog::{ModelFamily, ModelInfo, ModelVariant};
 use crate::config::{EngineConfig, PrefixCachePolicy, ResolvedKvCachePolicy};
+use crate::engine::metrics::{
+    ENGINE_EXECUTOR_MODEL_TENSOR_BATCH_WIDTH_CALLS_TOTAL,
+    ENGINE_SCHEDULER_CAPACITY_REPLAY_TOKENS_TOTAL, ENGINE_SCHEDULER_CAPACITY_SUSPENSIONS_TOTAL,
+};
 use crate::engine::{
     engine_batch_metrics_snapshot, engine_stream_metrics_snapshot, AdapterBindingKey,
     Engine as CoreEngine, EngineAudioInput, EngineCoreConfig, EngineCoreRequest, EngineOutput,
@@ -50,11 +54,6 @@ use crate::engine::{
     ENGINE_SCHEDULER_RUNNING_REQUESTS, ENGINE_STREAM_BACKPRESSURE_TOTAL,
     ENGINE_STREAM_CHECKPOINTS_COMMITTED_TOTAL, ENGINE_STREAM_CHECKPOINT_REJECTIONS_TOTAL,
     ENGINE_STREAM_DELIVERY_FAILURES_TOTAL, REQUEST_DEADLINE_EXCEEDED,
-};
-use crate::engine::metrics::{
-    ENGINE_EXECUTOR_MODEL_TENSOR_BATCH_WIDTH_CALLS_TOTAL,
-    ENGINE_SCHEDULER_CAPACITY_SUSPENSIONS_TOTAL,
-    ENGINE_SCHEDULER_CAPACITY_REPLAY_TOKENS_TOTAL,
 };
 use crate::error::{Error, Result};
 use crate::model::ModelResidencyLease;
@@ -2427,6 +2426,27 @@ impl RuntimeService {
         let device = backend_context.device.clone();
         Self::ensure_requested_backend_available(&backend_context)?;
         let selected_backend_kind = backend_context.backend_kind;
+        // Zero means automatic administrative capacity, not zero usable rows.
+        // This is only an upper bound: each loaded model fits exact physical state.
+        let automatic_rows = if selected_backend_kind == BackendKind::Cuda {
+            backend_context
+                .device
+                .capabilities
+                .cuda_total_memory_bytes
+                .map(|bytes| (bytes / (256 * 1024 * 1024)).max(1))
+                .unwrap_or(1)
+        } else {
+            8
+        };
+        for rows in [
+            &mut config.max_scheduler_batch_size,
+            &mut config.max_retained_sequences,
+            &mut config.max_staged_transactions,
+        ] {
+            if *rows == 0 {
+                *rows = automatic_rows;
+            }
+        }
 
         let model_registry = Arc::new(ModelRegistry::new_with_performance(
             config.models_dir.clone(),
@@ -2731,8 +2751,12 @@ impl RuntimeService {
     }
 
     /// Effective startup concurrency policy; never re-reads rollout environment variables.
-    pub fn chat_concurrency_policy(&self) -> crate::engine::metrics::EngineChatConcurrencyPolicySnapshot {
-        crate::engine::metrics::EngineChatConcurrencyPolicySnapshot::from_config(self.core_engine.config())
+    pub fn chat_concurrency_policy(
+        &self,
+    ) -> crate::engine::metrics::EngineChatConcurrencyPolicySnapshot {
+        crate::engine::metrics::EngineChatConcurrencyPolicySnapshot::from_config(
+            self.core_engine.config(),
+        )
     }
 
     /// Immutable requested/effective KV cache policy selected at startup.
@@ -3280,6 +3304,7 @@ impl RuntimeService {
             coordinator_lane_for_request(request),
             RuntimeRequestContext {
                 workload_class: request.workload_class,
+                tenant_key: request.tenant_key,
                 admission_ms: request.admission_ms,
                 priority: request.priority,
                 deadline: request.deadline,
@@ -3369,9 +3394,15 @@ impl RuntimeService {
                 .params
                 .max_tokens
                 .clamp(1, ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES);
-            let output_bytes = (frames as u64)
-                .checked_mul(2048 * 4 * 3)
-                .ok_or_else(|| Error::Overloaded("Fish S2 output reservation overflow".into()))?;
+            let output_bytes = if request.collect_audio_samples {
+                (frames as u64).checked_mul(2048 * 4 * 3).ok_or_else(|| {
+                    Error::Overloaded("Fish S2 output reservation overflow".into())
+                })?
+            } else {
+                request.streaming_audio_buffer_bytes(
+                    crate::models::architectures::fish_s2::FISH_S2_AUDIO_CHUNK_FRAMES * 2048,
+                )?
+            };
             let mut output = ResourceVector::zero();
             match self.backend_router.context().backend_kind {
                 BackendKind::Metal => output.unified_bytes = ResourceAmount::Known(output_bytes),
@@ -6158,6 +6189,9 @@ impl RuntimeService {
         Fut: Future<Output = Result<()>>,
     {
         request.streaming = true;
+        if request.model_variant == Some(ModelVariant::FishAudioS2Pro) {
+            request.mark_audio_streaming_only();
+        }
         if request.workload_class == WorkloadClass::Online {
             request.workload_class = WorkloadClass::Streaming;
         }
@@ -6212,6 +6246,14 @@ impl RuntimeService {
         if job.spec.request_id != request.id || job.spec.deadline != request.deadline {
             return Err(Error::InvalidInput(
                 "streaming engine request does not match its coordinator admission".to_string(),
+            ));
+        }
+        if request.model_variant == Some(ModelVariant::FishAudioS2Pro)
+            && (request.collect_audio_samples
+                || request.audio_stream_engine_queue_capacity.is_none())
+        {
+            return Err(Error::InvalidInput(
+                "Fish streaming output capacity must be frozen before admission".into(),
             ));
         }
         let observation_request = request.clone();
@@ -6671,10 +6713,15 @@ impl RuntimeService {
             ENGINE_EXECUTOR_MODEL_TENSOR_MULTIROW_CALLS_TOTAL,
             snapshot.model_tensor_multirow_calls_total,
         );
-        let width_labels = snapshot.model_tensor_batch_width_counts.iter()
-            .map(|(width, count)| (width.to_string(), *count)).collect::<Vec<_>>();
-        let width_values = width_labels.iter()
-            .map(|(label, count)| (label.as_str(), *count)).collect::<Vec<_>>();
+        let width_labels = snapshot
+            .model_tensor_batch_width_counts
+            .iter()
+            .map(|(width, count)| (width.to_string(), *count))
+            .collect::<Vec<_>>();
+        let width_values = width_labels
+            .iter()
+            .map(|(label, count)| (label.as_str(), *count))
+            .collect::<Vec<_>>();
         push_engine_labeled_metric(
             payload,
             ENGINE_EXECUTOR_MODEL_TENSOR_BATCH_WIDTH_CALLS_TOTAL,
@@ -8363,8 +8410,8 @@ mod tests {
     #[tokio::test]
     async fn runtime_concurrency_metrics_preserve_real_width_and_recovery_counts() {
         use crate::engine::metrics::{
-            record_capacity_replay, record_capacity_suspension,
-            record_engine_model_call, EngineModelCall,
+            record_capacity_replay, record_capacity_suspension, record_engine_model_call,
+            EngineModelCall,
         };
         let runtime = RuntimeService::new(EngineConfig::default()).expect("runtime");
         let before = runtime.engine_telemetry_snapshot().await;
@@ -8375,19 +8422,36 @@ mod tests {
         record_capacity_suspension();
         record_capacity_replay(17);
         let after = runtime.engine_telemetry_snapshot().await;
-        assert!(after.model_tensor_batch_width_counts.get(&3).copied().unwrap_or(0)
-            > before.model_tensor_batch_width_counts.get(&3).copied().unwrap_or(0));
+        assert!(
+            after
+                .model_tensor_batch_width_counts
+                .get(&3)
+                .copied()
+                .unwrap_or(0)
+                > before
+                    .model_tensor_batch_width_counts
+                    .get(&3)
+                    .copied()
+                    .unwrap_or(0)
+        );
         assert!(after.capacity_suspensions_total > before.capacity_suspensions_total);
         assert!(after.capacity_replay_tokens_total >= before.capacity_replay_tokens_total + 17);
         let json = serde_json::to_value(&after).expect("serialize concurrency metrics");
-        assert_eq!(json["model_tensor_batch_width_counts"]["3"],
-            serde_json::json!(after.model_tensor_batch_width_counts[&3]));
-        assert_eq!(json["capacity_replay_tokens_total"],
-            serde_json::json!(after.capacity_replay_tokens_total));
+        assert_eq!(
+            json["model_tensor_batch_width_counts"]["3"],
+            serde_json::json!(after.model_tensor_batch_width_counts[&3])
+        );
+        assert_eq!(
+            json["capacity_replay_tokens_total"],
+            serde_json::json!(after.capacity_replay_tokens_total)
+        );
         let payload = runtime.telemetry_prometheus().await;
-        assert!(payload.contains("izwi_engine_executor_model_tensor_batch_width_calls_total{width=\"3\"}"));
+        assert!(payload
+            .contains("izwi_engine_executor_model_tensor_batch_width_calls_total{width=\"3\"}"));
         assert!(payload.contains("# TYPE izwi_engine_scheduler_capacity_suspensions_total counter"));
-        assert!(payload.contains("# TYPE izwi_engine_scheduler_capacity_replay_tokens_total counter"));
+        assert!(
+            payload.contains("# TYPE izwi_engine_scheduler_capacity_replay_tokens_total counter")
+        );
     }
 
     #[tokio::test]
@@ -9001,6 +9065,64 @@ mod tests {
             .coordinator_job_for_request(&plain_tts)
             .expect("coordinator job");
         assert_eq!(plain_tts_spec.resources, expected_plain_tts);
+    }
+
+    #[test]
+    fn fish_streaming_output_admission_is_bounded_independently_of_length() {
+        let runtime = RuntimeService::new(EngineConfig {
+            backend: crate::backends::BackendPreference::Cpu,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut short =
+            EngineCoreRequest::tts("hello").with_model_variant(ModelVariant::FishAudioS2Pro);
+        short.params.max_tokens = 32;
+        let mut long = short.clone();
+        long.params.max_tokens = ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES;
+        let whole_short = runtime
+            .coordinator_job_for_request(&short)
+            .unwrap()
+            .0
+            .resources;
+        let whole_long = runtime
+            .coordinator_job_for_request(&long)
+            .unwrap()
+            .0
+            .resources;
+        assert_ne!(whole_short, whole_long);
+        short.mark_audio_streaming_only();
+        long.mark_audio_streaming_only();
+        let stream_short = runtime
+            .coordinator_job_for_request(&short)
+            .unwrap()
+            .0
+            .resources;
+        let stream_long = runtime
+            .coordinator_job_for_request(&long)
+            .unwrap()
+            .0
+            .resources;
+        assert_eq!(stream_short, stream_long);
+        assert_ne!(stream_long, whole_long);
+        let before = long.streaming_audio_buffer_bytes(16 * 2048).unwrap();
+        long.audio_stream_external_queue_capacity = 128;
+        let after = long.streaming_audio_buffer_bytes(16 * 2048).unwrap();
+        assert_eq!(
+            after - before,
+            128 * (16 * 2048 * 4 + long.id.len() as u64 + 512)
+        );
+        assert_ne!(
+            runtime
+                .coordinator_job_for_request(&long)
+                .unwrap()
+                .0
+                .resources,
+            stream_long
+        );
+        long.audio_stream_engine_queue_capacity = Some(17);
+        assert_eq!(CoreEngine::streaming_queue_capacity(&long), 17);
+        long.audio_stream_external_queue_capacity = usize::MAX;
+        assert!(long.streaming_audio_buffer_bytes(16 * 2048).is_err());
     }
 
     #[test]
