@@ -1,3 +1,6 @@
+#[path = "speech_admission.rs"]
+mod speech_admission;
+
 use axum::extract::Request;
 use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode};
@@ -110,6 +113,29 @@ pub async fn attach_enterprise_request_context(
         );
     }
 
+    let speech_permit = if speech_admission::is_speech_generation(req.method(), req.uri().path()) {
+        match speech_admission::acquire(
+            &principal,
+            state.request_admission_snapshot().global.capacity,
+        ) {
+            Ok(permit) => Some(permit),
+            Err(status) => {
+                return response_with_request_id(
+                    status,
+                    &correlation_id,
+                    if status == StatusCode::TOO_MANY_REQUESTS {
+                        "speech tenant quota exceeded"
+                    } else {
+                        "speech serving capacity unavailable"
+                    }
+                    .to_string(),
+                )
+            }
+        }
+    } else {
+        None
+    };
+
     req.extensions_mut().insert(RequestContext {
         correlation_id: correlation_id.clone(),
         principal: principal.clone(),
@@ -134,6 +160,10 @@ pub async fn attach_enterprise_request_context(
 
     if let Ok(value) = HeaderValue::from_str(&correlation_id) {
         response.headers_mut().insert(REQUEST_ID_HEADER, value);
+    }
+
+    if let Some(permit) = speech_permit {
+        response = speech_admission::guard_response(response, permit);
     }
 
     response
