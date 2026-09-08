@@ -349,6 +349,17 @@ impl Drop for CompletionRegistration<'_> {
     }
 }
 
+#[derive(Default)]
+struct AudioDeliveryState {
+    lanes: HashMap<SessionKey, mpsc::UnboundedSender<AudioDeliveryMessage>>,
+    completed: std::collections::VecDeque<EngineOutput>,
+}
+
+struct AudioDeliveryMessage {
+    delivery: Option<executor::CommittedStreamDelivery>,
+    terminal: Option<EngineOutput>,
+}
+
 pub struct Engine {
     /// Engine core handles the actual inference loop
     core: Arc<RwLock<EngineCore>>,
@@ -375,6 +386,7 @@ pub struct Engine {
     request_controls: Arc<std::sync::Mutex<HashMap<RequestId, RequestControl>>>,
     /// Exact-session terminal outputs for synchronous public callers.
     completion_mailboxes: Arc<std::sync::Mutex<HashMap<RequestId, CompletionMailbox>>>,
+    audio_deliveries: Arc<std::sync::Mutex<AudioDeliveryState>>,
     /// Distinguishes a cancelled registration from a later reuse of the public ID.
     next_completion_registration: std::sync::atomic::AtomicU64,
 }
@@ -388,6 +400,7 @@ struct OwnedStepContext {
     metrics: Arc<RwLock<EngineMetrics>>,
     request_controls: Arc<std::sync::Mutex<HashMap<RequestId, RequestControl>>>,
     completion_mailboxes: Arc<std::sync::Mutex<HashMap<RequestId, CompletionMailbox>>>,
+    audio_deliveries: Arc<std::sync::Mutex<AudioDeliveryState>>,
 }
 
 struct OwnedRunnerRecoveryGuard {
@@ -712,13 +725,199 @@ impl OwnedStepContext {
             .await
     }
 
+    fn enqueue_audio_delivery(&self, session: SessionKey, message: AudioDeliveryMessage) {
+        let mut state = self
+            .audio_deliveries
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if !state.lanes.contains_key(&session) {
+            let (tx, mut rx) = mpsc::unbounded_channel::<AudioDeliveryMessage>();
+            state.lanes.insert(session.clone(), tx);
+            let deliveries = Arc::downgrade(&self.audio_deliveries);
+            let core = Arc::downgrade(&self.core);
+            let controls = self.request_controls.clone();
+            let cancellation = controls
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .get(&session.request_id)
+                .filter(|control| control.session_epoch == session.epoch)
+                .map(|control| control.cancellation.clone());
+            let step_gate = self.step_gate.clone();
+            let session = session.clone();
+            tokio::spawn(async move {
+                let mut failure = None;
+                loop {
+                    let message = tokio::select! {
+                        message = rx.recv() => match message { Some(message) => message, None => break },
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                            let owns_session = controls.lock().unwrap_or_else(|poison| poison.into_inner())
+                                .get(&session.request_id).is_some_and(|control| control.session_epoch == session.epoch);
+                            if !owns_session {
+                                if let Some(deliveries) = deliveries.upgrade() {
+                                    deliveries.lock().unwrap_or_else(|poison| poison.into_inner()).lanes.remove(&session);
+                                }
+                                break;
+                            }
+                            continue;
+                        }
+                    };
+                    if let Some(delivery) = message.delivery {
+                        if failure.is_none() {
+                            let cancellation_wait = async {
+                                match cancellation.as_ref() {
+                                    Some(signal) => loop {
+                                        if signal.load(std::sync::atomic::Ordering::Acquire) {
+                                            break;
+                                        }
+                                        tokio::time::sleep(std::time::Duration::from_millis(10))
+                                            .await;
+                                    },
+                                    None => std::future::pending::<()>().await,
+                                }
+                            };
+                            let result = tokio::select! {
+                                biased;
+                                _ = cancellation_wait => Err(executor::StreamDeliveryFailureKind::Cancelled),
+                                result = delivery.deliver() => result,
+                            };
+                            if let Err(kind) = result {
+                                let failed = executor::StreamDeliveryFailure {
+                                    session: session.clone(),
+                                    kind,
+                                };
+                                {
+                                    let controls = controls
+                                        .lock()
+                                        .unwrap_or_else(|poison| poison.into_inner());
+                                    if let Some(control) = controls
+                                        .get(&session.request_id)
+                                        .filter(|control| control.session_epoch == session.epoch)
+                                    {
+                                        control
+                                            .cancellation
+                                            .store(true, std::sync::atomic::Ordering::Release);
+                                    }
+                                }
+                                if let Some(core) = core.upgrade() {
+                                    let _step = step_gate.lock().await;
+                                    core.write()
+                                        .await
+                                        .reconcile_stream_delivery_failures(
+                                            &mut Vec::new(),
+                                            vec![failed.clone()],
+                                        )
+                                        .await;
+                                }
+                                failure = Some(failed);
+                            }
+                        }
+                    }
+                    if let Some(terminal) = message.terminal {
+                        let mut outputs = vec![terminal];
+                        if let Some(failed) = failure.take() {
+                            if let Some(core) = core.upgrade() {
+                                let _step = step_gate.lock().await;
+                                core.write()
+                                    .await
+                                    .reconcile_stream_delivery_failures(&mut outputs, vec![failed])
+                                    .await;
+                            }
+                        }
+                        if let Some(deliveries) = deliveries.upgrade() {
+                            let mut state = deliveries
+                                .lock()
+                                .unwrap_or_else(|poison| poison.into_inner());
+                            state.lanes.remove(&session);
+                            state.completed.extend(outputs);
+                        }
+                        break;
+                    }
+                }
+            });
+        }
+        // Only bounded, credited PCM and one terminal control message enter a
+        // lane. Exact session identities prevent reuse from crossing epochs.
+        if let Some(sender) = state.lanes.get(&session) {
+            if let Err(error) = sender.send(message) {
+                state.lanes.remove(&session);
+                if let Some(mut terminal) = error.0.terminal {
+                    terminal.error = Some("Committed audio delivery lane closed".into());
+                    terminal.finish_reason = Some(OutputFinishReason::Error);
+                    state.completed.push_back(terminal);
+                }
+                let controls = self
+                    .request_controls
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                if let Some(control) = controls
+                    .get(&session.request_id)
+                    .filter(|control| control.session_epoch == session.epoch)
+                {
+                    control
+                        .cancellation
+                        .store(true, std::sync::atomic::Ordering::Release);
+                }
+            }
+        }
+    }
+
     async fn deliver_and_route_committed(
         &self,
         committed: core::CommittedEngineStep,
         defer_unregistered_terminal_ack: bool,
     ) -> Result<Vec<EngineOutput>> {
-        let mut outputs = committed.outputs;
-        let failed_streams = executor::deliver_committed_streams(committed.stream_deliveries).await;
+        let mut outputs = Vec::new();
+        let mut synchronous = Vec::new();
+        for delivery in committed.stream_deliveries {
+            let session = delivery.session.clone();
+            let asynchronous = delivery.has_audio_credits()
+                || self
+                    .audio_deliveries
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .lanes
+                    .contains_key(&session);
+            if asynchronous {
+                self.enqueue_audio_delivery(
+                    session,
+                    AudioDeliveryMessage {
+                        delivery: Some(delivery),
+                        terminal: None,
+                    },
+                );
+            } else {
+                synchronous.push(delivery);
+            }
+        }
+        for output in committed.outputs {
+            let session = SessionKey::new(output.request_id.clone(), output.sequence_id);
+            let deferred = output.is_finished
+                && self
+                    .audio_deliveries
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .lanes
+                    .contains_key(&session);
+            if deferred {
+                self.enqueue_audio_delivery(
+                    session,
+                    AudioDeliveryMessage {
+                        delivery: None,
+                        terminal: Some(output),
+                    },
+                );
+            } else {
+                outputs.push(output);
+            }
+        }
+        outputs.extend(
+            self.audio_deliveries
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .completed
+                .drain(..),
+        );
+        let failed_streams = executor::deliver_committed_streams(synchronous).await;
         if !failed_streams.is_empty() {
             let mut core = self.core.write().await;
             core.reconcile_stream_delivery_failures(&mut outputs, failed_streams)
@@ -768,7 +967,16 @@ impl OwnedStepContext {
                 self.execute_prepared(prepared, defer_unregistered_terminal_ack)
                     .await?
             }
-            None => Vec::new(),
+            None => {
+                self.deliver_and_route_committed(
+                    core::CommittedEngineStep {
+                        outputs: Vec::new(),
+                        stream_deliveries: Vec::new(),
+                    },
+                    defer_unregistered_terminal_ack,
+                )
+                .await?
+            }
         };
 
         // Keep every await before terminal dispatch. Once a completion sender
@@ -817,7 +1025,10 @@ impl Engine {
             .filter(|value| *value > 0)
     }
 
-    fn streaming_queue_capacity(request: &EngineCoreRequest) -> usize {
+    pub(crate) fn streaming_queue_capacity(request: &EngineCoreRequest) -> usize {
+        if let Some(capacity) = request.audio_stream_engine_queue_capacity {
+            return capacity;
+        }
         let default_capacity = match request.task_type {
             TaskType::TTS => 8usize,
             // Unified speech-to-speech emits bursty interleaved text and audio
@@ -898,6 +1109,7 @@ impl Engine {
             wake_notify: Arc::new(Notify::new()),
             request_controls: Arc::new(std::sync::Mutex::new(HashMap::new())),
             completion_mailboxes: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            audio_deliveries: Arc::new(std::sync::Mutex::new(AudioDeliveryState::default())),
             next_completion_registration: std::sync::atomic::AtomicU64::new(1),
         })
     }
@@ -2197,6 +2409,7 @@ impl Engine {
             metrics: self.metrics.clone(),
             request_controls: self.request_controls.clone(),
             completion_mailboxes: self.completion_mailboxes.clone(),
+            audio_deliveries: self.audio_deliveries.clone(),
         };
         match tokio::spawn(async move { context.run(defer_unregistered_terminal_ack).await }).await
         {
@@ -2235,7 +2448,13 @@ impl Engine {
             // Check if there are requests to process
             let has_work = {
                 let core = self.core.read().await;
-                core.has_pending_work()
+                core.has_pending_work() || {
+                    let audio = self
+                        .audio_deliveries
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner());
+                    !audio.lanes.is_empty() || !audio.completed.is_empty()
+                }
             };
 
             if has_work {
@@ -2779,6 +2998,27 @@ impl Engine {
         )
     }
 
+    pub(crate) async fn load_managed_model_state_with_row_limits(
+        &self,
+        model_instance: ModelInstanceId,
+        retained_state: &crate::kv::v2::InferenceStateContract,
+        logical_context_tokens: Option<usize>,
+        retained_rows: usize,
+        staged_rows: usize,
+    ) -> Result<Arc<ManagedKvModelRuntime>> {
+        let _step = self.step_gate.lock().await;
+        self.core
+            .write()
+            .await
+            .load_managed_model_state_with_row_limits(
+                model_instance,
+                retained_state,
+                logical_context_tokens,
+                retained_rows,
+                staged_rows,
+            )
+    }
+
     pub(crate) async fn load_managed_model_state_with_portable_copies(
         &self,
         model_instance: ModelInstanceId,
@@ -2923,7 +3163,13 @@ impl Engine {
     /// Check if scheduler currently has runnable or queued work.
     pub async fn has_pending_work(&self) -> bool {
         let core = self.core.read().await;
-        core.has_pending_work()
+        core.has_pending_work() || {
+            let audio = self
+                .audio_deliveries
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            !audio.lanes.is_empty() || !audio.completed.is_empty()
+        }
     }
 }
 
@@ -3635,8 +3881,270 @@ mod tests {
             wake_notify: Arc::new(Notify::new()),
             request_controls: Arc::new(std::sync::Mutex::new(HashMap::new())),
             completion_mailboxes: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            audio_deliveries: Arc::new(std::sync::Mutex::new(AudioDeliveryState::default())),
             next_completion_registration: std::sync::atomic::AtomicU64::new(1),
         }
+    }
+
+    #[tokio::test]
+    async fn credited_audio_delivery_does_not_block_peers_or_overtake_terminal() {
+        let engine = engine_with_test_executor(Box::new(ImmediateTerminalExecutor::new(Arc::new(
+            std::sync::atomic::AtomicUsize::new(0),
+        ))));
+        let context = OwnedStepContext {
+            core: engine.core.clone(),
+            step_gate: engine.step_gate.clone(),
+            metrics: engine.metrics.clone(),
+            request_controls: engine.request_controls.clone(),
+            completion_mailboxes: engine.completion_mailboxes.clone(),
+            audio_deliveries: engine.audio_deliveries.clone(),
+        };
+        let session = SessionKey::new("slow-audio".into(), 1);
+        let (tx, mut rx) = mpsc::channel(1);
+        let chunk = |sequence| StreamingOutput {
+            request_id: "slow-audio".into(),
+            sequence,
+            samples: vec![0.25],
+            sample_rate: 24000,
+            is_final: false,
+            text: None,
+            stats: None,
+            asr_progress: None,
+        };
+        tx.send(chunk(0)).await.unwrap();
+        context.enqueue_audio_delivery(
+            session.clone(),
+            AudioDeliveryMessage {
+                delivery: Some(executor::CommittedStreamDelivery::new(
+                    session.clone(),
+                    tx,
+                    EngineStreamPolicy::BlockWithDeadline { timeout_ms: 1000 },
+                    vec![chunk(1)],
+                )),
+                terminal: None,
+            },
+        );
+        let mut processor = OutputProcessor::new(24000);
+        let terminal = processor.process(
+            executor::ExecutorOutput {
+                request_id: session.request_id.clone(),
+                audio: None,
+                text: None,
+                input_transcription: None,
+                tokens_processed: 0,
+                tokens_generated: 1,
+                finished: true,
+                phase_timing_override: None,
+                asr_diagnostics: None,
+                error: None,
+            },
+            session.epoch,
+            Duration::from_millis(1),
+        );
+        context.enqueue_audio_delivery(
+            session.clone(),
+            AudioDeliveryMessage {
+                delivery: None,
+                terminal: Some(terminal),
+            },
+        );
+        // A full client channel cannot hold the engine step mutex or delay a
+        // peer's normal terminal request.
+        let peer = engine.generate(immediate_terminal_request("peer-audio"));
+        let peer_output = tokio::time::timeout(Duration::from_millis(500), peer)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(peer_output.is_finished);
+        assert!(engine.audio_deliveries.lock().unwrap().completed.is_empty());
+        assert_eq!(rx.recv().await.unwrap().sequence, 0);
+        assert_eq!(rx.recv().await.unwrap().sequence, 1);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !engine.audio_deliveries.lock().unwrap().completed.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let state = engine.audio_deliveries.lock().unwrap();
+        assert!(!state.lanes.contains_key(&session));
+        assert_eq!(state.completed.front().unwrap().request_id, "slow-audio");
+    }
+
+    #[tokio::test]
+    async fn closed_audio_lane_reports_failure_before_terminal_completion() {
+        let engine = engine_with_test_executor(Box::new(ImmediateTerminalExecutor::new(Arc::new(
+            std::sync::atomic::AtomicUsize::new(0),
+        ))));
+        let context = OwnedStepContext {
+            core: engine.core.clone(),
+            step_gate: engine.step_gate.clone(),
+            metrics: engine.metrics.clone(),
+            request_controls: engine.request_controls.clone(),
+            completion_mailboxes: engine.completion_mailboxes.clone(),
+            audio_deliveries: engine.audio_deliveries.clone(),
+        };
+        let session = SessionKey::new("closed-audio".into(), 7);
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let chunk = StreamingOutput {
+            request_id: session.request_id.clone(),
+            sequence: 0,
+            samples: vec![0.25],
+            sample_rate: 24000,
+            is_final: false,
+            text: None,
+            stats: None,
+            asr_progress: None,
+        };
+        context.enqueue_audio_delivery(
+            session.clone(),
+            AudioDeliveryMessage {
+                delivery: Some(executor::CommittedStreamDelivery::new(
+                    session.clone(),
+                    tx,
+                    EngineStreamPolicy::FailOnFull,
+                    vec![chunk],
+                )),
+                terminal: None,
+            },
+        );
+        let terminal = OutputProcessor::new(24000).process(
+            executor::ExecutorOutput {
+                request_id: session.request_id.clone(),
+                audio: None,
+                text: None,
+                input_transcription: None,
+                tokens_processed: 0,
+                tokens_generated: 1,
+                finished: true,
+                phase_timing_override: None,
+                asr_diagnostics: None,
+                error: None,
+            },
+            session.epoch,
+            Duration::from_millis(1),
+        );
+        context.enqueue_audio_delivery(
+            session.clone(),
+            AudioDeliveryMessage {
+                delivery: None,
+                terminal: Some(terminal),
+            },
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !engine.audio_deliveries.lock().unwrap().completed.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let state = engine.audio_deliveries.lock().unwrap();
+        assert!(!state.lanes.contains_key(&session));
+        let terminal = state.completed.front().unwrap();
+        assert_eq!(terminal.sequence_id, 7);
+        assert_eq!(terminal.finish_reason, Some(OutputFinishReason::Error));
+        assert!(terminal.error.as_ref().unwrap().contains("delivery"));
+    }
+
+    #[tokio::test]
+    async fn audio_lane_cancellation_interrupts_a_blocked_consumer() {
+        let engine = engine_with_test_executor(Box::new(ImmediateTerminalExecutor::new(Arc::new(
+            std::sync::atomic::AtomicUsize::new(0),
+        ))));
+        let session = SessionKey::new("cancel-audio".into(), 9);
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        engine.request_controls.lock().unwrap().insert(
+            session.request_id.clone(),
+            RequestControl {
+                session_epoch: session.epoch,
+                cancellation: cancellation.clone(),
+                model_variant: None,
+            },
+        );
+        let context = OwnedStepContext {
+            core: engine.core.clone(),
+            step_gate: engine.step_gate.clone(),
+            metrics: engine.metrics.clone(),
+            request_controls: engine.request_controls.clone(),
+            completion_mailboxes: engine.completion_mailboxes.clone(),
+            audio_deliveries: engine.audio_deliveries.clone(),
+        };
+        let (tx, mut rx) = mpsc::channel(1);
+        let chunk = |sequence| StreamingOutput {
+            request_id: session.request_id.clone(),
+            sequence,
+            samples: vec![0.25],
+            sample_rate: 24000,
+            is_final: false,
+            text: None,
+            stats: None,
+            asr_progress: None,
+        };
+        tx.send(chunk(0)).await.unwrap();
+        context.enqueue_audio_delivery(
+            session.clone(),
+            AudioDeliveryMessage {
+                delivery: Some(executor::CommittedStreamDelivery::new(
+                    session.clone(),
+                    tx,
+                    EngineStreamPolicy::BlockWithDeadline { timeout_ms: 60000 },
+                    vec![chunk(1)],
+                )),
+                terminal: None,
+            },
+        );
+        let terminal = OutputProcessor::new(24000).process(
+            executor::ExecutorOutput {
+                request_id: session.request_id.clone(),
+                audio: None,
+                text: None,
+                input_transcription: None,
+                tokens_processed: 0,
+                tokens_generated: 1,
+                finished: true,
+                phase_timing_override: None,
+                asr_diagnostics: None,
+                error: None,
+            },
+            session.epoch,
+            Duration::from_millis(1),
+        );
+        context.enqueue_audio_delivery(
+            session.clone(),
+            AudioDeliveryMessage {
+                delivery: None,
+                terminal: Some(terminal),
+            },
+        );
+        cancellation.store(true, std::sync::atomic::Ordering::Release);
+        tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                if !engine.audio_deliveries.lock().unwrap().completed.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let state = engine.audio_deliveries.lock().unwrap();
+        assert_eq!(
+            state.completed.front().unwrap().finish_reason,
+            Some(OutputFinishReason::Aborted)
+        );
+        assert!(!state.lanes.contains_key(&session));
+        assert_eq!(rx.try_recv().unwrap().sequence, 0);
+        assert!(
+            rx.try_recv().is_err(),
+            "cancelled PCM must not be delivered later"
+        );
     }
 
     #[test]
@@ -4277,6 +4785,7 @@ mod tests {
             wake_notify: Arc::new(Notify::new()),
             request_controls: Arc::new(std::sync::Mutex::new(HashMap::new())),
             completion_mailboxes: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            audio_deliveries: Arc::new(std::sync::Mutex::new(AudioDeliveryState::default())),
             next_completion_registration: std::sync::atomic::AtomicU64::new(1),
         });
 

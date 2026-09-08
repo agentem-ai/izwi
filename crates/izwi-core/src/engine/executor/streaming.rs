@@ -43,6 +43,7 @@ pub(crate) struct CommittedStreamDelivery {
     tx: mpsc::Sender<StreamingOutput>,
     policy: StreamBackpressurePolicy,
     outputs: Vec<CommittedStreamOutput>,
+    _audio_credits: Vec<super::super::request::AudioOutputCredit>,
 }
 
 #[derive(Debug)]
@@ -62,6 +63,7 @@ impl CommittedStreamDelivery {
             session,
             tx,
             policy,
+            _audio_credits: Vec::new(),
             outputs: outputs
                 .into_iter()
                 .map(|output| CommittedStreamOutput {
@@ -70,6 +72,23 @@ impl CommittedStreamDelivery {
                 })
                 .collect(),
         }
+    }
+
+    pub(crate) fn with_audio_credits(
+        mut self,
+        credits: Vec<super::super::request::AudioOutputCredit>,
+    ) -> Self {
+        if !credits.is_empty() && self.policy == StreamBackpressurePolicy::DropNewest {
+            // A committed acoustic frame may never disappear from an otherwise
+            // successful speech stream. Lossy policy remains available elsewhere.
+            self.policy = StreamBackpressurePolicy::FailOnFull;
+        }
+        self._audio_credits = credits;
+        self
+    }
+
+    pub(crate) fn has_audio_credits(&self) -> bool {
+        !self._audio_credits.is_empty()
     }
 
     pub(crate) fn from_progress(
@@ -82,6 +101,7 @@ impl CommittedStreamDelivery {
             session,
             tx,
             policy,
+            _audio_credits: Vec::new(),
             outputs: vec![CommittedStreamOutput {
                 output: progress.output,
                 _progress_permit: Some(progress.budget_permit),
@@ -89,7 +109,7 @@ impl CommittedStreamDelivery {
         }
     }
 
-    async fn deliver(self) -> std::result::Result<(), StreamDeliveryFailureKind> {
+    pub(crate) async fn deliver(self) -> std::result::Result<(), StreamDeliveryFailureKind> {
         for committed in self.outputs {
             let output = committed.output;
             if output.request_id != self.session.request_id {
@@ -543,6 +563,25 @@ mod tests {
             stats: None,
             asr_progress: None,
         }
+    }
+
+    #[tokio::test]
+    async fn credited_audio_never_drops_pcm_under_lossy_policy() {
+        let request = crate::engine::EngineCoreRequest::tts("reserved audio");
+        let _credit = request.try_reserve_audio_output(4).unwrap().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        tx.send(output(&request.id, 0)).await.unwrap();
+        let delivery = CommittedStreamDelivery::new(
+            SessionKey::new(request.id.clone(), 1),
+            tx,
+            StreamBackpressurePolicy::DropNewest,
+            vec![output(&request.id, 1)],
+        )
+        .with_audio_credits(request.take_audio_output_credits());
+        assert_eq!(
+            delivery.deliver().await,
+            Err(StreamDeliveryFailureKind::Delivery)
+        );
     }
 
     fn lane() -> BatchLaneKey {

@@ -10,10 +10,15 @@ pub(super) struct FishCodecCommit {
     pub(super) first_audio_ms: Option<f64>,
 }
 
+enum FishPendingUpdate {
+    Codec(FishCodecCommit),
+    Ar(crate::models::architectures::fish_s2::FishS2RetainedCheckpoint),
+}
+
 struct PendingFishCodec {
     session: SessionKey,
     active: ActiveFishS2TtsDecode,
-    update: FishCodecCommit,
+    update: FishPendingUpdate,
     decision: Option<PendingQuantumDecision>,
 }
 
@@ -59,8 +64,7 @@ impl FishStateCoordinator {
             .checked_mul(2048)
             .ok_or_else(|| Error::Overloaded("Fish PCM sample budget overflow".into()))?;
         let candidate_samples = active
-            .audio_samples
-            .len()
+            .total_audio_samples
             .checked_add(update.samples.len())
             .ok_or_else(|| Error::Overloaded("Fish PCM candidate length overflow".into()))?;
         if candidate_samples > sample_budget || active.audio_samples.capacity() > sample_budget {
@@ -70,7 +74,7 @@ impl FishStateCoordinator {
         }
         // Allocate the sealed output budget once. Geometric per-chunk growth
         // can exceed admission even when the final logical length fits it.
-        if active.audio_samples.capacity() < sample_budget {
+        if active.collect_audio_samples && active.audio_samples.capacity() < sample_budget {
             active
                 .audio_samples
                 .try_reserve_exact(sample_budget - active.audio_samples.len())
@@ -89,7 +93,48 @@ impl FishStateCoordinator {
             PendingFishCodec {
                 session,
                 active,
-                update,
+                update: FishPendingUpdate::Codec(update),
+                decision: None,
+            },
+        );
+        Ok(())
+    }
+
+    pub(super) fn stage_ar(
+        &self,
+        plan_id: PlanId,
+        session: SessionKey,
+        mut lease: ExecutorStateLease<'_, ActiveFishS2TtsDecode>,
+        mut checkpoint: crate::models::architectures::fish_s2::FishS2RetainedCheckpoint,
+    ) -> Result<()> {
+        let mut rows = self
+            .rows
+            .lock()
+            .map_err(|_| Error::InferenceError("Fish pending mutex poisoned".into()))?;
+        if lease.session != session
+            || !std::ptr::eq(lease.store, self.states.as_ref())
+            || rows.contains_key(&plan_id)
+        {
+            if checkpoint.is_initial() {
+                lease.discard_state();
+            } else {
+                lease
+                    .require_state_mut()?
+                    .state
+                    .rollback_managed_quantum(&mut checkpoint)?;
+                lease.mark_clean();
+            }
+            return Err(Error::InferenceError(
+                "Fish AR pending identity collision".into(),
+            ));
+        }
+        let active = lease.defer()?;
+        rows.insert(
+            plan_id,
+            PendingFishCodec {
+                session,
+                active,
+                update: FishPendingUpdate::Ar(checkpoint),
                 decision: None,
             },
         );
@@ -108,14 +153,31 @@ impl FishStateCoordinator {
             ));
         }
         let mut active = row.active;
-        if commit {
-            active.codec = row.update.codec;
-            active.audio_samples.extend_from_slice(&row.update.samples);
-            active.stream_sequence = row.update.stream_sequence;
-            active.codec_ms += row.update.codec_ms;
-            if active.first_audio_ms.is_none() {
-                active.first_audio_ms = row.update.first_audio_ms;
+        match row.update {
+            FishPendingUpdate::Codec(update) if commit => {
+                active.codec = update.codec;
+                active.total_audio_samples += update.samples.len();
+                if active.collect_audio_samples {
+                    active.audio_samples.extend_from_slice(&update.samples);
+                }
+                active.stream_sequence = update.stream_sequence;
+                active.codec_ms += update.codec_ms;
+                if active.first_audio_ms.is_none() {
+                    active.first_audio_ms = update.first_audio_ms;
+                }
             }
+            FishPendingUpdate::Ar(mut checkpoint) => {
+                if commit {
+                    active.state.commit_managed_quantum(&mut checkpoint)?;
+                    active.last_frames_generated = active.state.frames_generated();
+                } else if checkpoint.is_initial() {
+                    states.remove(&row.session);
+                    return Ok(());
+                } else {
+                    active.state.rollback_managed_quantum(&mut checkpoint)?;
+                }
+            }
+            FishPendingUpdate::Codec(_) => {}
         }
         states.insert(
             row.session,
@@ -216,12 +278,47 @@ impl PendingQuantumFinalizer for FishStateCoordinator {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::models::architectures::fish_s2::{FishS2RetainedState, FishS2TtsModel};
     use crate::models::registry::FishS2TtsModelLease;
 
-    fn staged() -> (FishStateCoordinator, SessionKey) {
+    pub(crate) fn staged() -> (FishStateCoordinator, SessionKey) {
+        staged_with_collection(true)
+    }
+
+    #[test]
+    fn initial_ar_discard_and_rejected_staging_release_unpublished_state() {
+        for collision in [false, true] {
+            let (coordinator, session) = staged();
+            coordinator.discard(17, &session);
+            let mut lease = ExecutorStateLease::checkout(
+                &coordinator.states,
+                session.clone(),
+                ModelVariant::FishAudioS2Pro,
+                "initial abort",
+            )
+            .unwrap();
+            let (state, checkpoint) = FishS2RetainedState::initial_quantum_for_test();
+            lease.require_state_mut().unwrap().state = state;
+            lease.mark_dirty();
+            if collision {
+                let foreign = SessionKey::new(session.request_id.clone(), session.epoch + 1);
+                assert!(coordinator
+                    .stage_ar(18, foreign, lease, checkpoint)
+                    .is_err());
+            } else {
+                coordinator
+                    .stage_ar(18, session.clone(), lease, checkpoint)
+                    .unwrap();
+                coordinator.discard(18, &session);
+            }
+            assert!(coordinator.rows.lock().unwrap().is_empty());
+            assert!(!coordinator.states.lock().unwrap().contains_key(&session));
+        }
+    }
+
+    fn staged_with_collection(collect: bool) -> (FishStateCoordinator, SessionKey) {
         let coordinator = FishStateCoordinator::new();
         let session = SessionKey::new("fish-pending".into(), 1);
         let mut lease = ExecutorStateLease::checkout(
@@ -239,7 +336,9 @@ mod tests {
                 last_frames_generated: 0,
                 stream_sequence: 3,
                 codec: Default::default(),
-                audio_samples: vec![0.25],
+                audio_samples: if collect { vec![0.25] } else { Vec::new() },
+                total_audio_samples: 1,
+                collect_audio_samples: collect,
                 codec_ms: 2.0,
                 execution_started: std::time::Instant::now(),
                 first_audio_ms: None,
@@ -262,7 +361,11 @@ mod tests {
         (coordinator, session)
     }
 
-    fn assert_ready(coordinator: &FishStateCoordinator, session: &SessionKey, committed: bool) {
+    pub(crate) fn assert_ready(
+        coordinator: &FishStateCoordinator,
+        session: &SessionKey,
+        committed: bool,
+    ) {
         let mut lease = ExecutorStateLease::checkout(
             &coordinator.states,
             session.clone(),
@@ -284,6 +387,64 @@ mod tests {
         assert_eq!(state.codec_ms, if committed { 7.0 } else { 2.0 });
         assert_eq!(state.first_audio_ms, committed.then_some(10.0));
         lease.restore().unwrap();
+    }
+
+    #[test]
+    fn fish_stream_only_commit_counts_pcm_without_retaining_waveform_and_abort_is_exact() {
+        for commit in [false, true] {
+            let (coordinator, session) = staged_with_collection(false);
+            coordinator
+                .prepare(
+                    17,
+                    &session,
+                    if commit {
+                        PendingQuantumDecision::Commit
+                    } else {
+                        PendingQuantumDecision::Abort
+                    },
+                )
+                .unwrap();
+            coordinator.publish(17, &session).unwrap();
+            let mut lease = ExecutorStateLease::checkout(
+                &coordinator.states,
+                session.clone(),
+                ModelVariant::FishAudioS2Pro,
+                "stream only test",
+            )
+            .unwrap();
+            let active = lease.require_state_mut().unwrap();
+            assert_eq!(active.audio_samples.capacity(), 0);
+            assert_eq!(active.audio_samples.len(), 0);
+            assert_eq!(active.total_audio_samples, if commit { 3 } else { 1 });
+            let max = active.state.params().max_frames * 2048;
+            active.total_audio_samples = max;
+            let error = coordinator
+                .stage(
+                    18,
+                    session.clone(),
+                    lease,
+                    FishCodecCommit {
+                        codec: Default::default(),
+                        samples: vec![0.0],
+                        stream_sequence: 5,
+                        codec_ms: 1.0,
+                        first_audio_ms: None,
+                    },
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("sealed sample budget"));
+            let mut lease = ExecutorStateLease::checkout(
+                &coordinator.states,
+                session,
+                ModelVariant::FishAudioS2Pro,
+                "stream only check",
+            )
+            .unwrap();
+            let active = lease.require_state_mut().unwrap();
+            assert_eq!(active.total_audio_samples, max);
+            assert_eq!(active.audio_samples.capacity(), 0);
+            lease.restore().unwrap();
+        }
     }
 
     #[test]

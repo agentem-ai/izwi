@@ -239,7 +239,7 @@ impl OutputProcessor {
         } else {
             executor_output.tokens_generated.max(
                 // Estimate tokens from audio length if not provided
-                (audio.samples.len() / 256).max(1),
+                (audio.streamed_samples.unwrap_or(audio.samples.len()) / 256).max(1),
             )
         };
 
@@ -459,6 +459,28 @@ mod tests {
     fn test_output_processor() {
         let processor = OutputProcessor::new(24000);
         assert_eq!(processor.sample_rate, 24000);
+    }
+
+    #[test]
+    fn streamed_completion_preserves_rtf_without_counting_asr_input_as_output() {
+        let mut processor = OutputProcessor::new(24_000);
+        let mut streaming = ExecutorOutput::terminal("streamed".into());
+        streaming.audio = Some(AudioOutput::streamed(48_000, 24_000));
+        let output = processor.process(streaming, 1, Duration::from_secs(1));
+        assert_eq!(output.audio.streamed_samples, Some(48_000));
+        assert_eq!(output.rtf(), 0.5);
+        assert_eq!(output.num_tokens, 48_000 / 256);
+        assert!(output.audio.samples.is_empty());
+
+        let mut asr = ExecutorOutput::terminal("input-duration".into());
+        let mut input = AudioOutput::empty(24_000);
+        input.duration_secs = 100.0;
+        asr.audio = Some(input);
+        asr.tokens_generated = 7;
+        assert_eq!(
+            processor.process(asr, 2, Duration::from_secs(1)).num_tokens,
+            7
+        );
     }
 
     #[test]

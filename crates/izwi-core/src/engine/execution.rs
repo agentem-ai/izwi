@@ -2494,6 +2494,10 @@ pub enum YieldReason {
     AwaitingAudioDecode {
         max_frames: usize,
     },
+    /// A codec row owns committed frames but cannot reserve bounded output space.
+    AwaitingAudioOutput {
+        max_frames: usize,
+    },
     Backpressure,
     AwaitingInput,
     Preempted,

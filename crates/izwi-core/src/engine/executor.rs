@@ -3005,6 +3005,13 @@ fn loaded_native_batch_support(request: &EngineCoreRequest) -> NativeBatchSuppor
                     .map(|_| (true, true))
             })
             .unwrap_or((false, false)),
+        TaskType::TTS
+            if request
+                .prepared_fish_s2_tts_model_lease_for_executor()
+                .is_ok_and(|model| model.is_some()) =>
+        {
+            (true, true)
+        }
         TaskType::TTS => {
             let lfm25_audio = request
                 .prepared_lfm25_audio_tts_model_lease_for_executor()
@@ -3304,7 +3311,22 @@ impl ModelExecutor for NativeExecutor {
             profile.prefill_batch = native_batch_support.prefill;
             profile.decode_batch = native_batch_support.decode;
             profile.concurrency = ConcurrencyClass::Batchable;
-            profile.max_batch_size = self.config.max_tensor_batch_size.max(1);
+            profile.max_batch_size = if request.model_variant == Some(ModelVariant::FishAudioS2Pro)
+            {
+                request
+                    .execution_adapter_binding()
+                    .and_then(|binding| {
+                        binding
+                            .stages
+                            .iter()
+                            .filter(|stage| stage.batch_mode != NativeBatchMode::None)
+                            .map(|stage| stage.max_batch_size)
+                            .max()
+                    })
+                    .unwrap_or(1)
+            } else {
+                self.config.max_tensor_batch_size.max(1)
+            };
         } else {
             let request_parallel_width = if can_parallelize_requests(self.config.backend) {
                 self.config.request_parallelism.max(1)
@@ -3370,7 +3392,27 @@ impl ModelExecutor for NativeExecutor {
             let route = NativeBatchRoute::resolve(&execution).map_err(|error| {
                 PhysicalDispatchError::not_started(error, width, FailureOrigin::ExecutorValidation)
             })?;
-            if execution.scheduled.len() > self.config.max_tensor_batch_size.max(1) {
+            let tensor_ceiling = if execution
+                .requests
+                .iter()
+                .all(|request| request.model_variant == Some(ModelVariant::FishAudioS2Pro))
+            {
+                execution
+                    .requests
+                    .iter()
+                    .zip(execution.scheduled)
+                    .map(|(request, scheduled)| {
+                        request
+                            .execution_adapter_binding()
+                            .and_then(|binding| binding.stage_for_work(&scheduled.work).ok())
+                            .map_or(1, |stage| stage.max_batch_size)
+                    })
+                    .min()
+                    .unwrap_or(1)
+            } else {
+                self.config.max_tensor_batch_size.max(1)
+            };
+            if execution.scheduled.len() > tensor_ceiling {
                 return Err(PhysicalDispatchError::not_started(
                     Error::Overloaded(
                         "native tensor batch exceeds the backend width cap".to_string(),
@@ -3579,6 +3621,40 @@ impl ModelExecutor for NativeExecutor {
                 }) =>
                 {
                     self.execute_static_kokoro_tts_requests_with_rows(
+                        execution.requests,
+                        execution.scheduled,
+                        Some(&execution.batch.rows),
+                    )
+                }
+                NativeBatchRoute::Audio {
+                    task: TaskType::TTS,
+                    stage: NativeAudioStage::SequenceAudioDecode,
+                    mode: NativeBatchMode::Static,
+                    ..
+                } if execution.requests.iter().all(|request| {
+                    request.model_variant.is_some_and(|variant| {
+                        variant.family() == crate::catalog::ModelFamily::FishS2Tts
+                    })
+                }) =>
+                {
+                    self.execute_static_fish_s2_codec_requests_with_rows(
+                        execution.requests,
+                        execution.scheduled,
+                        Some(&execution.batch.rows),
+                    )
+                }
+                NativeBatchRoute::Audio {
+                    task: TaskType::TTS,
+                    stage: NativeAudioStage::SequencePrefill,
+                    mode: NativeBatchMode::Static,
+                    ..
+                } if execution.requests.iter().all(|request| {
+                    request.model_variant.is_some_and(|variant| {
+                        variant.family() == crate::catalog::ModelFamily::FishS2Tts
+                    })
+                }) =>
+                {
+                    self.execute_static_fish_s2_tts_prefill_requests_with_rows(
                         execution.requests,
                         execution.scheduled,
                         Some(&execution.batch.rows),

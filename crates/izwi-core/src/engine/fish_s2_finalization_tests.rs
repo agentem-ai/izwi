@@ -121,6 +121,7 @@ fn fish_s2_codec_cost_cannot_exceed_loaded_stage_ceiling() {
     let mut request = prepared_request(512);
     let (mut binding, mut stage) = loaded_binding(BackendKind::Cuda);
     stage.max_workspace_bytes = 1;
+    stage.workspace_per_row_bytes = 1;
     binding.stages = binding
         .stages
         .iter()

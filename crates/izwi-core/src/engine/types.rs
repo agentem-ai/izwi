@@ -115,6 +115,9 @@ pub struct AudioOutput {
     pub sample_rate: u32,
     /// Duration in seconds
     pub duration_secs: f32,
+    /// Exact committed count for metadata-only generated audio. ASR input
+    /// duration is a different concept and must not imply generated samples.
+    pub streamed_samples: Option<usize>,
 }
 
 impl AudioOutput {
@@ -124,6 +127,18 @@ impl AudioOutput {
             samples,
             sample_rate,
             duration_secs,
+            streamed_samples: None,
+        }
+    }
+
+    /// Completion metadata for audio already delivered through the stream.
+    /// This representation deliberately owns no duplicate whole waveform.
+    pub(crate) fn streamed(total_samples: usize, sample_rate: u32) -> Self {
+        Self {
+            samples: Vec::new(),
+            sample_rate,
+            duration_secs: total_samples as f32 / sample_rate as f32,
+            streamed_samples: Some(total_samples),
         }
     }
 
@@ -133,13 +148,24 @@ impl AudioOutput {
             samples: Vec::new(),
             sample_rate,
             duration_secs: 0.0,
+            streamed_samples: None,
         }
     }
 
     /// Append samples from another output
     pub fn append(&mut self, other: &AudioOutput) {
-        self.samples.extend_from_slice(&other.samples);
-        self.duration_secs = self.samples.len() as f32 / self.sample_rate as f32;
+        if self.streamed_samples.is_some() || other.streamed_samples.is_some() {
+            let total = self
+                .streamed_samples
+                .unwrap_or(self.samples.len())
+                .saturating_add(other.streamed_samples.unwrap_or(other.samples.len()));
+            self.samples.clear();
+            self.streamed_samples = Some(total);
+            self.duration_secs = total as f32 / self.sample_rate as f32;
+        } else {
+            self.samples.extend_from_slice(&other.samples);
+            self.duration_secs = self.samples.len() as f32 / self.sample_rate as f32;
+        }
     }
 }
 
@@ -357,4 +383,19 @@ pub enum TaskType {
     Chat,
     /// Speech-to-speech generation.
     SpeechToSpeech,
+}
+
+#[cfg(test)]
+mod streamed_audio_completion_tests {
+    use super::*;
+    #[test]
+    fn metadata_only_completion_preserves_exact_count_duration_and_rtf() {
+        let audio = AudioOutput::streamed(88_200, 44_100);
+        assert!(audio.samples.is_empty());
+        assert_eq!(audio.streamed_samples, Some(88_200));
+        assert_eq!(audio.duration_secs, 2.0);
+        let elapsed = Duration::from_secs(1);
+        assert!((elapsed.as_secs_f32() / audio.duration_secs - 0.5).abs() < 1e-6);
+        assert_eq!(AudioOutput::new(vec![0.; 100], 100).streamed_samples, None);
+    }
 }

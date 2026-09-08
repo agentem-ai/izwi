@@ -133,6 +133,14 @@ pub(crate) struct FishS2RetainedCheckpoint {
     payload: Option<FishS2RetainedCheckpointPayload>,
 }
 
+impl FishS2RetainedCheckpoint {
+    pub(crate) fn is_initial(&self) -> bool {
+        self.payload
+            .as_ref()
+            .is_some_and(|payload| payload.slow_cache.is_none())
+    }
+}
+
 struct FishS2RetainedCheckpointPayload {
     slow_cache: Option<PhysicalPagedKvCache>,
     slow_position: usize,
@@ -1020,6 +1028,18 @@ impl FishS2RetainedState {
         let completions = self.slow_cache.take_completed_writes();
         self.completions_drained = true;
         completions
+    }
+
+    #[cfg(test)]
+    pub(crate) fn initial_quantum_for_test() -> (Self, FishS2RetainedCheckpoint) {
+        FishS2TtsModel::for_test()
+            .new_retained_state_in_quantum(
+                FishS2PreparedArtifact::test_prompt(11, 3),
+                FishS2GenerationParams::default(),
+                super::physical::test_physical_cache(91, 1, 1, 1, 8),
+                8192,
+            )
+            .unwrap()
     }
 
     #[cfg(test)]
