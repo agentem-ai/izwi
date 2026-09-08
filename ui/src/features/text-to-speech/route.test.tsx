@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AppLayout } from "@/app/layouts/AppLayout";
 import { NotificationProvider } from "@/app/providers/NotificationProvider";
 import { TextToSpeechPage } from "./route";
 import type { SpeechHistoryRecordStreamCallbacks } from "@/api";
@@ -48,6 +49,13 @@ const componentMocks = vi.hoisted(() => ({
         </div>
       ) : null,
   ),
+}));
+
+vi.mock("@/app/onboarding/FirstRunOnboarding", () => ({
+  FirstRunOnboarding: () => null,
+}));
+vi.mock("@/app/providers/AppUpdateProvider", () => ({
+  useAppUpdates: () => ({ availableUpdate: null, isPromptOpen: false }),
 }));
 
 vi.mock("@/api", () => ({
@@ -168,20 +176,38 @@ function buildSpeechCapabilities(overrides: Partial<Record<string, boolean>> = {
 function renderRoute(
   initialEntry: string,
   propsOverrides: Partial<typeof baseProps> = {},
+  withLayout = false,
 ) {
   const routeProps = { ...baseProps, ...propsOverrides };
+  if (withLayout) {
+    vi.stubGlobal("localStorage", { getItem: vi.fn().mockReturnValue(null), setItem: vi.fn() });
+  }
   return render(
     <NotificationProvider>
       <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route
-            path="/text-to-speech"
-            element={<TextToSpeechPage {...routeProps} />}
-          />
-          <Route
-            path="/text-to-speech/:recordId"
-            element={<TextToSpeechPage {...routeProps} />}
-          />
+            element={withLayout ? (
+              <AppLayout
+                readyModelsCount={1}
+                selectedModelLabel="FishAudio-S2-Pro"
+                catalogError={null}
+                resolvedTheme="dark"
+                themePreference="dark"
+                onThemePreferenceChange={vi.fn()}
+                onRetryModelCatalog={vi.fn().mockResolvedValue(undefined)}
+              />
+            ) : undefined}
+          >
+            <Route
+              path="/text-to-speech"
+              element={<TextToSpeechPage {...routeProps} />}
+            />
+            <Route
+              path="/text-to-speech/:recordId"
+              element={<TextToSpeechPage {...routeProps} />}
+            />
+          </Route>
         </Routes>
       </MemoryRouter>
     </NotificationProvider>,
@@ -210,7 +236,7 @@ describe("TextToSpeechPage", () => {
         buffer: null, connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn(), onended: null,
       }));
     });
-    apiMocks.cancelTextToSpeechRecord.mockResolvedValue({ record: buildRecord() });
+    apiMocks.cancelTextToSpeechRecord.mockReset().mockResolvedValue({ record: buildRecord() });
     apiMocks.listTextToSpeechRecords.mockReset();
     apiMocks.listTextToSpeechRecordPage.mockReset();
     apiMocks.getTextToSpeechRecord.mockReset();
@@ -926,7 +952,11 @@ describe("TextToSpeechPage", () => {
     );
   });
 
-  it("navigates to /text-to-speech/:id after stream created event", async () => {
+  it.each([
+    { withLayout: false, leave: false },
+    { withLayout: true, leave: false },
+    { withLayout: true, leave: true },
+  ])("keeps streaming through created navigation (layout: $withLayout, leave: $leave)", async ({ withLayout, leave }) => {
     let streamEvents!: SpeechHistoryRecordStreamCallbacks;
     const controller = new AbortController();
     apiMocks.getTextToSpeechRecord.mockResolvedValue(
@@ -948,7 +978,7 @@ describe("TextToSpeechPage", () => {
       },
     );
 
-    renderRoute("/text-to-speech");
+    renderRoute("/text-to-speech", {}, withLayout);
 
     await waitFor(() =>
       expect(apiMocks.listTextToSpeechRecords).toHaveBeenCalled(),
@@ -972,12 +1002,15 @@ describe("TextToSpeechPage", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(controller.signal.aborted).toBe(false);
+    expect(apiMocks.cancelTextToSpeechRecord).not.toHaveBeenCalled();
     await act(async () => {
       streamEvents.onStart?.({ requestId: "request", sampleRate: 44100, audioFormat: "pcm_i16" });
       await streamEvents.onChunk?.({ requestId: "request", sequence: 0, sampleCount: 1, audioBase64: "AAA=" });
     });
     expect(screen.getByText("Playing generated speech")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Stop generation and playback" }));
+    fireEvent.click(screen.getByRole("button", {
+      name: leave ? "Back to history" : "Stop generation and playback",
+    }));
     expect(controller.signal.aborted).toBe(true);
     expect(apiMocks.cancelTextToSpeechRecord).toHaveBeenCalledWith("tts-created-1");
   });
