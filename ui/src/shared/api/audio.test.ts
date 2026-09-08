@@ -242,6 +242,62 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     expect(seen).toEqual([0, 1]);
   });
 
+  it("ignores speech-history heartbeat comments before start and between audio chunks", async () => {
+    const record = { id: "tts-heartbeat", processing_status: "processing" };
+    const finalRecord = { ...record, processing_status: "ready" };
+    const data = (event: unknown) => `data: ${JSON.stringify(event)}\n\n`;
+    const parts = [
+      data({ event: "created", record }),
+      ": keep-alive\n\n",
+      ": keep-",
+      "alive\n\n",
+      data({ event: "start", request_id: "request", sample_rate: 44100, audio_format: "pcm_i16" }),
+      data({ event: "chunk", request_id: "request", sequence: 0, audio_base64: "AAA=", sample_count: 1 }),
+      ": keep-alive\n\n",
+      data({ event: "chunk", request_id: "request", sequence: 1, audio_base64: "AAA=", sample_count: 1 }),
+      data({ event: "final", record: finalRecord, generation_time_ms: 20, audio_duration_secs: 1, rtf: 0.02, tokens_generated: 2 }),
+      data({ event: "done" }),
+    ];
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const part of parts) controller.enqueue(encoder.encode(part));
+        controller.close();
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, {
+      headers: { "Content-Type": "text/event-stream" },
+    })));
+    const onCreated = vi.fn();
+    const onStart = vi.fn();
+    const onChunk = vi.fn();
+    const onFinal = vi.fn();
+    const onError = vi.fn();
+    let done!: () => void;
+    const completed = new Promise<void>((resolve) => { done = resolve; });
+    const client = new AudioApiClient(new ApiHttpClient());
+    const controller = client.createTextToSpeechRecordStream(
+      { text: "Hello", model_id: "FishAudio-S2-Pro" },
+      { onCreated, onStart, onChunk, onFinal, onError, onDone: done },
+    );
+    await completed;
+
+    expect(onCreated).toHaveBeenCalledExactlyOnceWith(record);
+    expect(onStart).toHaveBeenCalledExactlyOnceWith({
+      requestId: "request", sampleRate: 44100, audioFormat: "pcm_i16",
+    });
+    expect(onChunk.mock.calls).toEqual([
+      [{ requestId: "request", sequence: 0, audioBase64: "AAA=", sampleCount: 1 }],
+      [{ requestId: "request", sequence: 1, audioBase64: "AAA=", sampleCount: 1 }],
+    ]);
+    expect(onFinal).toHaveBeenCalledExactlyOnceWith({
+      record: finalRecord,
+      stats: { generation_time_ms: 20, audio_duration_secs: 1, rtf: 0.02, tokens_generated: 2 },
+    });
+    expect(onError).not.toHaveBeenCalled();
+    expect(controller.signal.aborted).toBe(false);
+  });
+
   it("parses direct TTS stream audio event names", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       sseResponse([

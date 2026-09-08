@@ -267,6 +267,37 @@ impl AsRef<[u8]> for BudgetedStreamEvent {
     }
 }
 
+// Model loading, reference preparation and prefill can all precede the first
+// PCM chunk. Comments keep SSE intermediaries alive without inventing audio or
+// progress events, and are produced on demand rather than entering the queue.
+fn speech_event_stream(
+    mut event_rx: mpsc::Receiver<BudgetedStreamEvent>,
+) -> impl futures::Stream<Item = Result<bytes::Bytes, Infallible>> {
+    async_stream::stream! {
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), event_rx.recv()).await {
+                Ok(Some(payload)) => {
+                    // Ownership follows the transport frame and every clone.
+                    yield Ok(bytes::Bytes::from_owner(payload));
+                }
+                Ok(None) => break,
+                Err(_) => yield Ok(bytes::Bytes::from_static(b": keepalive\n\n")),
+            }
+        }
+    }
+}
+
+fn speech_stream_response(event_rx: mpsc::Receiver<BudgetedStreamEvent>) -> Response {
+    let stream = speech_event_stream(event_rx);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache, no-transform")
+        .header("x-accel-buffering", "no")
+        .body(Body::from_stream(stream))
+        .expect("static speech stream response")
+}
+
 #[derive(Clone)]
 struct StreamEventSender {
     sender: mpsc::Sender<BudgetedStreamEvent>,
@@ -1498,8 +1529,7 @@ async fn stream_record_creation(
     let speech_store = state.speech_history_store.clone();
     let admission_state = state.clone();
 
-    let (sender, mut event_rx) =
-        mpsc::channel::<BudgetedStreamEvent>(stream_event_queue_capacity());
+    let (sender, event_rx) = mpsc::channel::<BudgetedStreamEvent>(stream_event_queue_capacity());
     let byte_limit = std::env::var("IZWI_AUDIO_STREAM_MAX_EVENT_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -1618,7 +1648,7 @@ async fn stream_record_creation(
             .await;
 
         let fallback_sample_rate = runtime.sample_rate().await;
-        if send_stream_event(
+        if let Err(message) = send_stream_event(
             &event_tx,
             SpeechStreamEvent {
                 event: "start",
@@ -1638,9 +1668,15 @@ async fn stream_record_creation(
             },
         )
         .await
-        .is_err()
         {
-            mark_failed(STREAM_CLIENT_DISCONNECTED_MESSAGE.to_string()).await;
+            tracing::warn!(
+                request_id = %stream_request_id,
+                record_id = %placeholder_record_id,
+                elapsed_ms = stream_entry_started.elapsed().as_millis(),
+                error = message,
+                "Speech stream startup event delivery failed"
+            );
+            mark_failed(message.to_string()).await;
             return;
         }
 
@@ -1791,6 +1827,14 @@ async fn stream_record_creation(
                 )
                 .await
                 {
+                    tracing::warn!(
+                        request_id = %stream_request_id,
+                        record_id = %placeholder_record_id,
+                        sequence = global_sequence,
+                        elapsed_ms = stream_entry_started.elapsed().as_millis(),
+                        error = message,
+                        "Speech stream PCM delivery failed"
+                    );
                     failure_message = Some(message.to_string());
                     stream_closed = true;
                     break;
@@ -1945,20 +1989,7 @@ async fn stream_record_creation(
         .await;
     });
 
-    let stream = async_stream::stream! {
-        while let Some(payload) = event_rx.recv().await {
-            // The byte reservation follows the HTTP body frame until the
-            // transport consumes or drops it, rather than ending at dequeue.
-            yield Ok::<_, Infallible>(bytes::Bytes::from_owner(payload));
-        }
-    };
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/event-stream")
-        .header(header::CACHE_CONTROL, "no-cache")
-        .body(Body::from_stream(stream))
-        .unwrap_or_else(|_| Response::new(Body::empty())))
+    Ok(speech_stream_response(event_rx))
 }
 
 fn normalize_create_request(
@@ -2341,6 +2372,80 @@ fn map_media_ingest_error(err: MediaIngestError) -> ApiError {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test(start_paused = true)]
+    async fn sse_keepalive_survives_idle_preparation_then_delivers_data_and_eof() {
+        use futures::StreamExt;
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let response = super::speech_stream_response(receiver);
+        assert_eq!(response.headers()["content-type"], "text/event-stream");
+        assert_eq!(
+            response.headers()["cache-control"],
+            "no-cache, no-transform"
+        );
+        assert_eq!(response.headers()["x-accel-buffering"], "no");
+        let mut body = response.into_body().into_data_stream();
+        let started = tokio::time::Instant::now();
+        // Simulate a reader/proxy that closes an idle stream after 15 seconds.
+        // Preparation takes 40 seconds, but regular comment frames keep it alive.
+        for _ in 0..4 {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(15), body.next())
+                .await
+                .expect("idle client closed before first audio")
+                .unwrap()
+                .unwrap();
+            assert_eq!(frame.as_ref(), b": keepalive\n\n");
+        }
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(40));
+        let payload = "data: {\"event\":\"chunk\"}\n\n".to_string();
+        let budget = crate::speech_resource_budget::ByteBudget::new(payload.len());
+        let other = crate::speech_resource_budget::ByteBudget::new(payload.len());
+        sender
+            .send(super::BudgetedStreamEvent {
+                _global_reservation: budget.reserve(payload.len()).unwrap(),
+                _stream_reservation: other.reserve(payload.len()).unwrap(),
+                payload: payload.clone(),
+            })
+            .await
+            .unwrap();
+        let frame = body.next().await.unwrap().unwrap();
+        assert_eq!(frame.as_ref(), payload.as_bytes());
+        assert!(budget.reserve(1).is_err());
+        drop(frame);
+        assert!(budget.reserve(payload.len()).is_ok());
+        drop(sender);
+        assert!(body.next().await.is_none());
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(40));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dropping_sse_body_releases_queued_bytes_and_closes_sender() {
+        for read_keepalive in [false, true] {
+            use futures::StreamExt;
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+            let mut body = super::speech_stream_response(receiver)
+                .into_body()
+                .into_data_stream();
+            if read_keepalive {
+                assert!(body.next().await.unwrap().is_ok());
+            }
+            let budget = crate::speech_resource_budget::ByteBudget::new(32);
+            let other = crate::speech_resource_budget::ByteBudget::new(32);
+            sender
+                .send(super::BudgetedStreamEvent {
+                    payload: "data: pending\n\n".into(),
+                    _global_reservation: budget.reserve(32).unwrap(),
+                    _stream_reservation: other.reserve(32).unwrap(),
+                })
+                .await
+                .unwrap();
+            assert!(budget.reserve(1).is_err());
+            drop(body);
+            assert!(sender.is_closed());
+            assert!(budget.reserve(32).is_ok());
+            assert!(other.reserve(32).is_ok());
+        }
+    }
+
     #[test]
     fn sse_byte_reservation_follows_transport_frame_and_clones() {
         let budget = crate::speech_resource_budget::ByteBudget::new(16);
