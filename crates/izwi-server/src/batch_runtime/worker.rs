@@ -434,6 +434,7 @@ enum StageExecutionResolution {
 
 #[derive(Clone)]
 struct ActiveExecution {
+    stage_id: String,
     cancellation: StageCancellationSignal,
     weight: u32,
     memory_bytes: u64,
@@ -441,7 +442,7 @@ struct ActiveExecution {
 
 struct ActiveExecutionGuard {
     slots: Arc<RwLock<HashMap<String, ActiveExecution>>>,
-    stage_id: String,
+    attempt_id: String,
 }
 
 impl Drop for ActiveExecutionGuard {
@@ -449,7 +450,7 @@ impl Drop for ActiveExecutionGuard {
         self.slots
             .write()
             .unwrap_or_else(|poison| poison.into_inner())
-            .remove(&self.stage_id);
+            .remove(&self.attempt_id);
     }
 }
 
@@ -586,13 +587,19 @@ impl BatchWorkerRunner {
         };
 
         let cancellation = StageCancellationSignal::new();
+        let attempt_id = claimed
+            .stage
+            .attempt_token
+            .clone()
+            .ok_or_else(|| anyhow!("Claimed stage is missing attempt identity"))?;
         let hints = &claimed.stage.resource_hints;
         self.active_executions
             .write()
             .unwrap_or_else(|poison| poison.into_inner())
             .insert(
-                claimed.stage.id.clone(),
+                attempt_id.clone(),
                 ActiveExecution {
+                    stage_id: claimed.stage.id.clone(),
                     cancellation: cancellation.clone(),
                     weight: hints.concurrency_weight.max(1),
                     memory_bytes: hints.min_memory_bytes.unwrap_or(0),
@@ -600,7 +607,7 @@ impl BatchWorkerRunner {
             );
         let _active_execution = ActiveExecutionGuard {
             slots: self.active_executions.clone(),
-            stage_id: claimed.stage.id.clone(),
+            attempt_id,
         };
         drop(claim_lock);
         self.health.record_claim(claimed.stage.id.clone());
@@ -1021,7 +1028,10 @@ impl BatchWorkerRunner {
                 .read()
                 .unwrap_or_else(|poison| poison.into_inner());
             (
-                active.keys().cloned().collect::<Vec<_>>(),
+                active
+                    .values()
+                    .map(|execution| execution.stage_id.clone())
+                    .collect::<Vec<_>>(),
                 active
                     .values()
                     .fold(0u32, |sum, execution| sum.saturating_add(execution.weight)),
@@ -1457,6 +1467,44 @@ mod tests {
     }
 
     #[test]
+    fn old_attempt_cleanup_preserves_a_reclaimed_stages_new_execution() {
+        let slots = Arc::new(RwLock::new(HashMap::new()));
+        let mut guards = Vec::new();
+        for attempt_id in ["old-attempt", "new-attempt"] {
+            slots.write().unwrap().insert(
+                attempt_id.to_string(),
+                ActiveExecution {
+                    stage_id: "same-stage".into(),
+                    cancellation: StageCancellationSignal::new(),
+                    weight: 1,
+                    memory_bytes: 10,
+                },
+            );
+            guards.push(ActiveExecutionGuard {
+                slots: slots.clone(),
+                attempt_id: attempt_id.to_string(),
+            });
+        }
+        assert_eq!(
+            slots
+                .read()
+                .unwrap()
+                .values()
+                .map(|execution| execution.weight)
+                .sum::<u32>(),
+            2
+        );
+        drop(guards.remove(0));
+        let live = slots.read().unwrap();
+        assert_eq!(live.len(), 1);
+        assert!(live.contains_key("new-attempt"));
+        assert_eq!(live["new-attempt"].memory_bytes, 10);
+        drop(live);
+        drop(guards);
+        assert!(slots.read().unwrap().is_empty());
+    }
+
+    #[test]
     fn weighted_active_claims_reduce_all_available_worker_resources() {
         let mut config = BatchWorkerConfig::local("weighted-worker");
         config.resources.concurrency_slots = 7;
@@ -1470,6 +1518,7 @@ mod tests {
         runner.active_executions.write().unwrap().insert(
             "active".into(),
             ActiveExecution {
+                stage_id: "stage".into(),
                 cancellation: StageCancellationSignal::new(),
                 weight: 3,
                 memory_bytes: 60,
