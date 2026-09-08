@@ -2,10 +2,10 @@
 //!
 //! The full host budget is reserved by model residency, independently of request
 //! preparation. Returned codes are request-owned copies; eviction never leaves
-//! unaccounted shared borrows alive. A single builder coalesces concurrent misses.
+//! unaccounted shared borrows alive. Per-key builders coalesce concurrent misses without blocking unrelated hits.
 
 use std::mem::size_of;
-use std::sync::{Mutex, TryLockError};
+use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -28,11 +28,13 @@ struct State {
     entries: [Option<Entry>; MAX_ENTRIES],
     clock: u64,
     payload_bytes: usize,
+    building: [Option<[u8; 32]>; MAX_ENTRIES],
 }
 
 pub(super) struct ReferenceCodeCache {
     state: Mutex<State>,
     budget: usize,
+    changed: Condvar,
 }
 
 impl Default for ReferenceCodeCache {
@@ -48,8 +50,10 @@ impl ReferenceCodeCache {
                 entries: std::array::from_fn(|_| None),
                 clock: 0,
                 payload_bytes: 0,
+                building: [None; MAX_ENTRIES],
             }),
             budget,
+            changed: Condvar::new(),
         }
     }
 
@@ -62,41 +66,52 @@ impl ReferenceCodeCache {
     ) -> Result<(FishS2VqCodes, bool)> {
         check()?;
         let key = reference_key(samples, sample_rate, check)?;
-        let mut state = loop {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::InferenceError("Fish reference cache poisoned".into()))?;
+        let builder_slot = loop {
             check()?;
-            match self.state.try_lock() {
-                Ok(state) => break state,
-                Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(5)),
-                Err(TryLockError::Poisoned(_)) => {
-                    return Err(Error::InferenceError(
-                        "Fish reference cache poisoned".into(),
-                    ));
+            state.clock = state.clock.saturating_add(1);
+            let clock = state.clock;
+            if let Some(entry) = state
+                .entries
+                .iter_mut()
+                .flatten()
+                .find(|entry| entry.key == key)
+            {
+                entry.used = clock;
+                let codebooks = if entry.frames == 0 {
+                    vec![Vec::new(); entry.rows]
+                } else {
+                    entry
+                        .codes
+                        .chunks_exact(entry.frames)
+                        .map(<[u32]>::to_vec)
+                        .collect()
+                };
+                return Ok((FishS2VqCodes { codebooks }, true));
+            }
+            if !state.building.contains(&Some(key)) {
+                if let Some(slot) = state.building.iter().position(Option::is_none) {
+                    state.building[slot] = Some(key);
+                    break slot;
                 }
             }
+            // Waits are bounded so cancellation remains observable. The fixed
+            // metadata table also bounds distinct concurrent cache builders;
+            // their tensors remain covered by request preparation admission.
+            state = self
+                .changed
+                .wait_timeout(state, Duration::from_millis(5))
+                .map_err(|_| Error::InferenceError("Fish reference cache poisoned".into()))?
+                .0;
         };
-        check()?;
-        // Saturation preserves correctness; tied entries may simply evict sooner.
-        state.clock = state.clock.saturating_add(1);
-        let clock = state.clock;
-        if let Some(entry) = state
-            .entries
-            .iter_mut()
-            .flatten()
-            .find(|entry| entry.key == key)
-        {
-            entry.used = clock;
-            let codebooks = if entry.frames == 0 {
-                vec![Vec::new(); entry.rows]
-            } else {
-                entry
-                    .codes
-                    .chunks_exact(entry.frames)
-                    .map(<[u32]>::to_vec)
-                    .collect()
-            };
-            return Ok((FishS2VqCodes { codebooks }, true));
-        }
-
+        drop(state);
+        let _builder = BuilderGuard {
+            cache: self,
+            slot: builder_slot,
+        };
         let codes = encode()?;
         // Failed/cancelled builders never publish a partial cache entry.
         check()?;
@@ -115,6 +130,12 @@ impl ReferenceCodeCache {
         if bytes == 0 || bytes > capacity {
             return Ok((codes, false));
         }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::InferenceError("Fish reference cache poisoned".into()))?;
+        state.clock = state.clock.saturating_add(1);
+        let clock = state.clock;
         // Evict before allocating the cache-owned copy. The encoder result and
         // any caller-owned hit copy stay within that request's preparation lease.
         while state.payload_bytes > capacity - bytes || state.entries.iter().all(Option::is_some) {
@@ -149,6 +170,21 @@ impl ReferenceCodeCache {
         });
         state.payload_bytes += bytes;
         Ok((codes, false))
+    }
+}
+
+// Clear the in-flight key on every return, cancellation, encoder failure and
+// unwind. Never publish partial values or hold metadata while running a codec.
+struct BuilderGuard<'a> {
+    cache: &'a ReferenceCodeCache,
+    slot: usize,
+}
+
+impl Drop for BuilderGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.cache.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.building[self.slot] = None;
+        self.cache.changed.notify_all();
     }
 }
 
@@ -298,5 +334,40 @@ mod tests {
             }
         });
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn warm_hit_and_distinct_miss_progress_while_builder_is_blocked() {
+        let cache = ReferenceCodeCache::default();
+        cache
+            .get_or_encode(&[1.], 1, &|| Ok(()), || Ok(codes(1)))
+            .unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let cache_ref = &cache;
+            scope.spawn(move || {
+                cache_ref
+                    .get_or_encode(&[2.], 1, &|| Ok(()), || {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                        Ok(codes(2))
+                    })
+                    .unwrap()
+            });
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(
+                cache
+                    .get_or_encode(&[1.], 1, &|| Ok(()), || panic!("warm hit blocked"))
+                    .unwrap()
+                    .1
+            );
+            assert!(
+                !cache
+                    .get_or_encode(&[3.], 1, &|| Ok(()), || Ok(codes(3)))
+                    .unwrap()
+                    .1
+            );
+            release_tx.send(()).unwrap();
+        });
     }
 }
