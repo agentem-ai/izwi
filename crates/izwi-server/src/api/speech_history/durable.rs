@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::tts_long_form::{generate_speech_plan_stream_with_progress, SpeechTextPlan};
+use crate::api::tts_long_form::{SpeechTextPlan, generate_speech_plan_stream_with_progress};
 use crate::batch_runtime::speech_progress::{SpeechCheckpoint, SpeechPcmBatch};
 
 pub(crate) struct DurableSpeechProgress {
@@ -504,8 +504,10 @@ async fn read_pcm(
         "Speech replay checksum mismatch"
     );
     Ok(bytes
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes))
         .collect())
 }
 
