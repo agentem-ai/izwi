@@ -12,7 +12,7 @@ use izwi_hooks::{
     MediaWriteRequest, StoredMediaBytes, StoredMediaObject,
 };
 use sea_orm::{DatabaseConnection, DatabaseConnectionType, DbBackend};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -448,7 +448,7 @@ impl MediaStorageProvider for LocalMediaStorageProvider {
             output.sync_all().await?;
             drop(output);
             // The temporary owner removes incomplete output on every error/cancellation.
-            temporary.persist_noclobber(target)?;
+            persist_local_tempfile_noclobber(temporary, &target)?;
             Ok::<_, anyhow::Error>((key, format!("{:x}", hash.finalize())))
         }
         .await
@@ -501,6 +501,41 @@ impl MediaStorageProvider for LocalMediaStorageProvider {
     async fn delete(&self, request: MediaDeleteRequest) -> HookResult<()> {
         storage_layout::delete_media_file(&self.media_root, Some(&request.key.key))
             .map_err(|err| HookError::Failed(err.to_string()))
+    }
+}
+
+fn persist_local_tempfile_noclobber(
+    temporary: tempfile::NamedTempFile,
+    target: &Path,
+) -> anyhow::Result<()> {
+    persist_local_tempfile_noclobber_with(temporary, target, |temporary, target| {
+        temporary.persist_noclobber(target)
+    })
+}
+
+fn persist_local_tempfile_noclobber_with(
+    temporary: tempfile::NamedTempFile,
+    target: &Path,
+    persist: impl FnOnce(
+        tempfile::NamedTempFile,
+        &Path,
+    ) -> Result<std::fs::File, tempfile::PersistError>,
+) -> anyhow::Result<()> {
+    match persist(temporary, target) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let rename_error = error.error;
+            let temporary = error.file;
+            std::fs::hard_link(temporary.path(), target).with_context(|| {
+                format!(
+                    "Failed to publish media with a hard link after atomic rename was denied: {rename_error}"
+                )
+            })?;
+            // Dropping the owner unlinks only the temporary name; the target hard link remains.
+            drop(temporary);
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -574,6 +609,62 @@ mod tests {
     use crate::test_support::env_lock;
     use izwi_hooks::{DatabaseProvider, DatabaseProviderDecision, MediaStorageResolver};
     use sea_orm::DbBackend;
+    use std::io::Write;
+
+    #[test]
+    fn local_media_publish_falls_back_when_atomic_rename_is_denied() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let target = directory.path().join("published.wav");
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(directory.path()).expect("temporary file");
+        temporary.write_all(b"generated audio").expect("write");
+        temporary.as_file().sync_all().expect("sync");
+        let temporary_path = temporary.path().to_path_buf();
+
+        persist_local_tempfile_noclobber_with(temporary, &target, |file, _| {
+            Err(tempfile::PersistError {
+                error: std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated seccomp denial",
+                ),
+                file,
+            })
+        })
+        .expect("permission denial should use the no-clobber hard-link fallback");
+
+        assert_eq!(
+            std::fs::read(&target).expect("published bytes"),
+            b"generated audio"
+        );
+        assert!(!temporary_path.exists());
+    }
+
+    #[test]
+    fn local_media_publish_fallback_does_not_replace_an_existing_target() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let target = directory.path().join("published.wav");
+        std::fs::write(&target, b"existing audio").expect("existing target");
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(directory.path()).expect("temporary file");
+        temporary.write_all(b"new audio").expect("write");
+
+        let error = persist_local_tempfile_noclobber_with(temporary, &target, |file, _| {
+            Err(tempfile::PersistError {
+                error: std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated seccomp denial",
+                ),
+                file,
+            })
+        })
+        .expect_err("fallback must preserve no-clobber behavior");
+
+        assert_eq!(
+            std::fs::read(&target).expect("existing bytes"),
+            b"existing audio"
+        );
+        assert!(error.to_string().contains("hard link"), "{error:#}");
+    }
 
     #[tokio::test]
     async fn file_upload_round_trips_stream_with_checksum_and_rejects_wrong_length() {
