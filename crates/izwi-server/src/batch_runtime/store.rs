@@ -360,15 +360,17 @@ impl StoredRetryPolicy {
 
 #[derive(Debug, Clone, Copy)]
 enum LeaseValidity {
-    Active,
     Expired,
+    Any,
 }
 
 impl LeaseValidity {
     fn sql_predicate(self) -> &'static str {
         match self {
-            Self::Active => "lease_expires_at > ?7",
             Self::Expired => "lease_expires_at <= ?7",
+            // Owner-fenced relinquish must not depend on wall-clock expiry:
+            // attempt identity still protects against a reclaimed lease.
+            Self::Any => "1 = 1",
         }
     }
 }
@@ -1517,7 +1519,7 @@ impl BatchRuntimeStore {
                 &tx,
                 &stage,
                 lease,
-                LeaseValidity::Active,
+                LeaseValidity::Any,
                 now,
                 available_at,
                 error_code,
@@ -1529,7 +1531,7 @@ impl BatchRuntimeStore {
                 &tx,
                 &stage,
                 lease,
-                LeaseValidity::Active,
+                LeaseValidity::Any,
                 now,
                 error_code,
                 error_message,

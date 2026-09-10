@@ -832,17 +832,18 @@ impl BatchWorkerRunner {
                 self.record_heartbeat("idle", None).await?;
             }
             StageExecutionResolution::Cancelled(reason) => {
-                let relinquished = if reason == StageCancellationReason::LeaseLost {
-                    None
-                } else {
-                    self.store
-                        .relinquish_stage_lease(
-                            &lease,
-                            reason.as_error_code(),
-                            format!("Stage execution cancelled: {}", reason.as_error_code()),
-                        )
-                        .await?
-                };
+                // Always attempt an owner-fenced relinquish, even after an
+                // observed lease loss: an expired-but-unreclaimed attempt is
+                // still ours to retry, while a reclaimed attempt safely no-ops
+                // on its attempt token. Skipping here orphaned `Running` rows.
+                let relinquished = self
+                    .store
+                    .relinquish_stage_lease(
+                        &lease,
+                        reason.as_error_code(),
+                        format!("Stage execution cancelled: {}", reason.as_error_code()),
+                    )
+                    .await?;
                 let outcome = match relinquished.as_ref().map(|stage| stage.status) {
                     Some(super::types::RuntimeStageStatus::Retrying) => {
                         RuntimeStageOutcome::Retried
@@ -1424,8 +1425,10 @@ mod tests {
         let mut config = BatchWorkerConfig::local("concurrent-worker");
         config.resources.concurrency_slots = 2;
         config.poll_interval = Duration::from_millis(10);
-        config.lease_duration = Duration::from_millis(150);
-        config.drain_timeout = Duration::from_millis(50);
+        // Keep wall-clock margins generous for shared CI runners: a 150ms
+        // lease flaked when renewal heartbeats slipped under parallel load.
+        config.lease_duration = Duration::from_millis(800);
+        config.drain_timeout = Duration::from_millis(300);
         let runner = BatchWorkerRunner::new(
             store.clone(),
             vec![Arc::new(BlockingExecutor {
@@ -1449,7 +1452,7 @@ mod tests {
         assert_eq!(runner.claim_filter().resources.concurrency_slots, 0);
         assert!(!runner.run_once().await.unwrap());
         // Both leases must stay alive for longer than the original lease.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
         let mut running = 0;
         let mut queued = 0;
         for id in &stage_ids {
