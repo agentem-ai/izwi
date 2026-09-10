@@ -1,3 +1,6 @@
+#[path = "speech_admission.rs"]
+mod speech_admission;
+
 use axum::extract::Request;
 use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode};
@@ -20,6 +23,25 @@ pub struct RequestContext {
     pub correlation_id: String,
     #[allow(dead_code)]
     pub principal: Principal,
+}
+
+impl RequestContext {
+    /// Scheduling identity comes exclusively from the authenticated extension.
+    /// Legacy durable jobs and the local anonymous principal share None.
+    pub(crate) fn tenant_key(&self) -> Option<[u8; 32]> {
+        if self.principal == Principal::local_anonymous() {
+            return None;
+        }
+        use sha2::{Digest, Sha256};
+        Some(Sha256::digest(principal_namespace(&self.principal).as_bytes()).into())
+    }
+}
+
+pub(super) fn principal_namespace(principal: &Principal) -> String {
+    match &principal.tenant_id {
+        Some(tenant) => format!("tenant:{tenant}"),
+        None => format!("principal:{}", principal.id),
+    }
 }
 
 #[allow(dead_code)]
@@ -110,6 +132,29 @@ pub async fn attach_enterprise_request_context(
         );
     }
 
+    let speech_permit = if speech_admission::is_speech_generation(req.method(), req.uri().path()) {
+        match speech_admission::acquire(
+            &principal,
+            state.request_admission_snapshot().global.capacity,
+        ) {
+            Ok(permit) => Some(permit),
+            Err(status) => {
+                return response_with_request_id(
+                    status,
+                    &correlation_id,
+                    if status == StatusCode::TOO_MANY_REQUESTS {
+                        "speech tenant quota exceeded"
+                    } else {
+                        "speech serving capacity unavailable"
+                    }
+                    .to_string(),
+                )
+            }
+        }
+    } else {
+        None
+    };
+
     req.extensions_mut().insert(RequestContext {
         correlation_id: correlation_id.clone(),
         principal: principal.clone(),
@@ -134,6 +179,10 @@ pub async fn attach_enterprise_request_context(
 
     if let Ok(value) = HeaderValue::from_str(&correlation_id) {
         response.headers_mut().insert(REQUEST_ID_HEADER, value);
+    }
+
+    if let Some(permit) = speech_permit {
+        response = speech_admission::guard_response(response, permit);
     }
 
     response
@@ -290,6 +339,23 @@ fn header_to_string(value: &HeaderValue) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scheduling_tenant_identity_is_trusted_namespaced_and_anonymous_stable() {
+        let mut context = super::RequestContext {
+            correlation_id: "untrusted-header".into(),
+            principal: izwi_hooks::Principal::local_anonymous(),
+        };
+        assert_eq!(context.tenant_key(), None);
+        context.principal.id = "a".into();
+        let individual = context.tenant_key();
+        context.principal.tenant_id = Some("a".into());
+        let tenant = context.tenant_key();
+        assert_ne!(individual, tenant);
+        context.principal.id = "another-member".into();
+        context.correlation_id = "different-header".into();
+        assert_eq!(context.tenant_key(), tenant);
+    }
+
     use super::*;
     use axum::{
         body::Body,

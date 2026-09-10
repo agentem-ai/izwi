@@ -4203,6 +4203,17 @@ impl Deref for VoxtralTtsModelLease {
 }
 
 impl FishS2TtsModelLease {
+    #[cfg(test)]
+    pub(crate) fn for_test(model: FishS2TtsModel) -> Self {
+        let uses = Arc::new(ModelUseState::default());
+        Self {
+            inner: TrackedModelLease {
+                model: Arc::new(model),
+                _guard: uses.acquire().expect("fresh Fish S2 test model lease"),
+            },
+        }
+    }
+
     pub(crate) fn model_arc(&self) -> Arc<FishS2TtsModel> {
         self.inner.model.clone()
     }

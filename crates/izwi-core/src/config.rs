@@ -615,11 +615,11 @@ pub struct EngineConfig {
     #[serde(default = "default_max_scheduler_batch_size")]
     pub max_scheduler_batch_size: usize,
 
-    /// Maximum retained sequence/session rows in managed model state.
+    /// Maximum retained sequence/session rows in managed model state; zero resolves automatically.
     #[serde(default = "default_max_retained_sequences")]
     pub max_retained_sequences: usize,
 
-    /// Maximum simultaneously staged managed-state transactions.
+    /// Maximum simultaneously staged managed-state transactions; zero resolves automatically.
     #[serde(default = "default_max_staged_transactions")]
     pub max_staged_transactions: usize,
 
@@ -744,15 +744,15 @@ fn default_models_dir() -> PathBuf {
 }
 
 fn default_max_scheduler_batch_size() -> usize {
-    8
+    0 // Automatic administrative ceiling; resolved against device memory at startup.
 }
 
 fn default_max_retained_sequences() -> usize {
-    8
+    0 // Automatic administrative ceiling; resolved against device memory at startup.
 }
 
 fn default_max_staged_transactions() -> usize {
-    8
+    0 // Automatic administrative ceiling; resolved against device memory at startup.
 }
 
 fn default_max_queued_requests() -> usize {
@@ -1016,9 +1016,9 @@ mod managed_kv_default_tests {
     #[test]
     fn physical_and_logical_capacity_defaults_are_independent() {
         let config = EngineConfig::default();
-        assert_eq!(config.max_scheduler_batch_size, 8);
-        assert_eq!(config.max_retained_sequences, 8);
-        assert_eq!(config.max_staged_transactions, 8);
+        assert_eq!(config.max_scheduler_batch_size, 0);
+        assert_eq!(config.max_retained_sequences, 0);
+        assert_eq!(config.max_staged_transactions, 0);
         assert_eq!(config.max_queued_requests, 128);
         assert_eq!(config.max_batch_size.resolve(BackendKind::Cpu), 2);
         assert_eq!(

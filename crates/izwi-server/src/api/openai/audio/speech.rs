@@ -87,6 +87,8 @@ pub struct SpeechRequest {
 struct SpeechStreamEvent {
     event: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    timing: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sequence: Option<usize>,
@@ -145,8 +147,21 @@ pub async fn speech(
         req.allow_format_fallback.unwrap_or(false),
     )?;
 
+    let tenant_key = ctx.tenant_key();
     if streaming {
-        return stream_speech(state, req, ctx.correlation_id, variant, resolved_format).await;
+        return stream_speech(
+            state,
+            req,
+            ctx.correlation_id,
+            tenant_key,
+            variant,
+            resolved_format,
+        )
+        .await;
+    }
+
+    if variant == ModelVariant::FishAudioS2Pro {
+        return fish_file_speech(state, req, ctx.correlation_id, tenant_key, resolved_format).await;
     }
 
     let permit = state
@@ -164,8 +179,10 @@ pub async fn speech(
     let format_fallback = resolved_format.fallback;
 
     let result = tokio::time::timeout(timeout, async {
+        let mut runtime_context = permit.runtime_context();
+        runtime_context.tenant_key = tenant_key;
         let gen_request = build_generation_request(&req, ctx.correlation_id, false, variant)
-            .with_runtime_context(permit.runtime_context());
+            .with_runtime_context(runtime_context);
         state.runtime.generate(gen_request).await
     })
     .await
@@ -217,6 +234,175 @@ pub async fn speech(
         builder = builder.header("X-Izwi-Tts-Diagnostics", diagnostics.to_string());
     }
     Ok(builder.body(Body::from(audio_bytes)).unwrap())
+}
+
+/// Synchronous requests retain cancellation with their HTTP future. PCM is
+/// spooled incrementally; the response owns the finalized file until EOF/drop.
+async fn fish_file_speech(
+    state: AppState,
+    req: SpeechRequest,
+    correlation_id: String,
+    tenant_key: Option<[u8; 32]>,
+    resolved_format: ResolvedSpeechFormat,
+) -> Result<Response<Body>, ApiError> {
+    use crate::speech_history_store::SpeechWavSpool;
+    use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+    let variant = ModelVariant::FishAudioS2Pro;
+    let mut request = build_generation_request(&req, correlation_id, true, variant);
+    request.runtime_context.tenant_key = tenant_key;
+    // Validate admission before model load or output allocation.
+    crate::api::tts_long_form::SpeechTextPlan::fish(&req.input, request.config.options.max_tokens)?;
+    state.runtime.load_model(variant).await?;
+    let started = Instant::now();
+    let (sender, mut receiver) = mpsc::channel::<AudioChunk>(2);
+    let format = resolved_format.format;
+    let collect = async {
+        let raw_owner =
+            tempfile::NamedTempFile::new().map_err(|e| ApiError::internal(e.to_string()))?;
+        let mut raw = tokio::fs::File::from_std(
+            raw_owner
+                .reopen()
+                .map_err(|e| ApiError::internal(e.to_string()))?,
+        );
+        let mut reservation = crate::speech_resource_budget::spool_budget()
+            .reserve(0)
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let mut wav = None;
+        let mut sample_rate = None;
+        let mut samples = 0u64;
+        let mut statistics = None;
+        while let Some(chunk) = receiver.recv().await {
+            accumulate_stream_statistics(&mut statistics, &chunk);
+            if chunk.samples.is_empty() {
+                continue;
+            }
+            let rate = chunk.sample_rate_or(44_100);
+            if sample_rate.is_some_and(|previous| previous != rate) {
+                return Err(ApiError::internal(
+                    "Speech sample rate changed between segments",
+                ));
+            }
+            sample_rate = Some(rate);
+            samples = samples
+                .checked_add(chunk.samples.len() as u64)
+                .ok_or_else(|| ApiError::internal("Speech sample count overflow"))?;
+            if format == AudioFormat::Wav {
+                if wav.is_none() {
+                    wav = Some(
+                        SpeechWavSpool::new(rate, u32::MAX as usize - 44)
+                            .map_err(|e| ApiError::internal(e.to_string()))?,
+                    );
+                }
+                let pcm = encode_speech_samples(&chunk.samples, rate, AudioFormat::RawI16)?;
+                wav.as_mut()
+                    .unwrap()
+                    .append_pcm(&pcm)
+                    .await
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+            } else {
+                let pcm = encode_speech_samples(&chunk.samples, rate, format)?;
+                reservation
+                    .grow(pcm.len())
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+                raw.write_all(&pcm)
+                    .await
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+            }
+        }
+        let rate =
+            sample_rate.ok_or_else(|| ApiError::internal("Speech generation produced no audio"))?;
+        let artifact = match wav {
+            Some(wav) => Some(
+                wav.finish_file()
+                    .await
+                    .map_err(|e| ApiError::internal(e.to_string()))?,
+            ),
+            None => None,
+        };
+        let (mut file, length) = if let Some(wav) = artifact.as_ref() {
+            (
+                wav.open()
+                    .await
+                    .map_err(|e| ApiError::internal(e.to_string()))?,
+                wav.len(),
+            )
+        } else {
+            raw.flush()
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            raw.seek(std::io::SeekFrom::Start(0))
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            let length = raw
+                .metadata()
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?
+                .len();
+            (raw, length)
+        };
+        let stream = async_stream::try_stream! {
+            // Capture owners before polling: dropping even an unpolled body releases disk.
+            let _owners = (artifact, raw_owner, reservation);
+            let mut buffer = vec![0u8; 64 * 1024];
+            loop {
+                let count = file.read(&mut buffer).await?;
+                if count == 0 { break; }
+                yield bytes::Bytes::copy_from_slice(&buffer[..count]);
+            }
+        };
+        let body = Body::from_stream(Box::pin(stream)
+            as std::pin::Pin<
+                Box<dyn futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>,
+            >);
+        Ok::<_, ApiError>((body, length, rate, samples, statistics))
+    };
+    let generation = async {
+        crate::api::tts_long_form::generate_speech_plan_stream(
+            &state,
+            variant,
+            request,
+            sender,
+            WorkloadClass::Interactive,
+        )
+        .await
+        .map_err(ApiError::from)
+    };
+    let timeout = Duration::from_secs(state.request_timeout_secs.max(1));
+    let (_, (body, length, rate, samples, statistics)) =
+        tokio::time::timeout(timeout, async { tokio::try_join!(generation, collect) })
+            .await
+            .map_err(|_| {
+                ApiError::internal(
+            "Synchronous speech deadline exceeded; use durable speech history for long jobs",
+        )
+            })??;
+    let duration = samples as f64 / f64::from(rate);
+    let elapsed = started.elapsed().as_secs_f64();
+    let mut builder = Response::builder()
+        .header(header::CONTENT_TYPE, AudioEncoder::content_type(format))
+        .header(header::CONTENT_LENGTH, length)
+        .header("X-Audio-Sample-Rate", rate)
+        .header("X-Generation-Time-Ms", format!("{:.1}", elapsed * 1000.0))
+        .header("X-Audio-Duration-Secs", format!("{duration:.2}"))
+        .header("X-RTF", format!("{:.3}", elapsed / duration))
+        .header(
+            "Access-Control-Expose-Headers",
+            SPEECH_RESPONSE_EXPOSED_HEADERS,
+        )
+        .header(
+            "X-Requested-Response-Format",
+            req.response_format.as_deref().unwrap_or("wav"),
+        )
+        .header("X-Actual-Response-Format", resolved_format.label);
+    if let Some(stats) = statistics {
+        builder = builder.header("X-Tokens-Generated", stats.tokens_generated);
+    }
+    if let Some(fallback) = resolved_format.fallback {
+        builder = builder.header("X-Response-Format-Fallback", fallback);
+    }
+    builder
+        .body(body)
+        .map_err(|e| ApiError::internal(e.to_string()))
 }
 
 fn resolve_speech_timeout_secs(
@@ -384,12 +570,24 @@ async fn stream_speech(
     state: AppState,
     req: SpeechRequest,
     correlation_id: String,
+    tenant_key: Option<[u8; 32]>,
     variant: ModelVariant,
     resolved_format: ResolvedSpeechFormat,
 ) -> Result<Response<Body>, ApiError> {
+    let stream_entry_started = Instant::now();
     let format = resolved_format.format;
     let format_fallback = resolved_format.fallback;
     let mut gen_request = build_generation_request(&req, correlation_id, true, variant);
+    let planned_segment_count = if variant == ModelVariant::FishAudioS2Pro {
+        crate::api::tts_long_form::SpeechTextPlan::fish(
+            &req.input,
+            gen_request.config.options.max_tokens,
+        )?
+        .segments
+        .len()
+    } else {
+        1
+    };
     let stream_request_id = gen_request.id.clone();
     let stream_audio_format = stream_audio_format_label(format);
     let (event_tx, mut event_rx) = mpsc::channel::<String>(stream_event_queue_capacity());
@@ -397,14 +595,15 @@ async fn stream_speech(
     let engine = state.runtime.clone();
     let admission_state = state.clone();
     tokio::spawn(async move {
-        let permit = match admission_state
-            .acquire_owned_workload_permit(WorkloadClass::Streaming)
-            .await
-        {
+        let permit = match tokio::select! {
+            _ = event_tx.closed() => return,
+            result = admission_state.acquire_owned_workload_permit(WorkloadClass::Streaming) => result,
+        } {
             Ok(permit) => permit,
             Err(_) => {
                 let error_event = SpeechStreamEvent {
                     event: "audio.failed",
+                    timing: None,
                     request_id: Some(stream_request_id.clone()),
                     sequence: None,
                     audio_base64: None,
@@ -422,12 +621,19 @@ async fn stream_speech(
                 return;
             }
         };
-        gen_request = gen_request.with_runtime_context(permit.runtime_context());
-        if let Err(err) = engine.load_model(variant).await {
+        let mut runtime_context = permit.runtime_context();
+        runtime_context.tenant_key = tenant_key;
+        gen_request = gen_request.with_runtime_context(runtime_context);
+        let load_result = tokio::select! {
+            _ = event_tx.closed() => return,
+            result = engine.load_model(variant) => result,
+        };
+        if let Err(err) = load_result {
             let _ = send_stream_event(
                 &event_tx,
                 SpeechStreamEvent {
                     event: "audio.failed",
+                    timing: None,
                     request_id: Some(stream_request_id.clone()),
                     sequence: None,
                     audio_base64: None,
@@ -447,47 +653,68 @@ async fn stream_speech(
         }
 
         let fallback_sample_rate = engine.sample_rate().await;
-        let start_event = SpeechStreamEvent {
-            event: "audio.started",
-            request_id: Some(stream_request_id.clone()),
-            sequence: None,
-            audio_base64: None,
-            sample_count: None,
-            is_final: None,
-            sample_rate: Some(fallback_sample_rate),
-            audio_format: Some(stream_audio_format),
-            tokens_generated: None,
-            generation_time_ms: None,
-            audio_duration_secs: None,
-            rtf: None,
-            error: format_fallback
-                .as_ref()
-                .map(|fallback| format!("Requested format fallback: {fallback}")),
-        };
-        if send_stream_event(&event_tx, start_event).await.is_err() {
-            return;
-        }
-
         let (chunk_tx, mut chunk_rx) = mpsc::channel::<AudioChunk>(32);
         let generation_engine = engine.clone();
+        let retained_permit = if variant == ModelVariant::FishAudioS2Pro {
+            drop(permit);
+            None
+        } else {
+            Some(permit)
+        };
         let generation_task = tokio::spawn(async move {
-            generation_engine
-                .generate_streaming(gen_request, chunk_tx)
+            let _permit = retained_permit;
+            if variant == ModelVariant::FishAudioS2Pro {
+                crate::api::tts_long_form::generate_speech_plan_stream(
+                    &admission_state,
+                    variant,
+                    gen_request,
+                    chunk_tx,
+                    WorkloadClass::Streaming,
+                )
                 .await
+            } else {
+                generation_engine
+                    .generate_streaming(gen_request, chunk_tx)
+                    .await
+            }
         });
 
         let mut total_samples = 0usize;
+        let mut terminal_statistics = None;
+        let mut first_pcm_ms = None;
+        let mut last_pcm_ms = None;
         let mut audio_duration_secs = 0.0f32;
         let mut last_sample_rate = fallback_sample_rate;
         let stream_started = Instant::now();
         let mut client_closed = false;
         let mut stream_failed = false;
-        while let Some(chunk) = chunk_rx.recv().await {
+        let mut audio_started = false;
+        while let Some(chunk) = next_stream_chunk(&mut chunk_rx, &event_tx).await {
+            // A successful runtime terminal marker may contain statistics only.
+            accumulate_stream_statistics(&mut terminal_statistics, &chunk);
+            if !audio_started {
+                if let Some(event) = speech_started_event(
+                    &chunk,
+                    &stream_request_id,
+                    fallback_sample_rate,
+                    stream_audio_format,
+                    format_fallback.as_deref(),
+                ) {
+                    if send_stream_event(&event_tx, event).await.is_err() {
+                        client_closed = true;
+                        break;
+                    }
+                    audio_started = true;
+                }
+            }
             if chunk.samples.is_empty() {
                 continue;
             }
 
             let chunk_sample_rate = chunk.sample_rate_or(fallback_sample_rate).max(1);
+            let pcm_ms = stream_entry_started.elapsed().as_secs_f64() * 1000.0;
+            first_pcm_ms.get_or_insert(pcm_ms);
+            last_pcm_ms = Some(pcm_ms);
             total_samples += chunk.samples.len();
             audio_duration_secs += chunk.samples.len() as f32 / chunk_sample_rate as f32;
             last_sample_rate = chunk_sample_rate;
@@ -496,6 +723,7 @@ async fn stream_speech(
                 Err(err) => {
                     let error_event = SpeechStreamEvent {
                         event: "audio.failed",
+                        timing: None,
                         request_id: Some(stream_request_id.clone()),
                         sequence: None,
                         audio_base64: None,
@@ -517,6 +745,7 @@ async fn stream_speech(
 
             let chunk_event = SpeechStreamEvent {
                 event: "audio.chunk",
+                timing: None,
                 request_id: Some(chunk.request_id.clone()),
                 sequence: Some(chunk.sequence),
                 audio_base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
@@ -537,15 +766,18 @@ async fn stream_speech(
         }
 
         drop(chunk_rx);
-        if client_closed {
+        if client_closed || event_tx.is_closed() {
+            generation_task.abort();
             let _ = generation_task.await;
             return;
         }
 
         if stream_failed {
+            generation_task.abort();
             let _ = generation_task.await;
             let done_event = SpeechStreamEvent {
                 event: "done",
+                timing: None,
                 request_id: Some(stream_request_id),
                 sequence: None,
                 audio_base64: None,
@@ -567,7 +799,12 @@ async fn stream_speech(
         match generation_outcome {
             Ok(Ok(())) => {
                 let generation_time_ms = stream_started.elapsed().as_secs_f32() * 1000.0;
-                let tokens_generated = total_samples / 256;
+                let tokens_generated = terminal_statistics
+                    .as_ref()
+                    .map(|stats| stats.tokens_generated);
+                let execution_time_ms = terminal_statistics
+                    .as_ref()
+                    .map(|stats| stats.generation_time_ms);
                 let rtf = if audio_duration_secs > 0.0 {
                     (generation_time_ms / 1000.0) / audio_duration_secs
                 } else {
@@ -576,6 +813,20 @@ async fn stream_speech(
 
                 let final_event = SpeechStreamEvent {
                     event: "audio.done",
+                    timing: Some(serde_json::json!({
+                        "generation_time_basis": "post_admission_stream_wall",
+                        "request_timing_basis": "stream_handler_entry_after_request_validation",
+                        "execution_time_ms": execution_time_ms,
+                        "execution_rtf": execution_time_ms.filter(|_| audio_duration_secs > 0.0)
+                            .map(|ms| ms / 1000.0 / audio_duration_secs),
+                        "first_pcm_ms": first_pcm_ms,
+                        "request_to_last_pcm_ms": last_pcm_ms,
+                        "request_to_last_pcm_rtf": last_pcm_ms.filter(|_| audio_duration_secs > 0.0)
+                            .map(|ms| ms / 1000.0 / f64::from(audio_duration_secs)),
+                        "pcm_sample_count": total_samples,
+                        "token_unit": if variant == ModelVariant::FishAudioS2Pro { "semantic_frames" } else { "model_tokens" },
+                        "planned_segment_count": planned_segment_count,
+                    })),
                     request_id: Some(stream_request_id.clone()),
                     sequence: None,
                     audio_base64: None,
@@ -583,7 +834,7 @@ async fn stream_speech(
                     is_final: None,
                     sample_rate: Some(last_sample_rate),
                     audio_format: None,
-                    tokens_generated: Some(tokens_generated),
+                    tokens_generated,
                     generation_time_ms: Some(generation_time_ms),
                     audio_duration_secs: Some(audio_duration_secs),
                     rtf: Some(rtf),
@@ -594,6 +845,7 @@ async fn stream_speech(
             Ok(Err(err)) => {
                 let error_event = SpeechStreamEvent {
                     event: "audio.failed",
+                    timing: None,
                     request_id: Some(stream_request_id.clone()),
                     sequence: None,
                     audio_base64: None,
@@ -612,6 +864,7 @@ async fn stream_speech(
             Err(err) => {
                 let error_event = SpeechStreamEvent {
                     event: "audio.failed",
+                    timing: None,
                     request_id: Some(stream_request_id.clone()),
                     sequence: None,
                     audio_base64: None,
@@ -633,17 +886,35 @@ async fn stream_speech(
     });
 
     let stream = async_stream::stream! {
-        while let Some(payload) = event_rx.recv().await {
-            yield Ok::<_, Infallible>(format!("data: {payload}\n\n"));
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), event_rx.recv()).await {
+                Ok(Some(payload)) => yield Ok::<_, Infallible>(format!("data: {payload}\n\n")),
+                Ok(None) => break,
+                Err(_) => yield Ok::<_, Infallible>(": keepalive\n\n".to_string()),
+            }
         }
     };
 
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
-        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CACHE_CONTROL, "no-cache, no-transform")
+        .header("X-Accel-Buffering", "no")
         .body(Body::from_stream(stream))
         .unwrap())
+}
+
+/// HTTP listeners own synchronous OpenAI generation, including while inference
+/// has not produced its first chunk. Closing the body must wake this wait.
+async fn next_stream_chunk(
+    chunks: &mut mpsc::Receiver<AudioChunk>,
+    events: &mpsc::Sender<String>,
+) -> Option<AudioChunk> {
+    tokio::select! {
+        biased;
+        _ = events.closed() => None,
+        chunk = chunks.recv() => chunk,
+    }
 }
 
 fn build_generation_request(
@@ -667,7 +938,11 @@ fn build_generation_request(
         &req.input,
         req.max_output_tokens.or(req.max_tokens),
     ) {
-        gen_config.options.max_tokens = max_tokens;
+        gen_config.options.max_tokens = if variant == ModelVariant::FishAudioS2Pro {
+            req.max_output_tokens.or(req.max_tokens).unwrap_or(0)
+        } else {
+            max_tokens
+        };
     }
     if let Some(top_k) = req.top_k {
         gen_config.options.top_k = top_k;
@@ -760,11 +1035,59 @@ fn resolve_streaming_mode(req: &SpeechRequest) -> Result<bool, ApiError> {
     }
 }
 
+// The runtime codec default may differ from the selected model's output rate.
+// Wait for real PCM before publishing playback metadata; empty terminal chunks
+// carry statistics, not a usable audio format.
+fn speech_started_event(
+    chunk: &AudioChunk,
+    request_id: &str,
+    fallback_sample_rate: u32,
+    audio_format: &'static str,
+    format_fallback: Option<&str>,
+) -> Option<SpeechStreamEvent> {
+    if chunk.samples.is_empty() {
+        return None;
+    }
+    Some(SpeechStreamEvent {
+        event: "audio.started",
+        timing: None,
+        request_id: Some(request_id.to_string()),
+        sequence: None,
+        audio_base64: None,
+        sample_count: None,
+        is_final: None,
+        sample_rate: Some(chunk.sample_rate_or(fallback_sample_rate).max(1)),
+        audio_format: Some(audio_format),
+        tokens_generated: None,
+        generation_time_ms: None,
+        audio_duration_secs: None,
+        rtf: None,
+        error: format_fallback.map(|fallback| format!("Requested format fallback: {fallback}")),
+    })
+}
+
 fn stream_audio_format_label(format: AudioFormat) -> &'static str {
     match format {
         AudioFormat::Wav => "wav",
         AudioFormat::RawF32 => "pcm_f32",
         AudioFormat::RawI16 => "pcm_i16",
+    }
+}
+
+/// Non-final statistics are deltas; terminal statistics are cumulative. Audio
+/// samples never imply a token count, because codec geometry varies by model.
+fn accumulate_stream_statistics(total: &mut Option<izwi_core::ChunkStats>, chunk: &AudioChunk) {
+    let Some(stats) = chunk.stats.as_ref() else {
+        return;
+    };
+    match total.as_mut() {
+        Some(total) if !chunk.is_final => {
+            total.tokens_generated = total
+                .tokens_generated
+                .saturating_add(stats.tokens_generated);
+            total.generation_time_ms += stats.generation_time_ms;
+        }
+        _ => *total = Some(stats.clone()),
     }
 }
 
@@ -780,6 +1103,20 @@ fn encode_speech_samples(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[tokio::test]
+    async fn disconnected_openai_listener_wakes_before_first_pcm() {
+        let (_producer, mut chunks) = mpsc::channel(2);
+        let (events, listener) = mpsc::channel(2);
+        drop(listener);
+        assert!(tokio::time::timeout(
+            Duration::from_millis(100),
+            next_stream_chunk(&mut chunks, &events)
+        )
+        .await
+        .expect("disconnect must not await first PCM")
+        .is_none());
+    }
 
     #[test]
     fn qwen_auto_timeout_expands_for_long_form() {
@@ -938,7 +1275,7 @@ mod tests {
     }
 
     #[test]
-    fn fish_s2_tts_omitted_max_tokens_uses_text_sized_auto_budget() {
+    fn fish_s2_tts_preserves_automatic_intent_until_segment_planning() {
         let req = SpeechRequest {
             model: "FishAudio-S2-Pro".to_string(),
             input: "The costs split cleanly into three buckets".to_string(),
@@ -960,8 +1297,8 @@ mod tests {
         };
 
         let timeout = resolve_speech_timeout_secs(1, ModelVariant::FishAudioS2Pro, &req);
-        // The automatic Fish budget includes two seconds for pauses and EOS.
-        assert_eq!(timeout, 71);
+        // The conservative Fish segment estimate includes room for pauses and EOS.
+        assert_eq!(timeout, 98);
 
         let generation = build_generation_request(
             &req,
@@ -970,9 +1307,8 @@ mod tests {
             ModelVariant::FishAudioS2Pro,
         );
         assert_eq!(
-            generation.config.options.max_tokens,
-            resolve_tts_output_frames(ModelVariant::FishAudioS2Pro, &req.input, None)
-                .expect("Fish frame hint")
+            generation.config.options.max_tokens, 0,
+            "automatic Fish requests must be planned before per-segment budgeting"
         );
     }
 
@@ -1177,6 +1513,72 @@ mod tests {
     }
 
     #[test]
+    fn speech_stream_start_waits_for_pcm_and_uses_model_rate_and_requested_format() {
+        let empty = AudioChunk::final_chunk("fish".into(), 0, Vec::new());
+        assert!(speech_started_event(&empty, "fish", 24_000, "pcm_i16", None).is_none());
+
+        let pcm = AudioChunk::new("fish".into(), 0, vec![0.25]).with_sample_rate(44_100);
+        for format in [AudioFormat::Wav, AudioFormat::RawI16, AudioFormat::RawF32] {
+            let label = stream_audio_format_label(format);
+            let event = speech_started_event(&pcm, "fish", 24_000, label, None).unwrap();
+            assert_eq!(event.event, "audio.started");
+            assert_eq!(event.sample_rate, Some(44_100));
+            assert_eq!(event.audio_format, Some(label));
+        }
+
+        let legacy_pcm = AudioChunk::new("legacy".into(), 0, vec![0.25]);
+        let event =
+            speech_started_event(&legacy_pcm, "legacy", 24_000, "wav", Some("mp3 to wav")).unwrap();
+        assert_eq!(event.sample_rate, Some(24_000));
+        assert_eq!(
+            event.error.as_deref(),
+            Some("Requested format fallback: mp3 to wav")
+        );
+    }
+
+    #[test]
+    fn streaming_terminal_only_statistics_replace_deltas_and_unknown_stays_unknown() {
+        let mut statistics = None;
+        let mut first = AudioChunk::new("fish".into(), 0, vec![0.0; 2048]);
+        accumulate_stream_statistics(&mut statistics, &first);
+        assert!(statistics.is_none());
+        first.stats = Some(izwi_core::ChunkStats {
+            generation_time_ms: 10.0,
+            tokens_generated: 1,
+            rtf: 0.2,
+        });
+        accumulate_stream_statistics(&mut statistics, &first);
+        let mut terminal = AudioChunk::final_chunk("fish".into(), 1, Vec::new());
+        terminal.stats = Some(izwi_core::ChunkStats {
+            generation_time_ms: 25.0,
+            tokens_generated: 2,
+            rtf: 0.3,
+        });
+        accumulate_stream_statistics(&mut statistics, &terminal);
+        let statistics = statistics.unwrap();
+        assert_eq!(statistics.tokens_generated, 2);
+        assert_eq!(statistics.generation_time_ms, 25.0);
+    }
+
+    #[test]
+    fn streaming_wav_chunks_are_independent_containers_with_matching_raw_pcm() {
+        for samples in [&[0.0f32, 0.25][..], &[-0.25f32][..]] {
+            let wav = encode_speech_samples(samples, 44_100, AudioFormat::Wav).unwrap();
+            let raw = encode_speech_samples(samples, 44_100, AudioFormat::RawI16).unwrap();
+            assert_eq!(&wav[..4], b"RIFF");
+            let reader = hound::WavReader::new(Cursor::new(wav)).unwrap();
+            assert_eq!(reader.duration() as usize, samples.len());
+            let decoded = reader
+                .into_samples::<i16>()
+                .map(|sample| sample.unwrap())
+                .flat_map(i16::to_le_bytes)
+                .collect::<Vec<_>>();
+            assert_eq!(decoded, raw);
+            assert_eq!(raw.len(), samples.len() * 2);
+        }
+    }
+
+    #[test]
     fn speech_wav_encoding_uses_generated_sample_rate() {
         let bytes = encode_speech_samples(&[0.0, 0.25, -0.25], 16_000, AudioFormat::Wav)
             .expect("encode wav");
@@ -1190,6 +1592,7 @@ mod tests {
     fn speech_stream_chunk_event_includes_audio_rate_and_format() {
         let event = SpeechStreamEvent {
             event: "audio.chunk",
+            timing: None,
             request_id: Some("req".to_string()),
             sequence: Some(3),
             audio_base64: Some("AA==".to_string()),

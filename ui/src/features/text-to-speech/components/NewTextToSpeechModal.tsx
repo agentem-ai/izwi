@@ -40,10 +40,7 @@ interface NewTextToSpeechModalProps {
   onOpenModelManager: () => void;
   onModelRequired: () => void;
   onCreated: (record: SpeechHistoryRecord) => Promise<void> | void;
-  onStreamingStart?: () => void;
-  onStreamingFinal?: (record: SpeechHistoryRecord) => void;
-  onStreamingError?: (message: string) => void;
-  onStreamingDone?: () => void;
+  onCreateStream: (request: SpeechHistoryRecordCreateRequest) => Promise<SpeechHistoryRecord>;
 }
 
 type EffectiveVoiceWorkflow =
@@ -76,10 +73,7 @@ export function NewTextToSpeechModal({
   onOpenModelManager,
   onModelRequired,
   onCreated,
-  onStreamingStart,
-  onStreamingFinal,
-  onStreamingError,
-  onStreamingDone,
+  onCreateStream,
 }: NewTextToSpeechModalProps) {
   const [text, setText] = useState("");
   const [speaker, setSpeaker] = useState(initialSpeaker || "Vivian");
@@ -311,58 +305,7 @@ export function NewTextToSpeechModal({
     try {
       const createdRecord =
         streamingEnabled && streamAvailable
-          ? await new Promise<SpeechHistoryRecord>((resolve, reject) => {
-              let settled = false;
-              let streamRecord: SpeechHistoryRecord | null = null;
-
-              api.createTextToSpeechRecordStream(request, {
-                onCreated: (record) => {
-                  streamRecord = record;
-                  if (settled) {
-                    return;
-                  }
-                  settled = true;
-                  resolve(record);
-                },
-                onStart: () => {
-                  onStreamingStart?.();
-                },
-                onFinal: ({ record }) => {
-                  streamRecord = record;
-                  onStreamingFinal?.(record);
-                  if (settled) {
-                    return;
-                  }
-                  settled = true;
-                  resolve(record);
-                },
-                onError: (message) => {
-                  onStreamingError?.(message);
-                  if (settled) {
-                    return;
-                  }
-                  settled = true;
-                  reject(new Error(message));
-                },
-                onDone: () => {
-                  onStreamingDone?.();
-                  if (settled) {
-                    return;
-                  }
-                  if (streamRecord) {
-                    settled = true;
-                    resolve(streamRecord);
-                    return;
-                  }
-                  settled = true;
-                  reject(
-                    new Error(
-                      "Generation started but no record was returned by the stream.",
-                    ),
-                  );
-                },
-              });
-            })
+          ? await onCreateStream(request)
           : await api.createTextToSpeechRecord(request);
 
       await onCreated(createdRecord);
@@ -378,10 +321,7 @@ export function NewTextToSpeechModal({
     onClose,
     onCreated,
     onModelRequired,
-    onStreamingDone,
-    onStreamingError,
-    onStreamingFinal,
-    onStreamingStart,
+    onCreateStream,
     effectiveVoiceWorkflow,
     resolvedBuiltInSpeaker,
     savedVoiceId,

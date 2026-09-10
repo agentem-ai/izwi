@@ -61,6 +61,7 @@ pub(crate) struct RequestEnvelope {
     pub(crate) stream_policy: RuntimeStreamPolicy,
     pub(crate) workload_class: WorkloadClass,
     pub(crate) admission_ms: Option<f64>,
+    pub(crate) tenant_key: Option<[u8; 32]>,
 }
 
 impl RequestEnvelope {
@@ -75,6 +76,7 @@ impl RequestEnvelope {
             stream_policy: RuntimeStreamPolicy::default(),
             workload_class: WorkloadClass::Online,
             admission_ms: None,
+            tenant_key: None,
         }
     }
 
@@ -111,6 +113,7 @@ impl RequestEnvelope {
     pub(crate) fn with_runtime_context(mut self, context: RuntimeRequestContext) -> Self {
         self.workload_class = context.workload_class;
         self.admission_ms = context.admission_ms;
+        self.tenant_key = context.tenant_key;
         self.priority = match context.priority {
             Priority::Low => RequestPriority::Background,
             Priority::Normal => RequestPriority::Normal,
@@ -135,6 +138,7 @@ impl RequestEnvelope {
         request.stream_policy = self.stream_policy.into();
         request.workload_class = self.workload_class;
         request.admission_ms = self.admission_ms;
+        request.tenant_key = self.tenant_key;
     }
 }
 
@@ -603,6 +607,7 @@ mod tests {
             Some("corr-asr".to_string()),
             RuntimeRequestContext::new(WorkloadClass::Batch)
                 .with_admission_ms(3.5)
+                .with_tenant_key([7; 32])
                 .with_priority(Priority::Critical)
                 .with_deadline(deadline),
         )
@@ -616,6 +621,7 @@ mod tests {
         );
         assert_eq!(core_request.audio_bytes.as_deref(), Some(&[1, 2, 3][..]));
         assert_eq!(core_request.language.as_deref(), Some("en"));
+        assert_eq!(core_request.tenant_key, Some([7; 32]));
         assert_eq!(core_request.correlation_id.as_deref(), Some("corr-asr"));
         assert_eq!(core_request.workload_class, WorkloadClass::Batch);
         assert_eq!(core_request.admission_ms, Some(3.5));

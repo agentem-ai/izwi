@@ -6,6 +6,7 @@ import { StatePanel } from "@/components/ui/state-panel";
 
 interface RouteErrorBoundaryProps {
   children: ReactNode;
+  resetKey?: string;
 }
 
 interface RouteErrorBoundaryState {
@@ -26,6 +27,13 @@ export class RouteErrorBoundary extends Component<
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("Route failed to render:", error, info.componentStack);
+  }
+
+  componentDidUpdate(previousProps: RouteErrorBoundaryProps) {
+    if (previousProps.resetKey !== this.props.resetKey && this.state.error) {
+      // Recover on navigation without remounting a healthy route and its streams.
+      this.setState({ error: null });
+    }
   }
 
   private retry = () => {

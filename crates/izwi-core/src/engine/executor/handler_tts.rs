@@ -22,6 +22,64 @@ use super::{
     ExecutorOutput, ExecutorPhaseTiming, ExecutorStateLease, ModelSessionResult, NativeExecutor,
 };
 
+// If any later row rejects staging, roll back every candidate already handed
+// to the coordinator before this physical invocation reports collective failure.
+struct FishPendingBatchGuard<'a> {
+    coordinator: &'a super::FishStateCoordinator,
+    staged: Vec<(crate::engine::PlanId, SessionKey)>,
+    armed: bool,
+}
+impl Drop for FishPendingBatchGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            for (plan, session) in &self.staged {
+                super::PendingQuantumFinalizer::discard(self.coordinator, *plan, session);
+            }
+        }
+    }
+}
+
+struct ContinuousFishRow<'a> {
+    index: usize,
+    lease: Option<ExecutorStateLease<'a, ActiveFishS2TtsDecode>>,
+    checkpoint: Option<crate::models::architectures::fish_s2::FishS2RetainedCheckpoint>,
+    fast: Option<InvocationPagedKvLease>,
+    sampling_before: f64,
+    fresh: bool,
+}
+
+impl ContinuousFishRow<'_> {
+    fn rollback(&mut self) -> Result<()> {
+        if self.fresh {
+            // Initial prefill has no earlier managed cache to restore.
+            // Discard its unpublished state instead of failing the cohort.
+            if let Some(lease) = &mut self.lease {
+                lease.discard_state();
+            }
+            self.checkpoint = None;
+            self.fresh = false;
+            return Ok(());
+        }
+        if let (Some(lease), Some(checkpoint)) = (&mut self.lease, &mut self.checkpoint) {
+            lease
+                .require_state_mut()?
+                .state
+                .rollback_managed_quantum(checkpoint)?;
+            lease.mark_clean();
+            self.checkpoint = None;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ContinuousFishRow<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.rollback() {
+            tracing::error!(%error, "Fish batch rollback failed; state remains fenced")
+        }
+    }
+}
+
 struct ContinuousVoxtralTtsRow<'a> {
     index: usize,
     lease: Option<ExecutorStateLease<'a, ActiveVoxtralTtsDecode>>,
@@ -657,6 +715,7 @@ impl NativeExecutor {
                 outputs[index] = Some(ModelSessionResult::atomic(ExecutorOutput {
                     request_id: request.id.clone(),
                     audio: Some(AudioOutput {
+                        streamed_samples: None,
                         samples: result.samples,
                         sample_rate: result.sample_rate,
                         duration_secs,
@@ -1454,164 +1513,496 @@ impl NativeExecutor {
         }))
     }
 
+    pub(super) fn fish_s2_tts_batch_with_managed(
+        &self,
+        requests: &[&EngineCoreRequest],
+        scheduled: &[ScheduledRequest],
+        mut managed: Vec<Option<super::RetainedRowManagedState>>,
+    ) -> Result<Vec<ModelSessionResult>> {
+        if requests.is_empty()
+            || requests.len() != scheduled.len()
+            || managed.len() != scheduled.len()
+        {
+            return Err(Error::InvalidInput("Fish batch row counts differ".into()));
+        }
+        let model = requests[0]
+            .prepared_fish_s2_tts_model_lease_for_executor()?
+            .ok_or_else(|| Error::InferenceError("Fish batch lost model".into()))?;
+        let variant = Self::resolve_variant(requests[0])?;
+        let is_prefill = scheduled[0].is_prefill;
+        let mut outputs: Vec<Option<ModelSessionResult>> =
+            (0..requests.len()).map(|_| None).collect();
+        let mut rows = Vec::with_capacity(requests.len());
+        for (index, (request, scheduled_row)) in requests.iter().zip(scheduled).enumerate() {
+            if scheduled_row.request_id != request.id
+                || scheduled_row.is_prefill != is_prefill
+                || Self::resolve_variant(request)? != variant
+                || request
+                    .execution_adapter_binding()
+                    .map(|b| b.adapter_instance_id)
+                    != requests[0]
+                        .execution_adapter_binding()
+                        .map(|b| b.adapter_instance_id)
+            {
+                return Err(Error::InvalidInput(
+                    "Fish batch crossed request, phase or adapter identity".into(),
+                ));
+            }
+            let row_model = request
+                .prepared_fish_s2_tts_model_lease_for_executor()?
+                .ok_or_else(|| Error::InferenceError("Fish batch row lost model".into()))?;
+            if !Arc::ptr_eq(&row_model.model_arc(), &model.model_arc()) {
+                return Err(Error::InvalidInput(
+                    "Fish batch crossed model generation".into(),
+                ));
+            }
+            if let Some(terminal) = fish_row_terminal(request, false) {
+                outputs[index] = Some(terminal);
+                continue;
+            }
+            let mut retained = managed[index]
+                .take()
+                .ok_or_else(|| Error::InferenceError("Fish batch lost managed state".into()))?;
+            let slow = retained
+                .take_paged_domain(crate::kv::CacheDomainId::new(1), true)?
+                .expect("required Fish slow cache");
+            retained.ensure_all_paged_consumed()?;
+            let mut lease = ExecutorStateLease::checkout(
+                &self.fish_s2_tts_decode_states,
+                scheduled_row.session_key(),
+                variant,
+                "Fish batch",
+            )?;
+            if lease
+                .state()
+                .is_some_and(|active| !Arc::ptr_eq(&active.model.model_arc(), &model.model_arc()))
+            {
+                return Err(Error::InvalidInput(
+                    "Fish batch retained state crossed model".into(),
+                ));
+            }
+            let fresh = lease.state().is_none();
+            let checkpoint = if fresh {
+                if !scheduled_row.is_prefill || scheduled_row.num_computed_tokens != 0 {
+                    return Err(Error::InferenceError(
+                        "Fish S2 TTS lost state before initial prefill".into(),
+                    ));
+                }
+                let artifact = request
+                    .prepared_fish_s2_tts_artifact_for_executor()?
+                    .ok_or_else(|| Error::InferenceError("Fish S2 TTS lost prompt".into()))?;
+                let params = request
+                    .fish_s2_tts_generation_params_for_executor()?
+                    .ok_or_else(|| Error::InferenceError("Fish S2 TTS lost geometry".into()))?;
+                let runtime = request.managed_cache_runtime().ok_or_else(|| {
+                    Error::InferenceError("Fish S2 TTS lost managed context limit".into())
+                })?;
+                let max_sequence_tokens = usize::try_from(runtime.maximum_sequence_tokens())
+                    .map_err(|_| Error::InvalidInput("Fish S2 context exceeds usize".into()))?;
+                let (state, checkpoint) = model.new_retained_state_in_quantum(
+                    artifact,
+                    params,
+                    slow,
+                    max_sequence_tokens,
+                )?;
+                lease.install_state(ActiveFishS2TtsDecode {
+                    variant,
+                    model: model.clone(),
+                    state,
+                    last_frames_generated: 0,
+                    stream_sequence: 0,
+                    codec: Default::default(),
+                    audio_samples: Vec::new(),
+                    total_audio_samples: 0,
+                    collect_audio_samples: request.collect_audio_samples,
+                    codec_ms: 0.0,
+                    execution_started: Instant::now(),
+                    first_audio_ms: None,
+                })?;
+                checkpoint
+            } else {
+                lease
+                    .require_state_mut()?
+                    .state
+                    .begin_managed_quantum(slow)?
+            };
+
+            let sampling_before = lease.require_state_mut()?.state.sampling_and_steps().0;
+            lease.mark_dirty();
+            let mut row = ContinuousFishRow {
+                index,
+                lease: Some(lease),
+                checkpoint: Some(checkpoint),
+                fast: None,
+                sampling_before,
+                fresh,
+            };
+            if !is_prefill {
+                row.fast = Some(super::invocation_paged_lease_for_row(
+                    request,
+                    scheduled_row,
+                )?);
+            }
+            rows.push(row);
+        }
+        let mut pending_guard = FishPendingBatchGuard {
+            coordinator: &self.fish_s2_pending,
+            staged: Vec::new(),
+            armed: true,
+        };
+        if !rows.is_empty() {
+            let width = rows.len();
+            let mut states = Vec::with_capacity(width);
+            let mut fast = Vec::with_capacity(width);
+            let mut spans = Vec::with_capacity(width);
+            for row in &mut rows {
+                states.push(
+                    &mut row
+                        .lease
+                        .as_mut()
+                        .expect("Fish lease")
+                        .require_state_mut()?
+                        .state,
+                );
+                if let Some(cache) = &mut row.fast {
+                    fast.push(cache.cache_mut());
+                }
+                spans.push(scheduled[row.index].num_tokens);
+            }
+            let steps = if is_prefill {
+                model.retained_prefill_batch(&mut states, &spans)?
+            } else {
+                model.retained_decode_batch(&mut states, &mut fast)?
+            };
+            if steps.len() != width {
+                return Err(Error::InferenceError(
+                    "Fish batch returned wrong width".into(),
+                ));
+            }
+            if let Some(call) = retained_tts_batch_model_call(
+                if is_prefill {
+                    crate::engine::NativeBatchMode::Static
+                } else {
+                    crate::engine::NativeBatchMode::Continuous
+                },
+                width,
+            ) {
+                crate::engine::metrics::record_engine_model_call(call);
+            }
+            for (row, step) in rows.iter_mut().zip(steps) {
+                let index = row.index;
+                let request = requests[index];
+                let scheduled_row = &scheduled[index];
+                if let Some(cache) = row.fast.take() {
+                    let _ = cache.release()?;
+                }
+                if let Some(terminal) = fish_row_terminal(request, true) {
+                    row.rollback()?;
+                    outputs[index] = Some(terminal);
+                    continue;
+                }
+                let lease = row.lease.as_mut().expect("Fish lease");
+                let active = lease.require_state_mut()?;
+                if is_prefill
+                    && !matches!(step, crate::models::architectures::fish_s2::FishS2RetainedStep::Prefill { consumed, .. } if consumed == scheduled_row.num_tokens)
+                {
+                    return Err(Error::InferenceError(
+                        "Fish prefill progress differs from scheduler".into(),
+                    ));
+                }
+                let completions = active.state.take_managed_write_completions();
+                if active.state.take_staged_step().as_ref() != Some(&step) {
+                    return Err(Error::InferenceError(
+                        "Fish batch staged output mismatch".into(),
+                    ));
+                }
+                let frames = active.state.frames_generated();
+                let generated = frames.saturating_sub(active.last_frames_generated);
+                let pending = frames.saturating_sub(active.codec.decoded_frames());
+                let threshold = if active.codec.decoded_frames() == 0 {
+                    crate::models::architectures::fish_s2::FISH_S2_FIRST_AUDIO_FRAMES
+                } else {
+                    crate::models::architectures::fish_s2::FISH_S2_AUDIO_CHUNK_FRAMES
+                };
+                let timing = fish_execution_timing(
+                    active,
+                    0.0,
+                    active.state.sampling_and_steps().0 - row.sampling_before,
+                    active.first_audio_ms,
+                );
+                let output = ExecutorOutput {
+                    request_id: request.id.clone(),
+                    audio: Some(AudioOutput::new(
+                        Vec::new(),
+                        model.diagnostics().sample_rate,
+                    )),
+                    text: None,
+                    input_transcription: None,
+                    tokens_processed: scheduled_row.num_tokens,
+                    tokens_generated: generated,
+                    finished: false,
+                    phase_timing_override: Some(timing),
+                    asr_diagnostics: None,
+                    error: None,
+                };
+                let result = if pending >= threshold || (active.state.finished() && pending > 0) {
+                    ModelSessionResult::yielded(
+                        output,
+                        crate::engine::YieldReason::AwaitingAudioDecode {
+                            max_frames: pending.min(
+                                crate::models::architectures::fish_s2::FISH_S2_AUDIO_CHUNK_FRAMES,
+                            ),
+                        },
+                    )
+                } else if active.state.finished() {
+                    ModelSessionResult::yielded(
+                        output,
+                        crate::engine::YieldReason::AwaitingFinalization,
+                    )
+                } else {
+                    ModelSessionResult::sequence(output)
+                };
+                self.fish_s2_pending.stage_ar(
+                    scheduled_row.plan_id,
+                    scheduled_row.session_key(),
+                    row.lease.take().expect("Fish lease"),
+                    row.checkpoint.take().expect("Fish checkpoint"),
+                )?;
+                pending_guard
+                    .staged
+                    .push((scheduled_row.plan_id, scheduled_row.session_key()));
+                outputs[index] = Some(
+                    result
+                        .with_managed_cache_completions(completions)
+                        .requiring_pending_quantum(),
+                );
+            }
+        }
+        let result = outputs
+            .into_iter()
+            .map(|out| out.ok_or_else(|| Error::InferenceError("Fish batch lost output".into())))
+            .collect::<Result<Vec<_>>>()?;
+        pending_guard.armed = false;
+        Ok(result)
+    }
+
     pub(super) fn fish_s2_tts_request_with_managed_cache(
         &self,
         request: &EngineCoreRequest,
         scheduled: &ScheduledRequest,
         retained: Option<super::RetainedRowManagedState>,
     ) -> Result<ModelSessionResult> {
-        use crate::models::architectures::fish_s2::FishS2RetainedStep;
+        self.fish_s2_tts_batch_with_managed(
+            &[request],
+            std::slice::from_ref(scheduled),
+            vec![retained],
+        )?
+        .pop()
+        .ok_or_else(|| Error::InferenceError("Fish scalar quantum produced no result".into()))
+    }
 
-        let variant = Self::resolve_variant(request)?;
-        if variant.family() != ModelFamily::FishS2Tts {
-            return Err(Error::InvalidInput("foreign Fish S2 TTS request".into()));
-        }
-        let model = request
-            .prepared_fish_s2_tts_model_lease_for_executor()?
-            .ok_or_else(|| Error::InferenceError("Fish S2 TTS lost model residency".into()))?;
-        let mut retained = retained.ok_or_else(|| {
-            Error::InferenceError("Fish S2 TTS lost retained physical state".into())
-        })?;
-        let slow = retained
-            .take_paged_domain(crate::kv::CacheDomainId::new(1), true)?
-            .expect("required Fish S2 slow cache");
-        retained.ensure_all_paged_consumed()?;
-        let mut lease = ExecutorStateLease::checkout(
-            &self.fish_s2_tts_decode_states,
-            scheduled.session_key(),
-            variant,
-            "Fish S2 TTS decode",
-        )?;
-        if lease.state().is_some_and(|active| {
-            active.variant != variant || !Arc::ptr_eq(&active.model.model_arc(), &model.model_arc())
-        }) {
-            lease.discard_state();
-        }
-        let fresh = lease.state().is_none();
-        let mut checkpoint = if fresh {
-            if !scheduled.is_prefill || scheduled.num_computed_tokens != 0 {
-                return Err(Error::InferenceError(
-                    "Fish S2 TTS lost state before initial prefill".into(),
-                ));
-            }
-            let artifact = request
-                .prepared_fish_s2_tts_artifact_for_executor()?
-                .ok_or_else(|| Error::InferenceError("Fish S2 TTS lost prompt".into()))?;
-            let params = request
-                .fish_s2_tts_generation_params_for_executor()?
-                .ok_or_else(|| Error::InferenceError("Fish S2 TTS lost geometry".into()))?;
-            let (state, checkpoint) =
-                model.new_retained_state_in_quantum(artifact, params, slow)?;
-            lease.install_state(ActiveFishS2TtsDecode {
-                variant,
-                model: model.clone(),
-                state,
-                last_frames_generated: 0,
-                stream_sequence: 0,
-            })?;
-            checkpoint
-        } else {
-            lease
-                .require_state_mut()?
-                .state
-                .begin_managed_quantum(slow)?
-        };
-        lease.mark_dirty();
-        let result = (|| {
-            let active = lease.require_state_mut()?;
-            let step = if scheduled.is_prefill {
-                let step = model.retained_prefill_step(&mut active.state, scheduled.num_tokens)?;
-                if !matches!(
-                    step,
-                    FishS2RetainedStep::Prefill { consumed, .. }
-                        if consumed == scheduled.num_tokens
-                ) {
-                    return Err(Error::InferenceError(
-                        "Fish S2 TTS prefill progress differs from scheduler".into(),
-                    ));
-                }
-                Some(step)
-            } else {
-                {
-                    let mut fast = super::invocation_paged_lease_for_row(request, scheduled)?;
-                    let step = model.retained_decode_step(&mut active.state, fast.cache_mut())?;
-                    let _ = fast.release()?;
-                    Some(step)
-                }
-            };
-            if request.is_cancelled() {
-                return Err(Error::Cancelled(request.id.clone()));
-            }
-            Ok::<_, Error>(step)
-        })();
-        let step = match result {
-            Ok(step) if !request.is_cancelled() => step,
-            result => {
-                if fresh {
-                    let _ = lease
-                        .require_state_mut()?
-                        .state
-                        .take_managed_write_completions();
-                    lease.discard_state();
-                } else {
-                    lease
-                        .require_state_mut()?
-                        .state
-                        .rollback_managed_quantum(&mut checkpoint)?;
-                }
-                lease.mark_clean();
-                return result.and_then(|_| Err(Error::Cancelled(request.id.clone())));
-            }
-        };
-        let completions = lease
-            .require_state_mut()?
-            .state
-            .take_managed_write_completions();
-        let staged = lease.require_state_mut()?.state.take_staged_step();
-        if step.is_some() && staged != step {
-            if fresh {
-                lease.discard_state();
-            } else {
-                lease
-                    .require_state_mut()?
-                    .state
-                    .rollback_managed_quantum(&mut checkpoint)?;
-            }
-            lease.mark_clean();
-            return Err(Error::InferenceError(
-                "Fish S2 TTS staged output changed before commit".into(),
+    pub(super) fn fish_s2_tts_audio_decode_request(
+        &self,
+        request: &EngineCoreRequest,
+        scheduled: &ScheduledRequest,
+    ) -> Result<ModelSessionResult> {
+        self.fish_s2_tts_audio_decode_batch(&[request], std::slice::from_ref(scheduled))?
+            .pop()
+            .ok_or_else(|| Error::InferenceError("Fish codec lost scalar output".into()))
+    }
+
+    pub(super) fn fish_s2_tts_audio_decode_batch(
+        &self,
+        requests: &[&EngineCoreRequest],
+        scheduled: &[ScheduledRequest],
+    ) -> Result<Vec<ModelSessionResult>> {
+        if requests.is_empty() || requests.len() != scheduled.len() {
+            return Err(Error::InvalidInput(
+                "Fish codec batch row counts differ".into(),
             ));
         }
-        lease
-            .require_state_mut()?
-            .state
-            .commit_managed_quantum(&mut checkpoint)?;
-        let active = lease.require_state_mut()?;
-        let frames_generated = active.state.frames_generated();
-        let generated = frames_generated.saturating_sub(active.last_frames_generated);
-        active.last_frames_generated = frames_generated;
-        let codec_ready = matches!(step, Some(FishS2RetainedStep::Finished { .. }));
-        let sample_rate = model.diagnostics().sample_rate;
-        lease.mark_clean();
-        lease.restore()?;
-        let output = ExecutorOutput {
-            request_id: request.id.clone(),
-            audio: Some(AudioOutput::new(Vec::new(), sample_rate)),
-            text: None,
-            input_transcription: None,
-            tokens_processed: scheduled.num_tokens,
-            tokens_generated: generated,
-            finished: false,
-            phase_timing_override: None,
-            asr_diagnostics: None,
-            error: None,
+        let model = requests[0]
+            .prepared_fish_s2_tts_model_lease_for_executor()?
+            .ok_or_else(|| Error::InferenceError("Fish codec batch lost model".into()))?;
+        let mut outputs: Vec<Option<ModelSessionResult>> =
+            (0..requests.len()).map(|_| None).collect();
+        let mut rows = Vec::new();
+        let mut codecs = Vec::new();
+        let mut frames = Vec::new();
+        for (index, (request, scheduled_row)) in requests.iter().zip(scheduled).enumerate() {
+            let crate::engine::WorkUnit::SequenceAudioDecode { max_frames } = scheduled_row.work
+            else {
+                return Err(Error::InvalidInput(
+                    "Fish codec batch requires audio work".into(),
+                ));
+            };
+            if request.id != scheduled_row.request_id
+                || request
+                    .execution_adapter_binding()
+                    .map(|b| b.adapter_instance_id)
+                    != requests[0]
+                        .execution_adapter_binding()
+                        .map(|b| b.adapter_instance_id)
+            {
+                return Err(Error::InvalidInput(
+                    "Fish codec batch crossed adapter identity".into(),
+                ));
+            }
+            if let Some(terminal) = fish_row_terminal(request, false) {
+                outputs[index] = Some(terminal);
+                continue;
+            }
+            let variant = Self::resolve_variant(request)?;
+            let row_model = request
+                .prepared_fish_s2_tts_model_lease_for_executor()?
+                .ok_or_else(|| Error::InferenceError("Fish codec row lost model".into()))?;
+            let mut lease = ExecutorStateLease::checkout(
+                &self.fish_s2_tts_decode_states,
+                scheduled_row.session_key(),
+                variant,
+                "Fish codec batch",
+            )?;
+            let active = lease.require_state_mut()?;
+            if active.variant != variant
+                || !Arc::ptr_eq(&active.model.model_arc(), &model.model_arc())
+                || !Arc::ptr_eq(&row_model.model_arc(), &model.model_arc())
+            {
+                return Err(Error::InvalidInput(
+                    "Fish codec batch crossed model generation".into(),
+                ));
+            }
+            let output_credit = if Self::stream_sender(request).is_some() {
+                let bytes = max_frames
+                    .checked_mul(2048 * std::mem::size_of::<f32>())
+                    .ok_or_else(|| Error::Overloaded("Fish codec output credit overflow".into()))?;
+                let Some(credit) = request.try_reserve_audio_output(bytes)? else {
+                    outputs[index] = Some(ModelSessionResult::yielded(
+                        ExecutorOutput {
+                            request_id: request.id.clone(),
+                            audio: Some(AudioOutput::empty(model.diagnostics().sample_rate)),
+                            text: None,
+                            input_transcription: None,
+                            tokens_processed: 0,
+                            tokens_generated: 0,
+                            finished: false,
+                            phase_timing_override: None,
+                            asr_diagnostics: None,
+                            error: None,
+                        },
+                        crate::engine::YieldReason::AwaitingAudioOutput { max_frames },
+                    ));
+                    continue;
+                };
+                Some(credit)
+            } else {
+                None
+            };
+            codecs.push(active.codec.clone());
+            frames.push(max_frames);
+            rows.push((index, lease, output_credit));
+        }
+        let mut pending_guard = FishPendingBatchGuard {
+            coordinator: &self.fish_s2_pending,
+            staged: Vec::new(),
+            armed: true,
         };
-        let result = if codec_ready {
-            ModelSessionResult::yielded(output, crate::engine::YieldReason::AwaitingFinalization)
-        } else {
-            ModelSessionResult::sequence(output)
-        };
-        Ok(result.with_managed_cache_completions(completions))
+        if !rows.is_empty() {
+            let states = rows
+                .iter_mut()
+                .map(|(_, lease, _)| lease.require_state_mut().map(|active| &active.state))
+                .collect::<Result<Vec<_>>>()?;
+            let started = Instant::now();
+            let chunks =
+                model.decode_retained_audio_batch(&states, &mut codecs, &frames, &|| Ok(()))?;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if chunks.len() != rows.len() {
+                return Err(Error::InferenceError(
+                    "Fish codec returned wrong width".into(),
+                ));
+            }
+            for (((index, mut lease, _credit), codec), samples) in
+                rows.into_iter().zip(codecs).zip(chunks)
+            {
+                let request = requests[index];
+                let scheduled_row = &scheduled[index];
+                if let Some(terminal) = fish_row_terminal(request, true) {
+                    // The model wrote only candidate codec state. Dropping this
+                    // clean lease and output credit preserves committed state.
+                    outputs[index] = Some(terminal);
+                    continue;
+                }
+                let active = lease.require_state_mut()?;
+                let sample_rate = model.diagnostics().sample_rate;
+                let mut sequence = active.stream_sequence;
+                if let Some(tx) = Self::stream_sender(request) {
+                    Self::stream_audio_with_policy(
+                        &tx,
+                        request.stream_policy,
+                        &request.id,
+                        &mut sequence,
+                        samples.clone(),
+                        sample_rate,
+                        false,
+                    )?;
+                }
+                let pending = active
+                    .state
+                    .frames_generated()
+                    .saturating_sub(codec.decoded_frames());
+                let done = active.state.finished();
+                let first_audio_ms = active
+                    .first_audio_ms
+                    .or_else(|| Some(active.execution_started.elapsed().as_secs_f64() * 1000.0));
+                let timing = fish_execution_timing(active, elapsed_ms, 0.0, first_audio_ms);
+                self.fish_s2_pending.stage(
+                    scheduled_row.plan_id,
+                    scheduled_row.session_key(),
+                    lease,
+                    super::FishCodecCommit {
+                        codec,
+                        samples,
+                        stream_sequence: sequence,
+                        codec_ms: elapsed_ms,
+                        first_audio_ms,
+                    },
+                )?;
+                let output = ExecutorOutput {
+                    request_id: request.id.clone(),
+                    audio: Some(AudioOutput::empty(sample_rate)),
+                    text: None,
+                    input_transcription: None,
+                    tokens_processed: 0,
+                    tokens_generated: 0,
+                    finished: false,
+                    phase_timing_override: Some(timing),
+                    asr_diagnostics: None,
+                    error: None,
+                };
+                let reason = if pending > 0 {
+                    crate::engine::YieldReason::AwaitingAudioDecode {
+                        max_frames: pending
+                            .min(crate::models::architectures::fish_s2::FISH_S2_AUDIO_CHUNK_FRAMES),
+                    }
+                } else if done {
+                    crate::engine::YieldReason::AwaitingFinalization
+                } else {
+                    crate::engine::YieldReason::QuantumExhausted
+                };
+                pending_guard
+                    .staged
+                    .push((scheduled_row.plan_id, scheduled_row.session_key()));
+                outputs[index] =
+                    Some(ModelSessionResult::yielded(output, reason).requiring_pending_quantum());
+            }
+        }
+        let result = outputs
+            .into_iter()
+            .map(|out| {
+                out.ok_or_else(|| Error::InferenceError("Fish codec batch lost output".into()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        pending_guard.armed = false;
+        Ok(result)
     }
 
     pub(super) fn fish_s2_tts_finalize_request(
@@ -1650,33 +2041,46 @@ impl NativeExecutor {
                 "Fish S2 codec crossed its model fence".into(),
             ));
         }
-        // Decoding is read-only with respect to committed AR state, so a failed
-        // or cancelled codec quantum cannot publish or partially mutate it.
-        let output = model.finalize_retained_state_with_cancel(&active.state, &|| {
-            if request.is_cancelled() {
-                return Err(Error::Cancelled(request.id.clone()));
-            }
-            if request
-                .deadline
-                .is_some_and(|deadline| Instant::now() >= deadline)
-            {
-                return Err(Error::Timeout(request.id.clone()));
-            }
-            Ok(())
-        })?;
-        if request.is_cancelled() {
-            return Err(Error::Cancelled(request.id.clone()));
+        if active.state.frames_generated() == 0
+            || !active.state.finished()
+            || active.codec.decoded_frames() != active.state.frames_generated()
+        {
+            return Err(Error::InferenceError(
+                "Fish finalization has undecoded frames".into(),
+            ));
         }
+        active.state.require_complete()?;
+        check_fish_codec_request(request)?;
+        let _tail = active.codec.flush();
+        let sample_rate = model.diagnostics().sample_rate;
+        let timing = fish_execution_timing(active, 0.0, 0.0, active.first_audio_ms);
+        active.state.trace_timings(&request.id, active.codec_ms);
+        if let Some(tx) = Self::stream_sender(request) {
+            Self::stream_audio_with_policy(
+                &tx,
+                request.stream_policy,
+                &request.id,
+                &mut active.stream_sequence,
+                Vec::new(),
+                sample_rate,
+                true,
+            )?;
+        }
+        let audio = if active.collect_audio_samples {
+            AudioOutput::new(std::mem::take(&mut active.audio_samples), sample_rate)
+        } else {
+            AudioOutput::streamed(active.total_audio_samples, sample_rate)
+        };
         lease.release()?;
         Ok(ModelSessionResult::sequence(ExecutorOutput {
             request_id: request.id.clone(),
-            audio: Some(AudioOutput::new(output.samples, output.sample_rate)),
+            audio: Some(audio),
             text: None,
             input_transcription: None,
             tokens_processed: 0,
             tokens_generated: 0,
             finished: true,
-            phase_timing_override: None,
+            phase_timing_override: Some(timing),
             asr_diagnostics: None,
             error: None,
         }))
@@ -1869,6 +2273,7 @@ impl NativeExecutor {
         Ok(ModelSessionResult::sequence(ExecutorOutput {
             request_id: request.id.clone(),
             audio: Some(AudioOutput {
+                streamed_samples: None,
                 duration_secs: samples.len() as f32 / sample_rate as f32,
                 samples,
                 sample_rate,
@@ -3285,6 +3690,15 @@ impl NativeExecutor {
             })
             .collect::<Result<Vec<_>>>()?;
         if ordered_requests.first().is_some_and(|request| {
+            request.model_variant == Some(crate::catalog::ModelVariant::FishAudioS2Pro)
+        }) {
+            return self.fish_s2_tts_batch_with_managed(
+                &ordered_requests,
+                scheduled,
+                managed_caches,
+            );
+        }
+        if ordered_requests.first().is_some_and(|request| {
             request
                 .model_variant
                 .is_some_and(|variant| variant.family() == ModelFamily::Lfm25Audio)
@@ -3638,8 +4052,169 @@ impl NativeExecutor {
     }
 }
 
+/// Terminal conditions belong to one row, even when its device work shared a
+/// launch with peers. Callers discard that row's uncommitted candidate state.
+fn fish_row_terminal(request: &EngineCoreRequest, dispatched: bool) -> Option<ModelSessionResult> {
+    if request.is_cancelled() {
+        let output = ExecutorOutput::cancelled(request.id.clone());
+        return Some(if dispatched {
+            ModelSessionResult::cancelled(output)
+        } else {
+            ModelSessionResult::cancelled_before_dispatch(output)
+        });
+    }
+    if request
+        .deadline
+        .is_none_or(|deadline| Instant::now() < deadline)
+    {
+        return None;
+    }
+    let mut result = ModelSessionResult::sequence(ExecutorOutput::error(
+        request.id.clone(),
+        Error::Timeout(request.id.clone()).to_string(),
+    ));
+    result.disposition =
+        crate::engine::ExecutionDisposition::Finished(crate::engine::FinishReason::TimedOut);
+    result.provenance = crate::engine::OutcomeProvenance::deadline(
+        if dispatched {
+            crate::engine::DeadlinePhase::ModelExecution
+        } else {
+            crate::engine::DeadlinePhase::DispatchWait
+        },
+        if dispatched {
+            crate::engine::DispatchState::Started
+        } else {
+            crate::engine::DispatchState::NotStarted
+        },
+    );
+    Some(result)
+}
+
+fn check_fish_codec_request(request: &EngineCoreRequest) -> Result<()> {
+    if request.is_cancelled() {
+        return Err(Error::Cancelled(request.id.clone()));
+    }
+    if request
+        .deadline
+        .is_some_and(|deadline| Instant::now() >= deadline)
+    {
+        return Err(Error::Timeout(request.id.clone()));
+    }
+    Ok(())
+}
+
+fn fish_execution_timing(
+    active: &ActiveFishS2TtsDecode,
+    codec_ms: f64,
+    sampling_ms: f64,
+    first_audio_ms: Option<f64>,
+) -> super::ExecutorPhaseTiming {
+    let (prefill_ms, decode_ms) = active.state.phase_timings();
+    let (_, prefill_steps, decode_steps) = active.state.sampling_and_steps();
+    super::ExecutorPhaseTiming {
+        prefill_ms: Some(prefill_ms),
+        decode_ms: Some(decode_ms),
+        sampling_ms: Some(sampling_ms),
+        codec_ms: Some(codec_ms),
+        prefill_steps: Some(prefill_steps),
+        decode_steps: Some(decode_steps),
+        first_output_ms_since_start: first_audio_ms,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fish_fresh_terminal_row_discards_state_without_poisoning_lease() {
+        use crate::engine::executor::PendingQuantumFinalizer;
+        let (coordinator, session) = super::super::fish_pending::tests::staged();
+        coordinator.discard(17, &session);
+        let mut lease = super::ExecutorStateLease::checkout(
+            &coordinator.states,
+            session.clone(),
+            crate::model::ModelVariant::FishAudioS2Pro,
+            "fresh rollback test",
+        )
+        .unwrap();
+        lease.mark_dirty();
+        let mut row = super::ContinuousFishRow {
+            index: 0,
+            lease: Some(lease),
+            checkpoint: None,
+            fast: None,
+            sampling_before: 0.0,
+            fresh: true,
+        };
+        row.rollback().unwrap();
+        assert!(row.lease.as_ref().unwrap().state().is_none());
+        drop(row);
+        assert!(!coordinator.states.lock().unwrap().contains_key(&session));
+    }
+
+    #[test]
+    fn fish_deadline_results_are_row_local_and_preserve_dispatch_provenance() {
+        use crate::engine::{DeadlinePhase, DispatchState, ExecutionDisposition, FinishReason};
+        let mut expired = super::EngineCoreRequest::tts("expired");
+        expired.deadline = Some(std::time::Instant::now());
+        let healthy = super::EngineCoreRequest::tts("healthy");
+        for dispatched in [false, true] {
+            let results =
+                [&expired, &healthy].map(|request| super::fish_row_terminal(request, dispatched));
+            assert!(results[1].is_none(), "peer remains executable");
+            let timed_out = results[0].as_ref().unwrap();
+            assert_eq!(timed_out.output.request_id, expired.id);
+            assert_eq!(
+                timed_out.disposition,
+                ExecutionDisposition::Finished(FinishReason::TimedOut)
+            );
+            assert_eq!(
+                timed_out.provenance.deadline_phase,
+                Some(if dispatched {
+                    DeadlinePhase::ModelExecution
+                } else {
+                    DeadlinePhase::DispatchWait
+                })
+            );
+            assert_eq!(
+                timed_out.provenance.dispatch_state,
+                if dispatched {
+                    DispatchState::Started
+                } else {
+                    DispatchState::NotStarted
+                }
+            );
+            assert!(timed_out.output.finished);
+            assert_eq!(timed_out.output.tokens_processed, 0);
+            assert_eq!(timed_out.output.tokens_generated, 0);
+            assert!(timed_out.staged_stream_outputs.is_empty());
+            assert!(timed_out.managed_cache_completions.is_empty());
+            assert!(!timed_out.pending_quantum_required);
+        }
+    }
+
+    #[test]
+    fn fish_batch_guard_discards_prior_staging_when_a_later_row_fails() {
+        let (coordinator, session) = super::super::fish_pending::tests::staged();
+        let failure: crate::error::Result<()> = {
+            let _guard = super::FishPendingBatchGuard {
+                coordinator: &coordinator,
+                staged: vec![(17, session.clone())],
+                armed: true,
+            };
+            Err(crate::error::Error::InferenceError(
+                "later row rejected after first staged".into(),
+            ))
+        };
+        assert!(failure.is_err());
+        super::super::fish_pending::tests::assert_ready(&coordinator, &session, false);
+        assert!(!super::super::PendingQuantumFinalizer::contains(
+            &coordinator,
+            17,
+            &session
+        ));
+    }
+
     use super::*;
     use base64::Engine;
 

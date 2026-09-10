@@ -150,7 +150,7 @@ pub const MODEL_FAMILY_REGISTRATIONS: &[FamilyRegistration] = &[
         family: ModelFamily::FishS2Tts,
         module_path: "crate::models::architectures::fish_s2",
         variants: FISH_S2_TTS_VARIANTS,
-        capabilities: TTS_CAPABILITIES,
+        capabilities: TTS_STREAMING_CAPABILITIES,
         fixture_ids: TTS_FIXTURES,
     },
     FamilyRegistration {

@@ -346,6 +346,14 @@ impl SchedulerTelemetry {
     }
 }
 
+type TenantServiceKey = (WorkloadClass, Option<[u8; 32]>);
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TenantService {
+    units: u64,
+    last_selected: u64,
+}
+
 /// Request scheduler.
 pub struct Scheduler {
     config: SchedulerConfig,
@@ -378,6 +386,8 @@ pub struct Scheduler {
     telemetry: SchedulerTelemetry,
     /// Completed scheduling quanta by workload class for weighted service.
     class_service: HashMap<WorkloadClass, u64>,
+    tenant_service: HashMap<TenantServiceKey, TenantService>,
+    tenant_service_floor: HashMap<WorkloadClass, u64>,
     /// Decode-only transactions observed while an indivisible full prefill was
     /// waiting. This bounds starvation without pretending that a Full adapter
     /// can safely resume a scheduler-authored chunk.
@@ -390,6 +400,7 @@ pub struct Scheduler {
     /// ordinary decode row was ready. One ordinary slot is reserved once this
     /// bounded debt is reached.
     realtime_only_steps_with_ready_decode: usize,
+    audio_only_steps_with_ready_decode: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -515,6 +526,7 @@ struct RequestMetadata {
     model_variant: Option<ModelVariant>,
     priority: Priority,
     workload_class: WorkloadClass,
+    tenant_key: Option<[u8; 32]>,
     arrival_time: Instant,
     deadline_at: Instant,
     hard_deadline: Option<Instant>,
@@ -579,6 +591,10 @@ struct RunningRequest {
     prefill_in_flight: bool,
     /// A committed decoder quantum requested a distinct terminal model stage.
     finalize_pending: bool,
+    audio_decode_pending: Option<usize>,
+    audio_decode_in_flight: bool,
+    /// Last codec/finalization dispatch, for fair rotation among equal priorities.
+    audio_last_service: u64,
     /// The exact finalization quantum has been planned but not yet committed.
     finalize_in_flight: bool,
     /// Scheduler-visible incremental-prefill quanta committed for this request.
@@ -612,9 +628,12 @@ impl Scheduler {
             next_realtime_service_clock: 1,
             telemetry,
             class_service: HashMap::new(),
+            tenant_service: HashMap::new(),
+            tenant_service_floor: HashMap::new(),
             decode_only_steps_with_waiting_full_prefill: 0,
             decode_only_steps_with_waiting_incremental_prefill: 0,
             realtime_only_steps_with_ready_decode: 0,
+            audio_only_steps_with_ready_decode: 0,
         }
     }
 
@@ -677,6 +696,7 @@ impl Scheduler {
             model_variant: request.model_variant,
             priority: request.priority,
             workload_class: request.workload_class,
+            tenant_key: request.tenant_key,
             arrival_time,
             deadline_at,
             hard_deadline: request.deadline,
@@ -690,7 +710,16 @@ impl Scheduler {
             retry_not_before: None,
             replay_prompt_tokens: None,
             capacity_blocked_on: None,
-            workspace_prefill_token_cap: None,
+            workspace_prefill_token_cap: request.execution_adapter_binding().and_then(|binding| {
+                binding
+                    .stages
+                    .iter()
+                    .filter(|stage| {
+                        stage.selector == crate::engine::StageWorkSelector::SequencePrefill
+                    })
+                    .map(|stage| usize::try_from(stage.max_work_units).unwrap_or(usize::MAX))
+                    .min()
+            }),
         };
 
         self.requests.insert(request.id.clone(), metadata);
@@ -728,6 +757,7 @@ impl Scheduler {
                 model_variant: request.model_variant,
                 priority: request.priority,
                 workload_class: request.workload_class,
+                tenant_key: request.tenant_key,
                 arrival_time,
                 deadline_at,
                 hard_deadline: request.deadline,
@@ -737,7 +767,20 @@ impl Scheduler {
                 retry_not_before: None,
                 replay_prompt_tokens: None,
                 capacity_blocked_on: None,
-                workspace_prefill_token_cap: None,
+                workspace_prefill_token_cap: request.execution_adapter_binding().and_then(
+                    |binding| {
+                        binding
+                            .stages
+                            .iter()
+                            .filter(|stage| {
+                                stage.selector == crate::engine::StageWorkSelector::SequencePrefill
+                            })
+                            .map(|stage| {
+                                usize::try_from(stage.max_work_units).unwrap_or(usize::MAX)
+                            })
+                            .min()
+                    },
+                ),
             },
         );
         self.running.insert(
@@ -750,6 +793,9 @@ impl Scheduler {
                 prefill_complete: true,
                 prefill_in_flight: false,
                 finalize_pending: false,
+                audio_decode_pending: None,
+                audio_decode_in_flight: false,
+                audio_last_service: 0,
                 finalize_in_flight: false,
                 incremental_prefill_quanta_committed: 0,
                 priority: request.priority,
@@ -897,6 +943,7 @@ impl Scheduler {
     pub fn schedule(&mut self) -> ScheduleResult {
         let mut result = ScheduleResult::empty();
         result.expired_requests = self.expire_deadlines();
+        self.refresh_tenant_service();
         let scheduling_now = Instant::now();
         let mut remaining_batch = self.config.max_batch_size;
         self.refresh_queue_age_sample();
@@ -1043,12 +1090,30 @@ impl Scheduler {
         // Finalization is a distinct, cache-free model stage. Schedule it
         // ahead of ordinary decode so a completed acoustic row cannot consume
         // another decoder quantum or be stranded by its output-token ceiling.
+        let ready_ordinary_decode = self.running.iter().any(|(id, running)| {
+            running.prefill_complete
+                && !running.finalize_pending
+                && running.audio_decode_pending.is_none()
+                && !self.realtime_sessions.contains_key(id)
+                && self.requests.get(id).is_some_and(|metadata| {
+                    running.num_tokens_generated < metadata.max_tokens
+                        && !self.capacity_waiting(metadata)
+                        && metadata
+                            .retry_not_before
+                            .is_none_or(|until| until <= scheduling_now)
+                })
+        });
+        // At width one a sustained supply of codec work must still leave a
+        // bounded opportunity for AR to refill other streams' audio buffers.
+        let reserve_ordinary_decode =
+            ready_ordinary_decode && self.audio_only_steps_with_ready_decode >= 4;
         let mut finalize_candidates = self
             .running
             .iter()
             .filter(|(id, running)| {
-                running.finalize_pending
+                (running.finalize_pending || running.audio_decode_pending.is_some())
                     && !running.finalize_in_flight
+                    && !running.audio_decode_in_flight
                     && !self.realtime_sessions.contains_key(*id)
             })
             .filter_map(|(id, running)| {
@@ -1067,20 +1132,52 @@ impl Scheduler {
                     running.sequence_id,
                     running.priority,
                     running.num_tokens_processed,
+                    running.audio_last_service,
                 ))
             })
             .collect::<Vec<_>>();
-        finalize_candidates
-            .sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.1.cmp(&right.1)));
-        for (request_id, sequence_id, _priority, num_computed_tokens) in finalize_candidates {
-            if remaining_batch == 0 || remaining_decode_budget == 0 {
+        while !finalize_candidates.is_empty() {
+            finalize_candidates.sort_by(|left, right| {
+                let left_aged = self.next_plan_id.saturating_sub(left.4) >= 8;
+                let right_aged = self.next_plan_id.saturating_sub(right.4) >= 8;
+                self.compare_tenant_service_with(&self.tenant_service, &left.0, &right.0)
+                    .then_with(|| right_aged.cmp(&left_aged))
+                    .then_with(|| {
+                        if left_aged && right_aged {
+                            left.4.cmp(&right.4)
+                        } else {
+                            right.2.cmp(&left.2)
+                        }
+                    })
+                    .then_with(|| left.4.cmp(&right.4))
+                    .then_with(|| left.1.cmp(&right.1))
+            });
+            let (request_id, sequence_id, _priority, num_computed_tokens, _) =
+                finalize_candidates.remove(0);
+            if remaining_batch == 0
+                || remaining_decode_budget == 0
+                || (remaining_batch <= 1
+                    && (force_incremental_prefill_service || reserve_ordinary_decode))
+            {
                 break;
             }
             let plan_id = self.next_plan_id;
             self.next_plan_id = self.next_plan_id.saturating_add(1);
-            if let Some(running) = self.running.get_mut(&request_id) {
-                running.finalize_in_flight = true;
-            }
+            let work = if let Some(running) = self.running.get_mut(&request_id) {
+                running.audio_last_service = plan_id;
+                if let Some(max_frames) = running.audio_decode_pending {
+                    running.audio_decode_in_flight = true;
+                    WorkUnit::SequenceAudioDecode { max_frames }
+                } else {
+                    running.finalize_in_flight = true;
+                    WorkUnit::SequenceFinalize {
+                        max_output_steps: 1,
+                    }
+                }
+            } else {
+                continue;
+            };
+            self.record_scheduled_service(&request_id, Self::service_units_for_work(1, &work));
             result.decode_requests.push(ScheduledRequest {
                 plan_id,
                 request_id,
@@ -1088,9 +1185,7 @@ impl Scheduler {
                 num_tokens: 1,
                 is_prefill: false,
                 num_computed_tokens,
-                work: WorkUnit::SequenceFinalize {
-                    max_output_steps: 1,
-                },
+                work,
             });
             remaining_decode_budget = remaining_decode_budget.saturating_sub(1);
             remaining_batch -= 1;
@@ -1101,7 +1196,9 @@ impl Scheduler {
         let mut decode_candidates: Vec<_> = self
             .running
             .iter()
-            .filter(|(_, r)| r.prefill_complete && !r.finalize_pending)
+            .filter(|(_, r)| {
+                r.prefill_complete && !r.finalize_pending && r.audio_decode_pending.is_none()
+            })
             .filter(|(id, _)| !self.realtime_sessions.contains_key(*id))
             .filter_map(|(id, r)| {
                 let metadata = self.requests.get(id)?;
@@ -1156,6 +1253,7 @@ impl Scheduler {
             });
         } else if self.config.policy == SchedulingPolicy::WeightedFair {
             let mut simulated_service = self.class_service.clone();
+            let mut simulated_tenants = self.tenant_service.clone();
             let mut fair_order = Vec::with_capacity(decode_candidates.len());
             while !decode_candidates.is_empty() {
                 let next_index = (0..decode_candidates.len())
@@ -1163,6 +1261,9 @@ impl Scheduler {
                         let a = &decode_candidates[*left];
                         let b = &decode_candidates[*right];
                         Self::compare_class_service_with(&simulated_service, a.7, b.7)
+                            .then_with(|| {
+                                self.compare_tenant_service_with(&simulated_tenants, &a.0, &b.0)
+                            })
                             .then_with(|| b.2.cmp(&a.2))
                             .then_with(|| {
                                 b.8.partial_cmp(&a.8).unwrap_or(std::cmp::Ordering::Equal)
@@ -1177,6 +1278,13 @@ impl Scheduler {
                     .unwrap_or_default()
                     .saturating_add(1);
                 simulated_service.insert(candidate.7, next_service);
+                if let Some(metadata) = self.requests.get(&candidate.0) {
+                    let service = simulated_tenants
+                        .entry((metadata.workload_class, metadata.tenant_key))
+                        .or_default();
+                    service.units = service.units.saturating_add(1);
+                    service.last_selected = self.next_plan_id;
+                }
                 fair_order.push(candidate);
             }
             decode_candidates = fair_order;
@@ -1292,7 +1400,7 @@ impl Scheduler {
             remaining_decode_budget = remaining_decode_budget.saturating_sub(num_tokens);
             remaining_batch -= 1;
             result.total_tokens += num_tokens;
-            self.record_class_service(workload_class, num_tokens);
+            self.record_scheduled_service(&request_id, num_tokens);
         }
 
         let served_realtime = result.decode_requests.iter().any(|row| {
@@ -1363,9 +1471,15 @@ impl Scheduler {
                 ))
             })
             .collect();
-        incomplete_prefill_candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.3.cmp(&b.3)));
+        while !incomplete_prefill_candidates.is_empty() {
+            incomplete_prefill_candidates.sort_by(|a, b| {
+                self.compare_tenant_service_with(&self.tenant_service, &a.0, &b.0)
+                    .then_with(|| b.1.cmp(&a.1))
+                    .then_with(|| a.3.cmp(&b.3))
+            });
 
-        for (request_id, _priority, sequence_id, num_computed) in incomplete_prefill_candidates {
+            let (request_id, _priority, sequence_id, num_computed) =
+                incomplete_prefill_candidates.remove(0);
             if remaining_batch == 0 || remaining_prefill_budget == 0 {
                 break;
             }
@@ -1454,7 +1568,7 @@ impl Scheduler {
                 remaining_batch -= 1;
             }
             result.total_tokens += num_tokens;
-            self.record_class_service(metadata.workload_class, num_tokens);
+            self.record_scheduled_service(&request_id, num_tokens);
         }
 
         let mut deferred_waiting = Vec::new();
@@ -1541,6 +1655,9 @@ impl Scheduler {
                 prefill_complete: false,
                 prefill_in_flight: true,
                 finalize_pending: false,
+                audio_decode_pending: None,
+                audio_decode_in_flight: false,
+                audio_last_service: 0,
                 finalize_in_flight: false,
                 incremental_prefill_quanta_committed: 0,
                 priority: metadata.priority,
@@ -1579,11 +1696,28 @@ impl Scheduler {
             }
             prefill_admissions = prefill_admissions.saturating_add(1);
             result.total_tokens += num_tokens;
-            self.record_class_service(metadata.workload_class, num_tokens);
+            self.record_scheduled_service(&request_id, num_tokens);
         }
 
         for request_id in deferred_waiting {
             self.enqueue_waiting_request(request_id);
+        }
+        if ready_ordinary_decode
+            && !result
+                .decode_requests
+                .iter()
+                .any(|row| matches!(row.work, WorkUnit::SequenceStep { .. }))
+            && result.decode_requests.iter().any(|row| {
+                matches!(
+                    row.work,
+                    WorkUnit::SequenceAudioDecode { .. } | WorkUnit::SequenceFinalize { .. }
+                )
+            })
+        {
+            self.audio_only_steps_with_ready_decode =
+                self.audio_only_steps_with_ready_decode.saturating_add(1);
+        } else {
+            self.audio_only_steps_with_ready_decode = 0;
         }
 
         result
@@ -1607,6 +1741,11 @@ impl Scheduler {
             .get(request_id)
             .is_some_and(|metadata| metadata.cache_policy.prefill == PrefillMode::Incremental);
         if let Some(running) = self.running.get_mut(request_id) {
+            if running.audio_decode_in_flight {
+                running.audio_decode_in_flight = false;
+                running.audio_decode_pending = None;
+            }
+
             let committed_incremental_prefill =
                 incremental_prefill && !running.prefill_complete && tokens_processed > 0;
             running.prefill_in_flight = false;
@@ -1648,6 +1787,48 @@ impl Scheduler {
         self.update_dynamic_budget();
     }
 
+    pub(crate) fn request_sequence_audio_decode(
+        &mut self,
+        request_id: &RequestId,
+        max_frames: usize,
+    ) -> crate::error::Result<()> {
+        let running = self.running.get_mut(request_id).ok_or_else(|| {
+            crate::error::Error::InferenceError("audio decode request is not running".into())
+        })?;
+        if max_frames == 0
+            || !running.prefill_complete
+            || running.prefill_in_flight
+            || running.finalize_pending
+            || running.audio_decode_in_flight
+        {
+            return Err(crate::error::Error::InferenceError(
+                "audio decode requires a committed active sequence".into(),
+            ));
+        }
+        running.audio_decode_pending = Some(max_frames);
+        Ok(())
+    }
+
+    /// A full stream outbox is a scheduling wait, not permission to allocate
+    /// another PCM chunk. Keep committed state while healthy rows progress.
+    pub(crate) fn defer_audio_output(
+        &mut self,
+        request_id: &RequestId,
+        max_frames: usize,
+    ) -> crate::error::Result<()> {
+        self.request_sequence_audio_decode(request_id, max_frames)?;
+        let metadata = self.requests.get_mut(request_id).ok_or_else(|| {
+            crate::error::Error::InferenceError("audio output request metadata missing".into())
+        })?;
+        let until = Instant::now() + Duration::from_millis(5);
+        metadata.retry_not_before = Some(
+            metadata
+                .retry_not_before
+                .map_or(until, |prior| prior.max(until)),
+        );
+        Ok(())
+    }
+
     /// Move one committed retained sequence onto its load-sealed finalization
     /// stage. This is deliberately independent of generated-token capacity:
     /// the final decoder frame may consume the request's last output token.
@@ -1666,7 +1847,9 @@ impl Scheduler {
             ));
         }
         running.finalize_pending = true;
+        running.audio_decode_pending = None;
         running.finalize_in_flight = false;
+        running.audio_decode_in_flight = false;
         running.paused = false;
         Ok(())
     }
@@ -1985,6 +2168,7 @@ impl Scheduler {
 
         running.prefill_in_flight = false;
         running.finalize_in_flight = false;
+        running.audio_decode_in_flight = false;
         running.prefill_complete = running.num_tokens_processed >= metadata.prefill_tokens();
         true
     }
@@ -2012,6 +2196,22 @@ impl Scheduler {
             .entry(metadata.workload_class)
             .or_default();
         *service = service.saturating_sub(scheduled_tokens.max(1) as u64);
+        if let Some(tenant) = self
+            .tenant_service
+            .get_mut(&(metadata.workload_class, metadata.tenant_key))
+        {
+            tenant.units = tenant.units.saturating_sub(scheduled_tokens.max(1) as u64);
+        }
+        if let Some(floor) = self
+            .tenant_service
+            .iter()
+            .filter(|(key, _)| key.0 == metadata.workload_class)
+            .map(|(_, value)| value.units)
+            .min()
+        {
+            self.tenant_service_floor
+                .insert(metadata.workload_class, floor);
+        }
         true
     }
 
@@ -2097,7 +2297,9 @@ impl Scheduler {
         running.prefill_complete = false;
         running.prefill_in_flight = false;
         running.finalize_pending = false;
+        running.audio_decode_pending = None;
         running.finalize_in_flight = false;
+        running.audio_decode_in_flight = false;
         running.paused = true;
         true
     }
@@ -2144,6 +2346,7 @@ impl Scheduler {
                     && candidate.epoch == running.sequence_id
                     && running.prefill_complete
                     && !running.finalize_in_flight
+                    && !running.audio_decode_in_flight
                     && !self.capacity_waiting(meta)
                     && (meta.priority < owner.priority
                         || meta.priority == owner.priority && meta.sequence_id > owner.sequence_id)
@@ -2180,7 +2383,9 @@ impl Scheduler {
         running.prefill_complete = false;
         running.prefill_in_flight = false;
         running.finalize_pending = false;
+        running.audio_decode_pending = None;
         running.finalize_in_flight = false;
+        running.audio_decode_in_flight = false;
         running.first_token_emitted = false;
         running.paused = true;
         true
@@ -2225,6 +2430,7 @@ impl Scheduler {
         self.remove_from_waiting(request_id);
         self.running.remove(request_id);
         self.requests.remove(request_id);
+        self.refresh_tenant_service();
         self.realtime_sessions.remove(request_id);
     }
 
@@ -2265,6 +2471,7 @@ impl Scheduler {
             return BeginTerminalRelease::StaleOrMissing;
         }
         self.requests.remove(&session.request_id);
+        self.refresh_tenant_service();
         self.realtime_sessions.remove(&session.request_id);
 
         let confirmation_required =
@@ -2417,10 +2624,12 @@ impl Scheduler {
         // Remove from running
         if self.running.remove(request_id).is_some() {
             self.requests.remove(request_id);
+            self.refresh_tenant_service();
             return true;
         }
 
         self.requests.remove(request_id);
+        self.refresh_tenant_service();
         false
     }
 
@@ -2617,9 +2826,13 @@ impl Scheduler {
                 candidates.cloned().max_by(|a, b| {
                     let metadata_a = self.requests.get(a);
                     let metadata_b = self.requests.get(b);
-                    metadata_a
-                        .map(|m| m.priority)
-                        .cmp(&metadata_b.map(|m| m.priority))
+                    self.compare_tenant_service_with(&self.tenant_service, a, b)
+                        .reverse()
+                        .then_with(|| {
+                            metadata_a
+                                .map(|m| m.priority)
+                                .cmp(&metadata_b.map(|m| m.priority))
+                        })
                         .then_with(|| {
                             metadata_b
                                 .map(|m| m.deadline_at)
@@ -2688,6 +2901,92 @@ impl Scheduler {
             WorkloadClass::Online => 3,
             WorkloadClass::Batch => 4,
             WorkloadClass::Background => 5,
+        }
+    }
+
+    /// Logical work units are a deterministic fairness proxy, not GPU time.
+    pub(crate) fn service_units_for_work(tokens: usize, work: &WorkUnit) -> usize {
+        match work {
+            WorkUnit::SequenceAudioDecode { max_frames } => (*max_frames).max(1),
+            _ => tokens.max(1),
+        }
+    }
+
+    fn refresh_tenant_service(&mut self) {
+        let live = self
+            .requests
+            .values()
+            .map(|metadata| (metadata.workload_class, metadata.tenant_key))
+            .collect::<HashSet<_>>();
+        self.tenant_service.retain(|key, _| live.contains(key));
+        for key in live {
+            self.tenant_service.entry(key).or_insert(TenantService {
+                units: self.tenant_service_floor.get(&key.0).copied().unwrap_or(0),
+                last_selected: self.next_plan_id,
+            });
+        }
+    }
+
+    fn compare_tenant_service_with(
+        &self,
+        service: &HashMap<TenantServiceKey, TenantService>,
+        a: &RequestId,
+        b: &RequestId,
+    ) -> Ordering {
+        if self.config.policy != SchedulingPolicy::WeightedFair {
+            return Ordering::Equal;
+        }
+        let (Some(a), Some(b)) = (self.requests.get(a), self.requests.get(b)) else {
+            return Ordering::Equal;
+        };
+        let key_a = (a.workload_class, a.tenant_key);
+        let key_b = (b.workload_class, b.tenant_key);
+        if key_a == key_b {
+            return Ordering::Equal;
+        }
+        if key_a.0 != key_b.0 {
+            return self.compare_class_service(key_a.0, key_b.0);
+        }
+        let a = service.get(&key_a).copied().unwrap_or_default();
+        let b = service.get(&key_b).copied().unwrap_or_default();
+        let aged_a = self.next_plan_id.saturating_sub(a.last_selected) >= 8;
+        let aged_b = self.next_plan_id.saturating_sub(b.last_selected) >= 8;
+        aged_b
+            .cmp(&aged_a)
+            .then_with(|| {
+                if aged_a && aged_b {
+                    a.last_selected.cmp(&b.last_selected)
+                } else {
+                    a.units.cmp(&b.units)
+                }
+            })
+            .then_with(|| a.units.cmp(&b.units))
+    }
+
+    fn record_scheduled_service(&mut self, request_id: &RequestId, units: usize) {
+        if self.config.policy != SchedulingPolicy::WeightedFair {
+            return;
+        }
+        let Some(metadata) = self.requests.get(request_id) else {
+            return;
+        };
+        let key = (metadata.workload_class, metadata.tenant_key);
+        self.record_class_service(key.0, units);
+        let entry = self.tenant_service.entry(key).or_insert(TenantService {
+            units: self.tenant_service_floor.get(&key.0).copied().unwrap_or(0),
+            last_selected: self.next_plan_id,
+        });
+        entry.units = entry.units.saturating_add(units.max(1) as u64);
+        entry.last_selected = self.next_plan_id;
+        if let Some(floor) = self
+            .tenant_service
+            .iter()
+            .filter(|(candidate, _)| candidate.0 == key.0)
+            .map(|(_, value)| value.units)
+            .min()
+        {
+            let existing = self.tenant_service_floor.entry(key.0).or_default();
+            *existing = (*existing).max(floor);
         }
     }
 
@@ -3821,6 +4120,47 @@ mod tests {
     }
 
     #[test]
+    fn loaded_prefill_limit_bounds_the_first_and_following_quanta() {
+        let mut scheduler = small_scheduler();
+        scheduler.config.enable_chunked_prefill = true;
+        let variant = ModelVariant::Kokoro82M;
+        let mut request = build_request(TaskType::TTS, "sealed-prefill", Priority::Normal)
+            .with_model_variant(variant);
+        request.prompt_tokens = vec![7; 32];
+        let profile = crate::engine::ExecutionProfile::fail_closed(
+            BackendKind::Cpu,
+            Some(variant),
+            ExecutionMode::Atomic,
+        );
+        let mut stage = crate::engine::StageDescriptor::from_execution_profile(
+            crate::engine::StageId::new(0),
+            "bounded.prefill",
+            &profile,
+            crate::engine::NativeBatchMode::None,
+        );
+        stage.selector = crate::engine::StageWorkSelector::SequencePrefill;
+        stage.max_work_units = 3;
+        request
+            .bind_execution_adapter(crate::engine::ExecutionAdapterBinding {
+                execution_group_id: crate::engine::ExecutionGroupId::new(1),
+                model_instance_id: crate::engine::ModelInstanceId::new(1),
+                adapter_instance_id: crate::engine::AdapterInstanceId::new(1),
+                adapter_abi_revision: crate::engine::AdapterAbiRevision::new(1),
+                model_variant: variant,
+                capability_id: "tts".into(),
+                stages: std::sync::Arc::from([stage]),
+            })
+            .unwrap();
+        assert!(scheduler.add_request(&request));
+        allow_incremental_prefill(&mut scheduler, &request.id);
+        for cursor in [0, 3] {
+            let row = scheduler.schedule().prefill_requests.remove(0);
+            assert_eq!((row.num_computed_tokens, row.num_tokens), (cursor, 3));
+            scheduler.update_after_step(&request.id, 3, 0, 1.0);
+        }
+    }
+
+    #[test]
     fn workspace_prefill_retry_shrinks_at_the_committed_cursor() {
         let mut scheduler = Scheduler::new(SchedulerConfig {
             max_batch_size: 1,
@@ -3852,7 +4192,10 @@ mod tests {
             scheduler.requests[&request.id].total_prompt_tokens,
             logical_prompt
         );
-        assert_eq!(scheduler.requests[&request.id].max_tokens, generation_budget);
+        assert_eq!(
+            scheduler.requests[&request.id].max_tokens,
+            generation_budget
+        );
         assert_eq!(scheduler.running[&request.id].num_tokens_generated, 0);
         scheduler.update_after_step(&request.id, 4, 0, 1.0);
         let subsequent = scheduler.schedule().prefill_requests.remove(0);
@@ -5098,6 +5441,150 @@ mod tests {
     }
 
     #[test]
+    fn tenant_fairness_prevents_request_count_from_buying_prefill_share() {
+        let mut scheduler = Scheduler::new(SchedulerConfig {
+            max_batch_size: 1,
+            max_tokens_per_step: 8,
+            ..Default::default()
+        });
+        for index in 0..7 {
+            let mut request =
+                build_request(TaskType::TTS, &format!("flood-{index}"), Priority::High);
+            request.tenant_key = Some([1; 32]);
+            scheduler.add_request(&request);
+        }
+        let mut peer = build_request(TaskType::TTS, "peer", Priority::Low);
+        peer.tenant_key = Some([2; 32]);
+        scheduler.add_request(&peer);
+        let first = scheduler.schedule().prefill_requests.remove(0);
+        assert!(first.request_id.starts_with("flood-"));
+        scheduler.finish_request(&first.request_id);
+        let second = scheduler.schedule().prefill_requests.remove(0);
+        assert_eq!(second.request_id, "peer");
+        scheduler.finish_request(&peer.id);
+        assert!(!scheduler
+            .tenant_service
+            .contains_key(&(WorkloadClass::Online, Some([2; 32]))));
+    }
+
+    #[test]
+    fn tenant_fairness_forms_decode_batches_across_tenants() {
+        let mut scheduler = Scheduler::new(SchedulerConfig {
+            max_batch_size: 8,
+            max_tokens_per_step: 32,
+            ..Default::default()
+        });
+        for index in 0..8 {
+            let mut request =
+                build_request(TaskType::TTS, &format!("row-{index}"), Priority::Normal);
+            request.tenant_key = Some([if index == 7 { 2 } else { 1 }; 32]);
+            scheduler.add_request(&request);
+        }
+        let prefill = scheduler.schedule();
+        assert_eq!(prefill.prefill_requests.len(), 8);
+        for row in prefill.prefill_requests {
+            scheduler.update_after_step(&row.request_id, row.num_tokens, 0, 1.0);
+        }
+        for tenant in scheduler.tenant_service.values_mut() {
+            tenant.units = 0;
+            tenant.last_selected = scheduler.next_plan_id;
+        }
+        scheduler.config.max_batch_size = 2;
+        let decode = scheduler.schedule();
+        assert_eq!(decode.decode_requests.len(), 2);
+        assert!(decode
+            .decode_requests
+            .iter()
+            .any(|row| row.request_id == "row-7"));
+    }
+
+    #[test]
+    fn tenant_codec_work_is_charged_by_frames_and_refunded_if_unexecuted() {
+        let mut scheduler = Scheduler::new(SchedulerConfig {
+            max_batch_size: 1,
+            max_tokens_per_step: 8,
+            ..Default::default()
+        });
+        let mut request = build_request(TaskType::TTS, "codec-tenant", Priority::Normal);
+        request.tenant_key = Some([3; 32]);
+        scheduler.add_request(&request);
+        let prefill = scheduler.schedule().prefill_requests.remove(0);
+        scheduler.update_after_step(&request.id, prefill.num_tokens, 0, 1.0);
+        scheduler
+            .request_sequence_audio_decode(&request.id, 16)
+            .unwrap();
+        let key = (request.workload_class, request.tenant_key);
+        let before = scheduler.tenant_service[&key].units;
+        // Repeated output-credit waits must not accumulate codec service.
+        // Core refunds once under its active-plan fence before each deferral.
+        for _ in 0..3 {
+            let codec = scheduler.schedule().decode_requests.remove(0);
+            assert_eq!(scheduler.tenant_service[&key].units - before, 16);
+            scheduler.update_after_step(&request.id, 0, 0, 1.0);
+            assert!(scheduler.refund_unexecuted_service(
+                &codec.session_key(),
+                Scheduler::service_units_for_work(codec.num_tokens, &codec.work),
+            ));
+            scheduler.defer_audio_output(&request.id, 16).unwrap();
+            assert_eq!(scheduler.tenant_service[&key].units, before);
+            scheduler
+                .requests
+                .get_mut(&request.id)
+                .unwrap()
+                .retry_not_before = Some(Instant::now() + Duration::from_secs(60));
+            assert!(scheduler.schedule().decode_requests.is_empty());
+            scheduler
+                .requests
+                .get_mut(&request.id)
+                .unwrap()
+                .retry_not_before = None;
+        }
+        let codec = scheduler.schedule().decode_requests.remove(0);
+        assert_eq!(scheduler.tenant_service[&key].units - before, 16);
+        let units = Scheduler::service_units_for_work(codec.num_tokens, &codec.work);
+        assert!(scheduler.refund_unexecuted_service(&codec.session_key(), units));
+        assert_eq!(scheduler.tenant_service[&key].units, before);
+        let stale = SessionKey::new(request.id.clone(), codec.sequence_id + 1);
+        assert!(!scheduler.refund_unexecuted_service(&stale, units));
+        scheduler.abort_request(&request.id);
+        assert!(scheduler.tenant_service.is_empty());
+    }
+
+    #[test]
+    fn tenant_age_bounds_cost_catchup_and_new_tenants_start_at_service_floor() {
+        let mut scheduler = Scheduler::new(SchedulerConfig::default());
+        let mut a = build_request(TaskType::TTS, "a", Priority::Normal);
+        a.tenant_key = Some([1; 32]);
+        scheduler.add_request(&a);
+        scheduler.refresh_tenant_service();
+        scheduler.record_scheduled_service(&a.id, 100);
+        let mut b = build_request(TaskType::TTS, "b", Priority::Normal);
+        b.tenant_key = Some([2; 32]);
+        scheduler.add_request(&b);
+        scheduler.refresh_tenant_service();
+        assert_eq!(
+            scheduler.tenant_service[&(b.workload_class, b.tenant_key)].units,
+            100
+        );
+        scheduler.next_plan_id = 100;
+        let old = scheduler
+            .tenant_service
+            .get_mut(&(b.workload_class, b.tenant_key))
+            .unwrap();
+        old.units = 10_000;
+        old.last_selected = 1;
+        scheduler
+            .tenant_service
+            .get_mut(&(a.workload_class, a.tenant_key))
+            .unwrap()
+            .last_selected = 100;
+        assert_eq!(
+            scheduler.compare_tenant_service_with(&scheduler.tenant_service, &b.id, &a.id),
+            Ordering::Less
+        );
+    }
+
+    #[test]
     fn production_defaults_only_enable_physically_enforced_features() {
         let config = SchedulerConfig::default();
         assert_eq!(config.policy, SchedulingPolicy::WeightedFair);
@@ -5139,6 +5626,146 @@ mod tests {
         assert_eq!(retry.decode_requests.len(), 1);
         assert!(matches!(
             retry.decode_requests[0].work,
+            WorkUnit::SequenceFinalize { .. }
+        ));
+    }
+
+    fn two_ready_audio_requests() -> (Scheduler, EngineCoreRequest, EngineCoreRequest) {
+        let mut scheduler = small_scheduler();
+        scheduler.config.max_tokens_per_step = 128;
+        let first = build_request(TaskType::TTS, "audio-first", Priority::Normal);
+        let second = build_request(TaskType::TTS, "audio-second", Priority::Normal);
+        for request in [&first, &second] {
+            assert!(scheduler.add_request(request));
+        }
+        let prefill = scheduler.schedule().prefill_requests;
+        assert_eq!(prefill.len(), 2);
+        for row in prefill {
+            scheduler.update_after_step(&row.request_id, row.num_tokens, 0, 1.0);
+        }
+        scheduler.config.max_batch_size = 1;
+        (scheduler, first, second)
+    }
+
+    #[test]
+    fn blocked_audio_output_defers_without_advancing_tokens_or_stalling_healthy_ar() {
+        let (mut scheduler, blocked, healthy) = two_ready_audio_requests();
+        scheduler
+            .request_sequence_audio_decode(&blocked.id, 4)
+            .unwrap();
+        let row = scheduler.schedule().decode_requests.remove(0);
+        assert_eq!(row.request_id, blocked.id);
+        scheduler.update_after_step(&blocked.id, 0, 0, 1.0);
+        let before = scheduler.get_running_info(&blocked.id).unwrap();
+        scheduler.defer_audio_output(&blocked.id, 4).unwrap();
+        // Extend the wait in this deterministic test; production uses five ms.
+        scheduler
+            .requests
+            .get_mut(&blocked.id)
+            .unwrap()
+            .retry_not_before = Some(Instant::now() + Duration::from_secs(1));
+        let row = scheduler.schedule().decode_requests.remove(0);
+        assert_eq!(row.request_id, healthy.id);
+        assert!(matches!(row.work, WorkUnit::SequenceStep { .. }));
+        assert_eq!(scheduler.get_running_info(&blocked.id).unwrap(), before);
+        assert_eq!(scheduler.running[&blocked.id].audio_decode_pending, Some(4));
+    }
+
+    #[test]
+    fn audio_rows_rotate_and_sustained_codec_work_preserves_ar_progress_at_width_one() {
+        let (mut scheduler, first, second) = two_ready_audio_requests();
+        for request in [&first, &second] {
+            scheduler
+                .request_sequence_audio_decode(&request.id, 4)
+                .unwrap();
+        }
+        let served = scheduler.schedule().decode_requests.remove(0);
+        scheduler.update_after_step(&served.request_id, 0, 0, 1.0);
+        scheduler
+            .request_sequence_audio_decode(&served.request_id, 4)
+            .unwrap();
+        assert_ne!(
+            scheduler.schedule().decode_requests[0].request_id,
+            served.request_id
+        );
+
+        let (mut scheduler, codec, ar) = two_ready_audio_requests();
+        scheduler
+            .request_sequence_audio_decode(&codec.id, 4)
+            .unwrap();
+        for _ in 0..4 {
+            let row = scheduler.schedule().decode_requests.remove(0);
+            assert_eq!(row.request_id, codec.id);
+            scheduler.update_after_step(&codec.id, 0, 0, 1.0);
+            scheduler
+                .request_sequence_audio_decode(&codec.id, 4)
+                .unwrap();
+        }
+        assert_eq!(scheduler.schedule().decode_requests[0].request_id, ar.id);
+
+        let (mut scheduler, high, low) = two_ready_audio_requests();
+        scheduler.running.get_mut(&high.id).unwrap().priority = Priority::High;
+        for request in [&high, &low] {
+            scheduler
+                .request_sequence_audio_decode(&request.id, 4)
+                .unwrap();
+        }
+        let mut low_served = false;
+        for _ in 0..9 {
+            let row = scheduler.schedule().decode_requests.remove(0);
+            if row.request_id == low.id {
+                low_served = true;
+                break;
+            }
+            scheduler.update_after_step(&row.request_id, 0, 0, 1.0);
+            scheduler
+                .request_sequence_audio_decode(&row.request_id, 4)
+                .unwrap();
+        }
+        assert!(low_served, "aging must prevent priority starvation");
+    }
+
+    #[test]
+    fn committed_audio_decode_retries_without_advancing_tokens_then_resumes() {
+        let mut scheduler = small_scheduler();
+        let mut request = build_request(TaskType::TTS, "tts-audio", Priority::Normal);
+        request.params.max_tokens = 2;
+        assert!(scheduler.add_request(&request));
+        assert!(scheduler
+            .request_sequence_audio_decode(&request.id, 4)
+            .is_err());
+        scheduler.schedule();
+        scheduler.update_after_step(&request.id, request.num_prompt_tokens(), 1, 1.0);
+        let before = scheduler.get_running_info(&request.id).unwrap();
+        scheduler
+            .request_sequence_audio_decode(&request.id, 1)
+            .unwrap();
+        let row = scheduler.schedule().decode_requests.remove(0);
+        assert!(matches!(
+            row.work,
+            WorkUnit::SequenceAudioDecode { max_frames: 1 }
+        ));
+        assert!(scheduler.schedule().decode_requests.is_empty());
+        assert!(scheduler.release_execution_quantum_for_retry(&row.session_key()));
+        let retry = scheduler.schedule().decode_requests.remove(0);
+        assert_eq!(retry.work, row.work);
+        scheduler.update_after_step(&request.id, 0, 0, 1.0);
+        assert_eq!(scheduler.get_running_info(&request.id).unwrap(), before);
+        let resumed = scheduler.schedule().decode_requests.remove(0);
+        assert!(matches!(resumed.work, WorkUnit::SequenceStep { .. }));
+        scheduler.update_after_step(&request.id, 1, 1, 1.0);
+        // The last audio chunk remains schedulable at the generation ceiling.
+        scheduler
+            .request_sequence_audio_decode(&request.id, 1)
+            .unwrap();
+        assert!(matches!(
+            scheduler.schedule().decode_requests[0].work,
+            WorkUnit::SequenceAudioDecode { .. }
+        ));
+        scheduler.update_after_step(&request.id, 0, 0, 1.0);
+        scheduler.request_sequence_finalize(&request.id).unwrap();
+        assert!(matches!(
+            scheduler.schedule().decode_requests[0].work,
             WorkUnit::SequenceFinalize { .. }
         ));
     }

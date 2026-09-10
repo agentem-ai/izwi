@@ -14,6 +14,10 @@ use crate::models::architectures::fish_s2::rotary::FishS2RotaryCache;
 use crate::models::architectures::fish_s2::tokenizer::FishS2VqCodes;
 use crate::models::architectures::qwen3::core::repeat_kv;
 
+#[path = "dac_streaming.rs"]
+mod streaming;
+pub(crate) use streaming::FishS2DacStreamState;
+
 pub(crate) const ATTENTION_QUERY_BLOCK: usize = 64;
 
 type CancelCheck<'a> = &'a dyn Fn() -> Result<()>;
@@ -1114,7 +1118,15 @@ impl FishS2CausalConvTranspose1d {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let out = self.conv.forward(x)?;
+        // Candle's CPU col2im path broadcasts the kernel in a batched matmul.
+        // Its shared-RHS optimization flattens batch and time; store those
+        // axes contiguously so it cannot cross channel/row boundaries.
+        let input = if x.device().is_cpu() && x.dim(0)? > 1 {
+            x.transpose(1, 2)?.contiguous()?.transpose(1, 2)?
+        } else {
+            x.clone()
+        };
+        let out = self.conv.forward(&input)?;
         let out_len = out.dim(2)?;
         let keep = out_len.saturating_sub(self.left_trim + self.right_trim);
         out.narrow(2, self.left_trim, keep).map_err(Error::from)
@@ -1271,8 +1283,11 @@ impl FishS2DacAttention {
         let q = self.rotary.apply(&q, 0)?.transpose(1, 2)?;
         let k = self.rotary.apply(&k, 0)?.transpose(1, 2)?;
         let v = v.transpose(1, 2)?;
-        let k = repeat_kv(&k, self.num_heads, self.num_kv_heads)?;
-        let v = repeat_kv(&v, self.num_heads, self.num_kv_heads)?;
+        // The shared GQA helper consumes [B,T,H,D], unlike codec attention.
+        let k =
+            repeat_kv(&k.transpose(1, 2)?, self.num_heads, self.num_kv_heads)?.transpose(1, 2)?;
+        let v =
+            repeat_kv(&v.transpose(1, 2)?, self.num_heads, self.num_kv_heads)?.transpose(1, 2)?;
         let q = q.reshape((bsz * self.num_heads, seq_len, self.head_dim))?;
         let k = k.reshape((bsz * self.num_heads, seq_len, self.head_dim))?;
         let v = v.reshape((bsz * self.num_heads, seq_len, self.head_dim))?;
@@ -1563,6 +1578,11 @@ thread_local! {
 }
 
 #[cfg(test)]
+pub(super) fn tiny_for_batch_tests() -> FishS2DacDecoder {
+    tests::tiny_decoder_fixture(&candle_core::Device::Cpu, true)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use candle_core::{Device, Shape};
@@ -1748,6 +1768,10 @@ mod tests {
     }
 
     fn tiny_decoder(device: &Device) -> FishS2DacDecoder {
+        tiny_decoder_fixture(device, false)
+    }
+
+    pub(super) fn tiny_decoder_fixture(device: &Device, streaming: bool) -> FishS2DacDecoder {
         let config = tiny_config();
         let mut tensors = HashMap::new();
         insert_conv(&mut tensors, device, "encoder.block.0", 2, 1, 7, 0.0);
@@ -1838,8 +1862,260 @@ mod tests {
         insert_snake(&mut tensors, device, "decoder.model.2", 2);
         insert_conv(&mut tensors, device, "decoder.model.3", 1, 2, 7, 0.0);
 
+        if streaming {
+            for (name, value) in &mut tensors {
+                if name.ends_with(".weight") && value.rank() >= 2 {
+                    let values = (0..value.elem_count())
+                        .map(|i| ((i * 17 % 31) as f32 - 13.0) / 200.0)
+                        .collect::<Vec<_>>();
+                    *value = Tensor::from_vec(values, value.shape(), device).unwrap();
+                }
+            }
+        }
         let vb = VarBuilder::from_tensors(tensors, DType::F32, device);
         FishS2DacDecoder::load(config, vb).unwrap()
+    }
+
+    #[test]
+    fn incremental_codec_matches_full_decode_and_rolls_back_cancelled_push() {
+        check_incremental_codec_partitions(&Device::Cpu);
+    }
+
+    #[cfg(feature = "metal")]
+    #[test]
+    #[ignore = "requires an available Metal device; never falls back to CPU"]
+    fn metal_incremental_codec_matches_full_decode_and_rollback() {
+        check_incremental_codec_partitions(
+            &crate::backends::metal_device_if_available(0).expect("Metal device"),
+        );
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    #[ignore = "requires an available CUDA device; never falls back to CPU"]
+    fn cuda_incremental_codec_matches_full_decode_and_rollback() {
+        check_incremental_codec_partitions(&Device::new_cuda(0).expect("CUDA device"));
+    }
+
+    #[test]
+    fn batched_transpose_preserves_row_channel_and_time_axes() {
+        let device = &Device::Cpu;
+        for stride in [1, 2, 3] {
+            let kernel = 2 * stride;
+            let weight = Tensor::from_vec(
+                (0..3 * 2 * kernel)
+                    .map(|i| (i as f32 - 7.0) / 31.0)
+                    .collect::<Vec<_>>(),
+                (3, 2, kernel),
+                device,
+            )
+            .unwrap();
+            let layer = FishS2CausalConvTranspose1d {
+                conv: ConvTranspose1d::new(
+                    weight,
+                    Some(Tensor::new(&[0.25f32, -0.5], device).unwrap()),
+                    ConvTranspose1dConfig {
+                        stride,
+                        ..Default::default()
+                    },
+                ),
+                left_trim: 0,
+                right_trim: stride,
+            };
+            for width in [2, 3, 7] {
+                let x = Tensor::from_vec(
+                    (0..width * 3 * 5)
+                        .map(|i| (i % 19) as f32 / 17.0)
+                        .collect::<Vec<_>>(),
+                    (width, 3, 5),
+                    device,
+                )
+                .unwrap();
+                for input in [x.clone(), x.narrow(2, 1, 3).unwrap()] {
+                    let batched = layer.forward(&input).unwrap();
+                    for row in 0..width {
+                        let expected = layer
+                            .forward(&input.narrow(0, row, 1).unwrap())
+                            .unwrap()
+                            .flatten_all()
+                            .unwrap()
+                            .to_vec1::<f32>()
+                            .unwrap();
+                        let actual = batched
+                            .narrow(0, row, 1)
+                            .unwrap()
+                            .flatten_all()
+                            .unwrap()
+                            .to_vec1::<f32>()
+                            .unwrap();
+                        assert!(
+                            actual
+                                .iter()
+                                .zip(expected)
+                                .all(|(a, b)| (a - b).abs() < 1e-5),
+                            "stride {stride}, width {width}, row {row}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn batched_codec_matches_scalar_for_mixed_ages_and_reordering_and_aborts_atomically() {
+        check_batched_codec(&Device::Cpu);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    #[ignore = "requires CUDA; no CPU fallback"]
+    fn cuda_batched_codec_matches_scalar_for_mixed_ages_and_rollback() {
+        check_batched_codec(&Device::new_cuda(0).expect("CUDA device"));
+    }
+
+    #[cfg(feature = "metal")]
+    #[test]
+    #[ignore = "requires Metal; no CPU fallback"]
+    fn metal_batched_codec_matches_scalar_for_mixed_ages_and_rollback() {
+        check_batched_codec(&crate::backends::metal_device_if_available(0).expect("Metal device"));
+    }
+
+    fn check_batched_codec(device: &Device) {
+        let codec = tiny_decoder_fixture(device, true);
+        let mut states = vec![FishS2DacStreamState::default(); 7];
+        let mut scalar = states.clone();
+        for step in 0..12 {
+            let codes = (0..7)
+                .map(|row| {
+                    (0..2)
+                        .map(|book| {
+                            (0..if row == 0 { 1 } else { 3 })
+                                .map(|frame| ((step + row + book + frame) % 8) as u32)
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let before = states
+                .iter()
+                .map(|s| (s.decoded_frames(), s.retained_tensor_bytes()))
+                .collect::<Vec<_>>();
+            let calls = std::cell::Cell::new(0);
+            assert!(codec
+                .push_frames_batch(&mut states, &codes, &|| {
+                    calls.set(calls.get() + 1);
+                    if calls.get() == 17 {
+                        Err(Error::InferenceError("cancel batch".into()))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err());
+            assert_eq!(
+                before,
+                states
+                    .iter()
+                    .map(|s| (s.decoded_frames(), s.retained_tensor_bytes()))
+                    .collect::<Vec<_>>()
+            );
+            let expected = scalar
+                .iter_mut()
+                .zip(&codes)
+                .map(|(state, codes)| codec.push_frames(state, codes, &|| Ok(())).unwrap())
+                .collect::<Vec<_>>();
+            let actual = codec
+                .push_frames_batch(&mut states, &codes, &|| Ok(()))
+                .unwrap();
+            for ((a, b), (state, reference)) in
+                actual.iter().zip(expected).zip(states.iter().zip(&scalar))
+            {
+                assert_eq!(a.len(), b.len());
+                let max_error = a
+                    .iter()
+                    .zip(&b)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0f32, f32::max);
+                assert!(
+                    max_error < 1e-5,
+                    "step {step}, frames {}, maxerror {max_error}, samples {:?} / {:?}",
+                    state.decoded_frames(),
+                    &a[..a.len().min(5)],
+                    &b[..b.len().min(5)]
+                );
+                assert_eq!(state.decoded_frames(), reference.decoded_frames());
+                assert_eq!(
+                    state.retained_tensor_bytes(),
+                    reference.retained_tensor_bytes()
+                );
+                assert!(
+                    state.retained_tensor_bytes()
+                        <= codec.config.streaming_history_bound_bytes().unwrap()
+                );
+            }
+            states.reverse();
+            scalar.reverse();
+        }
+    }
+
+    fn check_incremental_codec_partitions(device: &Device) {
+        use std::cell::Cell;
+        let codec = tiny_decoder_fixture(device, true);
+        let codes = (0..2)
+            .map(|book| {
+                (0..103)
+                    .map(|i| ((i + book) % 8) as u32)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let full = codec
+            .decode_codebooks(&codes)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        assert!(full.iter().any(|sample| sample.abs() > 1e-8));
+        for chunk in [1, 3, 8, 32] {
+            let mut state = FishS2DacStreamState::default();
+            let mut pcm = Vec::new();
+            for start in (0..103).step_by(chunk) {
+                let end = (start + chunk).min(103);
+                let rows = codes
+                    .iter()
+                    .map(|row| row[start..end].to_vec())
+                    .collect::<Vec<_>>();
+                let prior_frames = state.decoded_frames();
+                let prior_bytes = state.retained_tensor_bytes();
+                let checks = Cell::new(0usize);
+                assert!(codec
+                    .push_frames(&mut state, &rows, &|| {
+                        checks.set(checks.get() + 1);
+                        if checks.get() == 12 {
+                            Err(Error::InferenceError("cancelled fixture".into()))
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .is_err());
+                assert_eq!(state.decoded_frames(), prior_frames);
+                assert_eq!(state.retained_tensor_bytes(), prior_bytes);
+                pcm.extend(codec.push_frames(&mut state, &rows, &|| Ok(())).unwrap());
+                assert!(
+                    state.retained_tensor_bytes()
+                        <= codec.config.streaming_history_bound_bytes().unwrap()
+                );
+            }
+            assert_eq!(state.decoded_frames(), 103);
+            assert_eq!(state.emitted_samples(), full.len());
+            assert_eq!(pcm.len(), full.len());
+            for (a, b) in pcm.iter().zip(&full) {
+                assert!((a - b).abs() < 1e-5, "{a} != {b}");
+            }
+            assert!(state.flush().is_empty());
+            assert!(state.flush().is_empty());
+            assert_eq!(state.retained_tensor_bytes(), 0);
+            assert!(codec.push_frames(&mut state, &codes, &|| Ok(())).is_err());
+        }
     }
 
     #[test]

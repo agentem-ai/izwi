@@ -15,10 +15,35 @@ use crate::models::shared::weights::pytorch::{PthTensorMap, PthTensorSpec};
 
 #[path = "workspace.rs"]
 mod workspace;
+#[cfg(test)]
+use workspace::maximum_decode_workspace_bytes;
 pub(crate) use workspace::{
-    decode_workspace_bytes, maximum_decode_workspace_bytes, maximum_preparation_workspace_bytes,
+    decode_workspace_bytes, fft_workspace, maximum_preparation_workspace_bytes,
     preparation_workspace_bytes,
 };
+
+/// Conservative transient workspace for exact stateful decoding. Extend the
+/// stateless envelope by the largest causal support: the post-transformer KV
+/// window (127 prior frames) dominates every decoder convolution's history
+/// (at most 54 samples at an already-upsampled resolution). Retained histories
+/// and their rollback checkpoint are charged separately by the request owner.
+/// This intentionally overprices downstream convolutions until per-stage CUDA
+/// high-water measurements justify a tighter history-aware envelope.
+pub(crate) fn streaming_decode_workspace_bytes(frames: usize) -> Result<u64> {
+    use super::dac::FishS2DacConfig;
+    if frames == 0 || frames > FishS2DacConfig::MAX_QUANTIZER_FRAMES {
+        return decode_workspace_bytes(frames);
+    }
+    let history = FishS2DacConfig::current()
+        .transformer_window_size
+        .saturating_sub(1)
+        .max(54);
+    decode_workspace_bytes(
+        frames
+            .saturating_add(history)
+            .min(FishS2DacConfig::MAX_QUANTIZER_FRAMES),
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FishS2CodecSupport {
@@ -336,6 +361,23 @@ mod tests {
             dtype,
             archive_member_path: format!("synthetic/{name}"),
         }
+    }
+
+    #[test]
+    fn streaming_workspace_covers_history_and_rejects_invalid_quanta() {
+        assert_eq!(
+            streaming_decode_workspace_bytes(16).unwrap(),
+            decode_workspace_bytes(143).unwrap()
+        );
+        assert!(
+            streaming_decode_workspace_bytes(16).unwrap() > decode_workspace_bytes(16).unwrap()
+        );
+        assert_eq!(
+            streaming_decode_workspace_bytes(4096).unwrap(),
+            maximum_decode_workspace_bytes().unwrap()
+        );
+        assert!(streaming_decode_workspace_bytes(0).is_err());
+        assert!(streaming_decode_workspace_bytes(4097).is_err());
     }
 
     #[test]

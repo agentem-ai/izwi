@@ -162,6 +162,7 @@ const fn family_inference_state_policy(family: ModelFamily) -> FamilyInferenceSt
         },
         FishS2Tts => FamilyInferenceStatePolicy {
             tts: RetainedAndInvocation,
+            streaming_tts: RetainedAndInvocation,
             ..FamilyInferenceStatePolicy::STATELESS
         },
         ParakeetAsr => FamilyInferenceStatePolicy {
@@ -1118,7 +1119,7 @@ mod tests {
     }
 
     #[test]
-    fn built_in_registry_marks_fish_s2_as_retained_final_only_tts() {
+    fn built_in_registry_marks_fish_s2_as_retained_streaming_tts() {
         let registry = RuntimeAdapterRegistry::built_in();
         let variant = ModelVariant::FishAudioS2Pro;
 
@@ -1126,7 +1127,7 @@ mod tests {
             .require(CapabilityKind::Tts, variant)
             .expect("Fish S2 TTS adapter");
         assert_eq!(adapter.execution_target, ExecutionTargetKind::TokenEngine);
-        assert_eq!(adapter.streaming_mode, StreamingMode::FinalOnly);
+        assert_eq!(adapter.streaming_mode, StreamingMode::Chunked);
         assert_eq!(
             adapter.state_requirement,
             InferenceStateRequirement::RetainedAndInvocation

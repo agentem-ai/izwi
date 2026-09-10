@@ -1516,6 +1516,14 @@ impl InferenceCoordinator {
                                     let committed = row
                                         .job
                                         .record_materialized_usage(artifact.retained)
+                                        .map_err(|error| match error {
+                                            Error::InferenceError(message) => {
+                                                Error::InferenceError(format!(
+                                                    "{message}, stage=preparation_commit"
+                                                ))
+                                            }
+                                            error => error,
+                                        })
                                         .map(|()| PreparationPhysicalOutcome::Committed {
                                             artifact,
                                             job: row.job,
@@ -2069,7 +2077,21 @@ impl JobLease {
     /// replacing temporary physical allocations.
     pub fn record_materialized_usage(&self, observation: JobResourceObservation) -> Result<()> {
         let resources = observed_resources(observation, self._inner.coordinator.backend)?;
-        self._inner.reservation.record_materialized_usage(resources)
+        self._inner
+            .reservation
+            .record_materialized_usage(resources)
+            .map_err(|error| match error {
+                Error::InferenceError(message) => {
+                    // Bound and escape caller-supplied correlation identifiers;
+                    // never include request text, reference audio, or the spec.
+                    let request_id: String = self.spec.request_id.chars().take(128).collect();
+                    Error::InferenceError(format!(
+                        "{message}, request_id={request_id:?}, backend={:?}",
+                        self._inner.coordinator.backend,
+                    ))
+                }
+                error => error,
+            })
     }
 
     /// Restore a pending claim before releasing or replacing temporary
@@ -4974,10 +4996,15 @@ Pages free: 10.\n";
 
         let job = coordinator.admit(job("immutable-update")).await.unwrap();
 
-        assert!(matches!(
-            job.record_materialized_usage(JobResourceObservation::host(65 * 1024 * 1024)),
-            Err(Error::InferenceError(_))
-        ));
+        let error = job
+            .record_materialized_usage(JobResourceObservation::host(65 * 1024 * 1024))
+            .unwrap_err();
+        let Error::InferenceError(message) = error else {
+            panic!("materialization overflow must remain an inference error");
+        };
+        assert!(message.contains("request_id=\"immutable-update\""));
+        assert!(message.contains("backend=Cpu"));
+        assert!(message.contains("exceeded_domains=[\"host_bytes\"]"));
         assert_eq!(
             job.spec.resources.host_bytes,
             ResourceAmount::Known(64 * 1024 * 1024)
@@ -5329,3 +5356,7 @@ Pages free: 10.\n";
         }
     }
 }
+
+#[cfg(test)]
+#[path = "fish_s2_preparation_tests.rs"]
+mod fish_s2_preparation_tests;

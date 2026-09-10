@@ -109,7 +109,11 @@ pub(crate) fn fish_s2_physical_state_spec(
                     alignment_bytes: 64,
                     zero_on_release: false,
                     formula: WorkspaceFormula {
-                        fixed_bytes: stage.max_workspace_bytes,
+                        fixed_bytes: if stage.workspace_per_row_bytes > 0 {
+                            stage.workspace_per_row_bytes
+                        } else {
+                            stage.max_workspace_bytes
+                        },
                         dimensions: vec![],
                         terms: vec![],
                     },
@@ -354,6 +358,27 @@ pub(super) fn test_physical_cache(
     head_dim: usize,
     capacity_tokens: usize,
 ) -> PhysicalPagedKvCache {
+    test_physical_caches(
+        model_instance,
+        num_layers,
+        num_kv_heads,
+        head_dim,
+        capacity_tokens,
+        1,
+    )
+    .pop()
+    .unwrap()
+}
+
+#[cfg(test)]
+pub(super) fn test_physical_caches(
+    model_instance: u64,
+    num_layers: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    capacity_tokens: usize,
+    rows: usize,
+) -> Vec<PhysicalPagedKvCache> {
     use std::sync::Arc;
 
     use crate::backends::kv::{CpuKvArena, KvArena, KvArenaConfig, KvLayerConfig};
@@ -380,7 +405,7 @@ pub(super) fn test_physical_cache(
             id: arena_id,
             group,
             page_tokens: u32::try_from(page_tokens).expect("test page tokens"),
-            capacity_pages: u32::try_from(capacity_pages).expect("test capacity pages"),
+            capacity_pages: u32::try_from(capacity_pages * rows).expect("test capacity pages"),
             growth: None,
             dtype: DType::F32,
             layers: bindings
@@ -396,15 +421,20 @@ pub(super) fn test_physical_cache(
         })
         .expect("test CPU KV arena"),
     );
-    let blocks = (0..capacity_pages)
-        .map(|index| CacheBlockRef {
-            arena: arena_id,
-            group,
-            index: u32::try_from(index).expect("test page index"),
-            slot_generation: 1,
+    (0..rows)
+        .map(|row| {
+            let blocks = (row * capacity_pages..(row + 1) * capacity_pages)
+                .map(|index| CacheBlockRef {
+                    arena: arena_id,
+                    group,
+                    index: u32::try_from(index).expect("test page index"),
+                    slot_generation: 1,
+                })
+                .collect();
+            PhysicalPagedKvCache::new(arena.clone(), bindings.clone(), blocks, 0)
+                .expect("test physical cache")
         })
-        .collect();
-    PhysicalPagedKvCache::new(arena, bindings, blocks, 0).expect("test physical cache")
+        .collect()
 }
 
 #[cfg(test)]

@@ -214,6 +214,150 @@ describe("AudioApiClient.updateDiarizationRecord", () => {
     );
   });
 
+  it("backpressures speech-history SSE until progressive playback accepts each chunk", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([
+      { event: "chunk", request_id: "request", sequence: 0, audio_base64: "AAA=", sample_count: 1 },
+      { event: "chunk", request_id: "request", sequence: 1, audio_base64: "AAA=", sample_count: 1 },
+      { event: "done" },
+    ])));
+    let release!: () => void;
+    let firstChunk!: () => void;
+    const first = new Promise<void>((resolve) => { firstChunk = resolve; });
+    const capacity = new Promise<void>((resolve) => { release = resolve; });
+    const seen: number[] = [];
+    let done!: () => void;
+    const completed = new Promise<void>((resolve) => { done = resolve; });
+    const client = new AudioApiClient(new ApiHttpClient());
+    client.createTextToSpeechRecordStream({ text: "Hello", model_id: "FishAudio-S2-Pro" }, {
+      onChunk: async ({ sequence }) => {
+        seen.push(sequence);
+        if (sequence === 0) { firstChunk(); await capacity; }
+      },
+      onDone: done,
+    });
+    await first;
+    expect(seen).toEqual([0]);
+    release();
+    await completed;
+    expect(seen).toEqual([0, 1]);
+  });
+
+  it("downloads audio directly without fetching the entire recording into a Blob", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const client = new AudioApiClient(new ApiHttpClient());
+    await client.downloadAudioFile("https://example.test/v1/text-to-speech/record/audio", "narration.wav");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(click).toHaveBeenCalledOnce();
+    expect((click.mock.instances[0] as HTMLAnchorElement).href).toBe("https://example.test/v1/text-to-speech/record/audio?download=true");
+    click.mockRestore();
+  });
+
+  it("attaches to an existing durable speech job using GET without creating a second job", async () => {
+    const record = { id: "existing", processing_status: "processing" };
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse([
+      { event: "created", durable: true, record },
+      { event: "final", record: { ...record, processing_status: "ready" } },
+    ]));
+    vi.stubGlobal("fetch", fetchMock);
+    const onCreated = vi.fn(), onDurable = vi.fn();
+    await new Promise<void>((resolve) => {
+      new AudioApiClient(new ApiHttpClient()).attachTextToSpeechRecordStream("existing", { onCreated, onDurable, onDone: resolve });
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toContain("/text-to-speech/existing/events");
+    expect(fetchMock.mock.calls[0][1].method).toBeUndefined();
+    expect(fetchMock.mock.calls[0][1].body).toBeUndefined();
+    expect(onCreated).toHaveBeenCalledWith(record);
+    expect(onDurable).toHaveBeenCalledOnce();
+  });
+
+  it("reconnects durable speech from consumed PCM without restarting playback or duplicating chunks", async () => {
+    const record = { id: "durable-tts", processing_status: "processing" };
+    const created = { event: "created", durable: true, record };
+    const start = { event: "start", request_id: "stable", sample_rate: 44100, audio_format: "pcm_i16" };
+    const chunk = (sequence: number) => ({ event: "chunk", request_id: "stable", sequence, audio_base64: "AAA=", sample_count: 1 });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(sseResponse([created, start, chunk(0)]))
+      .mockResolvedValueOnce(sseResponse([created, start, chunk(0), chunk(1),
+        { event: "progress", completed_segments: 2, total_segments: 2, processed_text_bytes: 80 },
+        { event: "final", record: { ...record, processing_status: "ready" }, generation_time_ms: 10, audio_duration_secs: 1, tokens_generated: 2, rtf: 0.01 },
+      ]));
+    vi.stubGlobal("fetch", fetchMock);
+    const onStart = vi.fn(), onChunk = vi.fn(), onCreated = vi.fn(), onDurable = vi.fn(), onProgress = vi.fn(), onError = vi.fn();
+    await new Promise<void>((resolve) => {
+      new AudioApiClient(new ApiHttpClient()).createTextToSpeechRecordStream(
+        { text: "Narration", model_id: "FishAudio-S2-Pro" },
+        { onStart, onChunk, onCreated, onDurable, onProgress, onError, onDone: resolve },
+      );
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toContain("/text-to-speech/durable-tts/events?after_sequence=0");
+    expect(onStart).toHaveBeenCalledOnce();
+    expect(onCreated).toHaveBeenCalledOnce();
+    expect(onDurable).toHaveBeenCalledOnce();
+    expect(onChunk.mock.calls.map(([event]) => event.sequence)).toEqual([0, 1]);
+    expect(onProgress).toHaveBeenCalledWith({ completedSegments: 2, totalSegments: 2, processedTextBytes: 80 });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("ignores speech-history heartbeat comments before start and between audio chunks", async () => {
+    const record = { id: "tts-heartbeat", processing_status: "processing" };
+    const finalRecord = { ...record, processing_status: "ready" };
+    const data = (event: unknown) => `data: ${JSON.stringify(event)}\n\n`;
+    const parts = [
+      data({ event: "created", record }),
+      ": keep-alive\n\n",
+      ": keep-",
+      "alive\n\n",
+      data({ event: "start", request_id: "request", sample_rate: 44100, audio_format: "pcm_i16" }),
+      data({ event: "chunk", request_id: "request", sequence: 0, audio_base64: "AAA=", sample_count: 1, sample_rate: 44100 }),
+      ": keep-alive\n\n",
+      data({ event: "chunk", request_id: "request", sequence: 1, audio_base64: "AAA=", sample_count: 1, sample_rate: 44100 }),
+      data({ event: "final", record: finalRecord, generation_time_ms: 20, audio_duration_secs: 1, rtf: 0.02, tokens_generated: 2 }),
+      data({ event: "done" }),
+    ];
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const part of parts) controller.enqueue(encoder.encode(part));
+        controller.close();
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, {
+      headers: { "Content-Type": "text/event-stream" },
+    })));
+    const onCreated = vi.fn();
+    const onStart = vi.fn();
+    const onChunk = vi.fn();
+    const onFinal = vi.fn();
+    const onError = vi.fn();
+    let done!: () => void;
+    const completed = new Promise<void>((resolve) => { done = resolve; });
+    const client = new AudioApiClient(new ApiHttpClient());
+    const controller = client.createTextToSpeechRecordStream(
+      { text: "Hello", model_id: "FishAudio-S2-Pro" },
+      { onCreated, onStart, onChunk, onFinal, onError, onDone: done },
+    );
+    await completed;
+
+    expect(onCreated).toHaveBeenCalledExactlyOnceWith(record);
+    expect(onStart).toHaveBeenCalledExactlyOnceWith({
+      requestId: "request", sampleRate: 44100, audioFormat: "pcm_i16",
+    });
+    expect(onChunk.mock.calls).toEqual([
+      [{ requestId: "request", sequence: 0, audioBase64: "AAA=", sampleCount: 1, sampleRate: 44100 }],
+      [{ requestId: "request", sequence: 1, audioBase64: "AAA=", sampleCount: 1, sampleRate: 44100 }],
+    ]);
+    expect(onFinal).toHaveBeenCalledExactlyOnceWith({
+      record: finalRecord,
+      stats: { generation_time_ms: 20, audio_duration_secs: 1, rtf: 0.02, tokens_generated: 2 },
+    });
+    expect(onError).not.toHaveBeenCalled();
+    expect(controller.signal.aborted).toBe(false);
+  });
+
   it("parses direct TTS stream audio event names", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       sseResponse([

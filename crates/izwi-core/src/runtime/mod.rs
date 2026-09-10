@@ -13,6 +13,7 @@ mod chat;
 mod conformance;
 mod coordinator;
 mod diarization;
+pub(crate) mod fish_capacity;
 mod kokoro;
 mod lifecycle;
 mod pipeline;

@@ -32,6 +32,7 @@ struct CompatibilityColumn {
 }
 
 const BASELINE_SCHEMA: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS runtime_admission_locks (id TEXT PRIMARY KEY, lock_value INTEGER NOT NULL DEFAULT 1);",
     r#"
     CREATE TABLE IF NOT EXISTS chat_threads (
         id TEXT PRIMARY KEY,
@@ -540,6 +541,11 @@ const POST_COMPATIBILITY_SCHEMA: &[&str] = &[
 ];
 
 const COMPATIBILITY_COLUMNS: &[CompatibilityColumn] = &[
+    CompatibilityColumn {
+        table: "runtime_jobs",
+        column: "admission_tenant",
+        definition: "TEXT NULL",
+    },
     CompatibilityColumn {
         table: "chat_threads",
         column: "system_prompt",

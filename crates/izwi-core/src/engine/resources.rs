@@ -380,6 +380,49 @@ struct PendingClassSummary {
 }
 
 impl AuthorityState {
+    fn materialization_exceeded(
+        &self,
+        id: ReservationId,
+        operation: &str,
+        authorized: ResourceVector,
+        observed: ResourceVector,
+    ) -> Error {
+        let exceeded_domains: Vec<_> = [
+            ("host_bytes", observed.host_bytes, authorized.host_bytes),
+            (
+                "device_bytes",
+                observed.device_bytes,
+                authorized.device_bytes,
+            ),
+            (
+                "unified_bytes",
+                observed.unified_bytes,
+                authorized.unified_bytes,
+            ),
+            ("kv_bytes", observed.kv_bytes, authorized.kv_bytes),
+            (
+                "temporary_bytes",
+                observed.temporary_bytes,
+                authorized.temporary_bytes,
+            ),
+            (
+                "compute_slots",
+                observed.compute_slots,
+                authorized.compute_slots,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(domain, usage, limit)| (!usage.fits(limit)).then_some(domain))
+        .collect();
+        // Owner keys can contain arbitrary caller data. The authority's numeric
+        // reservation ID and class identify the owner without copying its key.
+        let owner_class = self.owners.get(&id).map(|owner| owner.class);
+        Error::InferenceError(format!(
+            "materialized resource usage exceeds its authorized reservation: reservation_id={}, owner_class={owner_class:?}, operation={operation}, authorized={authorized:?}, observed={observed:?}, exceeded_domains={exceeded_domains:?}",
+            id.0,
+        ))
+    }
+
     fn pending_by_class(
         &self,
         excluded: Option<ReservationId>,
@@ -858,8 +901,11 @@ impl ResourceAuthority {
             .copied()
             .unwrap_or_else(ResourceVector::zero);
         if !resources.fits_within(reserved) {
-            return Err(Error::InferenceError(
-                "materialized resource usage exceeds its authorized reservation".to_string(),
+            return Err(state.materialization_exceeded(
+                id,
+                "record_materialized_usage",
+                reserved,
+                resources,
             ));
         }
         if !current.fits_within(resources) {
@@ -896,8 +942,11 @@ impl ResourceAuthority {
             .copied()
             .unwrap_or_else(ResourceVector::zero);
         if !resources.fits_within(reserved) {
-            return Err(Error::InferenceError(
-                "materialized resource usage exceeds its authorized reservation".to_string(),
+            return Err(state.materialization_exceeded(
+                id,
+                "prepare_materialized_release",
+                reserved,
+                resources,
             ));
         }
         if !resources.fits_within(current) {
@@ -1916,6 +1965,55 @@ mod tests {
             Err(Error::InferenceError(_))
         ));
         assert_eq!(authority.snapshot().reserved, slots(8));
+    }
+
+    #[test]
+    fn materialization_diagnostics_identify_domains_and_preserve_ledger() {
+        let authority = Arc::new(ResourceAuthority::new(Arc::new(LiveProvider {
+            capacity: 10,
+            available: AtomicU64::new(10),
+        })));
+        let lease = authority
+            .reserve(
+                ReservationOwner::new(ReservationClass::Request, "private caller data"),
+                slots(8),
+            )
+            .unwrap();
+        lease.record_materialized_usage(slots(2)).unwrap();
+        let observed = ResourceVector {
+            host_bytes: ResourceAmount::Known(1),
+            compute_slots: ResourceAmount::Known(9),
+            ..ResourceVector::zero()
+        };
+        for (operation, error) in [
+            (
+                "record_materialized_usage",
+                lease.record_materialized_usage(observed).unwrap_err(),
+            ),
+            (
+                "prepare_materialized_release",
+                lease.prepare_materialized_release(observed).unwrap_err(),
+            ),
+        ] {
+            let Error::InferenceError(message) = error else {
+                panic!("materialization overflow must remain an inference error");
+            };
+            assert!(message
+                .starts_with("materialized resource usage exceeds its authorized reservation:"));
+            assert!(message.contains("reservation_id=1"));
+            assert!(message.contains("owner_class=Some(Request)"));
+            assert!(message.contains(&format!("operation={operation}")));
+            assert!(message.contains(&format!("authorized={:?}", slots(8))));
+            assert!(message.contains(&format!("observed={observed:?}")));
+            assert!(message.contains("exceeded_domains=[\"host_bytes\", \"compute_slots\"]"));
+            assert!(!message.contains("private caller data"));
+            let state = authority.state.lock().unwrap();
+            assert_eq!(state.materialized.get(&ReservationId(1)), Some(&slots(2)));
+            assert_eq!(state.ledger.used(), slots(8));
+        }
+        drop(lease);
+        assert_eq!(authority.snapshot().reservations, 0);
+        assert_eq!(authority.snapshot().reserved, ResourceVector::zero());
     }
 
     #[test]

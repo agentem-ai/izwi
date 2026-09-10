@@ -1,3 +1,5 @@
+#[path = "durable.rs"]
+pub(crate) mod durable;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,7 +44,7 @@ use crate::media_ingest::{
 use crate::speech_history_store::{
     CompleteSpeechHistoryRecord, NewSpeechHistoryRecord, SpeechHistoryProcessingStatus,
     SpeechHistoryRecord, SpeechHistoryRecordListCursor, SpeechHistoryRecordSummary,
-    SpeechRouteKind, StoredSpeechAudio,
+    SpeechRouteKind, SpeechWavSpool, StoredSpeechAudio,
 };
 use crate::state::AppState;
 use izwi_core::audio::{inspect_audio_bytes, AudioEncoder, AudioFormat};
@@ -121,6 +123,10 @@ pub struct CreateSpeechHistoryRecordRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BatchSpeechRequest {
+    /// Server-generated scheduler identity; this envelope is never accepted
+    /// from an HTTP client. Missing identity preserves legacy anonymous jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tenant_key: Option<[u8; 32]>,
     route_kind: SpeechRouteKind,
     model_id: String,
     input_text: String,
@@ -136,6 +142,7 @@ impl BatchSpeechRequest {
     ) -> Self {
         request.reference_audio = None;
         Self {
+            tenant_key: None,
             route_kind,
             model_id,
             input_text,
@@ -147,6 +154,8 @@ impl BatchSpeechRequest {
 #[derive(Debug, Serialize)]
 struct SpeechStreamEvent {
     event: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timing: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -173,6 +182,73 @@ struct SpeechStreamEvent {
     error: Option<String>,
 }
 
+/// Per constituent request: terminal totals replace earlier deltas, even when
+/// the final marker contains no audio. Long-form requests sum these totals.
+#[derive(Default)]
+struct StreamRequestStatistics {
+    measured: bool,
+    tokens: usize,
+    execution_ms: f32,
+}
+
+impl StreamRequestStatistics {
+    fn observe(&mut self, chunk: &AudioChunk) {
+        if let Some(stats) = chunk.stats.as_ref() {
+            self.measured = true;
+            if chunk.is_final {
+                self.tokens = stats.tokens_generated;
+                self.execution_ms = stats.generation_time_ms;
+            } else {
+                self.tokens = self.tokens.saturating_add(stats.tokens_generated);
+                self.execution_ms += stats.generation_time_ms;
+            }
+        }
+    }
+}
+
+/// Bound final provider upload memory using the existing generation allowance,
+/// including every long-form constituent and the largest supported slow-down.
+/// Models without a catalog duration bound use a 256 MiB fallback. Operators can
+/// deliberately impose a tighter limit with IZWI_TTS_STREAM_MAX_PCM_BYTES.
+fn stream_pcm_byte_allowance(
+    variant: ModelVariant,
+    sample_rate: u32,
+    request_count: usize,
+) -> usize {
+    let limit = match (
+        variant.tts_max_output_frames_hint(),
+        variant.tts_output_frame_rate_hz_hint(),
+    ) {
+        (Some(frames), Some(rate)) if rate > 0.0 => {
+            let frames = if variant == ModelVariant::Voxtral4BTts2603 {
+                frames.max(ModelVariant::VOXTRAL_TTS_CUDA_MAX_OUTPUT_FRAMES)
+            } else {
+                frames
+            };
+            // One frame of rounding/codec boundary slack per constituent.
+            (((frames + 1) as f64 / f64::from(rate))
+                * f64::from(sample_rate)
+                * 2.0
+                * 4.0
+                * request_count.max(1) as f64)
+                .ceil() as usize
+        }
+        _ => 256 * 1024 * 1024,
+    };
+    limit.min(u32::MAX as usize - 44)
+}
+
+fn stream_pcm_byte_limit(variant: ModelVariant, sample_rate: u32, request_count: usize) -> usize {
+    let limit = stream_pcm_byte_allowance(variant, sample_rate, request_count);
+    let configured = std::env::var("IZWI_TTS_STREAM_MAX_PCM_BYTES")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value >= 2);
+    configured
+        .map_or(limit, |configured| configured.min(limit))
+        .min(u32::MAX as usize - 44)
+}
+
 fn stream_event_queue_capacity() -> usize {
     std::env::var("IZWI_AUDIO_STREAM_EVENT_QUEUE_CAPACITY")
         .ok()
@@ -181,11 +257,130 @@ fn stream_event_queue_capacity() -> usize {
         .unwrap_or(DEFAULT_STREAM_EVENT_QUEUE_CAPACITY)
 }
 
+struct BudgetedStreamEvent {
+    payload: String,
+    _global_reservation: crate::speech_resource_budget::ByteReservation,
+    _stream_reservation: crate::speech_resource_budget::ByteReservation,
+}
+
+impl AsRef<[u8]> for BudgetedStreamEvent {
+    fn as_ref(&self) -> &[u8] {
+        self.payload.as_bytes()
+    }
+}
+
+// Model loading, reference preparation and prefill can all precede the first
+// PCM chunk. Comments keep SSE intermediaries alive without inventing audio or
+// progress events, and are produced on demand rather than entering the queue.
+fn speech_event_stream(
+    mut event_rx: mpsc::Receiver<BudgetedStreamEvent>,
+) -> impl futures::Stream<Item = Result<bytes::Bytes, Infallible>> {
+    async_stream::stream! {
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), event_rx.recv()).await {
+                Ok(Some(payload)) => {
+                    // Ownership follows the transport frame and every clone.
+                    yield Ok(bytes::Bytes::from_owner(payload));
+                }
+                Ok(None) => break,
+                Err(_) => yield Ok(bytes::Bytes::from_static(b": keepalive\n\n")),
+            }
+        }
+    }
+}
+
+fn speech_stream_response(event_rx: mpsc::Receiver<BudgetedStreamEvent>) -> Response {
+    let stream = speech_event_stream(event_rx);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache, no-transform")
+        .header("x-accel-buffering", "no")
+        .body(Body::from_stream(stream))
+        .expect("static speech stream response")
+}
+
+#[derive(Clone)]
+struct StreamEventSender {
+    sender: mpsc::Sender<BudgetedStreamEvent>,
+    budget: Arc<crate::speech_resource_budget::ByteBudget>,
+}
+
 async fn send_stream_event(
-    event_tx: &mpsc::Sender<String>,
+    event_tx: &StreamEventSender,
     event: SpeechStreamEvent,
-) -> Result<(), ()> {
-    event_tx.send(to_stream_json(event)).await.map_err(|_| ())
+) -> Result<(), &'static str> {
+    let payload = format!("data: {}\n\n", to_stream_json(event));
+    let global_reservation = crate::speech_resource_budget::event_budget()
+        .reserve(payload.len())
+        .map_err(|_| "Speech stream output byte capacity exhausted")?;
+    let stream_reservation = event_tx
+        .budget
+        .reserve(payload.len())
+        .map_err(|_| "Speech stream output byte capacity exhausted")?;
+    let event = BudgetedStreamEvent {
+        payload,
+        _global_reservation: global_reservation,
+        _stream_reservation: stream_reservation,
+    };
+    let timeout_secs = std::env::var("IZWI_AUDIO_STREAM_STALL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(30);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        event_tx.sender.send(event),
+    )
+    .await
+    .map_err(|_| "Speech stream client stalled beyond its send deadline")?
+    .map_err(|_| STREAM_CLIENT_DISCONNECTED_MESSAGE)
+}
+
+// Bind playback and persisted WAV to the first actual PCM rate. The runtime's
+// default codec rate may differ from the selected model (Fish emits 44.1 kHz).
+async fn prepare_stream_pcm(
+    event_tx: &StreamEventSender,
+    request_id: &str,
+    chunk: &AudioChunk,
+    fallback_sample_rate: u32,
+    merged_sample_rate: &mut Option<u32>,
+) -> Result<Option<u32>, String> {
+    if chunk.samples.is_empty() {
+        return Ok(None);
+    }
+    let sample_rate = chunk.sample_rate_or(fallback_sample_rate).max(1);
+    if let Some(expected) = *merged_sample_rate {
+        if expected != sample_rate {
+            return Err(format!(
+                "Streaming sample rate changed from {expected} Hz to {sample_rate} Hz"
+            ));
+        }
+    } else {
+        send_stream_event(
+            event_tx,
+            SpeechStreamEvent {
+                event: "start",
+                timing: None,
+                request_id: Some(request_id.to_string()),
+                sequence: None,
+                audio_base64: None,
+                sample_count: None,
+                sample_rate: Some(sample_rate),
+                audio_format: Some("pcm_i16"),
+                tokens_generated: None,
+                generation_time_ms: None,
+                audio_duration_secs: None,
+                rtf: None,
+                record: None,
+                error: None,
+            },
+        )
+        .await
+        .map_err(str::to_string)?;
+        *merged_sample_rate = Some(sample_rate);
+    }
+    Ok(Some(sample_rate))
 }
 
 pub async fn list_text_to_speech_records(
@@ -289,8 +484,22 @@ pub async fn cancel_text_to_speech_record(
         &record_id,
         "Cancelled by speech history request",
     )
-    .await?
-    .ok_or_else(|| ApiError::bad_request("Speech history job is not cancellable"))?;
+    .await?;
+    let record = match record {
+        Some(record) => record,
+        None => state
+            .speech_history_store
+            .get_record(SpeechRouteKind::TextToSpeech, record_id.clone())
+            .await
+            .map_err(map_store_error)?
+            .filter(|record| {
+                matches!(
+                    record.processing_status,
+                    SpeechHistoryProcessingStatus::Ready | SpeechHistoryProcessingStatus::Failed
+                )
+            })
+            .ok_or_else(|| ApiError::bad_request("Speech history job is not cancellable"))?,
+    };
 
     Ok(Json(CancelSpeechHistoryRecordResponse {
         id: record_id,
@@ -390,11 +599,39 @@ async fn get_record_audio(
 ) -> Result<Response, ApiError> {
     let audio = state
         .speech_history_store
-        .get_audio(route_kind, record_id)
+        .get_audio_stream(route_kind, record_id)
         .await
         .map_err(map_store_error)?
         .ok_or_else(|| ApiError::not_found("History audio not found"))?;
-    Ok(audio_response(audio, as_attachment))
+    let mut reader = audio.audio.reader;
+    let mut response = audio_response(
+        StoredSpeechAudio {
+            audio_bytes: Vec::new(),
+            audio_mime_type: audio.audio_mime_type,
+            audio_filename: audio.audio_filename,
+        },
+        as_attachment,
+    );
+    let stream = async_stream::stream! {
+        use tokio::io::AsyncReadExt;
+        loop {
+            let mut buffer = vec![0u8; 64 * 1024];
+            let count = match reader.read(&mut buffer).await {
+                Ok(count) => count,
+                Err(error) => { yield Err::<bytes::Bytes, std::io::Error>(error); break; }
+            };
+            if count == 0 { break; }
+            buffer.truncate(count);
+            yield Ok(bytes::Bytes::from(buffer));
+        }
+    };
+    *response.body_mut() = Body::from_stream(stream);
+    if let Some(length) = audio.audio.metadata.content_length {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    }
+    Ok(response)
 }
 
 async fn delete_record(
@@ -409,6 +646,9 @@ async fn delete_record(
         "Cancelled because the speech history record was deleted",
     )
     .await?;
+    durable::cleanup_record_replay(&state, route_kind, &record_id)
+        .await
+        .map_err(map_store_error)?;
     let deleted = state
         .speech_history_store
         .delete_record(route_kind, record_id.clone())
@@ -444,12 +684,19 @@ async fn cancel_speech_history_job(
         return Ok(None);
     };
 
-    state
+    if state
         .batch_runtime_store
         .cancel_job(&job.id, Some(reason.to_string()))
         .await
         .map_err(map_store_error)?
-        .ok_or_else(|| ApiError::bad_request("Speech history job is no longer cancellable"))?;
+        .is_none()
+    {
+        return state
+            .speech_history_store
+            .get_record(route_kind, record_id.to_string())
+            .await
+            .map_err(map_store_error);
+    }
 
     state
         .speech_history_store
@@ -476,6 +723,12 @@ async fn create_record(
     let variant = parse_tts_model_variant(model_id.as_str())
         .map_err(|err| ApiError::bad_request(format!("Unsupported TTS model: {err}")))?;
 
+    if variant == ModelVariant::FishAudioS2Pro {
+        crate::api::tts_long_form::SpeechTextPlan::fish(
+            &input_text,
+            req.max_output_tokens.or(req.max_tokens).unwrap_or(0),
+        )?;
+    }
     validate_reference_voice_selection(&req)?;
     req = resolve_saved_voice_selection(&state, req).await?;
     req = normalize_for_model_capabilities(route_kind, variant, req)?;
@@ -495,7 +748,7 @@ async fn create_record(
         )
         .await?;
 
-        if req.stream.unwrap_or(false) {
+        if req.stream.unwrap_or(false) && variant != ModelVariant::FishAudioS2Pro {
             return stream_record_creation(
                 state,
                 ctx,
@@ -516,7 +769,8 @@ async fn create_record(
             route_kind,
             model_id,
             input_text,
-            Some(ctx.correlation_id),
+            ctx.tenant_key(),
+            Some(ctx.correlation_id.clone()),
             idempotency_key,
         )
         .await
@@ -530,15 +784,28 @@ async fn create_record(
                     Some(err.message.clone()),
                 )
                 .await;
+            if err
+                .message
+                .contains("Speech job admission capacity exhausted")
+            {
+                return Err(ApiError {
+                    status: StatusCode::TOO_MANY_REQUESTS,
+                    message: err.message,
+                });
+            }
             return Err(err);
         }
 
+        if req.stream.unwrap_or(false) {
+            return durable::replay_response(state, ctx.tenant_key(), placeholder.id, None).await;
+        }
         return Ok((StatusCode::ACCEPTED, Json(placeholder)).into_response());
     }
 
     let (record, _) = synthesize_record_internal(
         &state,
         &ctx,
+        ctx.tenant_key(),
         req,
         route_kind,
         variant,
@@ -686,13 +953,20 @@ async fn enqueue_batch_speech_job(
     route_kind: SpeechRouteKind,
     model_id: String,
     input_text: String,
+    tenant_key: Option<[u8; 32]>,
     correlation_id: Option<String>,
     idempotency_key: Option<String>,
 ) -> Result<(), ApiError> {
+    state
+        .batch_runtime_store
+        .preflight_speech_admission(tenant_key)
+        .await
+        .map_err(map_store_error)?;
     let reference_ingest =
         ingest_batch_reference_audio(state, placeholder, route_kind, &req).await?;
-    let request_snapshot =
+    let mut request_snapshot =
         BatchSpeechRequest::for_durable_job(route_kind, model_id.clone(), input_text.clone(), req);
+    request_snapshot.tenant_key = tenant_key;
     let request_json = serde_json::to_value(&request_snapshot)
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
     let request_hash = durable_tts_request_hash(&request_json, reference_ingest.as_ref());
@@ -714,7 +988,7 @@ async fn enqueue_batch_speech_job(
         .await
         .map_err(map_store_error)?;
 
-    let job = state
+    let job_result = state
         .batch_runtime_store
         .create_job(NewRuntimeJob {
             job_kind: RuntimeJobKind::TtsSpeech,
@@ -730,14 +1004,35 @@ async fn enqueue_batch_speech_job(
                 .map(|asset| asset.id.clone()),
             input_text_asset_id: Some(text_asset.id.clone()),
             request_json: request_json.clone(),
-            model_snapshot_json: serde_json::json!({}),
+            model_snapshot_json: serde_json::json!({
+                "version": 1,
+                "model_id": request_snapshot.model_id,
+                "request_sha256": sha256_hex(request_json.to_string().as_bytes()),
+                "text_sha256": sha256_hex(input_text.as_bytes()),
+                "reference_audio_sha256": reference_ingest.as_ref()
+                    .and_then(|ingest| ingest.source_asset.as_ref())
+                    .and_then(|asset| asset.sha256.as_deref()),
+                "reference_text_sha256": request_snapshot.request.reference_text.as_ref()
+                    .map(|text| sha256_hex(text.as_bytes())),
+            }),
             retry_policy_json: serde_json::json!({"max_attempts": 2}),
             max_attempts: 2,
             idempotency_key: idempotency_key.clone(),
             correlation_id,
         })
-        .await
-        .map_err(map_store_error)?;
+        .await;
+    let job = match job_result {
+        Ok(job) => job,
+        Err(error) => {
+            // If create committed but its response failed, the ownership query
+            // preserves the referenced text. Shared canonical media stays intact.
+            let _ = state
+                .batch_runtime_store
+                .remove_unreferenced_text_asset(&text_asset.id)
+                .await;
+            return Err(map_store_error(error));
+        }
+    };
 
     let text_input_artifact = state
         .batch_runtime_store
@@ -879,6 +1174,10 @@ impl StageExecutor for BatchTtsStageExecutor {
         BATCH_TTS_STAGE_KIND
     }
 
+    async fn maintenance(&self) -> anyhow::Result<()> {
+        durable::cleanup_expired_replay(&self.state).await
+    }
+
     async fn execute(&self, claimed: ClaimedStage) -> anyhow::Result<StageExecutionOutcome> {
         execute_batch_tts_stage(&self.state, claimed, None).await
     }
@@ -955,6 +1254,7 @@ async fn execute_batch_tts_stage(
     let (_record, output_artifact) = match synthesize_record_internal(
         state,
         &ctx,
+        request.tenant_key,
         request.request,
         request.route_kind,
         variant,
@@ -970,6 +1270,12 @@ async fn execute_batch_tts_stage(
     {
         Ok(record) => record,
         Err(err) => {
+            if err
+                .message
+                .contains("speech_stage_yield: committed segment boundary")
+            {
+                return Err(crate::batch_runtime::worker::SpeechStageYield.into());
+            }
             match projection_attempt.as_ref() {
                 Some(projection_attempt) => {
                     let _ = state
@@ -1046,6 +1352,18 @@ async fn hydrate_batch_reference_audio(
             .read_object(storage_key)
             .await
             .context("Failed to read canonical TTS reference artifact")?;
+        if let Some(expected) = artifact.sha256.as_deref() {
+            anyhow::ensure!(
+                sha256_hex(&stored.bytes) == expected,
+                "Canonical TTS reference checksum changed"
+            );
+        }
+        if let Some(expected) = artifact.size_bytes {
+            anyhow::ensure!(
+                stored.bytes.len() as u64 == expected,
+                "Canonical TTS reference size changed"
+            );
+        }
         request.reference_audio =
             Some(base64::engine::general_purpose::STANDARD.encode(stored.bytes));
         return Ok(());
@@ -1169,6 +1487,7 @@ pub(crate) async fn synthesize_record(
     synthesize_record_internal(
         state,
         ctx,
+        ctx.tenant_key(),
         req,
         route_kind,
         variant,
@@ -1187,6 +1506,7 @@ pub(crate) async fn synthesize_record(
 async fn synthesize_record_internal(
     state: &AppState,
     ctx: &RequestContext,
+    tenant_key: Option<[u8; 32]>,
     req: CreateSpeechHistoryRecordRequest,
     route_kind: SpeechRouteKind,
     variant: ModelVariant,
@@ -1204,6 +1524,24 @@ async fn synthesize_record_internal(
     ),
     ApiError,
 > {
+    if variant == ModelVariant::FishAudioS2Pro {
+        return durable::synthesize_fish_record(
+            state,
+            ctx,
+            tenant_key,
+            req,
+            route_kind,
+            variant,
+            model_id,
+            input_text,
+            target_record_id,
+            workload_class,
+            attempt,
+            projection_attempt,
+            batch_publication,
+        )
+        .await;
+    }
     if let Some(attempt) = attempt {
         attempt
             .ensure_active()
@@ -1219,7 +1557,9 @@ async fn synthesize_record_internal(
     );
     let permit = state.acquire_workload_permit(workload_class).await;
     state.runtime.load_model(variant).await?;
-    generation_request = generation_request.with_runtime_context(permit.runtime_context());
+    let mut runtime_context = permit.runtime_context();
+    runtime_context.tenant_key = tenant_key;
+    generation_request = generation_request.with_runtime_context(runtime_context);
     let planned_request_count =
         expand_generation_requests_for_long_form(&generation_request, variant).len();
     let timeout = Duration::from_secs(resolve_generation_timeout_secs(
@@ -1355,6 +1695,8 @@ async fn stream_record_creation(
     input_text: String,
     placeholder: SpeechHistoryRecord,
 ) -> Result<Response, ApiError> {
+    let stream_entry_started = std::time::Instant::now();
+    let tenant_key = ctx.tenant_key();
     let generation_request = build_generation_request(
         req.clone(),
         ctx.correlation_id,
@@ -1362,8 +1704,21 @@ async fn stream_record_creation(
         true,
         variant,
     );
-    let mut planned_requests =
-        expand_generation_requests_for_long_form(&generation_request, variant);
+    let planned_count = if variant == ModelVariant::FishAudioS2Pro {
+        crate::api::tts_long_form::SpeechTextPlan::fish(
+            &generation_request.text,
+            generation_request.config.options.max_tokens,
+        )?
+        .segments
+        .len()
+    } else {
+        expand_generation_requests_for_long_form(&generation_request, variant).len()
+    };
+    let mut planned_requests = if variant == ModelVariant::FishAudioS2Pro {
+        vec![generation_request.clone()]
+    } else {
+        expand_generation_requests_for_long_form(&generation_request, variant)
+    };
     let stream_request_id = generation_request.id.clone();
     let placeholder_record_id = placeholder.id.clone();
 
@@ -1371,11 +1726,21 @@ async fn stream_record_creation(
     let speech_store = state.speech_history_store.clone();
     let admission_state = state.clone();
 
-    let (event_tx, mut event_rx) = mpsc::channel::<String>(stream_event_queue_capacity());
+    let (sender, event_rx) = mpsc::channel::<BudgetedStreamEvent>(stream_event_queue_capacity());
+    let byte_limit = std::env::var("IZWI_AUDIO_STREAM_MAX_EVENT_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(4 * 1024 * 1024);
+    let event_tx = StreamEventSender {
+        sender,
+        budget: crate::speech_resource_budget::ByteBudget::new(byte_limit),
+    };
     let _ = send_stream_event(
         &event_tx,
         SpeechStreamEvent {
             event: "created",
+            timing: None,
             request_id: Some(stream_request_id.clone()),
             sequence: None,
             audio_base64: None,
@@ -1411,6 +1776,7 @@ async fn stream_record_creation(
                     &event_tx,
                     SpeechStreamEvent {
                         event: "error",
+                        timing: None,
                         request_id: Some(stream_request_id),
                         sequence: None,
                         audio_base64: None,
@@ -1440,6 +1806,7 @@ async fn stream_record_creation(
                     &event_tx,
                     SpeechStreamEvent {
                         event: "done",
+                        timing: None,
                         request_id: Some(stream_request_id),
                         sequence: None,
                         audio_base64: None,
@@ -1462,7 +1829,8 @@ async fn stream_record_creation(
             mark_failed(err.to_string()).await;
             return;
         }
-        let runtime_context = permit.runtime_context();
+        let mut runtime_context = permit.runtime_context();
+        runtime_context.tenant_key = tenant_key;
         for request in &mut planned_requests {
             request.runtime_context = runtime_context;
         }
@@ -1476,96 +1844,85 @@ async fn stream_record_creation(
             )
             .await;
 
+        let _permit = if variant == ModelVariant::FishAudioS2Pro {
+            drop(permit);
+            None
+        } else {
+            Some(permit)
+        };
         let fallback_sample_rate = runtime.sample_rate().await;
-        if send_stream_event(
-            &event_tx,
-            SpeechStreamEvent {
-                event: "start",
-                request_id: Some(stream_request_id.clone()),
-                sequence: None,
-                audio_base64: None,
-                sample_count: None,
-                sample_rate: Some(fallback_sample_rate),
-                audio_format: Some("pcm_i16"),
-                tokens_generated: None,
-                generation_time_ms: None,
-                audio_duration_secs: None,
-                rtf: None,
-                record: None,
-                error: None,
-            },
-        )
-        .await
-        .is_err()
-        {
-            mark_failed(STREAM_CLIENT_DISCONNECTED_MESSAGE.to_string()).await;
-            return;
-        }
-
         let mut total_samples = 0usize;
         let mut audio_duration_secs = 0.0f32;
         let mut total_tokens = 0usize;
+        let mut execution_time_ms = 0.0f32;
+        let mut statistics_measured = true;
+        let split_request_count = planned_count;
+        let mut first_pcm_ms = None;
+        let mut last_pcm_ms = None;
         let stream_started = std::time::Instant::now();
-        let mut merged_samples: Vec<f32> = Vec::new();
+        let mut wav_spool: Option<SpeechWavSpool> = None;
         let mut merged_sample_rate: Option<u32> = None;
         let mut global_sequence = 0usize;
         let mut failed = false;
         let mut failure_message: Option<String> = None;
         for request in planned_requests {
+            let mut request_statistics = StreamRequestStatistics::default();
             let (chunk_tx, mut chunk_rx) = mpsc::channel::<AudioChunk>(32);
             let generation_engine = runtime.clone();
+            let runner_state = admission_state.clone();
             let generation_task = tokio::spawn(async move {
-                generation_engine
-                    .generate_streaming(request, chunk_tx)
+                if variant == ModelVariant::FishAudioS2Pro {
+                    crate::api::tts_long_form::generate_speech_plan_stream(
+                        &runner_state,
+                        variant,
+                        request,
+                        chunk_tx,
+                        WorkloadClass::Streaming,
+                    )
                     .await
+                } else {
+                    generation_engine
+                        .generate_streaming(request, chunk_tx)
+                        .await
+                }
             });
 
             let mut encoding_failed = false;
             let mut stream_closed = false;
             while let Some(chunk) = chunk_rx.recv().await {
-                if chunk.samples.is_empty() {
-                    continue;
-                }
-
-                let chunk_sample_rate = chunk.sample_rate_or(fallback_sample_rate).max(1);
-                match merged_sample_rate {
-                    Some(expected) if expected != chunk_sample_rate => {
-                        let message = format!(
-                            "Streaming sample rate changed from {expected} Hz to {chunk_sample_rate} Hz"
+                // Terminal-only chunks carry committed frame counts and execution
+                // time; metadata must be consumed even when no PCM remains.
+                request_statistics.observe(&chunk);
+                let chunk_sample_rate = match prepare_stream_pcm(
+                    &event_tx,
+                    &stream_request_id,
+                    &chunk,
+                    fallback_sample_rate,
+                    &mut merged_sample_rate,
+                )
+                .await
+                {
+                    Ok(Some(sample_rate)) => sample_rate,
+                    Ok(None) => continue,
+                    Err(message) => {
+                        tracing::warn!(
+                            request_id = %stream_request_id,
+                            record_id = %placeholder_record_id,
+                            elapsed_ms = stream_entry_started.elapsed().as_millis(),
+                            error = %message,
+                            "Speech stream format initialization failed"
                         );
-                        let _ = send_stream_event(
-                            &event_tx,
-                            SpeechStreamEvent {
-                                event: "error",
-                                request_id: Some(stream_request_id.clone()),
-                                sequence: None,
-                                audio_base64: None,
-                                sample_count: None,
-                                sample_rate: None,
-                                audio_format: None,
-                                tokens_generated: None,
-                                generation_time_ms: None,
-                                audio_duration_secs: None,
-                                rtf: None,
-                                record: None,
-                                error: Some(message.clone()),
-                            },
-                        )
-                        .await;
                         encoding_failed = true;
                         failure_message = Some(message);
                         break;
                     }
-                    None => merged_sample_rate = Some(chunk_sample_rate),
-                    _ => {}
-                }
+                };
 
                 total_samples += chunk.samples.len();
                 audio_duration_secs += chunk.samples.len() as f32 / chunk_sample_rate as f32;
-                if let Some(stats) = chunk.stats.as_ref() {
-                    total_tokens = total_tokens.saturating_add(stats.tokens_generated);
-                }
-                merged_samples.extend_from_slice(&chunk.samples);
+                let pcm_ms = stream_entry_started.elapsed().as_secs_f64() * 1000.0;
+                first_pcm_ms.get_or_insert(pcm_ms);
+                last_pcm_ms = Some(pcm_ms);
 
                 let stream_encoder = AudioEncoder::new(chunk_sample_rate, 1);
                 let chunk_bytes = match stream_encoder.encode(&chunk.samples, AudioFormat::RawI16) {
@@ -1575,6 +1932,7 @@ async fn stream_record_creation(
                             &event_tx,
                             SpeechStreamEvent {
                                 event: "error",
+                                timing: None,
                                 request_id: Some(stream_request_id.clone()),
                                 sequence: None,
                                 audio_base64: None,
@@ -1596,10 +1954,31 @@ async fn stream_record_creation(
                     }
                 };
 
-                if send_stream_event(
+                let append_result = async {
+                    if wav_spool.is_none() {
+                        wav_spool = Some(SpeechWavSpool::new(
+                            chunk_sample_rate,
+                            stream_pcm_byte_limit(variant, chunk_sample_rate, split_request_count),
+                        )?);
+                    }
+                    wav_spool
+                        .as_mut()
+                        .expect("created WAV spool")
+                        .append_pcm(&chunk_bytes)
+                        .await
+                }
+                .await;
+                if let Err(err) = append_result {
+                    encoding_failed = true;
+                    failure_message = Some(format!("Failed to persist streaming PCM: {err}"));
+                    break;
+                }
+
+                if let Err(message) = send_stream_event(
                     &event_tx,
                     SpeechStreamEvent {
                         event: "chunk",
+                        timing: None,
                         request_id: Some(stream_request_id.clone()),
                         sequence: Some(global_sequence),
                         audio_base64: Some(
@@ -1617,14 +1996,25 @@ async fn stream_record_creation(
                     },
                 )
                 .await
-                .is_err()
                 {
+                    tracing::warn!(
+                        request_id = %stream_request_id,
+                        record_id = %placeholder_record_id,
+                        sequence = global_sequence,
+                        elapsed_ms = stream_entry_started.elapsed().as_millis(),
+                        error = message,
+                        "Speech stream PCM delivery failed"
+                    );
+                    failure_message = Some(message.to_string());
                     stream_closed = true;
                     break;
                 }
                 global_sequence = global_sequence.saturating_add(1);
             }
 
+            total_tokens = total_tokens.saturating_add(request_statistics.tokens);
+            execution_time_ms += request_statistics.execution_ms;
+            statistics_measured &= request_statistics.measured;
             drop(chunk_rx);
             let generation_outcome = generation_task.await;
             if encoding_failed || stream_closed {
@@ -1655,18 +2045,19 @@ async fn stream_record_creation(
             mark_failed(stream_terminal_failure_message(failure_message)).await;
         } else {
             let generation_time_ms = stream_started.elapsed().as_secs_f32() * 1000.0;
-            if total_tokens == 0 {
-                total_tokens = total_samples / 256;
-            }
             let rtf = if audio_duration_secs > 0.0 {
                 (generation_time_ms / 1000.0) / audio_duration_secs
             } else {
                 0.0
             };
 
-            let record_sample_rate = merged_sample_rate.unwrap_or(fallback_sample_rate).max(1);
-            let wav_encoder = AudioEncoder::new(record_sample_rate, 1);
-            match wav_encoder.encode(merged_samples.as_slice(), AudioFormat::Wav) {
+            let wav_result = match wav_spool {
+                Some(spool) => spool.finish().await,
+                None => Err(anyhow::anyhow!(
+                    "Streaming generation produced no PCM audio"
+                )),
+            };
+            match wav_result {
                 Ok(wav_bytes) => {
                     let record_result = speech_store
                         .complete_record(
@@ -1684,11 +2075,11 @@ async fn stream_record_creation(
                                 generation_time_ms: generation_time_ms as f64,
                                 audio_duration_secs: Some(audio_duration_secs as f64),
                                 rtf: Some(rtf as f64),
-                                tokens_generated: Some(total_tokens),
+                                tokens_generated: statistics_measured.then_some(total_tokens),
                                 audio_mime_type: AudioEncoder::content_type(AudioFormat::Wav)
                                     .to_string(),
                                 audio_filename: Some(default_audio_filename(route_kind, "wav")),
-                                audio_bytes: wav_bytes,
+                                audio_bytes: wav_bytes.bytes,
                                 preexisting_audio_storage_path: None,
                             },
                         )
@@ -1700,13 +2091,28 @@ async fn stream_record_creation(
                                 &event_tx,
                                 SpeechStreamEvent {
                                     event: "final",
+                                    timing: Some(serde_json::json!({
+                                        "generation_time_basis": "post_admission_stream_wall",
+                                        "request_timing_basis": "stream_handler_entry_after_record_creation",
+                                        "execution_time_ms": statistics_measured.then_some(execution_time_ms),
+                                        "execution_rtf": if statistics_measured && audio_duration_secs > 0.0 {
+                                            Some(execution_time_ms / 1000.0 / audio_duration_secs)
+                                        } else { None },
+                                        "first_pcm_ms": first_pcm_ms,
+                                        "request_to_last_pcm_ms": last_pcm_ms,
+                                        "request_to_last_pcm_rtf": last_pcm_ms.filter(|_| audio_duration_secs > 0.0)
+                                            .map(|ms| ms / 1000.0 / f64::from(audio_duration_secs)),
+                                        "split_request_count": split_request_count,
+                                        "pcm_sample_count": total_samples,
+                                        "token_unit": if model_id == "FishAudio-S2-Pro" { "semantic_frames" } else { "model_tokens" },
+                                    })),
                                     request_id: Some(stream_request_id.clone()),
                                     sequence: None,
                                     audio_base64: None,
                                     sample_count: None,
                                     sample_rate: None,
                                     audio_format: None,
-                                    tokens_generated: Some(total_tokens),
+                                    tokens_generated: statistics_measured.then_some(total_tokens),
                                     generation_time_ms: Some(generation_time_ms),
                                     audio_duration_secs: Some(audio_duration_secs),
                                     rtf: Some(rtf),
@@ -1726,7 +2132,7 @@ async fn stream_record_creation(
                     }
                 }
                 Err(err) => {
-                    mark_failed(format!("Failed to encode final WAV output: {err}")).await;
+                    mark_failed(format!("Failed to finalize streaming WAV output: {err}")).await;
                 }
             }
         }
@@ -1735,6 +2141,7 @@ async fn stream_record_creation(
             &event_tx,
             SpeechStreamEvent {
                 event: "done",
+                timing: None,
                 request_id: Some(stream_request_id),
                 sequence: None,
                 audio_base64: None,
@@ -1752,18 +2159,7 @@ async fn stream_record_creation(
         .await;
     });
 
-    let stream = async_stream::stream! {
-        while let Some(payload) = event_rx.recv().await {
-            yield Ok::<_, Infallible>(format!("data: {payload}\n\n"));
-        }
-    };
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/event-stream")
-        .header(header::CACHE_CONTROL, "no-cache")
-        .body(Body::from_stream(stream))
-        .unwrap_or_else(|_| Response::new(Body::empty())))
+    Ok(speech_stream_response(event_rx))
 }
 
 fn normalize_create_request(
@@ -1853,7 +2249,11 @@ fn build_generation_request(
         &text,
         req.max_output_tokens.or(req.max_tokens),
     ) {
-        generation_config.options.max_tokens = max_tokens;
+        generation_config.options.max_tokens = if variant == ModelVariant::FishAudioS2Pro {
+            req.max_output_tokens.or(req.max_tokens).unwrap_or(0)
+        } else {
+            max_tokens
+        };
     }
     if let Some(top_k) = req.top_k {
         generation_config.options.top_k = top_k;
@@ -2146,6 +2546,182 @@ fn map_media_ingest_error(err: MediaIngestError) -> ApiError {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn stream_start_uses_first_pcm_rate_once_across_requests() {
+        for explicit_rate in [Some(44_100), None] {
+            let (sender, mut receiver) = mpsc::channel(4);
+            let event_tx = StreamEventSender {
+                sender,
+                budget: crate::speech_resource_budget::ByteBudget::new(4096),
+            };
+            let mut merged_rate = None;
+            // Metadata-only chunks must not start playback at a fallback rate.
+            let empty = AudioChunk::final_chunk("first".into(), 0, Vec::new());
+            assert_eq!(
+                prepare_stream_pcm(&event_tx, "stream", &empty, 24_000, &mut merged_rate)
+                    .await
+                    .unwrap(),
+                None
+            );
+            assert!(receiver.try_recv().is_err());
+            let mut first = AudioChunk::new("first".into(), 0, vec![0.25; 2048]);
+            if let Some(rate) = explicit_rate {
+                first = first.with_sample_rate(rate);
+            }
+            let rate = prepare_stream_pcm(&event_tx, "stream", &first, 24_000, &mut merged_rate)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(rate, explicit_rate.unwrap_or(24_000));
+            let event = receiver.recv().await.unwrap();
+            let start: serde_json::Value =
+                serde_json::from_str(event.payload.strip_prefix("data: ").unwrap().trim()).unwrap();
+            assert_eq!(start["event"], "start");
+            assert_eq!(start["sample_rate"], rate);
+            assert_eq!(start["audio_format"], "pcm_i16");
+            // Playback and the finalized WAV must interpret these same samples
+            // at the same rate; otherwise pitch and duration diverge.
+            let wav = AudioEncoder::new(rate, 1)
+                .encode(&first.samples, AudioFormat::Wav)
+                .unwrap();
+            let wav_rate = u32::from_le_bytes(wav[24..28].try_into().unwrap());
+            assert_eq!(start["sample_rate"], wav_rate);
+            assert_eq!(merged_rate, Some(rate));
+            let next = AudioChunk::new("second".into(), 0, vec![0.25; 2048]).with_sample_rate(rate);
+            assert_eq!(
+                prepare_stream_pcm(&event_tx, "stream", &next, 24_000, &mut merged_rate)
+                    .await
+                    .unwrap(),
+                Some(rate)
+            );
+            assert!(
+                receiver.try_recv().is_err(),
+                "split requests must not restart playback"
+            );
+            let changed = next.with_sample_rate(48_000);
+            assert!(
+                prepare_stream_pcm(&event_tx, "stream", &changed, 24_000, &mut merged_rate)
+                    .await
+                    .unwrap_err()
+                    .contains("Streaming sample rate changed")
+            );
+            assert_eq!(merged_rate, Some(rate));
+            assert!(receiver.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_start_delivery_failure_does_not_commit_format() {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+        let event_tx = StreamEventSender {
+            sender,
+            budget: crate::speech_resource_budget::ByteBudget::new(4096),
+        };
+        let mut merged_rate = None;
+        let chunk = AudioChunk::new("request".into(), 0, vec![0.25]).with_sample_rate(44_100);
+        assert_eq!(
+            prepare_stream_pcm(&event_tx, "stream", &chunk, 24_000, &mut merged_rate)
+                .await
+                .unwrap_err(),
+            STREAM_CLIENT_DISCONNECTED_MESSAGE
+        );
+        assert_eq!(merged_rate, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sse_keepalive_survives_idle_preparation_then_delivers_data_and_eof() {
+        use futures::StreamExt;
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let response = super::speech_stream_response(receiver);
+        assert_eq!(response.headers()["content-type"], "text/event-stream");
+        assert_eq!(
+            response.headers()["cache-control"],
+            "no-cache, no-transform"
+        );
+        assert_eq!(response.headers()["x-accel-buffering"], "no");
+        let mut body = response.into_body().into_data_stream();
+        let started = tokio::time::Instant::now();
+        // Simulate a reader/proxy that closes an idle stream after 15 seconds.
+        // Preparation takes 40 seconds, but regular comment frames keep it alive.
+        for _ in 0..4 {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(15), body.next())
+                .await
+                .expect("idle client closed before first audio")
+                .unwrap()
+                .unwrap();
+            assert_eq!(frame.as_ref(), b": keepalive\n\n");
+        }
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(40));
+        let payload = "data: {\"event\":\"chunk\"}\n\n".to_string();
+        let budget = crate::speech_resource_budget::ByteBudget::new(payload.len());
+        let other = crate::speech_resource_budget::ByteBudget::new(payload.len());
+        sender
+            .send(super::BudgetedStreamEvent {
+                _global_reservation: budget.reserve(payload.len()).unwrap(),
+                _stream_reservation: other.reserve(payload.len()).unwrap(),
+                payload: payload.clone(),
+            })
+            .await
+            .unwrap();
+        let frame = body.next().await.unwrap().unwrap();
+        assert_eq!(frame.as_ref(), payload.as_bytes());
+        assert!(budget.reserve(1).is_err());
+        drop(frame);
+        assert!(budget.reserve(payload.len()).is_ok());
+        drop(sender);
+        assert!(body.next().await.is_none());
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(40));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dropping_sse_body_releases_queued_bytes_and_closes_sender() {
+        for read_keepalive in [false, true] {
+            use futures::StreamExt;
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+            let mut body = super::speech_stream_response(receiver)
+                .into_body()
+                .into_data_stream();
+            if read_keepalive {
+                assert!(body.next().await.unwrap().is_ok());
+            }
+            let budget = crate::speech_resource_budget::ByteBudget::new(32);
+            let other = crate::speech_resource_budget::ByteBudget::new(32);
+            sender
+                .send(super::BudgetedStreamEvent {
+                    payload: "data: pending\n\n".into(),
+                    _global_reservation: budget.reserve(32).unwrap(),
+                    _stream_reservation: other.reserve(32).unwrap(),
+                })
+                .await
+                .unwrap();
+            assert!(budget.reserve(1).is_err());
+            drop(body);
+            assert!(sender.is_closed());
+            assert!(budget.reserve(32).is_ok());
+            assert!(other.reserve(32).is_ok());
+        }
+    }
+
+    #[test]
+    fn sse_byte_reservation_follows_transport_frame_and_clones() {
+        let budget = crate::speech_resource_budget::ByteBudget::new(16);
+        let other = crate::speech_resource_budget::ByteBudget::new(16);
+        let event = super::BudgetedStreamEvent {
+            payload: "data: test\n\n".to_string(),
+            _global_reservation: budget.reserve(16).unwrap(),
+            _stream_reservation: other.reserve(16).unwrap(),
+        };
+        let frame = bytes::Bytes::from_owner(event);
+        let in_transport = frame.clone();
+        drop(frame);
+        assert!(budget.reserve(1).is_err());
+        assert!(other.reserve(1).is_err());
+        drop(in_transport);
+        assert!(budget.reserve(16).is_ok());
+        assert!(other.reserve(16).is_ok());
+    }
+
     use super::*;
 
     fn base_request() -> CreateSpeechHistoryRecordRequest {
@@ -2165,6 +2741,48 @@ mod tests {
             top_k: None,
             stream: None,
         }
+    }
+
+    #[test]
+    fn stream_spool_allowance_preserves_fish_full_output_and_long_form() {
+        let single = stream_pcm_byte_allowance(ModelVariant::FishAudioS2Pro, 44_100, 1);
+        let full_slow_pcm = ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES * 2048 * 2 * 4;
+        assert!(single >= full_slow_pcm);
+        let long_form = stream_pcm_byte_allowance(ModelVariant::FishAudioS2Pro, 44_100, 3);
+        assert!(long_form >= full_slow_pcm * 3);
+        assert!(long_form <= single * 3);
+        assert!(
+            stream_pcm_byte_allowance(ModelVariant::FishAudioS2Pro, 44_100, usize::MAX)
+                <= u32::MAX as usize - 44
+        );
+    }
+
+    #[test]
+    fn terminal_only_statistics_replace_chunk_deltas_without_guessing_frames() {
+        let mut statistics = StreamRequestStatistics::default();
+        let mut first = AudioChunk::new("request".into(), 0, vec![0.0; 2048]);
+        first.stats = Some(izwi_core::ChunkStats {
+            generation_time_ms: 10.0,
+            tokens_generated: 1,
+            rtf: 0.2,
+        });
+        statistics.observe(&first);
+        let mut terminal = AudioChunk::final_chunk("request".into(), 1, Vec::new());
+        terminal.stats = Some(izwi_core::ChunkStats {
+            generation_time_ms: 25.0,
+            tokens_generated: 2,
+            rtf: 0.3,
+        });
+        statistics.observe(&terminal);
+        assert_eq!(statistics.tokens, 2);
+        assert_eq!(statistics.execution_ms, 25.0);
+        let mut unknown = StreamRequestStatistics::default();
+        unknown.observe(&AudioChunk::final_chunk(
+            "unknown".into(),
+            0,
+            vec![0.0; 4096],
+        ));
+        assert_eq!(unknown.tokens, 0);
     }
 
     #[test]
@@ -2191,6 +2809,7 @@ mod tests {
         request.reference_audio = Some("legacy-base64-audio".to_string());
         request.reference_text = Some("Reference words".to_string());
         let json = serde_json::to_value(BatchSpeechRequest {
+            tenant_key: None,
             route_kind: SpeechRouteKind::TextToSpeech,
             model_id: "Qwen3-TTS-12Hz-1.7B-Base".to_string(),
             input_text: "Hello".to_string(),
@@ -2203,6 +2822,35 @@ mod tests {
         assert_eq!(
             decoded.request.reference_audio.as_deref(),
             Some("legacy-base64-audio")
+        );
+    }
+
+    #[test]
+    fn durable_tenant_identity_roundtrips_and_public_payload_cannot_supply_it() {
+        let mut raw = serde_json::to_value(base_request()).unwrap();
+        raw["tenant_key"] = serde_json::json!(vec![19; 32]);
+        let public: CreateSpeechHistoryRecordRequest = serde_json::from_value(raw).unwrap();
+        let mut internal = BatchSpeechRequest::for_durable_job(
+            SpeechRouteKind::TextToSpeech,
+            "FishAudio-S2-Pro".into(),
+            "hello".into(),
+            public,
+        );
+        assert_eq!(
+            internal.tenant_key, None,
+            "public fields must not become trusted scheduling identity"
+        );
+        internal.tenant_key = Some([7; 32]);
+        let persisted = serde_json::to_value(&internal).unwrap();
+        let restored: BatchSpeechRequest = serde_json::from_value(persisted.clone()).unwrap();
+        assert_eq!(restored.tenant_key, Some([7; 32]));
+        let mut legacy = persisted;
+        legacy.as_object_mut().unwrap().remove("tenant_key");
+        assert_eq!(
+            serde_json::from_value::<BatchSpeechRequest>(legacy)
+                .unwrap()
+                .tenant_key,
+            None
         );
     }
 

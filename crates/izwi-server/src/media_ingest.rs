@@ -537,6 +537,13 @@ impl MediaIngestService {
         read_media_object(&self.media_storage, key).await
     }
 
+    pub async fn read_object_stream(
+        &self,
+        key: &str,
+    ) -> Result<izwi_hooks::StoredMediaStream, MediaStorageError> {
+        crate::persistence::read_media_stream(&self.media_storage, key).await
+    }
+
     pub async fn delete_object(&self, key: &str) -> anyhow::Result<()> {
         delete_media_object(&self.media_storage, Some(key)).await
     }
@@ -560,6 +567,38 @@ impl MediaIngestService {
             metadata,
         )
         .await
+    }
+
+    pub async fn persist_generated_audio_file(
+        &self,
+        record_id: String,
+        filename: Option<&str>,
+        content_type: &str,
+        path: std::path::PathBuf,
+        content_length: u64,
+        route: &str,
+    ) -> Result<String, MediaIngestError> {
+        let mut metadata = HookMetadata::new();
+        metadata.insert("route".to_string(), route.to_string());
+        self.media_storage
+            .put_file(
+                izwi_hooks::MediaWriteRequest {
+                    namespace: MediaNamespace::GeneratedSpeech,
+                    record_id,
+                    preferred_filename: filename.map(str::to_string),
+                    content_type: content_type.to_string(),
+                    metadata,
+                },
+                path,
+                content_length,
+            )
+            .await
+            .map(|stored| stored.key.key)
+            .map_err(|error| {
+                MediaIngestError::Storage(anyhow::anyhow!(
+                    "Media storage file upload failed: {error}"
+                ))
+            })
     }
 
     async fn prepare_audio(

@@ -162,6 +162,7 @@ export interface SpeechHistoryRecordCreateRequest {
 type SpeechHistoryRecordStreamEvent =
   | {
       event: "created";
+      durable?: boolean;
       record: SpeechHistoryRecord;
     }
   | {
@@ -176,6 +177,7 @@ type SpeechHistoryRecordStreamEvent =
       sequence: number;
       audio_base64: string;
       sample_count: number;
+      sample_rate?: number;
     }
   | {
       event: "final";
@@ -186,10 +188,14 @@ type SpeechHistoryRecordStreamEvent =
       rtf: number;
       record: SpeechHistoryRecord;
     }
+  | { event: "progress"; completed_segments: number; total_segments: number; processed_text_bytes: number }
   | { event: "error"; request_id?: string; error: string }
   | { event: "done"; request_id?: string };
 
 export interface SpeechHistoryRecordStreamCallbacks {
+  onDurable?: () => void;
+  onProgress?: (progress: { completedSegments: number; totalSegments: number; processedTextBytes: number }) => void;
+  onReconnecting?: (attempt: number) => void;
   onCreated?: (record: SpeechHistoryRecord) => void;
   onStart?: (event: {
     requestId: string;
@@ -201,7 +207,8 @@ export interface SpeechHistoryRecordStreamCallbacks {
     sequence: number;
     audioBase64: string;
     sampleCount: number;
-  }) => void;
+    sampleRate?: number;
+  }) => void | Promise<void>;
   onFinal?: (event: {
     record: SpeechHistoryRecord;
     stats: TTSGenerationStats;
@@ -1658,87 +1665,107 @@ export class AudioApiClient {
     request: SpeechHistoryRecordCreateRequest,
     callbacks: SpeechHistoryRecordStreamCallbacks,
   ): AbortController {
+    return this.consumeSpeechHistoryRecordStream(route, callbacks, request);
+  }
+
+  attachTextToSpeechRecordStream(recordId: string, callbacks: SpeechHistoryRecordStreamCallbacks): AbortController {
+    return this.consumeSpeechHistoryRecordStream("text-to-speech", callbacks, undefined, recordId);
+  }
+
+  private consumeSpeechHistoryRecordStream(
+    route: SpeechHistoryRoute,
+    callbacks: SpeechHistoryRecordStreamCallbacks,
+    request?: SpeechHistoryRecordCreateRequest,
+    existingRecordId?: string,
+  ): AbortController {
     const abortController = new AbortController();
 
     const startStream = async () => {
+      let recordId = existingRecordId;
+      let durable = existingRecordId !== undefined;
+      let created = false;
+      if (durable) callbacks.onDurable?.();
+      let lastSequence = -1;
+      let started = false;
+      let terminal = false;
+      let retries = 0;
+      let initial = existingRecordId === undefined;
       try {
-        const response = await fetch(
-          this.http.url(this.speechHistoryCollectionPath(route)),
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(
-              this.buildSpeechHistoryRecordCreateBody(request, true),
-            ),
-            signal: abortController.signal,
-          },
-        );
-
-        if (!response.ok) {
-          callbacks.onError?.(
-            (
-              await this.http.createError(response, "Speech streaming failed")
-            ).message,
-          );
-          callbacks.onDone?.();
-          return;
-        }
-
-        await consumeDataStream(response, (data) => {
+        while (!abortController.signal.aborted && !terminal) {
           try {
-            const event = JSON.parse(data) as SpeechHistoryRecordStreamEvent;
-            switch (event.event) {
-              case "created":
-                callbacks.onCreated?.(event.record);
-                break;
-              case "start":
-                callbacks.onStart?.({
-                  requestId: event.request_id,
-                  sampleRate: event.sample_rate,
-                  audioFormat: event.audio_format,
-                });
-                break;
-              case "chunk":
-                callbacks.onChunk?.({
-                  requestId: event.request_id,
-                  sequence: event.sequence,
-                  audioBase64: event.audio_base64,
-                  sampleCount: event.sample_count,
-                });
-                break;
-              case "final":
-                callbacks.onFinal?.({
-                  record: event.record,
-                  stats: {
-                    generation_time_ms: event.generation_time_ms,
-                    audio_duration_secs: event.audio_duration_secs,
-                    rtf: event.rtf,
-                    tokens_generated: event.tokens_generated,
-                  },
-                });
-                break;
-              case "error":
-                callbacks.onError?.(event.error);
-                break;
-              case "done":
-                return true;
+            const path = initial
+              ? this.speechHistoryCollectionPath(route)
+              : `${this.speechHistoryRecordPath(route, recordId!)}/events${lastSequence >= 0 ? `?after_sequence=${lastSequence}` : ""}`;
+            const response = await fetch(this.http.url(path), initial ? {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(this.buildSpeechHistoryRecordCreateBody(request!, true)),
+              signal: abortController.signal,
+            } : { signal: abortController.signal });
+            if (!response.ok) {
+              // Authentication, expired cursors and unknown jobs need user action.
+              if (response.status < 500) terminal = true;
+              throw await this.http.createError(response, "Speech streaming failed");
             }
-          } catch {
-            // Skip malformed SSE payloads.
+            await consumeDataStream(response, async (data) => {
+              let event: SpeechHistoryRecordStreamEvent;
+              try { event = JSON.parse(data) as SpeechHistoryRecordStreamEvent; }
+              catch { return false; }
+              switch (event.event) {
+                case "created":
+                  if (event.durable && !durable) { durable = true; callbacks.onDurable?.(); }
+                  if (!created) { recordId = event.record.id; created = true; callbacks.onCreated?.(event.record); }
+                  break;
+                case "start":
+                  if (!started) {
+                    callbacks.onStart?.({ requestId: event.request_id, sampleRate: event.sample_rate, audioFormat: event.audio_format });
+                    started = true;
+                  }
+                  break;
+                case "chunk":
+                  if (durable && event.sequence <= lastSequence) break;
+                  await callbacks.onChunk?.({ requestId: event.request_id, sequence: event.sequence,
+                    audioBase64: event.audio_base64, sampleCount: event.sample_count, sampleRate: event.sample_rate });
+                  lastSequence = event.sequence;
+                  retries = 0;
+                  break;
+                case "progress":
+                  callbacks.onProgress?.({ completedSegments: event.completed_segments,
+                    totalSegments: event.total_segments, processedTextBytes: event.processed_text_bytes });
+                  break;
+                case "final":
+                  terminal = true;
+                  callbacks.onFinal?.({ record: event.record, stats: {
+                    generation_time_ms: event.generation_time_ms, audio_duration_secs: event.audio_duration_secs,
+                    rtf: event.rtf, tokens_generated: event.tokens_generated,
+                  } });
+                  return true;
+                case "error":
+                  terminal = true;
+                  callbacks.onError?.(event.error);
+                  return true;
+                case "done": return true;
+              }
+              return false;
+            });
+            if (terminal || !durable || !recordId) break;
+          } catch (error) {
+            if (terminal || !durable || !recordId || isAbortError(error)) throw error;
           }
-
-          return false;
-        });
-
-        callbacks.onDone?.();
-      } catch (error) {
-        if (!isAbortError(error)) {
-          callbacks.onError?.(
-            error instanceof Error ? error.message : "Speech stream error",
-          );
+          if (abortController.signal.aborted || terminal) break;
+          if (++retries > 5) throw new Error("Speech playback disconnected. Generation continues in history; reopen the recording when it is ready.");
+          callbacks.onReconnecting?.(retries);
+          initial = false;
+          await new Promise<void>((resolve) => {
+            const done = () => { clearTimeout(timer); abortController.signal.removeEventListener("abort", done); resolve(); };
+            const timer = setTimeout(done, retries === 1 ? 0 : Math.min(500 * 2 ** (retries - 2), 5000));
+            abortController.signal.addEventListener("abort", done, { once: true });
+          });
         }
+      } catch (error) {
+        if (!isAbortError(error) && !abortController.signal.aborted) {
+          callbacks.onError?.(error instanceof Error ? error.message : "Speech stream error");
+        }
+      } finally {
         callbacks.onDone?.();
       }
     };
@@ -1783,24 +1810,31 @@ export class AudioApiClient {
       }
     }
 
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Audio download failed (${response.status})`);
+    // Speech endpoints support attachment responses, including cross-origin APIs
+    // where browsers ignore the anchor's download attribute. Other/signed media
+    // URLs retain their existing download contract.
+    const downloadUrl = new URL(url, window.location.href);
+    const isSpeechArtifact = /\/(?:text-to-speech|voice-designs|voice-clones)\/[^/]+\/audio$/.test(downloadUrl.pathname);
+    let objectUrl: string | undefined;
+    if (isSpeechArtifact) {
+      downloadUrl.searchParams.set("download", "true");
+    } else {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Audio download failed (${response.status})`);
+      objectUrl = URL.createObjectURL(await response.blob());
     }
-
-    const blob = await response.blob();
-    const objectUrl = URL.createObjectURL(blob);
+    // Long speech goes directly to the browser's download manager, never a Blob.
     const anchor = document.createElement("a");
-    anchor.href = objectUrl;
+    anchor.href = objectUrl ?? downloadUrl.toString();
     anchor.download = suggestedFilename;
     anchor.style.display = "none";
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
-
-    window.setTimeout(() => {
-      URL.revokeObjectURL(objectUrl);
-    }, 1000);
+    if (objectUrl) {
+      const temporaryUrl = objectUrl;
+      window.setTimeout(() => URL.revokeObjectURL(temporaryUrl), 1000);
+    }
   }
 
   async saveAudioFile(url: string, suggestedFilename: string): Promise<void> {

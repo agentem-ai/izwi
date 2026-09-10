@@ -1402,6 +1402,265 @@ mod tests {
         drop(temp_dir);
     }
 
+    async fn speech_replay_fixture(state: &AppState, tenant: Option<[u8; 32]>) -> (String, String) {
+        use crate::batch_runtime::store::{sha256_hex, NewStageOutputArtifact};
+        use crate::speech_history_store::{
+            NewSpeechHistoryRecord, SpeechHistoryProcessingStatus, SpeechRouteKind,
+        };
+        let samples = vec![0.1_f32, -0.2, 0.3];
+        let record = state
+            .speech_history_store
+            .create_record(NewSpeechHistoryRecord {
+                route_kind: SpeechRouteKind::TextToSpeech,
+                processing_status: SpeechHistoryProcessingStatus::Ready,
+                processing_error: None,
+                model_id: Some("FishAudio-S2-Pro".into()),
+                speaker: None,
+                language: None,
+                saved_voice_id: None,
+                speed: None,
+                input_text: "hello".into(),
+                voice_description: None,
+                reference_text: None,
+                generation_time_ms: 12.0,
+                audio_duration_secs: Some(3.0 / 44100.0),
+                rtf: Some(0.5),
+                tokens_generated: Some(3),
+                audio_mime_type: "audio/wav".into(),
+                audio_filename: Some("test.wav".into()),
+                audio_bytes: AudioEncoder::new(44100, 1)
+                    .encode(&samples, AudioFormat::Wav)
+                    .unwrap(),
+            })
+            .await
+            .unwrap();
+        let job = state.batch_runtime_store.create_job(NewRuntimeJob {
+            job_kind: RuntimeJobKind::TtsSpeech, status: RuntimeJobStatus::Queued, priority: 0,
+            model_id: Some("FishAudio-S2-Pro".into()), capability: Some("tts".into()),
+            route_record_kind: Some("text_to_speech".into()), route_record_id: Some(record.id.clone()),
+            input_media_asset_id: None, input_text_asset_id: None,
+            request_json: serde_json::json!({"tenant_key":tenant,"route_kind":"text_to_speech","model_id":"FishAudio-S2-Pro","input_text":"hello","request":{}}),
+            model_snapshot_json: serde_json::json!({"version":1}), retry_policy_json: serde_json::json!({}),
+            max_attempts: 1, idempotency_key: None, correlation_id: None,
+        }).await.unwrap();
+        state
+            .batch_runtime_store
+            .create_stage(NewJobStage {
+                job_id: job.id.clone(),
+                sequence: 0,
+                stage_kind: "tts_synthesize".into(),
+                status: RuntimeStageStatus::Queued,
+                capability: Some("tts".into()),
+                model_id: job.model_id.clone(),
+                max_attempts: 1,
+                input_artifact_ids: vec![],
+            })
+            .await
+            .unwrap();
+        let claimed = state
+            .batch_runtime_store
+            .claim_next_stage("test-worker", 60000)
+            .await
+            .unwrap()
+            .unwrap();
+        let bytes: Vec<u8> = samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect();
+        let key = state
+            .media_ingest
+            .persist_generated_audio(
+                "replay-test".into(),
+                Some("pcm"),
+                "audio/pcm-f32le",
+                &bytes,
+                "speech_replay",
+            )
+            .await
+            .unwrap();
+        state.batch_runtime_store.publish_stage_output_artifact(&claimed.lease().unwrap(), NewStageOutputArtifact {
+            publication_key: "speech-pcm/00000000000000000000".into(), artifact_kind: RuntimeArtifactKind::Audio,
+            artifact_role: RuntimeArtifactRole::OutputIntermediate, media_asset_id: None, text_asset_id: None,
+            storage_key: Some(key), content_type: Some("audio/pcm-f32le".into()), filename: None,
+            size_bytes: Some(bytes.len() as u64), sha256: Some(sha256_hex(&bytes)),
+            metadata_json: serde_json::json!({"version":1,"sequence":0,"segment":0,"sample_offset":0,"sample_count":3,"sample_rate":44100}), retention_policy: "test".into(),
+        }).await.unwrap().unwrap();
+        state
+            .batch_runtime_store
+            .complete_stage(&claimed.lease().unwrap(), vec![])
+            .await
+            .unwrap()
+            .unwrap();
+        (record.id, job.id)
+    }
+
+    #[tokio::test]
+    async fn durable_speech_replay_preserves_pcm_stats_and_terminal_cancel() {
+        let (state, _root) = test_state("durable_speech_replay", false);
+        state.lifecycle.mark_ready();
+        let (id, job_id) = speech_replay_fixture(&state, None).await;
+        let config = ServeRuntimeConfig {
+            backend: izwi_core::backends::BackendPreference::Cpu,
+            ui_enabled: false,
+            ..ServeRuntimeConfig::default()
+        };
+        let app = create_router(state.clone(), &config);
+        let path = format!("/v1/text-to-speech/{id}/events");
+        let response = send_request(app.clone(), build_request(Method::GET, &path, None)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let events: Vec<serde_json::Value> = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events[0]["durable"], true);
+        assert_eq!(events[1]["sample_rate"], 44100);
+        assert_eq!(events[2]["sequence"], 0);
+        let streamed = base64::engine::general_purpose::STANDARD
+            .decode(events[2]["audio_base64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            streamed,
+            AudioEncoder::new(44100, 1)
+                .encode(&[0.1, -0.2, 0.3], AudioFormat::RawI16)
+                .unwrap()
+        );
+        assert_eq!(events[3]["event"], "final");
+        assert_eq!(events[3]["generation_time_ms"], 12.0);
+        assert_eq!(events[3]["tokens_generated"], 3);
+        assert_eq!(events[4]["event"], "done");
+        let response = send_request(
+            app.clone(),
+            build_request(Method::GET, &format!("{path}?after_sequence=0"), None),
+        )
+        .await;
+        drop(response); // Merely dropping a subscriber never cancels a durable job.
+        assert_eq!(
+            state
+                .batch_runtime_store
+                .get_job(&job_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            RuntimeJobStatus::Completed
+        );
+        assert_route_status(
+            app.clone(),
+            Method::GET,
+            &format!("{path}?after_sequence=99"),
+            None,
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+        assert_route_status(
+            app,
+            Method::POST,
+            &format!("/v1/text-to-speech/{id}/cancel"),
+            Some("{}"),
+            StatusCode::OK,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn durable_speech_listener_disconnect_does_not_cancel_running_job() {
+        use crate::speech_history_store::{SpeechHistoryProcessingStatus, SpeechRouteKind};
+        use futures::StreamExt;
+        let (state, _root) = test_state("durable_speech_disconnect", false);
+        state.lifecycle.mark_ready();
+        let (id, job_id) = speech_replay_fixture(&state, None).await;
+        state
+            .batch_runtime_store
+            .transition_job_status(
+                &job_id,
+                &[RuntimeJobStatus::Completed],
+                RuntimeJobStatus::Running,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        state
+            .speech_history_store
+            .update_processing_status(
+                SpeechRouteKind::TextToSpeech,
+                id.clone(),
+                SpeechHistoryProcessingStatus::Processing,
+                None,
+            )
+            .await
+            .unwrap();
+        let config = ServeRuntimeConfig {
+            backend: izwi_core::backends::BackendPreference::Cpu,
+            ui_enabled: false,
+            ..ServeRuntimeConfig::default()
+        };
+        let response = send_request(
+            create_router(state.clone(), &config),
+            build_request(
+                Method::GET,
+                &format!("/v1/text-to-speech/{id}/events"),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        assert!(
+            String::from_utf8(body.next().await.unwrap().unwrap().to_vec())
+                .unwrap()
+                .contains("created")
+        );
+        drop(body);
+        assert_eq!(
+            state
+                .batch_runtime_store
+                .get_job(&job_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            RuntimeJobStatus::Running
+        );
+        assert_eq!(
+            state
+                .speech_history_store
+                .get_record(SpeechRouteKind::TextToSpeech, id)
+                .await
+                .unwrap()
+                .unwrap()
+                .processing_status,
+            SpeechHistoryProcessingStatus::Processing
+        );
+    }
+
+    #[tokio::test]
+    async fn durable_speech_replay_rejects_other_tenant() {
+        let (state, _root) = test_state("durable_speech_other_tenant", false);
+        state.lifecycle.mark_ready();
+        let (id, _) = speech_replay_fixture(&state, Some([7; 32])).await;
+        let config = ServeRuntimeConfig {
+            backend: izwi_core::backends::BackendPreference::Cpu,
+            ui_enabled: false,
+            ..ServeRuntimeConfig::default()
+        };
+        assert_route_status(
+            create_router(state, &config),
+            Method::GET,
+            &format!("/v1/text-to-speech/{id}/events"),
+            None,
+            StatusCode::FORBIDDEN,
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn runtime_job_routes_return_trace_and_support_cancel_retry() {
         let (state, temp_dir) = test_state("runtime_job_routes_return_trace", false);

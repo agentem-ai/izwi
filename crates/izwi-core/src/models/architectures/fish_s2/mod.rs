@@ -16,12 +16,14 @@ use crate::error::{Error, Result};
 use crate::models::shared::attention::physical::PhysicalPagedKvCache;
 
 pub mod artifacts;
+mod batch;
 pub mod codec;
 pub mod config;
 pub mod contracts;
 pub mod dac;
 pub mod fast;
 mod physical;
+mod reference_cache;
 mod retained;
 mod rotary;
 mod sampling;
@@ -38,10 +40,13 @@ pub use contracts::{
 };
 pub use dac::{FishS2DacConfig, FishS2DacDecoder};
 pub use fast::{FishS2FastConfig, FishS2FastDecoder, FishS2GeneratedFrame, FishS2Sampler};
+#[cfg(test)]
+pub(crate) use physical::fish_s2_physical_state_spec;
 pub(crate) use physical::{FishS2PhysicalStateSpec, FISH_S2_SLOW_STATE_GROUP};
 #[allow(unused_imports)]
 pub(crate) use retained::{
-    FishS2PreparedArtifact, FishS2RetainedCheckpoint, FishS2RetainedState, FishS2RetainedStep,
+    FishS2PreparationMemory, FishS2PreparedArtifact, FishS2RetainedCheckpoint, FishS2RetainedState,
+    FishS2RetainedStep,
 };
 pub use slow::{FishS2SlowConfig, FishS2SlowOutput, FishS2SlowTransformer};
 pub use tokenizer::{
@@ -49,18 +54,25 @@ pub use tokenizer::{
 };
 pub use weights::{FishS2TensorSpec, FishS2WeightIndex, FishS2Weights};
 
+pub(crate) use reference_cache::FISH_S2_REFERENCE_CACHE_BYTES;
+
 pub(crate) const FISH_S2_TTS_PREPARATION_STAGE: &str = "tts.prepare.fish_s2";
 pub(crate) const FISH_S2_TTS_PREFILL_STAGE: &str = "tts.prefill.fish_s2";
 pub(crate) const FISH_S2_TTS_DECODE_STAGE: &str = "tts.decode.fish_s2";
+pub(crate) const FISH_S2_AUDIO_CHUNK_FRAMES: usize = 16;
+pub(crate) const FISH_S2_FIRST_AUDIO_FRAMES: usize = 4;
+pub(crate) const FISH_S2_TTS_AUDIO_DECODE_STAGE: &str = "tts.audio_decode.fish_s2";
 pub(crate) const FISH_S2_TTS_FINALIZE_STAGE: &str = "tts.codec.fish_s2.scalar";
 
 pub struct FishS2TtsModel {
     model_identity: u64,
+    artifact_fingerprint: Option<String>,
     variant: ModelVariant,
     config: FishS2Config,
     artifacts: FishS2ArtifactManifest,
     codec: FishS2CodecArtifact,
     runtime: Option<FishS2NativeRuntime>,
+    reference_cache: reference_cache::ReferenceCodeCache,
 }
 
 struct FishS2NativeRuntime {
@@ -115,6 +127,26 @@ pub struct FishS2TtsDiagnostics {
     pub codec_support: &'static str,
 }
 
+/// Model-authored terminal reason. Exhausting a budget is incomplete speech.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum FishS2StopReason {
+    #[serde(rename = "im_end")]
+    EndOfSpeech,
+    #[serde(rename = "max_frames")]
+    FrameLimit,
+}
+
+impl FishS2StopReason {
+    pub(crate) fn require_complete(self) -> Result<()> {
+        match self {
+            Self::EndOfSpeech => Ok(()),
+            Self::FrameLimit => Err(Error::InferenceError(
+                "Fish S2 generation incomplete: frame_limit reached before end of speech".into(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FishS2TtsGenerationDiagnostics {
     pub model_family: &'static str,
@@ -122,7 +154,7 @@ pub struct FishS2TtsGenerationDiagnostics {
     pub prompt_tokens: usize,
     pub max_frames: usize,
     pub frames_generated: usize,
-    pub stop_reason: String,
+    pub stop_reason: FishS2StopReason,
     pub temperature: f32,
     pub top_p: f32,
     pub top_k: usize,
@@ -143,6 +175,32 @@ const RAS_HIGH_TOP_P: f32 = 0.9;
 static NEXT_FISH_S2_MODEL_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
 impl FishS2TtsModel {
+    /// Metadata-only fixture for request preparation and admission tests.
+    /// Native inference remains unavailable, as for `load_metadata`.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            model_identity: 1,
+            artifact_fingerprint: None,
+            variant: ModelVariant::FishAudioS2Pro,
+            config: config::current_config(),
+            artifacts: FishS2ArtifactManifest {
+                model_dir: Default::default(),
+                shard_files: Vec::new(),
+                tensor_count: 0,
+                text_tensor_count: 0,
+                audio_decoder_tensor_count: 0,
+                codec_path: Default::default(),
+            },
+            codec: FishS2CodecArtifact {
+                path: Default::default(),
+                support: codec::FishS2CodecSupport::NativePthStateDict,
+            },
+            runtime: None,
+            reference_cache: Default::default(),
+        }
+    }
+
     pub fn load_metadata(model_dir: &Path, variant: ModelVariant) -> Result<Self> {
         if variant != ModelVariant::FishAudioS2Pro {
             return Err(Error::InvalidInput(format!(
@@ -154,16 +212,19 @@ impl FishS2TtsModel {
         let codec = FishS2CodecArtifact::load(model_dir)?;
         Ok(Self {
             model_identity: next_fish_s2_model_identity()?,
+            artifact_fingerprint: None,
             variant,
             config,
             artifacts,
             codec,
             runtime: None,
+            reference_cache: Default::default(),
         })
     }
 
     pub fn load(model_dir: &Path, variant: ModelVariant, device: DeviceProfile) -> Result<Self> {
         let mut model = Self::load_metadata(model_dir, variant)?;
+        model.artifact_fingerprint = Some(model.artifacts.content_fingerprint()?);
         model.runtime = Some(FishS2NativeRuntime::load(
             model_dir,
             &model.config,
@@ -171,6 +232,10 @@ impl FishS2TtsModel {
             device,
         )?);
         Ok(model)
+    }
+
+    pub fn artifact_fingerprint(&self) -> Option<&str> {
+        self.artifact_fingerprint.as_deref()
     }
 
     pub fn variant(&self) -> ModelVariant {
@@ -380,7 +445,7 @@ impl FishS2NativeRuntime {
         let slow_prefill_ms = elapsed_ms(started);
         let mut generated_codebooks = vec![Vec::new(); config.num_codebooks];
         let mut recent_semantic_tokens = Vec::with_capacity(RAS_WIN_SIZE);
-        let mut stop_reason = "max_frames".to_string();
+        let mut stop_reason = FishS2StopReason::FrameLimit;
 
         let started = Instant::now();
         for frame_index in 0..max_frames {
@@ -398,7 +463,7 @@ impl FishS2NativeRuntime {
             )?;
             let semantic_token_id = self.slow.token_id_from_logit(semantic_index)?;
             if semantic_token_id == im_end_token_id {
-                stop_reason = "im_end".to_string();
+                stop_reason = FishS2StopReason::EndOfSpeech;
                 break;
             }
 
@@ -426,6 +491,7 @@ impl FishS2NativeRuntime {
                 .forward_embeds(&frame_embeds, start_pos, slow_cache, false)?;
         }
         let ar_decode_ms = elapsed_ms(started);
+        stop_reason.require_complete()?;
 
         let frames_generated = generated_codebooks.first().map(Vec::len).unwrap_or(0);
         if frames_generated == 0 {
@@ -645,7 +711,7 @@ fn generated_frame_prompt(
     })
 }
 
-fn effective_frame_budget(
+pub(crate) fn effective_frame_budget(
     prompt_tokens: usize,
     model_context: usize,
     cache_capacity: usize,
@@ -656,7 +722,14 @@ fn effective_frame_budget(
         .ok_or_else(|| Error::InvalidInput(format!(
             "Fish S2 prompt length {prompt_tokens} leaves no output room in effective context {context}",
         )))?;
-    Ok(requested.min(available))
+    // Reserve one context position beyond the full output budget for EOS. Never
+    // silently shrink the admitted output budget after exact tokenization.
+    if requested == 0 || requested >= available {
+        return Err(Error::InvalidInput(format!(
+            "Fish S2 segment does not fit effective context: prompt_tokens={prompt_tokens}, requested_frames={requested}, eos_margin=1, context={context}; split the text segment or shorten the voice reference before generating audio",
+        )));
+    }
+    Ok(requested)
 }
 
 fn elapsed_ms(started: Instant) -> f32 {
@@ -673,7 +746,43 @@ fn fish_s2_codec_support_name(support: FishS2CodecSupport) -> &'static str {
 mod smoke;
 
 #[cfg(test)]
+mod streaming_smoke;
+
+#[cfg(test)]
 mod tests {
+    #[test]
+    fn full_output_budget_and_eos_must_fit_exact_context() {
+        assert_eq!(
+            super::effective_frame_budget(224, 8192, 256, 31).unwrap(),
+            31
+        );
+        for requested in [32, 512] {
+            let error = super::effective_frame_budget(224, 8192, 256, requested).unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("segment does not fit effective context"));
+        }
+    }
+
+    #[test]
+    fn frame_limit_is_incomplete_speech_while_eos_is_success() {
+        use super::FishS2StopReason;
+        FishS2StopReason::EndOfSpeech.require_complete().unwrap();
+        assert!(FishS2StopReason::FrameLimit
+            .require_complete()
+            .unwrap_err()
+            .to_string()
+            .contains("generation incomplete: frame_limit"));
+        assert_eq!(
+            serde_json::to_string(&FishS2StopReason::EndOfSpeech).unwrap(),
+            "\"im_end\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FishS2StopReason::FrameLimit).unwrap(),
+            "\"max_frames\""
+        );
+    }
+
     use super::*;
     use candle_core::Device;
 

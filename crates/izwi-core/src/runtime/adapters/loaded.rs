@@ -41,7 +41,7 @@ const GRANITE_SPEECH_ASR_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::n
 const LFM25_AUDIO_ASR_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(23);
 const LFM25_AUDIO_TTS_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(24);
 const VIBEVOICE_TTS_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(26);
-const FISH_S2_TTS_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(28);
+const FISH_S2_TTS_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(30);
 const VOXTRAL_TTS_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(28);
 const PARAKEET_ASR_ADAPTER_ABI: AdapterAbiRevision = AdapterAbiRevision::new(28);
 pub(crate) const VOXTRAL_REALTIME_ADAPTER_ABI: AdapterAbiRevision =
@@ -216,6 +216,15 @@ pub(crate) trait LoadedExecutionAdapter: fmt::Debug + Send + Sync {
     fn adapter_instance_id(&self) -> AdapterInstanceId;
     fn adapter_abi_revision(&self) -> AdapterAbiRevision;
     fn contract(&self, streaming: StreamingRequirements) -> Result<LoadedExecutionContract>;
+
+    fn seal_fish_capacity(
+        &self,
+        _capacity: crate::runtime::fish_capacity::ResolvedFishServingCapacity,
+    ) -> Result<()> {
+        Err(Error::ModelLoadError(
+            "loaded adapter does not support Fish capacity sealing".into(),
+        ))
+    }
 
     fn seal_chat_workspace(&self, _accelerator_bytes: u64) -> Result<()> {
         Err(Error::ModelLoadError(
@@ -916,8 +925,10 @@ fn is_vibevoice_physical_tts(metadata: AdapterMetadata) -> bool {
 }
 
 fn is_fish_s2_physical_tts(metadata: AdapterMetadata) -> bool {
-    metadata.capability == CapabilityKind::Tts
-        && metadata.model_variant.family() == crate::catalog::ModelFamily::FishS2Tts
+    matches!(
+        metadata.capability,
+        CapabilityKind::Tts | CapabilityKind::StreamingTts
+    ) && metadata.model_variant.family() == crate::catalog::ModelFamily::FishS2Tts
 }
 
 fn is_voxtral_physical_tts(metadata: AdapterMetadata) -> bool {
@@ -1179,10 +1190,7 @@ impl LoadedExecutionAdapterFactory for FishS2PhysicalTtsAdapterFactory {
     }
 
     fn batch_mode(&self) -> NativeBatchMode {
-        // Fish slow/fast physical kernels are currently width-one. The
-        // scheduler can interleave retained rows, but the factory must not
-        // advertise a native multi-row tensor call.
-        NativeBatchMode::None
+        NativeBatchMode::Continuous
     }
 
     fn supports(&self, metadata: AdapterMetadata, _backend_kind: BackendKind) -> bool {
@@ -2621,6 +2629,7 @@ struct FishS2TtsExecutionAdapter {
     adapter_instance_id: AdapterInstanceId,
     metadata: AdapterMetadata,
     backend_kind: BackendKind,
+    capacity: OnceLock<crate::runtime::fish_capacity::ResolvedFishServingCapacity>,
 }
 
 impl FishS2TtsExecutionAdapter {
@@ -2638,6 +2647,7 @@ impl FishS2TtsExecutionAdapter {
             ),
             metadata,
             backend_kind,
+            capacity: OnceLock::new(),
         }
     }
 }
@@ -2655,6 +2665,24 @@ impl LoadedExecutionAdapter for FishS2TtsExecutionAdapter {
         FISH_S2_TTS_ADAPTER_ABI
     }
 
+    fn seal_fish_capacity(
+        &self,
+        capacity: crate::runtime::fish_capacity::ResolvedFishServingCapacity,
+    ) -> Result<()> {
+        if let Some(existing) = self.capacity.get() {
+            return if existing == &capacity {
+                Ok(())
+            } else {
+                Err(Error::ModelLoadError(
+                    "Fish serving capacity cannot change after sealing".into(),
+                ))
+            };
+        }
+        self.capacity
+            .set(capacity)
+            .map_err(|_| Error::ModelLoadError("Fish capacity seal raced publication".into()))
+    }
+
     fn contract(&self, streaming: StreamingRequirements) -> Result<LoadedExecutionContract> {
         use crate::models::architectures::fish_s2::{
             FISH_S2_SLOW_STATE_GROUP, FISH_S2_TTS_DECODE_STAGE, FISH_S2_TTS_PREFILL_STAGE,
@@ -2666,13 +2694,21 @@ impl LoadedExecutionAdapter for FishS2TtsExecutionAdapter {
             ));
         }
 
+        let capacity = self
+            .capacity
+            .get()
+            .cloned()
+            .unwrap_or(crate::runtime::fish_capacity::ResolvedFishServingCapacity::scalar()?);
+        let native = if capacity.native_batching {
+            NativeBatchMode::Continuous
+        } else {
+            NativeBatchMode::None
+        };
         let mut profile = scalar_execution_profile(self.metadata, self.backend_kind, false);
         profile.mode = ExecutionMode::Sequence;
         profile.prefill = PrefillMode::Incremental;
         profile.incremental_decode = true;
-        // The current slow and fast physical kernels accept B=1. The sequence
-        // scheduler may interleave users, but must not publish a native batch.
-        profile.decode_batch = NativeBatchMode::None;
+        profile.decode_batch = native;
         profile.cache_mode = CacheMode::ExternalPaged;
         profile.cache_namespace = Some(format!(
             "{}:tts:{}:fish-s2-state-v2",
@@ -2684,7 +2720,7 @@ impl LoadedExecutionAdapter for FishS2TtsExecutionAdapter {
         profile.concurrency = ConcurrencyClass::Batchable;
         profile.recompute_safe = true;
         profile.cache_release_safe = true;
-        profile.max_batch_size = 1;
+        profile.max_batch_size = capacity.ar_rows;
         profile.resolved_from_loaded_model = true;
 
         let mut preparation = StageDescriptor::from_execution_profile(
@@ -2697,6 +2733,7 @@ impl LoadedExecutionAdapter for FishS2TtsExecutionAdapter {
         preparation.progress = StageProgressKind::Atomic;
         preparation.concurrency = ConcurrencyClass::Exclusive;
         preparation.shape_policy = StageShapePolicy::Exact;
+        preparation.max_batch_size = 1;
         preparation.max_work_units = ModelVariant::FISH_S2_PRO_NATIVE_CONTEXT_TOKENS as u64;
         preparation.max_workspace_bytes =
             crate::models::architectures::fish_s2::codec::maximum_preparation_workspace_bytes()?;
@@ -2705,13 +2742,26 @@ impl LoadedExecutionAdapter for FishS2TtsExecutionAdapter {
             StageId::new(1),
             FISH_S2_TTS_PREFILL_STAGE,
             &profile,
-            NativeBatchMode::None,
+            if capacity.native_batching {
+                NativeBatchMode::Static
+            } else {
+                NativeBatchMode::None
+            },
         );
         prefill.selector = StageWorkSelector::SequencePrefill;
-        prefill.concurrency = ConcurrencyClass::Exclusive;
-        prefill.shape_policy = StageShapePolicy::Exact;
-        prefill.max_work_units = ModelVariant::FISH_S2_PRO_NATIVE_CONTEXT_TOKENS as u64;
-        prefill.max_workspace_bytes = 512 * 1024 * 1024;
+        prefill.concurrency = if capacity.native_batching {
+            ConcurrencyClass::Batchable
+        } else {
+            ConcurrencyClass::Exclusive
+        };
+        prefill.shape_policy = StageShapePolicy::Ragged;
+        prefill.max_batch_size = capacity.ar_rows.min(capacity.prefill_tokens as usize);
+        prefill.max_work_units = capacity.prefill_tokens;
+        prefill.workspace_per_row_bytes = 0;
+        prefill.workspace_per_work_unit_bytes = capacity.prefill_workspace_per_token;
+        prefill.max_workspace_bytes = capacity
+            .ar_workspace_per_row
+            .saturating_mul(prefill.max_batch_size as u64);
         prefill.retained_state_selections = Some(vec![ClockedStateSelection::new(
             FISH_S2_SLOW_STATE_GROUP,
             StateClock::DecoderTokens,
@@ -2721,13 +2771,20 @@ impl LoadedExecutionAdapter for FishS2TtsExecutionAdapter {
             StageId::new(2),
             FISH_S2_TTS_DECODE_STAGE,
             &profile,
-            NativeBatchMode::None,
+            native,
         );
         decode.selector = StageWorkSelector::SequenceDecode;
-        decode.concurrency = ConcurrencyClass::Exclusive;
-        decode.shape_policy = StageShapePolicy::Exact;
-        decode.max_work_units = 1;
-        decode.max_workspace_bytes = 512 * 1024 * 1024;
+        decode.concurrency = if capacity.native_batching {
+            ConcurrencyClass::Batchable
+        } else {
+            ConcurrencyClass::Exclusive
+        };
+        decode.shape_policy = StageShapePolicy::Ragged;
+        decode.max_work_units = capacity.ar_rows as u64;
+        decode.workspace_per_row_bytes = capacity.ar_workspace_per_row;
+        decode.max_workspace_bytes = capacity
+            .ar_workspace_per_row
+            .saturating_mul(capacity.ar_rows as u64);
         decode.retained_state_selections = Some(vec![ClockedStateSelection::new(
             FISH_S2_SLOW_STATE_GROUP,
             StateClock::DecoderTokens,
@@ -2744,9 +2801,41 @@ impl LoadedExecutionAdapter for FishS2TtsExecutionAdapter {
         finalize.max_batch_size = 1;
         finalize.concurrency = ConcurrencyClass::Exclusive;
         finalize.max_work_units = 1;
-        finalize.max_workspace_bytes =
-            crate::models::architectures::fish_s2::codec::maximum_decode_workspace_bytes()?;
-        for stage in [&mut preparation, &mut prefill, &mut decode, &mut finalize] {
+        finalize.max_workspace_bytes = 0;
+        let mut audio_decode = StageDescriptor::from_execution_profile(
+            StageId::new(4),
+            crate::models::architectures::fish_s2::FISH_S2_TTS_AUDIO_DECODE_STAGE,
+            &profile,
+            if capacity.native_batching {
+                NativeBatchMode::Static
+            } else {
+                NativeBatchMode::None
+            },
+        );
+        audio_decode.max_batch_size = capacity.codec_rows;
+        audio_decode.selector = StageWorkSelector::SequenceAudioDecode;
+        audio_decode.progress = StageProgressKind::Iterative;
+        audio_decode.shape_policy = StageShapePolicy::Exact;
+        audio_decode.concurrency = if capacity.native_batching {
+            ConcurrencyClass::Batchable
+        } else {
+            ConcurrencyClass::Exclusive
+        };
+        audio_decode.max_work_units =
+            (crate::models::architectures::fish_s2::FISH_S2_AUDIO_CHUNK_FRAMES as u64)
+                .saturating_mul(capacity.codec_rows as u64);
+        audio_decode.workspace_per_row_bytes = capacity.codec_workspace_per_row;
+        audio_decode.max_workspace_bytes = capacity
+            .codec_workspace_per_row
+            .saturating_mul(capacity.codec_rows as u64);
+        for stage in [
+            &mut preparation,
+            &mut prefill,
+            &mut decode,
+            &mut finalize,
+            &mut audio_decode,
+        ] {
+            stage.max_padding_basis_points = 0;
             stage.output_visibility = OutputVisibility::AfterQuantumCommit;
             stage.validate()?;
         }
@@ -2757,7 +2846,7 @@ impl LoadedExecutionAdapter for FishS2TtsExecutionAdapter {
             adapter_abi_revision: self.adapter_abi_revision(),
             metadata: self.metadata,
             execution_profile: profile,
-            stages: Arc::from([preparation, prefill, decode, finalize]),
+            stages: Arc::from([preparation, prefill, decode, finalize, audio_decode]),
         })
     }
 }
@@ -4683,6 +4772,21 @@ impl LoadedModelBundleDraft {
         loaded_execution_contracts(execution.as_ref())
     }
 
+    pub(crate) fn seal_fish_capacity(
+        &self,
+        capacity: crate::runtime::fish_capacity::ResolvedFishServingCapacity,
+    ) -> Result<()> {
+        for capability in [CapabilityKind::Tts, CapabilityKind::StreamingTts] {
+            self.capabilities
+                .get(&capability)
+                .ok_or_else(|| {
+                    Error::ModelLoadError("Fish capability missing during capacity seal".into())
+                })?
+                .seal_fish_capacity(capacity.clone())?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn seal_chat_workspace(&self, accelerator_bytes: u64) -> Result<()> {
         let execution = self
             .capabilities
@@ -5632,6 +5736,15 @@ mod tests {
                     assert_eq!(contract.adapter_abi_revision, SCALAR_ADAPTER_ABI);
                     assert_eq!(contract.stages.len(), 1);
                     assert_eq!(contract.stages[0].batch_mode, NativeBatchMode::None);
+                } else if is_fish_s2_physical_tts(metadata) {
+                    // The factory implements native batching, but an unqualified
+                    // scalar load must publish the scalar graph truthfully.
+                    assert_ne!(contract.adapter_abi_revision, SCALAR_ADAPTER_ABI);
+                    assert_eq!(contract.execution_profile.max_batch_size, 1);
+                    assert!(contract
+                        .stages
+                        .iter()
+                        .all(|stage| stage.batch_mode == NativeBatchMode::None));
                 } else {
                     assert_ne!(contract.adapter_abi_revision, SCALAR_ADAPTER_ABI);
                     assert!(
@@ -5920,8 +6033,7 @@ mod tests {
                             == crate::catalog::ModelFamily::Qwen3Tts;
                         let kokoro_tts = execution.metadata().capability == CapabilityKind::Tts
                             && variant.family() == crate::catalog::ModelFamily::KokoroTts;
-                        let fish_s2_tts = execution.metadata().capability == CapabilityKind::Tts
-                            && variant.family() == crate::catalog::ModelFamily::FishS2Tts;
+                        let fish_s2_tts = is_fish_s2_physical_tts(execution.metadata());
                         let retained_tts = execution.metadata().capability == CapabilityKind::Tts
                             && matches!(
                                 variant.family(),
@@ -6172,6 +6284,7 @@ mod tests {
                         PhysicalLaunchPolicy::ExecutionGroupExclusive
                     );
                     assert_eq!(contract.stages[0].max_batch_size, 1);
+
                     assert_eq!(
                         contract.stages[0].shape_policy,
                         crate::engine::StageShapePolicy::Exact
@@ -6850,6 +6963,113 @@ mod tests {
     }
 
     #[test]
+    fn fish_s2_factory_binds_both_tts_capabilities_to_native_streaming_stages() {
+        let registry = RuntimeAdapterRegistry::built_in();
+        for backend in [BackendKind::Cpu, BackendKind::Metal, BackendKind::Cuda] {
+            let draft = LoadedModelBundleDraft::build(
+                &registry,
+                ExecutionGroupId::new(1),
+                ModelInstanceId::new(2),
+                ModelVariant::FishAudioS2Pro,
+                backend,
+            )
+            .unwrap();
+            for capability in [CapabilityKind::Tts, CapabilityKind::StreamingTts] {
+                let adapter = draft.capabilities.get(&capability).unwrap();
+                assert!(is_fish_s2_physical_tts(adapter.metadata()));
+                for streaming in [
+                    StreamingRequirements::NONE,
+                    StreamingRequirements::native(true),
+                ] {
+                    let contract = adapter.contract(streaming).unwrap();
+                    assert_eq!(contract.metadata.capability, capability);
+                    assert_eq!(contract.adapter_abi_revision, FISH_S2_TTS_ADAPTER_ABI);
+                    assert_eq!(contract.execution_profile.backend, backend);
+                    assert_eq!(contract.execution_profile.mode, ExecutionMode::Sequence);
+                    assert_eq!(
+                        contract.execution_profile.cache_mode,
+                        CacheMode::ExternalPaged
+                    );
+                    assert_eq!(
+                        contract
+                            .stages
+                            .iter()
+                            .map(|stage| stage.selector)
+                            .collect::<Vec<_>>(),
+                        vec![
+                            StageWorkSelector::PreSequencePreparation,
+                            StageWorkSelector::SequencePrefill,
+                            StageWorkSelector::SequenceDecode,
+                            StageWorkSelector::SequenceFinalize,
+                            StageWorkSelector::SequenceAudioDecode,
+                        ]
+                    );
+                    assert!(contract.stages.iter().all(|stage| {
+                        stage.output_visibility == OutputVisibility::AfterQuantumCommit
+                    }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fish_capacity_seals_both_routes_and_rejects_rebinding() {
+        let registry = RuntimeAdapterRegistry::built_in();
+        let draft = LoadedModelBundleDraft::build(
+            &registry,
+            ExecutionGroupId::new(17),
+            ModelInstanceId::new(19),
+            ModelVariant::FishAudioS2Pro,
+            BackendKind::Cuda,
+        )
+        .unwrap();
+        let mut capacity =
+            crate::runtime::fish_capacity::ResolvedFishServingCapacity::scalar().unwrap();
+        capacity.ar_rows = 7;
+        capacity.codec_rows = 7;
+        capacity.active_rows = 9;
+        capacity.staged_rows = 7;
+        capacity.native_batching = true;
+        draft.seal_fish_capacity(capacity.clone()).unwrap();
+        draft.seal_fish_capacity(capacity.clone()).unwrap();
+        for capability in [CapabilityKind::Tts, CapabilityKind::StreamingTts] {
+            let contracts = draft.execution_contracts(capability).unwrap();
+            for contract in contracts {
+                assert_eq!(contract.execution_profile.max_batch_size, 7);
+                let decode = contract
+                    .stages
+                    .iter()
+                    .find(|stage| stage.selector == StageWorkSelector::SequenceDecode)
+                    .unwrap();
+                assert_eq!(decode.batch_mode, NativeBatchMode::Continuous);
+                assert_eq!(decode.max_batch_size, 7);
+                assert_eq!(
+                    decode.max_workspace_bytes,
+                    decode.workspace_per_row_bytes * 7
+                );
+                assert_eq!(contract.stages[0].max_batch_size, 1);
+                let prefill = contract
+                    .stages
+                    .iter()
+                    .find(|stage| stage.selector == StageWorkSelector::SequencePrefill)
+                    .unwrap();
+                assert_eq!(prefill.batch_mode, NativeBatchMode::Static);
+                assert_eq!(prefill.max_work_units, capacity.prefill_tokens);
+                let codec = contract
+                    .stages
+                    .iter()
+                    .find(|stage| stage.selector == StageWorkSelector::SequenceAudioDecode)
+                    .unwrap();
+                assert_eq!(codec.batch_mode, NativeBatchMode::Static);
+                assert_eq!(codec.max_batch_size, 7);
+                assert_eq!(codec.max_workspace_bytes, codec.workspace_per_row_bytes * 7);
+            }
+        }
+        capacity.ar_rows = 6;
+        assert!(draft.seal_fish_capacity(capacity).is_err());
+    }
+
+    #[test]
     fn fish_s2_loaded_contracts_have_only_retained_state_and_codec_finalization() {
         let registry = RuntimeAdapterRegistry::built_in();
         let metadata = *registry
@@ -6873,7 +7093,7 @@ mod tests {
             .iter()
             .find(|contract| contract.execution_profile.mode == ExecutionMode::Sequence)
             .unwrap();
-        assert_eq!(retained.stages.len(), 4);
+        assert_eq!(retained.stages.len(), 5);
         let finalize = retained
             .stages
             .iter()

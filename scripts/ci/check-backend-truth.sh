@@ -454,6 +454,9 @@ run_hygiene() {
     scripts/bench/test-run-cuda-model-evidence.sh
     scripts/bench/test-run-cuda-model-load-evidence.sh
     PYTHONDONTWRITEBYTECODE=1 python3 scripts/bench/test-cuda-chat-concurrency.py
+    PYTHONDONTWRITEBYTECODE=1 python3 scripts/bench/test-fish-streaming-benchmark.py
+    PYTHONDONTWRITEBYTECODE=1 python3 scripts/bench/test-fish-long-form-qualification.py
+    PYTHONDONTWRITEBYTECODE=1 python3 scripts/bench/test-fish-serving-capacity.py
 }
 
 run_cargo_cuda_compile() {
@@ -506,6 +509,12 @@ run_cargo_cuda_device_profile() {
     for suite in kernels::cuda models::architectures::qwen38 models::shared::attention::physical; do
         IZWI_REQUIRE_CUDA_TEST_DEVICE=1 cargo test --locked -p izwi-core \
             --features "${core_features}" "${suite}" --lib -- --test-threads=1
+    done
+    # Fish codec fixtures must execute on the requested device; CPU fixture
+    # success does not qualify CUDA convolution layouts or retained histories.
+    for probe in cuda_batched_codec_matches_scalar_for_mixed_ages_and_rollback cuda_incremental_codec_matches_full_decode_and_rollback cuda_codec_attention_matches_dense_oracle; do
+        cargo test --locked -p izwi-core --features "${core_features}" \
+            "${probe}" --lib -- --ignored --test-threads=1
     done
     if [[ ",${core_features}," == *",flash-attn,"* ]]; then
         cargo test --locked -p izwi-core --features "${core_features}" \

@@ -384,6 +384,15 @@ fn warn_if_projection_missing(updated: bool, job: &RuntimeJob) {
 }
 
 fn map_store_error(err: anyhow::Error) -> ApiError {
+    if err
+        .to_string()
+        .contains("Speech job admission capacity exhausted")
+    {
+        return ApiError {
+            status: axum::http::StatusCode::TOO_MANY_REQUESTS,
+            message: err.to_string(),
+        };
+    }
     ApiError::internal(format!("Batch runtime storage error: {err}"))
 }
 

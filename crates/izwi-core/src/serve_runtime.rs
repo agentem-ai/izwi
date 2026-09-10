@@ -204,14 +204,14 @@ impl ServeRuntimeConfig {
             max_batch_size: self.max_batch_size,
             physical_execution_mode: self.physical_execution_mode,
             max_physical_in_flight: self.max_physical_in_flight,
-            max_scheduler_batch_size: self.max_scheduler_batch_size.max(1),
+            max_scheduler_batch_size: self.max_scheduler_batch_size,
             enable_prefix_caching: self.enable_prefix_caching,
             managed_prefix_cache_salt: self.managed_prefix_cache_salt.clone(),
             max_prefix_cache_pages: self.max_prefix_cache_pages,
             enable_chunked_prefill: self.enable_chunked_prefill,
             chunked_prefill_threshold: self.chunked_prefill_threshold.max(1),
-            max_retained_sequences: self.max_retained_sequences.max(1),
-            max_staged_transactions: self.max_staged_transactions.max(1),
+            max_retained_sequences: self.max_retained_sequences,
+            max_staged_transactions: self.max_staged_transactions,
             max_queued_requests: self.max_queued_requests.max(1),
             max_sequence_length: self.max_sequence_length,
             backend: self.backend,
@@ -318,7 +318,7 @@ fn default_max_batch_size() -> BatchSizePreference {
 }
 
 fn default_max_scheduler_batch_size() -> usize {
-    8
+    0 // Resolve the automatic administrative ceiling on the selected device.
 }
 
 fn default_enable_prefix_caching() -> bool {
@@ -342,11 +342,11 @@ fn default_chunked_prefill_threshold() -> usize {
 }
 
 fn default_max_retained_sequences() -> usize {
-    8
+    0 // Resolve the automatic administrative ceiling on the selected device.
 }
 
 fn default_max_staged_transactions() -> usize {
-    8
+    0 // Resolve the automatic administrative ceiling on the selected device.
 }
 
 fn default_max_queued_requests() -> usize {

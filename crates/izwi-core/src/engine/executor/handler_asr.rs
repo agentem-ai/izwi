@@ -973,6 +973,7 @@ impl NativeExecutor {
                 ModelSessionResult::sequence(ExecutorOutput {
                     request_id: requests[index].id.clone(),
                     audio: Some(AudioOutput {
+                        streamed_samples: None,
                         samples: Vec::new(),
                         sample_rate,
                         duration_secs: if sample_rate == 0 {
@@ -1305,6 +1306,7 @@ impl NativeExecutor {
         Ok(ModelSessionResult::sequence(ExecutorOutput {
             request_id: request.id.clone(),
             audio: Some(AudioOutput {
+                streamed_samples: None,
                 samples: Vec::new(),
                 sample_rate,
                 duration_secs: if sample_rate == 0 {
@@ -1723,6 +1725,7 @@ impl NativeExecutor {
                     ModelSessionResult::sequence(ExecutorOutput {
                         request_id: request.id.clone(),
                         audio: Some(AudioOutput {
+                            streamed_samples: None,
                             samples: Vec::new(),
                             sample_rate,
                             duration_secs: if sample_rate == 0 {
@@ -2057,6 +2060,7 @@ impl NativeExecutor {
                     ModelSessionResult::sequence(ExecutorOutput {
                         request_id: request.id.clone(),
                         audio: Some(AudioOutput {
+                            streamed_samples: None,
                             samples: Vec::new(),
                             sample_rate,
                             duration_secs: if sample_rate == 0 {
@@ -2439,6 +2443,7 @@ impl NativeExecutor {
         Ok(ModelSessionResult::sequence(ExecutorOutput {
             request_id: request.id.clone(),
             audio: Some(AudioOutput {
+                streamed_samples: None,
                 samples: Vec::new(),
                 sample_rate,
                 duration_secs: if sample_rate == 0 {
@@ -2860,6 +2865,7 @@ impl NativeExecutor {
         Ok(ModelSessionResult::sequence(ExecutorOutput {
             request_id: request.id.clone(),
             audio: Some(AudioOutput {
+                streamed_samples: None,
                 samples: Vec::new(),
                 sample_rate,
                 duration_secs: if sample_rate == 0 {
@@ -3174,6 +3180,7 @@ impl NativeExecutor {
         Ok(ModelSessionResult::sequence(ExecutorOutput {
             request_id: request.id.clone(),
             audio: Some(AudioOutput {
+                streamed_samples: None,
                 samples: Vec::new(),
                 sample_rate,
                 duration_secs: if sample_rate == 0 {
@@ -3549,6 +3556,7 @@ impl NativeExecutor {
         Ok(ModelSessionResult::sequence(ExecutorOutput {
             request_id: request.id.clone(),
             audio: Some(AudioOutput {
+                streamed_samples: None,
                 samples: Vec::new(),
                 sample_rate,
                 duration_secs: if sample_rate == 0 {
@@ -3843,6 +3851,7 @@ impl NativeExecutor {
         Ok(ModelSessionResult::sequence(ExecutorOutput {
             request_id: request.id.clone(),
             audio: Some(AudioOutput {
+                streamed_samples: None,
                 samples: Vec::new(),
                 sample_rate,
                 duration_secs: if sample_rate > 0 {
@@ -4274,6 +4283,7 @@ impl NativeExecutor {
         let result = ModelSessionResult::sequence(ExecutorOutput {
             request_id: request.id.clone(),
             audio: Some(AudioOutput {
+                streamed_samples: None,
                 samples: Vec::new(),
                 sample_rate,
                 duration_secs: if sample_rate == 0 {
@@ -4738,6 +4748,7 @@ impl NativeExecutor {
         Ok(ModelSessionResult::sequence(ExecutorOutput {
             request_id: request.id.clone(),
             audio: Some(AudioOutput {
+                streamed_samples: None,
                 samples: Vec::new(),
                 sample_rate: input_sample_rate,
                 duration_secs: if input_sample_rate > 0 {
@@ -5285,6 +5296,7 @@ impl NativeExecutor {
                 ModelSessionResult::sequence(ExecutorOutput {
                     request_id: requests[index].id.clone(),
                     audio: Some(AudioOutput {
+                        streamed_samples: None,
                         samples: Vec::new(),
                         sample_rate,
                         duration_secs: if sample_rate > 0 {
@@ -5615,6 +5627,7 @@ impl NativeExecutor {
             outputs[index] = Some(ModelSessionResult::sequence(ExecutorOutput {
                 request_id: request.id.clone(),
                 audio: Some(AudioOutput {
+                    streamed_samples: None,
                     samples: Vec::new(),
                     sample_rate,
                     duration_secs: if sample_rate > 0 {
@@ -6469,6 +6482,7 @@ impl NativeExecutor {
                 ModelSessionResult::sequence(ExecutorOutput {
                     request_id: request.id.clone(),
                     audio: Some(AudioOutput {
+                        streamed_samples: None,
                         samples: Vec::new(),
                         sample_rate: input_sample_rate,
                         duration_secs: if input_sample_rate > 0 {
@@ -6725,6 +6739,7 @@ impl NativeExecutor {
                             return Ok(ModelSessionResult::atomic(ExecutorOutput {
                                 request_id: request.id.clone(),
                                 audio: Some(AudioOutput {
+                                    streamed_samples: None,
                                     samples: Vec::new(),
                                     sample_rate,
                                     duration_secs: if sample_rate > 0 {
@@ -6885,6 +6900,7 @@ impl NativeExecutor {
                     return Ok(ModelSessionResult::sequence(ExecutorOutput {
                         request_id: request.id.clone(),
                         audio: Some(AudioOutput {
+                            streamed_samples: None,
                             samples: Vec::new(),
                             sample_rate: input_sample_rate,
                             duration_secs: if input_sample_rate > 0 {
@@ -7365,6 +7381,7 @@ impl NativeExecutor {
         Ok(ModelSessionResult::atomic(ExecutorOutput {
             request_id: request.id.clone(),
             audio: Some(AudioOutput {
+                streamed_samples: None,
                 samples: Vec::new(),
                 sample_rate,
                 duration_secs: samples_len as f32 / sample_rate as f32,

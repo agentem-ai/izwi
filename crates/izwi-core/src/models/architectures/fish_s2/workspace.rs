@@ -44,6 +44,7 @@ pub(crate) fn decode_workspace_bytes(frames: usize) -> Result<u64> {
     decode_envelope(&FishS2DacConfig::current(), frames as u64)
 }
 
+#[cfg(test)]
 pub(crate) fn maximum_decode_workspace_bytes() -> Result<u64> {
     decode_workspace_bytes(FishS2DacConfig::MAX_QUANTIZER_FRAMES)
 }
@@ -300,7 +301,7 @@ fn transformer(shape: AudioShape, window: u64, head_dim: u64) -> Result<u64> {
     ])
 }
 
-fn fft_workspace(input_samples: u64, sample_rate: u32) -> Result<u64> {
+pub(crate) fn fft_workspace(input_samples: u64, sample_rate: u32) -> Result<u64> {
     let target_rate = FishS2DacConfig::current().sample_rate;
     if sample_rate == target_rate {
         return Ok(0);

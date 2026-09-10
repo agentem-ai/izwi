@@ -2,12 +2,12 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::FutureExt;
-use tokio::sync::{broadcast, oneshot, Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock, broadcast, oneshot};
 use tokio::task::yield_now;
 use tracing::{debug, error, info_span, warn};
 
@@ -18,26 +18,26 @@ use crate::backends::{
 };
 use crate::catalog::{ModelFamily, ModelInfo, ModelVariant};
 use crate::config::{EngineConfig, PrefixCachePolicy, ResolvedKvCachePolicy};
+use crate::engine::metrics::{
+    ENGINE_EXECUTOR_MODEL_TENSOR_BATCH_WIDTH_CALLS_TOTAL,
+    ENGINE_SCHEDULER_CAPACITY_REPLAY_TOKENS_TOTAL, ENGINE_SCHEDULER_CAPACITY_SUSPENSIONS_TOTAL,
+};
 use crate::engine::{
-    engine_batch_metrics_snapshot, engine_stream_metrics_snapshot, AdapterBindingKey,
-    Engine as CoreEngine, EngineAudioInput, EngineCoreConfig, EngineCoreRequest, EngineOutput,
-    EngineStreamPolicy, EngineTask, GenerationParams, OutputFinishReason, ResourceAmount,
-    ResourceVector, SessionKey, StreamingOutput, TaskType, WorkUnit, WorkerConfig, WorkloadClass,
-    ENGINE_EXECUTOR_BATCH_WORKSPACE_BYTES_TOTAL,
+    AdapterBindingKey, ENGINE_EXECUTOR_BATCH_WORKSPACE_BYTES_TOTAL,
     ENGINE_EXECUTOR_BATCH_WORKSPACE_DOMAIN_BYTES_TOTAL,
     ENGINE_EXECUTOR_CONTINUOUS_ENVELOPE_SCALAR_FALLBACKS_TOTAL,
     ENGINE_EXECUTOR_DEADLINE_PHASE_ROWS_TOTAL, ENGINE_EXECUTOR_DISPATCH_STATE_ROWS_TOTAL,
     ENGINE_EXECUTOR_FAILURE_ORIGIN_ROWS_TOTAL, ENGINE_EXECUTOR_MODEL_DECODE_CALLS_TOTAL,
-    ENGINE_EXECUTOR_MODEL_SCALAR_ROW_DISPATCHES_TOTAL, ENGINE_EXECUTOR_MODEL_TENSOR_BATCHES_TOTAL,
+    ENGINE_EXECUTOR_MODEL_SCALAR_ROW_DISPATCHES_TOTAL,
     ENGINE_EXECUTOR_MODEL_TENSOR_BATCH_MAX_WIDTH, ENGINE_EXECUTOR_MODEL_TENSOR_BATCH_ROWS_TOTAL,
-    ENGINE_EXECUTOR_MODEL_TENSOR_MULTIROW_CALLS_TOTAL,
+    ENGINE_EXECUTOR_MODEL_TENSOR_BATCHES_TOTAL, ENGINE_EXECUTOR_MODEL_TENSOR_MULTIROW_CALLS_TOTAL,
     ENGINE_EXECUTOR_PHYSICAL_BATCH_REJECTIONS_TOTAL,
-    ENGINE_EXECUTOR_REQUEST_PARALLEL_BATCHES_TOTAL, ENGINE_EXECUTOR_TENSOR_BATCHES_TOTAL,
+    ENGINE_EXECUTOR_REQUEST_PARALLEL_BATCHES_TOTAL,
     ENGINE_EXECUTOR_TENSOR_BATCH_CAPACITY_ROWS_TOTAL, ENGINE_EXECUTOR_TENSOR_BATCH_FILL_RATIO,
     ENGINE_EXECUTOR_TENSOR_BATCH_MATERIALIZED_ELEMENTS_TOTAL,
     ENGINE_EXECUTOR_TENSOR_BATCH_MAX_WIDTH, ENGINE_EXECUTOR_TENSOR_BATCH_PADDING_RATIO,
     ENGINE_EXECUTOR_TENSOR_BATCH_ROWS_TOTAL, ENGINE_EXECUTOR_TENSOR_BATCH_USEFUL_ELEMENTS_TOTAL,
-    ENGINE_EXECUTOR_TENSOR_CONTINUOUS_BATCHES_TOTAL,
+    ENGINE_EXECUTOR_TENSOR_BATCHES_TOTAL, ENGINE_EXECUTOR_TENSOR_CONTINUOUS_BATCHES_TOTAL,
     ENGINE_EXECUTOR_TENSOR_CONTINUOUS_MULTIROW_BATCHES_TOTAL,
     ENGINE_EXECUTOR_TENSOR_STATIC_BATCHES_TOTAL, ENGINE_KV_CACHE_ALLOCATED_BLOCKS,
     ENGINE_KV_CACHE_EVICTIONS_TOTAL, ENGINE_KV_CACHE_FREE_BLOCKS,
@@ -48,13 +48,12 @@ use crate::engine::{
     ENGINE_SCHEDULER_INCREMENTAL_PREFILL_TOKENS_COMMITTED_TOTAL,
     ENGINE_SCHEDULER_MULTISPAN_PREFILL_REQUESTS_TOTAL, ENGINE_SCHEDULER_QUEUE_DEPTH,
     ENGINE_SCHEDULER_RUNNING_REQUESTS, ENGINE_STREAM_BACKPRESSURE_TOTAL,
-    ENGINE_STREAM_CHECKPOINTS_COMMITTED_TOTAL, ENGINE_STREAM_CHECKPOINT_REJECTIONS_TOTAL,
-    ENGINE_STREAM_DELIVERY_FAILURES_TOTAL, REQUEST_DEADLINE_EXCEEDED,
-};
-use crate::engine::metrics::{
-    ENGINE_EXECUTOR_MODEL_TENSOR_BATCH_WIDTH_CALLS_TOTAL,
-    ENGINE_SCHEDULER_CAPACITY_SUSPENSIONS_TOTAL,
-    ENGINE_SCHEDULER_CAPACITY_REPLAY_TOKENS_TOTAL,
+    ENGINE_STREAM_CHECKPOINT_REJECTIONS_TOTAL, ENGINE_STREAM_CHECKPOINTS_COMMITTED_TOTAL,
+    ENGINE_STREAM_DELIVERY_FAILURES_TOTAL, Engine as CoreEngine, EngineAudioInput,
+    EngineCoreConfig, EngineCoreRequest, EngineOutput, EngineStreamPolicy, EngineTask,
+    GenerationParams, OutputFinishReason, REQUEST_DEADLINE_EXCEEDED, ResourceAmount,
+    ResourceVector, SessionKey, StreamingOutput, TaskType, WorkUnit, WorkerConfig, WorkloadClass,
+    engine_batch_metrics_snapshot, engine_stream_metrics_snapshot,
 };
 use crate::error::{Error, Result};
 use crate::model::ModelResidencyLease;
@@ -71,7 +70,7 @@ use crate::models::architectures::vibevoice::asr::{
     VibeVoiceAsrPreparationDecision, VibeVoiceAsrPreparedArtifact, VibeVoiceAsrPreparedGeometry,
 };
 use crate::models::architectures::vibevoice::tts::{
-    vibevoice_tts_auto_max_frames_for_text, VibeVoiceSpeakerReference, VibeVoiceTtsGenerationParams,
+    VibeVoiceSpeakerReference, VibeVoiceTtsGenerationParams, vibevoice_tts_auto_max_frames_for_text,
 };
 use crate::models::architectures::voxtral::tts::VoxtralTtsGenerationParams;
 use crate::models::architectures::whisper::asr::{
@@ -96,11 +95,10 @@ use crate::runtime::lifecycle::controller::ModelLifecycleController;
 use crate::runtime::pipeline::{PipelineExecutor, PipelineGraph};
 use crate::runtime::routing::RouteSource;
 use crate::runtime::telemetry::{
-    push_engine_labeled_metric, push_engine_labeled_metric_f64, push_engine_metric,
-    push_engine_metric_f64, push_engine_physical_execution_metrics, EngineRuntimeTelemetrySnapshot,
-    RuntimeObservationContext, RuntimeStageObservation, RuntimeStageOutcome,
-    RuntimeStageOutputCounters, RuntimeStageTiming, RuntimeTelemetryCollector,
-    RuntimeTelemetrySnapshot,
+    EngineRuntimeTelemetrySnapshot, RuntimeObservationContext, RuntimeStageObservation,
+    RuntimeStageOutcome, RuntimeStageOutputCounters, RuntimeStageTiming, RuntimeTelemetryCollector,
+    RuntimeTelemetrySnapshot, push_engine_labeled_metric, push_engine_labeled_metric_f64,
+    push_engine_metric, push_engine_metric_f64, push_engine_physical_execution_metrics,
 };
 use crate::runtime::types::RuntimeRequestContext;
 use crate::runtime_models::{LoadedModelDiagnostics, ModelRegistry};
@@ -701,6 +699,44 @@ fn asr_encoder_retained_resources(
     retained_artifact_resources(backend, host_bytes, accelerator_bytes)
 }
 
+/// Fish's request lease owns host preparation buffers and the eventual artifact.
+/// Codec tensor workspace is leased separately by the physical batch runner.
+pub(super) fn fish_s2_preparation_resources(
+    backend: BackendKind,
+    request_bytes: u64,
+    preparation_host_bytes: u64,
+) -> Result<ResourceVector> {
+    let host_bytes = request_bytes
+        .checked_add(preparation_host_bytes)
+        .ok_or_else(|| Error::Overloaded("Fish S2 preparation host reservation overflow".into()))?;
+    retained_artifact_resources(backend, host_bytes, 0)
+}
+
+pub(super) fn fish_s2_artifact_resources(
+    backend: BackendKind,
+    artifact_bytes: u64,
+) -> Result<ResourceVector> {
+    retained_artifact_resources(backend, artifact_bytes, 0)
+}
+
+pub(super) fn add_fish_s2_artifact_to_admission(
+    backend: BackendKind,
+    spec: &mut JobSpec,
+    observation: &mut JobResourceObservation,
+    artifact_bytes: u64,
+) -> Result<()> {
+    let resources = spec
+        .resources
+        .checked_add(fish_s2_artifact_resources(backend, artifact_bytes)?)?;
+    let host_bytes = observation
+        .host_bytes
+        .checked_add(artifact_bytes)
+        .ok_or_else(|| Error::Overloaded("Fish S2 execution host observation overflow".into()))?;
+    spec.resources = resources;
+    observation.host_bytes = host_bytes;
+    Ok(())
+}
+
 fn kokoro_synthesis_resources(
     backend: BackendKind,
     text: &str,
@@ -907,6 +943,35 @@ struct QwenAsrEncoderPending {
     retained_host_bytes: u64,
     cancellation: PreparationCancellation,
     response: Option<oneshot::Sender<QwenAsrEncoderOutcome>>,
+}
+
+/// Keep decoded inputs covered when row sealing or dispatch fails. Field order
+/// frees physical inputs before the final lease clone, including during unwind.
+pub(super) struct PreparationOwnedInputs<T> {
+    inputs: T,
+    lease: JobLease,
+}
+
+impl<T> PreparationOwnedInputs<T> {
+    pub(super) fn new(inputs: T, lease: JobLease) -> Self {
+        Self { inputs, lease }
+    }
+
+    pub(super) fn run<R>(self, operation: impl FnOnce(T) -> Result<R>) -> Result<R> {
+        let Self { inputs, lease } = self;
+        let result = operation(inputs);
+        drop(lease);
+        result
+    }
+}
+
+pub(super) fn release_failed_preparation<T>(
+    failure: crate::runtime::coordinator::PreparationAdmissionFailure,
+    inputs: T,
+) -> Error {
+    drop(inputs);
+    drop(failure.bridge);
+    failure.error
 }
 
 struct PreparationCancellationGuard {
@@ -2360,6 +2425,27 @@ impl RuntimeService {
         let device = backend_context.device.clone();
         Self::ensure_requested_backend_available(&backend_context)?;
         let selected_backend_kind = backend_context.backend_kind;
+        // Zero means automatic administrative capacity, not zero usable rows.
+        // This is only an upper bound: each loaded model fits exact physical state.
+        let automatic_rows = if selected_backend_kind == BackendKind::Cuda {
+            backend_context
+                .device
+                .capabilities
+                .cuda_total_memory_bytes
+                .map(|bytes| (bytes / (256 * 1024 * 1024)).max(1))
+                .unwrap_or(1)
+        } else {
+            8
+        };
+        for rows in [
+            &mut config.max_scheduler_batch_size,
+            &mut config.max_retained_sequences,
+            &mut config.max_staged_transactions,
+        ] {
+            if *rows == 0 {
+                *rows = automatic_rows;
+            }
+        }
 
         let model_registry = Arc::new(ModelRegistry::new_with_performance(
             config.models_dir.clone(),
@@ -2664,8 +2750,12 @@ impl RuntimeService {
     }
 
     /// Effective startup concurrency policy; never re-reads rollout environment variables.
-    pub fn chat_concurrency_policy(&self) -> crate::engine::metrics::EngineChatConcurrencyPolicySnapshot {
-        crate::engine::metrics::EngineChatConcurrencyPolicySnapshot::from_config(self.core_engine.config())
+    pub fn chat_concurrency_policy(
+        &self,
+    ) -> crate::engine::metrics::EngineChatConcurrencyPolicySnapshot {
+        crate::engine::metrics::EngineChatConcurrencyPolicySnapshot::from_config(
+            self.core_engine.config(),
+        )
     }
 
     /// Immutable requested/effective KV cache policy selected at startup.
@@ -2736,6 +2826,16 @@ impl RuntimeService {
                 "Model {variant} does not expose TTS speakers"
             ))),
         }
+    }
+
+    /// Content identity of the loaded Fish weights, codec and tokenizer. Native
+    /// loading computes this once; segment admission only clones the small hash.
+    pub async fn fish_s2_artifact_fingerprint(&self) -> Option<String> {
+        self.model_registry
+            .get_fish_s2_tts(ModelVariant::FishAudioS2Pro)
+            .await?
+            .artifact_fingerprint()
+            .map(str::to_owned)
     }
 
     /// Machine-readable diagnostics for the currently loaded direct TTS model.
@@ -3213,6 +3313,7 @@ impl RuntimeService {
             coordinator_lane_for_request(request),
             RuntimeRequestContext {
                 workload_class: request.workload_class,
+                tenant_key: request.tenant_key,
                 admission_ms: request.admission_ms,
                 priority: request.priority,
                 deadline: request.deadline,
@@ -3302,9 +3403,15 @@ impl RuntimeService {
                 .params
                 .max_tokens
                 .clamp(1, ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES);
-            let output_bytes = (frames as u64)
-                .checked_mul(2048 * 4)
-                .ok_or_else(|| Error::Overloaded("Fish S2 output reservation overflow".into()))?;
+            let output_bytes = if request.collect_audio_samples {
+                (frames as u64).checked_mul(2048 * 4 * 3).ok_or_else(|| {
+                    Error::Overloaded("Fish S2 output reservation overflow".into())
+                })?
+            } else {
+                request.streaming_audio_buffer_bytes(
+                    crate::models::architectures::fish_s2::FISH_S2_AUDIO_CHUNK_FRAMES * 2048,
+                )?
+            };
             let mut output = ResourceVector::zero();
             match self.backend_router.context().backend_kind {
                 BackendKind::Metal => output.unified_bytes = ResourceAmount::Known(output_bytes),
@@ -3313,6 +3420,19 @@ impl RuntimeService {
                 }
             }
             spec.resources = spec.resources.checked_add(output)?;
+            // Current history and immutable rollback history coexist during a push.
+            let history_bytes =
+                crate::models::architectures::fish_s2::dac::FishS2DacConfig::current()
+                    .streaming_history_bound_bytes()?
+                    .checked_mul(2)
+                    .ok_or_else(|| {
+                        Error::Overloaded("Fish codec history reservation overflow".into())
+                    })?;
+            spec.resources = spec.resources.checked_add(asr_encoder_retained_resources(
+                self.backend_router.context().backend_kind,
+                0,
+                history_bytes,
+            )?)?;
         }
         if request.task_type == TaskType::Chat && !request.chat_config.media_inputs.is_empty() {
             if !request
@@ -3331,7 +3451,20 @@ impl RuntimeService {
                 estimate,
             )?)?;
         }
-        Ok((spec, host_input_observation(input_bytes)?))
+        let mut observation = host_input_observation(input_bytes)?;
+        if request.task_type == TaskType::TTS
+            && request.model_variant == Some(ModelVariant::FishAudioS2Pro)
+        {
+            if let Some(artifact) = request.prepared_fish_s2_tts_artifact_for_executor()? {
+                add_fish_s2_artifact_to_admission(
+                    self.backend_router.context().backend_kind,
+                    &mut spec,
+                    &mut observation,
+                    artifact.retained_bytes()?,
+                )?;
+            }
+        }
+        Ok((spec, observation))
     }
 
     /// Load or pin a model under the admitted request's absolute deadline.
@@ -5269,7 +5402,6 @@ impl RuntimeService {
                 request
                     .params
                     .max_tokens
-                    .min(context_limit.saturating_sub(1))
                     .clamp(1, ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES)
             },
             temperature: request.params.temperature,
@@ -5283,31 +5415,33 @@ impl RuntimeService {
             ..FishS2GenerationParams::default()
         };
         params.validate()?;
-        let codec_workspace =
-            crate::models::architectures::fish_s2::codec::preparation_workspace_bytes(
-                reference.audio_samples.len(),
-                reference.sample_rate,
-            )?;
-        let decode_workspace =
-            crate::models::architectures::fish_s2::codec::decode_workspace_bytes(
-                params.max_frames,
-            )?;
+        let memory = model.preparation_memory(&text, &reference, context_limit)?;
+        // The text clone and decoded reference were constructed under the initial
+        // input/audio-decode lease. Keep their ownership covered across the bridge;
+        // subsequent codec/tokenizer allocations begin only after admission.
+        let preparation_host_bytes = memory
+            .host_bytes()?
+            .checked_add(u64::try_from(text.capacity()).map_err(|_| {
+                Error::Overloaded("Fish S2 preparation text capacity exceeds u64".into())
+            })?)
+            .ok_or_else(|| Error::Overloaded("Fish S2 preparation host bytes overflow".into()))?;
+        let codec_workspace = memory.accelerator_workspace_bytes;
         let retained_request_bytes = u64::try_from(retained_engine_request_input_bytes(&request)?)
             .map_err(|_| Error::Overloaded("Fish S2 TTS retained request exceeds u64".into()))?;
         job.record_materialized_usage(JobResourceObservation::host(retained_request_bytes))?;
-        let bridge = self.coordinator.bridge_preparation_admission(job)?;
         let preparation_spec = JobSpec {
             request_id: request.id.clone(),
             lane: CoordinatorLane::Atomic,
             priority: request.priority,
             workload_class: request.workload_class,
             deadline: request.deadline,
-            resources: asr_encoder_retained_resources(
+            resources: fish_s2_preparation_resources(
                 self.backend_router.context().backend_kind,
                 retained_request_bytes,
-                codec_workspace,
+                preparation_host_bytes,
             )?,
         };
+        let bridge = self.coordinator.bridge_preparation_admission(job)?;
         let preparation_job = match self
             .coordinator
             .admit_observed_from_preparation(
@@ -5318,8 +5452,17 @@ impl RuntimeService {
             .await
         {
             Ok(job) => job,
-            Err(failure) => return Err(failure.error),
+            Err(failure) => {
+                return Err(release_failed_preparation(
+                    failure,
+                    (request, text, reference),
+                ));
+            }
         };
+        let request_id = request.id.clone();
+        let codec_deadline = request.deadline;
+        let owned_inputs =
+            PreparationOwnedInputs::new((request, text, reference), preparation_job.clone());
         let work = WorkUnit::PreSequencePreparation {
             kind: "tts.prepare.fish_s2".into(),
         };
@@ -5343,8 +5486,7 @@ impl RuntimeService {
         )?;
         let model_for_preparation = model.clone();
         let cancellation_for_codec = cancellation.clone();
-        let codec_request_id = request.id.clone();
-        let codec_deadline = request.deadline;
+        let codec_request_id = request_id.clone();
         let mut cancellation_guard = PreparationCancellationGuard {
             cancellation,
             armed: true,
@@ -5357,26 +5499,31 @@ impl RuntimeService {
                         "Fish S2 TTS preparation must remain scalar".into(),
                     ));
                 }
-                let artifact = model_for_preparation.prepare_retained_artifact_with_cancel(
-                    &text,
-                    reference,
-                    &|| {
-                        if cancellation_for_codec.is_cancelled() {
-                            return Err(Error::Cancelled(codec_request_id.clone()));
-                        }
-                        if codec_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                            return Err(Error::Timeout(codec_request_id.clone()));
-                        }
-                        Ok(())
-                    },
-                )?;
-                let retained_host_bytes = retained_request_bytes
-                    .checked_add(artifact.retained_bytes()?)
-                    .ok_or_else(|| Error::Overloaded("Fish S2 retained bytes overflow".into()))?;
-                Ok(vec![Ok(PreparationArtifact {
-                    retained: JobResourceObservation::host(retained_host_bytes),
-                    value: artifact,
-                })])
+                owned_inputs.run(|(request, text, reference)| {
+                    let artifact = model_for_preparation.prepare_retained_artifact_with_cancel(
+                        &text,
+                        reference,
+                        context_limit,
+                        &|| {
+                            if cancellation_for_codec.is_cancelled() {
+                                return Err(Error::Cancelled(codec_request_id.clone()));
+                            }
+                            if codec_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                                return Err(Error::Timeout(codec_request_id.clone()));
+                            }
+                            Ok(())
+                        },
+                    )?;
+                    let retained_host_bytes = retained_request_bytes
+                        .checked_add(artifact.retained_bytes()?)
+                        .ok_or_else(|| {
+                            Error::Overloaded("Fish S2 retained bytes overflow".into())
+                        })?;
+                    Ok(vec![Ok(PreparationArtifact {
+                        retained: JobResourceObservation::host(retained_host_bytes),
+                        value: (request, artifact),
+                    })])
+                })
             })
             .await?;
         cancellation_guard.armed = false;
@@ -5384,29 +5531,18 @@ impl RuntimeService {
             Error::InferenceError("Fish S2 TTS preparation returned no outcome".into())
         })? {
             PreparationRowOutcome::Committed { artifact, bridge } => (artifact, bridge),
-            PreparationRowOutcome::Cancelled => return Err(Error::Cancelled(request.id.clone())),
-            PreparationRowOutcome::TimedOut => return Err(Error::Timeout(request.id.clone())),
+            PreparationRowOutcome::Cancelled => return Err(Error::Cancelled(request_id.clone())),
+            PreparationRowOutcome::TimedOut => return Err(Error::Timeout(request_id.clone())),
             PreparationRowOutcome::Failed(error) => return Err(error),
         };
         let retained = artifact.retained;
-        let mut prepared = request;
+        let (mut prepared, prepared_artifact) = artifact.value;
         prepared.install_fish_s2_tts_execution_model(
             variant,
             model,
-            artifact.value,
+            prepared_artifact,
             params,
             context_limit,
-        )?;
-        prepared.install_prepared_stage_cost(
-            crate::engine::StageId::new(3),
-            crate::engine::WorkCost::with_workspace(
-                1,
-                1,
-                lfm25_audio_tts_preparation_workspace(
-                    self.backend_router.context().backend_kind,
-                    decode_workspace,
-                ),
-            ),
         )?;
         let (execution, _) = self.coordinator_job_for_request(&prepared)?;
         match self
@@ -5415,7 +5551,7 @@ impl RuntimeService {
             .await
         {
             Ok(job) => Ok((prepared, job)),
-            Err(failure) => Err(failure.error),
+            Err(failure) => Err(release_failed_preparation(failure, prepared)),
         }
     }
 
@@ -5792,29 +5928,43 @@ impl RuntimeService {
         }
     }
 
+    /// Every admitted execution mode must install the same model-bound artifacts
+    /// before binding or engine admission. Keep the family pipeline in one place.
+    async fn prepare_request_for_binding(
+        &self,
+        request: EngineCoreRequest,
+        job: JobLease,
+        residency_lease: Option<&ModelResidencyLease>,
+    ) -> Result<(EngineCoreRequest, JobLease)> {
+        let (request, job) = self
+            .prepare_asr_shape_for_binding(request, job, residency_lease)
+            .await?;
+        let (request, job) = self
+            .prepare_kokoro_tts_for_binding(request, job, residency_lease)
+            .await?;
+        let (request, job) = self
+            .prepare_vibevoice_tts_for_binding(request, job, residency_lease)
+            .await?;
+        let (request, job) = self
+            .prepare_fish_s2_tts_for_binding(request, job, residency_lease)
+            .await?;
+        let (request, job) = self
+            .prepare_voxtral_tts_for_binding(request, job, residency_lease)
+            .await?;
+        let (request, job) = self
+            .prepare_lfm25_audio_tts_for_binding(request, job, residency_lease)
+            .await?;
+        Ok((request, job))
+    }
+
     async fn run_request_after_admission(
         &self,
         request: EngineCoreRequest,
         job: JobLease,
         residency_lease: Option<ModelResidencyLease>,
     ) -> Result<EngineOutput> {
-        let (request, job) = self
-            .prepare_asr_shape_for_binding(request, job, residency_lease.as_ref())
-            .await?;
-        let (request, job) = self
-            .prepare_kokoro_tts_for_binding(request, job, residency_lease.as_ref())
-            .await?;
-        let (request, job) = self
-            .prepare_vibevoice_tts_for_binding(request, job, residency_lease.as_ref())
-            .await?;
-        let (request, job) = self
-            .prepare_fish_s2_tts_for_binding(request, job, residency_lease.as_ref())
-            .await?;
-        let (request, job) = self
-            .prepare_voxtral_tts_for_binding(request, job, residency_lease.as_ref())
-            .await?;
         let (mut request, job) = self
-            .prepare_lfm25_audio_tts_for_binding(request, job, residency_lease.as_ref())
+            .prepare_request_for_binding(request, job, residency_lease.as_ref())
             .await?;
         let loaded_bundle = residency_lease
             .as_ref()
@@ -6061,6 +6211,9 @@ impl RuntimeService {
         Fut: Future<Output = Result<()>>,
     {
         request.streaming = true;
+        if request.model_variant == Some(ModelVariant::FishAudioS2Pro) {
+            request.mark_audio_streaming_only();
+        }
         if request.workload_class == WorkloadClass::Online {
             request.workload_class = WorkloadClass::Streaming;
         }
@@ -6097,11 +6250,8 @@ impl RuntimeService {
         F: FnMut(StreamingOutput) -> Fut,
         Fut: Future<Output = Result<()>>,
     {
-        let (request, job) = self
-            .prepare_asr_shape_for_binding(request, job, residency_lease.as_ref())
-            .await?;
         let (mut request, job) = self
-            .prepare_lfm25_audio_tts_for_binding(request, job, residency_lease.as_ref())
+            .prepare_request_for_binding(request, job, residency_lease.as_ref())
             .await?;
         let loaded_bundle = residency_lease
             .as_ref()
@@ -6115,6 +6265,14 @@ impl RuntimeService {
         if job.spec.request_id != request.id || job.spec.deadline != request.deadline {
             return Err(Error::InvalidInput(
                 "streaming engine request does not match its coordinator admission".to_string(),
+            ));
+        }
+        if request.model_variant == Some(ModelVariant::FishAudioS2Pro)
+            && (request.collect_audio_samples
+                || request.audio_stream_engine_queue_capacity.is_none())
+        {
+            return Err(Error::InvalidInput(
+                "Fish streaming output capacity must be frozen before admission".into(),
             ));
         }
         let observation_request = request.clone();
@@ -6574,10 +6732,15 @@ impl RuntimeService {
             ENGINE_EXECUTOR_MODEL_TENSOR_MULTIROW_CALLS_TOTAL,
             snapshot.model_tensor_multirow_calls_total,
         );
-        let width_labels = snapshot.model_tensor_batch_width_counts.iter()
-            .map(|(width, count)| (width.to_string(), *count)).collect::<Vec<_>>();
-        let width_values = width_labels.iter()
-            .map(|(label, count)| (label.as_str(), *count)).collect::<Vec<_>>();
+        let width_labels = snapshot
+            .model_tensor_batch_width_counts
+            .iter()
+            .map(|(width, count)| (width.to_string(), *count))
+            .collect::<Vec<_>>();
+        let width_values = width_labels
+            .iter()
+            .map(|(label, count)| (label.as_str(), *count))
+            .collect::<Vec<_>>();
         push_engine_labeled_metric(
             payload,
             ENGINE_EXECUTOR_MODEL_TENSOR_BATCH_WIDTH_CALLS_TOTAL,
@@ -6917,29 +7080,37 @@ mod tests {
         order.observe(request_id, &first).unwrap();
 
         let duplicate = StreamingOutput::new(request_id.to_string(), 0, vec![0.0], 24_000);
-        assert!(order
-            .observe(request_id, &duplicate)
-            .unwrap_err()
-            .to_string()
-            .contains("not greater"));
+        assert!(
+            order
+                .observe(request_id, &duplicate)
+                .unwrap_err()
+                .to_string()
+                .contains("not greater")
+        );
         let wrong_request = StreamingOutput::new("stale".to_string(), 1, vec![0.0], 24_000);
-        assert!(order
-            .observe(request_id, &wrong_request)
-            .unwrap_err()
-            .to_string()
-            .contains("carried request ID"));
-        assert!(order
-            .require_final(request_id)
-            .unwrap_err()
-            .to_string()
-            .contains("without a final marker"));
+        assert!(
+            order
+                .observe(request_id, &wrong_request)
+                .unwrap_err()
+                .to_string()
+                .contains("carried request ID")
+        );
+        assert!(
+            order
+                .require_final(request_id)
+                .unwrap_err()
+                .to_string()
+                .contains("without a final marker")
+        );
 
         let gap = StreamingOutput::new(request_id.to_string(), 4, Vec::new(), 0);
-        assert!(order
-            .observe(request_id, &gap)
-            .unwrap_err()
-            .to_string()
-            .contains("did not match expected 1"));
+        assert!(
+            order
+                .observe(request_id, &gap)
+                .unwrap_err()
+                .to_string()
+                .contains("did not match expected 1")
+        );
 
         // Gaps remain valid only for an explicitly lossy DropNewest transport,
         // while every observed sequence must still advance monotonically.
@@ -6951,11 +7122,13 @@ mod tests {
         order.require_final(request_id).unwrap();
 
         let after_final = StreamingOutput::new(request_id.to_string(), 5, vec![0.0], 24_000);
-        assert!(order
-            .observe(request_id, &after_final)
-            .unwrap_err()
-            .to_string()
-            .contains("after its final marker"));
+        assert!(
+            order
+                .observe(request_id, &after_final)
+                .unwrap_err()
+                .to_string()
+                .contains("after its final marker")
+        );
     }
 
     #[test]
@@ -7127,26 +7300,30 @@ mod tests {
         assert_eq!(contract.model_instance_id, instance);
         assert_eq!(contract.execution_group_id, group);
 
-        assert!(loaded_contract_for_residency(
-            &lease,
-            Some(&bundle),
-            CapabilityKind::StreamingTts,
-            false,
-            group,
-            BackendKind::Cpu,
-            Some(ExecutionTargetKind::TokenEngine),
-        )
-        .is_err());
-        assert!(loaded_contract_for_residency(
-            &lease,
-            Some(&bundle),
-            CapabilityKind::StreamingTts,
-            false,
-            crate::engine::ExecutionGroupId::new(group.get() + 1),
-            BackendKind::Cpu,
-            Some(ExecutionTargetKind::DirectModel),
-        )
-        .is_err());
+        assert!(
+            loaded_contract_for_residency(
+                &lease,
+                Some(&bundle),
+                CapabilityKind::StreamingTts,
+                false,
+                group,
+                BackendKind::Cpu,
+                Some(ExecutionTargetKind::TokenEngine),
+            )
+            .is_err()
+        );
+        assert!(
+            loaded_contract_for_residency(
+                &lease,
+                Some(&bundle),
+                CapabilityKind::StreamingTts,
+                false,
+                crate::engine::ExecutionGroupId::new(group.get() + 1),
+                BackendKind::Cpu,
+                Some(ExecutionTargetKind::DirectModel),
+            )
+            .is_err()
+        );
     }
 
     async fn pending_streaming_guard_fixture(
@@ -7227,11 +7404,13 @@ mod tests {
 
         assert!(matches!(duplicate, Err(Error::InvalidInput(_))));
         assert_eq!(runtime.completion_waiters.lock().await.len(), 1);
-        assert!(runtime
-            .completion_waiters
-            .lock()
-            .await
-            .contains_key("same-request"));
+        assert!(
+            runtime
+                .completion_waiters
+                .lock()
+                .await
+                .contains_key("same-request")
+        );
         drop(original);
         runtime
             .remove_waiter("same-request", original_registration)
@@ -7445,10 +7624,12 @@ mod tests {
         step_entered_rx.await.expect("step lock was not acquired");
 
         drop(guard);
-        assert!(tokio::time::timeout(Duration::from_secs(1), receiver)
-            .await
-            .expect("cleanup did not remove its waiter before exact abort")
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), receiver)
+                .await
+                .expect("cleanup did not remove its waiter before exact abort")
+                .is_err()
+        );
         assert_eq!(runtime.coordinator_snapshot().active_jobs, 1);
         assert_eq!(
             runtime
@@ -7526,11 +7707,13 @@ mod tests {
             "the core lock was released too early"
         );
         assert_eq!(runtime.coordinator_snapshot().active_jobs, 0);
-        assert!(!runtime
-            .completion_waiters
-            .lock()
-            .await
-            .contains_key(&request_id));
+        assert!(
+            !runtime
+                .completion_waiters
+                .lock()
+                .await
+                .contains_key(&request_id)
+        );
 
         release_step_tx.send(()).expect("release step lock");
         step_lock.await.expect("step-lock task");
@@ -7555,13 +7738,30 @@ mod tests {
 
         let request_id = "streaming-admission-deadline".to_string();
         let deadline = Instant::now() + Duration::from_millis(25);
-        let residency_variant = ModelVariant::Kokoro82M;
+        let residency_variant = ModelVariant::FishAudioS2Pro;
         let mut request = EngineCoreRequest::tts("bounded streaming Engine admission")
             .with_model_variant(residency_variant)
             .with_deadline(Some(deadline));
         request.id = request_id.clone();
         request.prompt_tokens = vec![1];
         request.streaming = true;
+        request.mark_audio_streaming_only();
+        // The model-bound fixture has already completed preparation. This test
+        // isolates deadline handling while admission waits for the core lock.
+        request
+            .install_fish_s2_tts_execution_model(
+                residency_variant,
+                crate::models::registry::FishS2TtsModelLease::for_test(
+                    crate::models::architectures::fish_s2::FishS2TtsModel::for_test(),
+                ),
+                crate::models::architectures::fish_s2::FishS2PreparedArtifact::test_prompt(11, 16),
+                FishS2GenerationParams {
+                    max_frames: 32,
+                    ..Default::default()
+                },
+                128,
+            )
+            .unwrap();
         let (spec, observation) = runtime
             .coordinator_job_for_request(&request)
             .expect("job shape");
@@ -7570,10 +7770,10 @@ mod tests {
             .admit_observed(spec, observation)
             .await
             .expect("job admission");
+
         let residency_lease = runtime
             .model_manager
             .acquire_residency_lease(residency_variant);
-
         let err = tokio::time::timeout(
             Duration::from_secs(1),
             runtime.run_streaming_request_after_admission(
@@ -7587,7 +7787,10 @@ mod tests {
         .await
         .expect("streaming Engine admission waited for the core lock past its deadline")
         .expect_err("expired streaming Engine admission unexpectedly succeeded");
-        assert!(matches!(err, Error::Timeout(id) if id == request_id));
+        assert!(
+            matches!(err, Error::Timeout(ref id) if id == &request_id),
+            "expected admission timeout, got {err:?}"
+        );
         assert!(
             !step_lock.is_finished(),
             "the core lock was released too early"
@@ -7599,11 +7802,13 @@ mod tests {
                 .active_residency_leases(residency_variant),
             0
         );
-        assert!(!runtime
-            .completion_waiters
-            .lock()
-            .await
-            .contains_key(&request_id));
+        assert!(
+            !runtime
+                .completion_waiters
+                .lock()
+                .await
+                .contains_key(&request_id)
+        );
 
         release_step_tx.send(()).expect("release step lock");
         step_lock.await.expect("step-lock task");
@@ -7611,6 +7816,130 @@ mod tests {
             runtime.core_engine.request_session_key(&request_id).await,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn fish_streaming_runs_model_preparation_before_engine_admission() {
+        for model_streaming_required in [true, false] {
+            let runtime = RuntimeService::new(EngineConfig::default()).expect("runtime");
+            let mut request = EngineCoreRequest::tts("prepare streaming Fish")
+                .with_model_variant(ModelVariant::FishAudioS2Pro);
+            request.streaming = true;
+            request.mark_audio_streaming_only();
+            let request_id = request.id.clone();
+            let (spec, observation) = runtime.coordinator_job_for_request(&request).unwrap();
+            let job = runtime
+                .coordinator
+                .admit_observed(spec, observation)
+                .await
+                .unwrap();
+            let callback_invoked = Arc::new(AtomicBool::new(false));
+            let callback_observer = callback_invoked.clone();
+
+            // No weights are installed: reaching Fish preparation must fail here,
+            // before a request without its model lease can enter the executor.
+            let error = tokio::time::timeout(
+                Duration::from_secs(1),
+                runtime.run_streaming_request_after_admission(
+                    request,
+                    move |_| {
+                        callback_observer.store(true, Ordering::Release);
+                        std::future::ready(Ok(()))
+                    },
+                    job,
+                    None,
+                    model_streaming_required,
+                ),
+            )
+            .await
+            .expect("missing Fish model should fail before execution")
+            .expect_err("streaming Fish must prepare its model");
+            assert!(
+                matches!(error, Error::ModelNotFound(ref message) if message.contains("Fish S2 TTS")),
+                "expected the Fish preparation failure, got {error:?}"
+            );
+            assert!(!callback_invoked.load(Ordering::Acquire));
+            assert_eq!(runtime.coordinator_snapshot().active_jobs, 0);
+            assert_eq!(
+                runtime.core_engine.request_session_key(&request_id).await,
+                None
+            );
+            assert!(
+                !runtime
+                    .completion_waiters
+                    .lock()
+                    .await
+                    .contains_key(&request_id)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_preparation_preserves_fish_model_artifact_and_streaming_budget() {
+        use crate::models::architectures::fish_s2::{FishS2PreparedArtifact, FishS2TtsModel};
+        use crate::models::registry::FishS2TtsModelLease;
+
+        let runtime = RuntimeService::new(EngineConfig::default()).expect("runtime");
+        let model = FishS2TtsModelLease::for_test(FishS2TtsModel::for_test());
+        let model_identity = model.model_arc();
+        let artifact = FishS2PreparedArtifact::test_prompt(11, 16);
+        let mut request = EngineCoreRequest::tts("already prepared streaming Fish")
+            .with_model_variant(ModelVariant::FishAudioS2Pro);
+        request.streaming = true;
+        request.mark_audio_streaming_only();
+        request
+            .install_fish_s2_tts_execution_model(
+                ModelVariant::FishAudioS2Pro,
+                model,
+                artifact.clone(),
+                FishS2GenerationParams {
+                    max_frames: 32,
+                    ..Default::default()
+                },
+                128,
+            )
+            .unwrap();
+        let request_id = request.id.clone();
+        let queue_capacity = request.audio_stream_engine_queue_capacity;
+        let (spec, observation) = runtime.coordinator_job_for_request(&request).unwrap();
+        let job = runtime
+            .coordinator
+            .admit_observed(spec, observation)
+            .await
+            .unwrap();
+
+        let (prepared, job) = runtime
+            .prepare_request_for_binding(request, job, None)
+            .await
+            .unwrap();
+        let lease = prepared
+            .prepared_fish_s2_tts_model_lease_for_executor()
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&model_identity, &lease.model_arc()));
+        assert!(Arc::ptr_eq(
+            &artifact,
+            &prepared
+                .prepared_fish_s2_tts_artifact_for_executor()
+                .unwrap()
+                .unwrap()
+        ));
+        assert_eq!(prepared.id, request_id);
+        assert_eq!(prepared.params.max_tokens, 32);
+        assert_eq!(
+            prepared
+                .fish_s2_tts_generation_params_for_executor()
+                .unwrap()
+                .unwrap()
+                .max_frames,
+            32
+        );
+        assert!(prepared.streaming);
+        assert!(!prepared.collect_audio_samples);
+        assert_eq!(prepared.audio_stream_engine_queue_capacity, queue_capacity);
+        assert_eq!(job.spec.request_id, request_id);
+        drop(job);
+        assert_eq!(runtime.coordinator_snapshot().active_jobs, 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -7646,10 +7975,12 @@ mod tests {
             !callback_invoked.load(Ordering::Acquire),
             "an expired request invoked synchronous callback code"
         );
-        assert!(tokio::time::timeout(Duration::from_secs(1), receiver)
-            .await
-            .expect("deadline cleanup did not remove its exact waiter")
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), receiver)
+                .await
+                .expect("deadline cleanup did not remove its exact waiter")
+                .is_err()
+        );
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if runtime.coordinator_snapshot().active_jobs == 0
@@ -7692,10 +8023,12 @@ mod tests {
         .expect("hung callback outlived the absolute request deadline")
         .expect_err("hung callback unexpectedly succeeded");
         assert!(matches!(err, Error::Timeout(id) if id == request_id));
-        assert!(tokio::time::timeout(Duration::from_secs(1), receiver)
-            .await
-            .expect("deadline cleanup did not remove its exact waiter")
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), receiver)
+                .await
+                .expect("deadline cleanup did not remove its exact waiter")
+                .is_err()
+        );
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if runtime.coordinator_snapshot().active_jobs == 0
@@ -7750,10 +8083,12 @@ mod tests {
         .expect("callback failure waited for the in-flight core step")
         .expect_err("failing callback unexpectedly succeeded");
         assert!(err.to_string().contains("streaming callback failed"));
-        assert!(tokio::time::timeout(Duration::from_secs(1), receiver)
-            .await
-            .expect("detached cleanup did not remove its exact waiter")
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), receiver)
+                .await
+                .expect("detached cleanup did not remove its exact waiter")
+                .is_err()
+        );
         assert_eq!(runtime.coordinator_snapshot().active_jobs, 1);
         assert_eq!(
             runtime
@@ -7828,10 +8163,12 @@ mod tests {
 
         tokio::task::yield_now().await;
         cleanup.abort();
-        assert!(cleanup
-            .await
-            .expect_err("cleanup task unexpectedly completed")
-            .is_cancelled());
+        assert!(
+            cleanup
+                .await
+                .expect_err("cleanup task unexpectedly completed")
+                .is_cancelled()
+        );
         assert_eq!(isolated_coordinator.snapshot().active_jobs, 1);
         assert_eq!(
             runtime
@@ -7851,11 +8188,13 @@ mod tests {
             .await
         );
         assert!(receiver.await.is_err());
-        assert!(runtime
-            .core_engine
-            .abort_request_session(&session)
-            .await
-            .expect("manual exact abort"));
+        assert!(
+            runtime
+                .core_engine
+                .abort_request_session(&session)
+                .await
+                .expect("manual exact abort")
+        );
         assert_eq!(isolated_coordinator.snapshot().active_jobs, 1);
         assert_eq!(
             runtime
@@ -8125,11 +8464,13 @@ mod tests {
             None,
         );
 
-        assert!(runtime
-            .core_engine
-            .abort_request_session(&old_session)
-            .await
-            .expect("old exact abort"));
+        assert!(
+            runtime
+                .core_engine
+                .abort_request_session(&old_session)
+                .await
+                .expect("old exact abort")
+        );
         let old_terminal = runtime
             .core_engine
             .step_for_dispatch()
@@ -8266,8 +8607,8 @@ mod tests {
     #[tokio::test]
     async fn runtime_concurrency_metrics_preserve_real_width_and_recovery_counts() {
         use crate::engine::metrics::{
-            record_capacity_replay, record_capacity_suspension,
-            record_engine_model_call, EngineModelCall,
+            EngineModelCall, record_capacity_replay, record_capacity_suspension,
+            record_engine_model_call,
         };
         let runtime = RuntimeService::new(EngineConfig::default()).expect("runtime");
         let before = runtime.engine_telemetry_snapshot().await;
@@ -8278,19 +8619,40 @@ mod tests {
         record_capacity_suspension();
         record_capacity_replay(17);
         let after = runtime.engine_telemetry_snapshot().await;
-        assert!(after.model_tensor_batch_width_counts.get(&3).copied().unwrap_or(0)
-            > before.model_tensor_batch_width_counts.get(&3).copied().unwrap_or(0));
+        assert!(
+            after
+                .model_tensor_batch_width_counts
+                .get(&3)
+                .copied()
+                .unwrap_or(0)
+                > before
+                    .model_tensor_batch_width_counts
+                    .get(&3)
+                    .copied()
+                    .unwrap_or(0)
+        );
         assert!(after.capacity_suspensions_total > before.capacity_suspensions_total);
         assert!(after.capacity_replay_tokens_total >= before.capacity_replay_tokens_total + 17);
         let json = serde_json::to_value(&after).expect("serialize concurrency metrics");
-        assert_eq!(json["model_tensor_batch_width_counts"]["3"],
-            serde_json::json!(after.model_tensor_batch_width_counts[&3]));
-        assert_eq!(json["capacity_replay_tokens_total"],
-            serde_json::json!(after.capacity_replay_tokens_total));
+        assert_eq!(
+            json["model_tensor_batch_width_counts"]["3"],
+            serde_json::json!(after.model_tensor_batch_width_counts[&3])
+        );
+        assert_eq!(
+            json["capacity_replay_tokens_total"],
+            serde_json::json!(after.capacity_replay_tokens_total)
+        );
         let payload = runtime.telemetry_prometheus().await;
-        assert!(payload.contains("izwi_engine_executor_model_tensor_batch_width_calls_total{width=\"3\"}"));
-        assert!(payload.contains("# TYPE izwi_engine_scheduler_capacity_suspensions_total counter"));
-        assert!(payload.contains("# TYPE izwi_engine_scheduler_capacity_replay_tokens_total counter"));
+        assert!(
+            payload
+                .contains("izwi_engine_executor_model_tensor_batch_width_calls_total{width=\"3\"}")
+        );
+        assert!(
+            payload.contains("# TYPE izwi_engine_scheduler_capacity_suspensions_total counter")
+        );
+        assert!(
+            payload.contains("# TYPE izwi_engine_scheduler_capacity_replay_tokens_total counter")
+        );
     }
 
     #[tokio::test]
@@ -8301,16 +8663,22 @@ mod tests {
 
         assert!(payload.contains("izwi_engine_scheduler_queue_depth"));
         assert!(payload.contains("izwi_engine_scheduler_running_requests"));
-        assert!(payload
-            .contains("izwi_engine_kv_cache_allocated_blocks{accounting=\"physical_pages\"}"));
-        assert!(payload
-            .contains("izwi_engine_kv_cache_utilization_ratio{accounting=\"physical_pages\"}"));
+        assert!(
+            payload
+                .contains("izwi_engine_kv_cache_allocated_blocks{accounting=\"physical_pages\"}")
+        );
+        assert!(
+            payload
+                .contains("izwi_engine_kv_cache_utilization_ratio{accounting=\"physical_pages\"}")
+        );
         assert!(payload.contains(
             "izwi_engine_kv_cache_memory_capacity_bytes{accounting=\"resident_paged_plus_authorized_tensor\"}"
         ));
         assert!(payload.contains("allocated physical KV-cache pages"));
-        assert!(payload
-            .contains("Resident managed KV pages plus authorized retained tensor-state bytes"));
+        assert!(
+            payload
+                .contains("Resident managed KV pages plus authorized retained tensor-state bytes")
+        );
         assert!(!payload.contains("izwi_engine_kv_cache_soft_max_blocks"));
         assert!(!payload.contains("izwi_engine_kv_cache_copy_on_write_splits_total"));
         assert!(payload.contains("izwi_engine_stream_backpressure_total"));
@@ -8332,15 +8700,22 @@ mod tests {
         assert!(payload.contains("izwi_engine_executor_model_tensor_batch_rows_total"));
         assert!(payload.contains("izwi_engine_executor_model_tensor_batch_max_width"));
         assert!(payload.contains("izwi_engine_executor_model_scalar_row_dispatches_total"));
-        assert!(payload.contains("izwi_engine_executor_continuous_envelope_scalar_fallbacks_total"));
+        assert!(
+            payload.contains("izwi_engine_executor_continuous_envelope_scalar_fallbacks_total")
+        );
         assert!(payload.contains("izwi_engine_executor_physical_batch_rejections_total"));
-        assert!(payload
-            .contains("izwi_engine_executor_dispatch_state_rows_total{state=\"not_started\"}"));
+        assert!(
+            payload
+                .contains("izwi_engine_executor_dispatch_state_rows_total{state=\"not_started\"}")
+        );
         assert!(
             payload.contains("izwi_engine_executor_failure_origin_rows_total{origin=\"model\"}")
         );
-        assert!(payload
-            .contains("izwi_engine_executor_deadline_phase_rows_total{phase=\"dispatch_wait\"}"));
+        assert!(
+            payload.contains(
+                "izwi_engine_executor_deadline_phase_rows_total{phase=\"dispatch_wait\"}"
+            )
+        );
         assert!(payload.contains(
             "izwi_engine_executor_batch_workspace_domain_bytes_total{domain=\"device\"}"
         ));
@@ -8353,8 +8728,11 @@ mod tests {
         assert!(payload.contains(
             "izwi_engine_executor_physical_fallbacks_total{reason=\"uncertified_profile\"}"
         ));
-        assert!(payload
-            .contains("izwi_engine_executor_physical_defers_total{reason=\"workspace_capacity\"}"));
+        assert!(
+            payload.contains(
+                "izwi_engine_executor_physical_defers_total{reason=\"workspace_capacity\"}"
+            )
+        );
         assert!(payload.contains(
             "izwi_engine_executor_physical_workspace_high_water_bytes{domain=\"device\"}"
         ));
@@ -8369,7 +8747,24 @@ mod tests {
         assert!(payload.contains("izwi_inference_coordinator_poisoned 0"));
 
         let snapshot = runtime.telemetry_snapshot().await;
-        assert_eq!(snapshot.coordinator, runtime.coordinator_snapshot());
+        assert_eq!(
+            snapshot.coordinator.reserved_memory_bytes,
+            snapshot
+                .coordinator
+                .reserved_host_memory_bytes
+                .saturating_add(snapshot.coordinator.reserved_device_memory_bytes)
+                .saturating_add(snapshot.coordinator.reserved_unified_memory_bytes)
+        );
+        assert!(snapshot.coordinator.capacity >= 1);
+        assert_eq!(snapshot.coordinator.active_jobs, 0);
+        assert_eq!(snapshot.coordinator.active_preparation_bridges, 0);
+        assert_eq!(snapshot.coordinator.active_model_loads, 0);
+        assert_eq!(snapshot.coordinator.active_executions, 0);
+        assert_eq!(snapshot.coordinator.admitted_total, 0);
+        assert_eq!(snapshot.coordinator.rejected_total, 0);
+        assert_eq!(snapshot.coordinator.expired_total, 0);
+        assert!(!snapshot.coordinator.draining);
+        assert!(!snapshot.coordinator.poisoned);
         assert!(snapshot.engine.physical_execution.effective_cap >= 1);
         let serialized = serde_json::to_value(&snapshot).expect("serialize runtime telemetry");
         let effective_mode = serialized["engine"]["physical_execution"]["effective_mode"]
@@ -8398,10 +8793,12 @@ mod tests {
 
         assert!(runtime.is_draining());
         assert!(runtime.telemetry_snapshot().await.coordinator.draining);
-        assert!(runtime
-            .telemetry_prometheus()
-            .await
-            .contains("izwi_inference_coordinator_draining 1"));
+        assert!(
+            runtime
+                .telemetry_prometheus()
+                .await
+                .contains("izwi_inference_coordinator_draining 1")
+        );
     }
 
     #[test]
@@ -8904,6 +9301,64 @@ mod tests {
             .coordinator_job_for_request(&plain_tts)
             .expect("coordinator job");
         assert_eq!(plain_tts_spec.resources, expected_plain_tts);
+    }
+
+    #[test]
+    fn fish_streaming_output_admission_is_bounded_independently_of_length() {
+        let runtime = RuntimeService::new(EngineConfig {
+            backend: crate::backends::BackendPreference::Cpu,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut short =
+            EngineCoreRequest::tts("hello").with_model_variant(ModelVariant::FishAudioS2Pro);
+        short.params.max_tokens = 32;
+        let mut long = short.clone();
+        long.params.max_tokens = ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES;
+        let whole_short = runtime
+            .coordinator_job_for_request(&short)
+            .unwrap()
+            .0
+            .resources;
+        let whole_long = runtime
+            .coordinator_job_for_request(&long)
+            .unwrap()
+            .0
+            .resources;
+        assert_ne!(whole_short, whole_long);
+        short.mark_audio_streaming_only();
+        long.mark_audio_streaming_only();
+        let stream_short = runtime
+            .coordinator_job_for_request(&short)
+            .unwrap()
+            .0
+            .resources;
+        let stream_long = runtime
+            .coordinator_job_for_request(&long)
+            .unwrap()
+            .0
+            .resources;
+        assert_eq!(stream_short, stream_long);
+        assert_ne!(stream_long, whole_long);
+        let before = long.streaming_audio_buffer_bytes(16 * 2048).unwrap();
+        long.audio_stream_external_queue_capacity = 128;
+        let after = long.streaming_audio_buffer_bytes(16 * 2048).unwrap();
+        assert_eq!(
+            after - before,
+            128 * (16 * 2048 * 4 + long.id.len() as u64 + 512)
+        );
+        assert_ne!(
+            runtime
+                .coordinator_job_for_request(&long)
+                .unwrap()
+                .0
+                .resources,
+            stream_long
+        );
+        long.audio_stream_engine_queue_capacity = Some(17);
+        assert_eq!(CoreEngine::streaming_queue_capacity(&long), 17);
+        long.audio_stream_external_queue_capacity = usize::MAX;
+        assert!(long.streaming_audio_buffer_bytes(16 * 2048).is_err());
     }
 
     #[test]

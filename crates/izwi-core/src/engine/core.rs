@@ -896,6 +896,7 @@ impl EngineCore {
         let work_kind = match &work {
             WorkUnit::PreSequencePreparation { kind } => kind.clone(),
             WorkUnit::SequenceStep { phase, .. } => format!("{phase:?}").to_ascii_lowercase(),
+            WorkUnit::SequenceAudioDecode { .. } => "sequence_audio_decode".to_string(),
             WorkUnit::SequenceFinalize { .. } => "sequence_finalize".to_string(),
             WorkUnit::RealtimePush { .. } => "realtime_push".to_string(),
             WorkUnit::RealtimeFinish { .. } => "realtime_finish".to_string(),
@@ -977,7 +978,9 @@ impl EngineCore {
                 phase: super::SequencePhase::Decode,
                 ..
             } => ExecutionState::Decoding,
-            WorkUnit::SequenceFinalize { .. } => ExecutionState::Decoding,
+            WorkUnit::SequenceAudioDecode { .. } | WorkUnit::SequenceFinalize { .. } => {
+                ExecutionState::Decoding
+            }
             WorkUnit::RealtimePush { .. } => ExecutionState::RealtimeRunning,
             WorkUnit::RealtimeFinish { .. } => ExecutionState::RealtimeFinishing,
             WorkUnit::RealtimePreparation {
@@ -1085,10 +1088,10 @@ impl EngineCore {
                         "Unexecuted plan rollback found a mismatched session fence"
                     );
                 }
-                if !self
-                    .scheduler
-                    .refund_unexecuted_service(&session, scheduled.num_tokens)
-                {
+                if !self.scheduler.refund_unexecuted_service(
+                    &session,
+                    Scheduler::service_units_for_work(scheduled.num_tokens, &scheduled.work),
+                ) {
                     warn!(
                         plan_id = scheduled.plan_id,
                         request_id = %scheduled.request_id,
@@ -2166,6 +2169,49 @@ impl EngineCore {
                         result.output.tokens_generated,
                         step_time_ms,
                     );
+                    let audio_transition =
+                        match result.disposition {
+                            ExecutionDisposition::Yielded(
+                                super::YieldReason::AwaitingAudioDecode { max_frames },
+                            ) => Some(self.scheduler.request_sequence_audio_decode(
+                                &plan.session.request_id,
+                                max_frames,
+                            )),
+                            ExecutionDisposition::Yielded(
+                                super::YieldReason::AwaitingAudioOutput { max_frames },
+                            ) => {
+                                // The batch entered the adapter, but this row stopped
+                                // at output admission before codec execution. The
+                                // active-plan removal above fences this refund against
+                                // duplicate results and the unexecuted rollback path.
+                                self.scheduler.refund_unexecuted_service(
+                                    &plan.session,
+                                    Scheduler::service_units_for_work(1, &plan.work),
+                                );
+                                Some(
+                                    self.scheduler
+                                        .defer_audio_output(&plan.session.request_id, max_frames),
+                                )
+                            }
+                            _ => None,
+                        };
+                    if let Some(Err(error)) = audio_transition {
+                        return Some(CommittedExecutorOutput {
+                            session: plan.session,
+                            output: ExecutorOutput::error(
+                                result.output.request_id,
+                                error.to_string(),
+                            ),
+                            disposition: ExecutionDisposition::Failed(
+                                ExecutionFailure::invalid_output("audio decode transition failed"),
+                            ),
+                            provenance: OutcomeProvenance::failure(
+                                FailureOrigin::StateCommit,
+                                result.provenance.dispatch_state,
+                            ),
+                            staged_stream_outputs: Vec::new(),
+                        });
+                    }
                     if matches!(
                         result.disposition,
                         ExecutionDisposition::Yielded(super::YieldReason::AwaitingFinalization)
@@ -2204,6 +2250,18 @@ impl EngineCore {
         }
         result.output.request_id = plan.session.request_id.clone();
         if !result.staged_stream_outputs.is_empty() {
+            // AfterQuantumCommit PCM/text is just as irreversible as an
+            // IncrementalCommitted event. Fence recomputation before handing
+            // the committed outbox to delivery, which may already be audible
+            // when the next model quantum fails or needs capacity.
+            if result.staged_stream_outputs.iter().any(|output| {
+                !output.samples.is_empty()
+                    || output.text.as_ref().is_some_and(|text| !text.is_empty())
+                    || output.asr_progress.is_some()
+            }) {
+                self.incremental_stream_sessions
+                    .insert(plan.session.clone());
+            }
             if let Some(next_sequence) = staged_next_sequence {
                 self.stream_sequence_cursors
                     .insert(plan.session.clone(), next_sequence);
@@ -2222,6 +2280,7 @@ impl EngineCore {
         request: &EngineCoreRequest,
         work: &WorkUnit,
         stage: Option<&super::StageDescriptor>,
+        backend: crate::backends::BackendKind,
     ) -> Result<WorkCost> {
         if let WorkUnit::RealtimePreparation { operation_id, .. } = work {
             return request.realtime_asr_preparation_cost(*operation_id);
@@ -2273,7 +2332,10 @@ impl EngineCore {
                 })?;
                 input.max(output).max(1)
             }
-            WorkUnit::SequenceFinalize { max_output_steps } => u64::try_from(*max_output_steps)
+            WorkUnit::SequenceAudioDecode {
+                max_frames: max_output_steps,
+            }
+            | WorkUnit::SequenceFinalize { max_output_steps } => u64::try_from(*max_output_steps)
                 .map_err(|_| {
                     Error::Overloaded(
                         "sequence finalization output bound exceeds work accounting".into(),
@@ -2335,6 +2397,82 @@ impl EngineCore {
             WorkUnit::RealtimeDecodeContinuation { .. } | WorkUnit::RealtimeCompletion { .. } => 1,
             WorkUnit::AtomicJob { .. } | WorkUnit::PipelineStage { .. } => 1,
         };
+        // Fish codec finalization is scalar. Native tensor-stage costs require
+        // a bound batchable stage, so derive this workspace from the sealed
+        // generation geometry only after the execution plan has its binding.
+        if request.task_type == super::TaskType::TTS
+            && request.model_variant == Some(ModelVariant::FishAudioS2Pro)
+            && matches!(
+                work,
+                WorkUnit::SequenceFinalize { .. } | WorkUnit::SequenceAudioDecode { .. }
+            )
+        {
+            let binding = request.execution_adapter_binding().ok_or_else(|| {
+                Error::InvalidInput("Fish S2 finalization requires a loaded adapter binding".into())
+            })?;
+            let stage = stage
+                .filter(|stage| {
+                    stage.selector.matches(work)
+                        && (stage.batch_mode == NativeBatchMode::None
+                            || (matches!(work, WorkUnit::SequenceAudioDecode { .. })
+                                && stage.batch_mode == NativeBatchMode::Static))
+                        && binding.stages.contains(stage)
+                })
+                .ok_or_else(|| {
+                    Error::InvalidInput(
+                        "Fish S2 codec requires its exact bound execution stage".into(),
+                    )
+                })?;
+            let params = request
+                .fish_s2_tts_generation_params_for_executor()?
+                .ok_or_else(|| {
+                    Error::InvalidInput(
+                        "Fish S2 finalization requires sealed generation parameters".into(),
+                    )
+                })?;
+            params.validate()?;
+            if params.max_frames > ModelVariant::FISH_S2_PRO_MAX_OUTPUT_FRAMES {
+                return Err(Error::InvalidInput(
+                    "Fish S2 output exceeds the codec frame limit".into(),
+                ));
+            }
+            let frames = match work {
+                WorkUnit::SequenceAudioDecode { max_frames } => {
+                    (*max_frames).min(params.max_frames)
+                }
+                _ => params.max_frames,
+            };
+            let bytes = if matches!(work, WorkUnit::SequenceAudioDecode { .. }) {
+                crate::models::architectures::fish_s2::codec::streaming_decode_workspace_bytes(
+                    frames,
+                )?
+            } else {
+                // Terminal flush only moves retained PCM; neural work is complete.
+                0
+            };
+            if logical_units > stage.max_work_units || bytes > stage.max_workspace_bytes {
+                return Err(Error::Overloaded(
+                    "Fish S2 finalization exceeds its loaded stage workspace or work limit".into(),
+                ));
+            }
+            let mut workspace = super::ResourceVector::zero();
+            match backend {
+                crate::backends::BackendKind::Cpu => {
+                    workspace.host_bytes = ResourceAmount::Known(bytes)
+                }
+                crate::backends::BackendKind::Metal => {
+                    workspace.unified_bytes = ResourceAmount::Known(bytes)
+                }
+                crate::backends::BackendKind::Cuda => {
+                    workspace.device_bytes = ResourceAmount::Known(bytes)
+                }
+            }
+            return Ok(WorkCost::with_workspace(
+                logical_units,
+                logical_units,
+                workspace,
+            ));
+        }
         let workspace_bytes = stage.map_or(Ok(0), |stage| {
             stage
                 .workspace_per_work_unit_bytes
@@ -2557,7 +2695,12 @@ impl EngineCore {
                         scheduled.plan_id
                     ))
                 })?;
-            let cost = Self::work_cost(&request, &plan.work, plan.stage.as_ref())?;
+            let cost = Self::work_cost(
+                &request,
+                &plan.work,
+                plan.stage.as_ref(),
+                plan.batch_key.backend,
+            )?;
             let lane = Self::batch_lane(&plan, cost);
             let (mut budget, shape_policy) = Self::batch_budget(&plan)?;
             if let Some(cap) = self.workspace_row_limits.get(&plan.session) {
@@ -2752,6 +2895,14 @@ impl EngineCore {
         existing: Option<AudioOutput>,
         current: Option<AudioOutput>,
     ) -> Option<AudioOutput> {
+        // Stream completion carries cumulative committed sample metadata while
+        // intentionally retaining no waveform. Its empty Vec is not no output.
+        if current
+            .as_ref()
+            .is_some_and(|audio| audio.streamed_samples.is_some())
+        {
+            return current;
+        }
         match (existing, current) {
             (None, None) => None,
             (Some(existing), None) => Some(existing),
@@ -4489,12 +4640,15 @@ impl EngineCore {
             if !staged_stream_outputs.is_empty() {
                 if let Some(request) = self.requests.get(&request_id) {
                     if let Some(tx) = request.streaming_tx.clone() {
-                        stream_deliveries.push(CommittedStreamDelivery::new(
-                            session.clone(),
-                            tx,
-                            request.stream_policy,
-                            staged_stream_outputs,
-                        ));
+                        stream_deliveries.push(
+                            CommittedStreamDelivery::new(
+                                session.clone(),
+                                tx,
+                                request.stream_policy,
+                                staged_stream_outputs,
+                            )
+                            .with_audio_credits(request.take_audio_output_credits()),
+                        );
                     }
                 }
             }
@@ -5126,6 +5280,56 @@ impl EngineCore {
         Ok(runtime)
     }
 
+    /// Resolve one loaded model against its sealed row ceilings without changing
+    /// engine-wide configuration or another model's fitting policy.
+    pub(crate) fn load_managed_model_state_with_row_limits(
+        &mut self,
+        model_instance: super::ModelInstanceId,
+        retained_state: &crate::kv::v2::InferenceStateContract,
+        logical_context_tokens: Option<usize>,
+        retained_rows: usize,
+        staged_rows: usize,
+    ) -> Result<Arc<super::ManagedKvModelRuntime>> {
+        if retained_rows == 0
+            || staged_rows == 0
+            || retained_rows > self.config.max_retained_sequences
+            || staged_rows > self.config.max_staged_transactions
+        {
+            return Err(Error::ModelLoadError(
+                "model row limits exceed configured capacity".into(),
+            ));
+        }
+        let backend = self.managed_kv_cache.worker_backend();
+        let logical_token_reach = self.resolve_managed_token_reach_for_contract_with_rows(
+            backend,
+            model_instance,
+            retained_state,
+            logical_context_tokens,
+            1,
+            (retained_rows, staged_rows),
+        )?;
+        let runtime = self.managed_kv_cache.bind_model_state_with_capacity(
+            model_instance,
+            backend,
+            ManagedStateCapacityRequest {
+                total_paged_pages: u32::try_from(self.config.max_blocks).map_err(|_| {
+                    Error::InvalidInput("managed KV page budget exceeds u32".into())
+                })?,
+                logical_token_reach,
+                retained_sequence_rows: u32::try_from(retained_rows).map_err(|_| {
+                    Error::InvalidInput("managed state sequence limit exceeds u32".into())
+                })?,
+                staged_transaction_rows: u32::try_from(staged_rows).map_err(|_| {
+                    Error::InvalidInput("managed state transaction limit exceeds u32".into())
+                })?,
+            },
+            self.config.block_size,
+            retained_state,
+        )?;
+        runtime.synchronize_backing()?;
+        Ok(runtime)
+    }
+
     pub(crate) fn load_composite_retained_state(
         &mut self,
         model_instance: super::ModelInstanceId,
@@ -5184,6 +5388,28 @@ impl EngineCore {
         loaded_context: Option<usize>,
         portable_state_copies: u32,
     ) -> Result<Option<u64>> {
+        self.resolve_managed_token_reach_for_contract_with_rows(
+            backend,
+            model_instance,
+            contract,
+            loaded_context,
+            portable_state_copies,
+            (
+                self.config.max_retained_sequences,
+                self.config.max_staged_transactions,
+            ),
+        )
+    }
+
+    fn resolve_managed_token_reach_for_contract_with_rows(
+        &self,
+        backend: BackendKind,
+        model_instance: super::ModelInstanceId,
+        contract: &crate::kv::v2::InferenceStateContract,
+        loaded_context: Option<usize>,
+        portable_state_copies: u32,
+        row_limits: (usize, usize),
+    ) -> Result<Option<u64>> {
         if !self.config.portable_context_auto
             && backend != BackendKind::Cuda
             && loaded_context.is_none()
@@ -5206,10 +5432,10 @@ impl EngineCore {
                     maximum_tokens,
                     self.config.portable_context_reserve_bytes,
                     self.config.block_size,
-                    u32::try_from(self.config.max_retained_sequences).map_err(|_| {
+                    u32::try_from(row_limits.0).map_err(|_| {
                         Error::InvalidInput("managed state sequence limit exceeds u32".into())
                     })?,
-                    u32::try_from(self.config.max_staged_transactions).map_err(|_| {
+                    u32::try_from(row_limits.1).map_err(|_| {
                         Error::InvalidInput("managed state transaction limit exceeds u32".into())
                     })?,
                     portable_state_copies,
@@ -5431,6 +5657,25 @@ impl Drop for EngineCore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn streamed_completion_survives_empty_audio_merging() {
+        let audio = super::EngineCore::merge_audio_output(
+            Some(super::AudioOutput::empty(24000)),
+            Some(super::AudioOutput::streamed(48000, 24000)),
+        )
+        .unwrap();
+        assert!(audio.samples.is_empty());
+        assert_eq!(audio.streamed_samples, Some(48000));
+        assert_eq!(audio.duration_secs, 2.0);
+        let unchanged = super::EngineCore::merge_audio_output(
+            Some(audio),
+            Some(super::AudioOutput::empty(24000)),
+        )
+        .unwrap();
+        assert_eq!(unchanged.streamed_samples, Some(48000));
+        assert_eq!(unchanged.duration_secs, 2.0);
+    }
+
     use super::super::executor::{
         ExecutorOutput, ExecutorPhaseTiming, ExecutorStepResult, ModelExecutor, ModelSessionResult,
     };
@@ -7802,7 +8047,7 @@ mod tests {
             auxiliary_state: None,
         };
 
-        let cost = EngineCore::work_cost(&request, &work, Some(&stage)).unwrap();
+        let cost = EngineCore::work_cost(&request, &work, Some(&stage), BackendKind::Cpu).unwrap();
         assert_eq!(cost.logical_units, 4);
         assert_eq!(cost.tensor_elements, 512);
         assert_eq!(cost.workspace.workspace_bytes().unwrap(), 32);
@@ -7820,6 +8065,7 @@ mod tests {
                 max_cache_append: 8,
             },
             None,
+            BackendKind::Cpu,
         )
         .unwrap();
         assert_eq!(push, WorkCost::new(160, 160, 0));
@@ -7832,6 +8078,7 @@ mod tests {
                 max_cache_append: 8,
             },
             None,
+            BackendKind::Cpu,
         )
         .unwrap();
         assert_eq!(finish, WorkCost::new(8, 8, 0));
@@ -7866,6 +8113,7 @@ mod tests {
                 auxiliary_state: None,
             },
             None,
+            BackendKind::Cpu,
         )
         .unwrap();
 
@@ -8297,6 +8545,90 @@ mod tests {
             let retry_schedule = core.scheduler.schedule();
             assert!(retry_schedule.prefill_requests.is_empty());
             assert!(retry_schedule.decode_requests.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn staged_pcm_commit_fences_recompute_and_restart_without_replaying_audio() {
+        for restart in [false, true] {
+            let executor = UnifiedExecutor::new_for_test(Box::new(MockExecutor::new(Arc::new(
+                Mutex::new(Vec::new()),
+            ))));
+            let mut core = EngineCore::new_with_unified_executor(
+                EngineCoreConfig {
+                    max_batch_size: 1,
+                    max_tokens_per_step: 8,
+                    ..Default::default()
+                },
+                executor,
+            )
+            .unwrap();
+            let mut request = EngineCoreRequest::tts("committed PCM");
+            request.id = format!("staged-pcm-retry-{restart}");
+            request.prompt_tokens = vec![1];
+            request.streaming = true;
+            let (tx, _rx) = mpsc::channel(8);
+            request.streaming_tx = Some(tx);
+            core.add_request(request).unwrap();
+            core.refresh_scheduler_execution_profiles().await;
+            let prefill = core.scheduler.schedule().prefill_requests.remove(0);
+            let session = prefill.session_key();
+            core.begin_execution_plan(&prefill).await.unwrap();
+            let mut result = ExecutorStepResult::new(
+                &prefill,
+                MockExecutor::build_outputs(std::slice::from_ref(&prefill)).remove(0),
+            );
+            result
+                .staged_stream_outputs
+                .push(super::super::StreamingOutput {
+                    request_id: session.request_id.clone(),
+                    sequence: 0,
+                    samples: vec![0.25, 0.5],
+                    sample_rate: 44_100,
+                    is_final: false,
+                    text: None,
+                    stats: None,
+                    asr_progress: None,
+                });
+            let committed = core.commit_executor_result(result, 1.0).await.unwrap();
+            assert_eq!(committed.staged_stream_outputs.len(), 1);
+            assert!(core.incremental_stream_sessions.contains(&session));
+            assert_eq!(core.stream_sequence_cursors.get(&session), Some(&1));
+
+            let decode = core.scheduler.schedule().decode_requests.remove(0);
+            core.begin_execution_plan(&decode).await.unwrap();
+            let result = if restart {
+                ExecutorStepResult::from_session(
+                    &decode,
+                    super::super::executor::ModelSessionResult::restart_sequence(
+                        session.request_id.clone(),
+                        super::super::SequenceRestartReason::ModelFallback,
+                    ),
+                )
+            } else {
+                retryable_step_result(&decode, RetryDisposition::Recompute)
+            };
+            let rejected = core.commit_executor_result(result, 1.0).await.unwrap();
+            assert!(matches!(
+                rejected.disposition,
+                ExecutionDisposition::Failed(ExecutionFailure {
+                    retry: RetryDisposition::Never,
+                    ..
+                })
+            ));
+            assert!(rejected.staged_stream_outputs.is_empty());
+            assert!(rejected
+                .output
+                .error
+                .as_deref()
+                .is_some_and(|message| message.contains("unsafe")));
+            // Result commitment authenticates the failure; the step's output
+            // processing then begins terminal cleanup before another schedule.
+            let cause = EngineCore::terminal_release_cause(&rejected.disposition).unwrap();
+            core.begin_terminal_release(&session, cause).await;
+            let schedule = core.scheduler.schedule();
+            assert!(schedule.prefill_requests.is_empty());
+            assert!(schedule.decode_requests.is_empty());
         }
     }
 
@@ -10069,3 +10401,7 @@ mod decode_timing_tests {
         assert_eq!(timing.post_first_token_ms(), None);
     }
 }
+
+#[cfg(test)]
+#[path = "fish_s2_finalization_tests.rs"]
+mod fish_s2_finalization_tests;

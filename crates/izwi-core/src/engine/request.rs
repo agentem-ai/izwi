@@ -5,7 +5,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -528,6 +528,19 @@ impl Drop for StreamProgressPermit {
     }
 }
 
+/// Candidate output credit reserved before codec materialization. The staging
+/// outbox and caller share ownership until commit transfers it to delivery.
+#[derive(Debug, Clone)]
+pub(crate) struct AudioOutputCredit {
+    _permits: Arc<Vec<StreamProgressPermit>>,
+    bytes: usize,
+}
+
+fn committed_audio_budget() -> &'static Arc<StreamProgressBudget> {
+    static BUDGET: OnceLock<Arc<StreamProgressBudget>> = OnceLock::new();
+    BUDGET.get_or_init(|| StreamProgressBudget::new(64 * 1024 * 1024))
+}
+
 #[derive(Debug)]
 pub(super) struct FencedStreamProgress {
     pub(super) batch_id: BatchId,
@@ -653,6 +666,8 @@ struct StreamBufferState {
     staged: Vec<StreamingOutput>,
     staged_bytes: usize,
     binding: Option<IncrementalStreamBinding>,
+    audio_credits: Vec<AudioOutputCredit>,
+    audio_budget: Option<Arc<StreamProgressBudget>>,
 }
 
 /// Bounded stream outbox and transaction-scoped progress binding. Clones
@@ -677,6 +692,7 @@ impl StreamStagingBuffer {
             .lock()
             .map_err(|_| Error::InferenceError("stream staging mutex poisoned".to_string()))?;
         state.staged.clear();
+        state.audio_credits.clear();
         state.staged_bytes = 0;
         state.binding = None;
         Ok(())
@@ -702,6 +718,7 @@ impl StreamStagingBuffer {
             ));
         }
         state.staged.clear();
+        state.audio_credits.clear();
         state.staged_bytes = 0;
         if visibility == OutputVisibility::IncrementalCommitted {
             state.binding = Some(IncrementalStreamBinding {
@@ -748,6 +765,18 @@ impl StreamStagingBuffer {
                     }
                     return Err(Error::Overloaded(
                         "stream staging outbox exceeded its bounded capacity".to_string(),
+                    ));
+                }
+                if !state.audio_credits.is_empty()
+                    && next_bytes
+                        > state
+                            .audio_credits
+                            .iter()
+                            .map(|credit| credit.bytes)
+                            .sum::<usize>()
+                {
+                    return Err(Error::Overloaded(
+                        "Audio output exceeded its pre-dispatch credit".into(),
                     ));
                 }
                 state.staged.push(output);
@@ -1051,6 +1080,11 @@ pub struct EngineCoreRequest {
     /// Executor-produced stream events remain invisible until their exact
     /// execution report has committed.
     pub(super) stream_staging: StreamStagingBuffer,
+    /// Retain whole-wave samples for callers requesting a complete audio result.
+    pub(crate) collect_audio_samples: bool,
+    pub(crate) tenant_key: Option<[u8; 32]>,
+    pub(crate) audio_stream_external_queue_capacity: usize,
+    pub(crate) audio_stream_engine_queue_capacity: Option<usize>,
     /// Input text (for TTS)
     pub text: Option<String>,
     /// Chat input messages.
@@ -3592,6 +3626,13 @@ impl EngineCoreRequest {
                 self.id
             )));
         }
+        // Validate exact reference + text + full output room before admission.
+        crate::models::architectures::fish_s2::effective_frame_budget(
+            artifact.prompt_tokens(),
+            max_sequence_tokens,
+            max_sequence_tokens,
+            params.max_frames,
+        )?;
         self.prepared_stage_costs.clear();
         self.prepared_sequence_input_tokens = Some(artifact.prompt_tokens());
         self.params.max_tokens = params.max_frames;
@@ -4423,6 +4464,10 @@ impl EngineCoreRequest {
             prepared_asr_audio: None,
             prepared_asr_encoder_artifact: None,
             stream_staging: StreamStagingBuffer::default(),
+            collect_audio_samples: true,
+            tenant_key: None,
+            audio_stream_external_queue_capacity: 0,
+            audio_stream_engine_queue_capacity: None,
             text: Some(text),
             chat_messages: None,
             chat_config: ChatRequestConfig::default(),
@@ -4479,6 +4524,10 @@ impl EngineCoreRequest {
             prepared_asr_audio: None,
             prepared_asr_encoder_artifact: None,
             stream_staging: StreamStagingBuffer::default(),
+            collect_audio_samples: true,
+            tenant_key: None,
+            audio_stream_external_queue_capacity: 0,
+            audio_stream_engine_queue_capacity: None,
             text: None,
             chat_messages: None,
             chat_config: ChatRequestConfig::default(),
@@ -4535,6 +4584,10 @@ impl EngineCoreRequest {
             prepared_asr_audio: None,
             prepared_asr_encoder_artifact: None,
             stream_staging: StreamStagingBuffer::default(),
+            collect_audio_samples: true,
+            tenant_key: None,
+            audio_stream_external_queue_capacity: 0,
+            audio_stream_engine_queue_capacity: None,
             text: None,
             chat_messages: None,
             chat_config: ChatRequestConfig::default(),
@@ -4588,6 +4641,10 @@ impl EngineCoreRequest {
             prepared_asr_audio: None,
             prepared_asr_encoder_artifact: None,
             stream_staging: StreamStagingBuffer::default(),
+            collect_audio_samples: true,
+            tenant_key: None,
+            audio_stream_external_queue_capacity: 0,
+            audio_stream_engine_queue_capacity: None,
             text: None,
             chat_messages: Some(messages),
             chat_config: ChatRequestConfig::default(),
@@ -4642,6 +4699,10 @@ impl EngineCoreRequest {
             prepared_asr_audio: None,
             prepared_asr_encoder_artifact: None,
             stream_staging: StreamStagingBuffer::default(),
+            collect_audio_samples: true,
+            tenant_key: None,
+            audio_stream_external_queue_capacity: 0,
+            audio_stream_engine_queue_capacity: None,
             text: None,
             chat_messages: None,
             chat_config: ChatRequestConfig::default(),
@@ -4696,6 +4757,10 @@ impl EngineCoreRequest {
             prepared_asr_audio: None,
             prepared_asr_encoder_artifact: None,
             stream_staging: StreamStagingBuffer::default(),
+            collect_audio_samples: true,
+            tenant_key: None,
+            audio_stream_external_queue_capacity: 0,
+            audio_stream_engine_queue_capacity: None,
             text: None,
             chat_messages: None,
             chat_config: ChatRequestConfig::default(),
@@ -5102,6 +5167,82 @@ impl EngineCoreRequest {
             .iter()
             .find(|prepared| prepared.stage_id == stage_id)
             .map(|prepared| prepared.cost)
+    }
+
+    pub(crate) fn mark_audio_streaming_only(&mut self) {
+        self.collect_audio_samples = false;
+        if self.audio_stream_engine_queue_capacity.is_none() {
+            self.audio_stream_engine_queue_capacity =
+                Some(super::Engine::streaming_queue_capacity(self));
+        }
+    }
+
+    /// Price all independently queued PCM, not only the credited codec outbox.
+    pub(crate) fn streaming_audio_buffer_bytes(&self, max_chunk_samples: usize) -> Result<u64> {
+        let engine_rows = self.audio_stream_engine_queue_capacity.ok_or_else(|| {
+            Error::InvalidInput(
+                "streaming audio queue capacity was not frozen before admission".into(),
+            )
+        })?;
+        let chunk_bytes = max_chunk_samples
+            .checked_mul(std::mem::size_of::<f32>())
+            .and_then(|bytes| bytes.checked_add(self.id.len()))
+            .and_then(|bytes| bytes.checked_add(512))
+            .ok_or_else(|| Error::Overloaded("streaming chunk reservation overflow".into()))?;
+        let rows = engine_rows
+            .checked_add(self.audio_stream_external_queue_capacity)
+            .and_then(|rows| rows.checked_add(3))
+            .ok_or_else(|| Error::Overloaded("streaming queue reservation overflow".into()))?;
+        let bytes = rows
+            .checked_mul(chunk_bytes)
+            .and_then(|bytes| bytes.checked_add(STREAM_PROGRESS_MAX_BUFFERED_BYTES))
+            .ok_or_else(|| Error::Overloaded("streaming PCM reservation overflow".into()))?;
+        u64::try_from(bytes)
+            .map_err(|_| Error::Overloaded("streaming PCM reservation exceeds u64".into()))
+    }
+
+    /// Nonblocking pre-codec admission. None means this row should yield while
+    /// peers progress; no codec history or samples may be materialized yet.
+    pub(crate) fn try_reserve_audio_output(
+        &self,
+        sample_bytes: usize,
+    ) -> Result<Option<AudioOutputCredit>> {
+        let bytes = sample_bytes
+            .checked_add(self.id.len())
+            .and_then(|bytes| bytes.checked_add(256))
+            .ok_or_else(|| Error::Overloaded("Audio output credit overflow".into()))?;
+        let mut state = self
+            .stream_staging
+            .state
+            .lock()
+            .map_err(|_| Error::InferenceError("stream staging mutex poisoned".into()))?;
+        let budget = state
+            .audio_budget
+            .get_or_insert_with(|| StreamProgressBudget::new(4 * 1024 * 1024))
+            .clone();
+        let Some(local) = budget.reserve(bytes, EngineStreamPolicy::DropNewest)? else {
+            return Ok(None);
+        };
+        let Some(global) =
+            committed_audio_budget().reserve(bytes, EngineStreamPolicy::DropNewest)?
+        else {
+            return Ok(None);
+        };
+        let credit = AudioOutputCredit {
+            _permits: Arc::new(vec![local, global]),
+            bytes,
+        };
+        state.audio_credits.push(credit.clone());
+        Ok(Some(credit))
+    }
+
+    pub(super) fn take_audio_output_credits(&self) -> Vec<AudioOutputCredit> {
+        let mut state = self
+            .stream_staging
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        std::mem::take(&mut state.audio_credits)
     }
 
     pub(super) fn begin_stream_staging(&self) -> Result<()> {
@@ -5608,6 +5749,45 @@ impl RequestBuilder {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn audio_output_credits_survive_commit_transfer_and_abort_returns_capacity() {
+        let request = super::EngineCoreRequest::tts("credit test");
+        let credit = request
+            .try_reserve_audio_output(3 * 1024 * 1024)
+            .unwrap()
+            .unwrap();
+        assert!(request
+            .try_reserve_audio_output(2 * 1024 * 1024)
+            .unwrap()
+            .is_none());
+        let committed = request.take_audio_output_credits();
+        drop(credit);
+        request.begin_stream_staging().unwrap();
+        assert!(request
+            .try_reserve_audio_output(2 * 1024 * 1024)
+            .unwrap()
+            .is_none());
+        drop(committed);
+        let aborted = request
+            .try_reserve_audio_output(3 * 1024 * 1024)
+            .unwrap()
+            .unwrap();
+        drop(aborted);
+        request.begin_stream_staging().unwrap();
+        assert!(request
+            .try_reserve_audio_output(3 * 1024 * 1024)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn whole_audio_retention_is_explicitly_disabled_only_for_streaming_consumers() {
+        let mut request = super::EngineCoreRequest::tts("sample");
+        assert!(request.collect_audio_samples);
+        request.mark_audio_streaming_only();
+        assert!(!request.collect_audio_samples);
+    }
+
     use super::*;
     use crate::backends::BackendKind;
     use crate::model::ModelVariant;

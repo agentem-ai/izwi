@@ -72,6 +72,11 @@ services:
       - IZWI_MODELS_DIR=/app/models
       - IZWI_BACKEND=cuda
       - IZWI_LFM2_DIAGNOSTICS=${IZWI_LFM2_DIAGNOSTICS:-0}
+      # Candidate native Fish batching stays opt-in until this GPU is qualified.
+      - IZWI_FISH_NATIVE_BATCHING=${IZWI_FISH_NATIVE_BATCHING:-false}
+      - IZWI_TTS_TOTAL_SPOOL_BYTES=${IZWI_TTS_TOTAL_SPOOL_BYTES:-1073741824}
+      - IZWI_TTS_TOTAL_UPLOAD_BYTES=${IZWI_TTS_TOTAL_UPLOAD_BYTES:-268435456}
+      - IZWI_AUDIO_STREAM_TOTAL_EVENT_BYTES=${IZWI_AUDIO_STREAM_TOTAL_EVENT_BYTES:-67108864}
       - HF_HOME=/app/models/huggingface
       - TRANSFORMERS_CACHE=/app/models/huggingface
       - NVIDIA_VISIBLE_DEVICES=all

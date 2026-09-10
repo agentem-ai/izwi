@@ -316,6 +316,10 @@ pub enum WorkUnit {
         /// is an authenticated explicit selection of no auxiliary group.
         auxiliary_state: Option<Arc<[ClockedStateSpan]>>,
     },
+    /// Resumable codec work over already committed acoustic frames; no KV append.
+    SequenceAudioDecode {
+        max_frames: usize,
+    },
     /// A model-authenticated terminal sequence stage that does not append KV.
     /// TTS codecs use this after acoustic decode has committed its final frame.
     SequenceFinalize {
@@ -458,6 +462,7 @@ pub enum StageWorkSelector {
     SequencePrefill,
     SequenceDecode,
     SequenceFinalize,
+    SequenceAudioDecode,
     RealtimePush,
     RealtimeFinish,
     RealtimePreparation,
@@ -469,7 +474,7 @@ pub enum StageWorkSelector {
 }
 
 impl StageWorkSelector {
-    fn matches(self, work: &WorkUnit) -> bool {
+    pub(crate) fn matches(self, work: &WorkUnit) -> bool {
         match (self, work) {
             (Self::Any, _) => true,
             (Self::PreSequencePreparation, WorkUnit::PreSequencePreparation { .. }) => true,
@@ -487,6 +492,7 @@ impl StageWorkSelector {
                     ..
                 },
             )
+            | (Self::SequenceAudioDecode, WorkUnit::SequenceAudioDecode { .. })
             | (Self::SequenceFinalize, WorkUnit::SequenceFinalize { .. })
             | (Self::RealtimePush, WorkUnit::RealtimePush { .. })
             | (Self::RealtimeFinish, WorkUnit::RealtimeFinish { .. })
@@ -2484,6 +2490,14 @@ pub enum YieldReason {
     QuantumExhausted,
     /// Decoder state is durably ready for a distinct terminal sequence stage.
     AwaitingFinalization,
+    /// Committed acoustic frames are ready for a cache-free codec quantum.
+    AwaitingAudioDecode {
+        max_frames: usize,
+    },
+    /// A codec row owns committed frames but cannot reserve bounded output space.
+    AwaitingAudioOutput {
+        max_frames: usize,
+    },
     Backpressure,
     AwaitingInput,
     Preempted,
@@ -2807,6 +2821,13 @@ impl ExecutionReport {
                     return Err(Error::InferenceError(
                         "executor reported progress without consuming or producing work"
                             .to_string(),
+                    ));
+                }
+            }
+            WorkUnit::SequenceAudioDecode { max_frames } => {
+                if max_frames == 0 || self.input_consumed != 0 || self.output_produced != 0 {
+                    return Err(Error::InferenceError(
+                        "audio decode must preserve decoder token progress".into(),
                     ));
                 }
             }
@@ -4730,6 +4751,24 @@ mod tests {
         assert!(capabilities.cancellable_between_steps);
         assert!(!capabilities.physical_cache);
         assert_eq!(capabilities.max_batch_size, 4);
+    }
+
+    #[test]
+    fn audio_decode_is_resumable_but_cannot_append_decoder_tokens() {
+        let plan = plan_for(
+            SessionKey::new("audio".into(), 1),
+            WorkUnit::SequenceAudioDecode { max_frames: 4 },
+        );
+        let mut report = report_for(
+            &plan,
+            ExecutionDisposition::Yielded(YieldReason::QuantumExhausted),
+        );
+        assert!(report.validate_against(&plan).is_ok());
+        report.input_consumed = 1;
+        assert!(report.validate_against(&plan).is_err());
+        report.input_consumed = 0;
+        report.output_produced = 1;
+        assert!(report.validate_against(&plan).is_err());
     }
 
     #[test]

@@ -8,8 +8,12 @@
 #   Windows: %LOCALAPPDATA%\izwi\models
 # models_dir = "/path/to/models"
 
-# Physical tensor batch width: auto selects CPU/Metal=1 and CUDA=8
+# Physical tensor width: auto uses backend defaults; opted-in Fish resolves at model load.
+# Logical capacities use 0 for resource-derived automatic limits.
 max_batch_size = "auto"
+max_scheduler_batch_size = 0
+max_retained_sequences = 0
+max_staged_transactions = 0
 
 # Maximum sequence length (tokens)
 max_sequence_length = 4096

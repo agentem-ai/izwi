@@ -2,6 +2,7 @@
 //! Design, and Voice Cloning.
 
 mod handlers;
+pub(crate) use handlers::durable::DurableSpeechProgress;
 
 use axum::{extract::DefaultBodyLimit, routing::get, Router};
 
@@ -39,6 +40,10 @@ pub fn router() -> Router<AppState> {
         .route(
             CANONICAL_TTS_AUDIO,
             get(handlers::get_text_to_speech_record_audio),
+        )
+        .route(
+            "/text-to-speech/{record_id}/events",
+            get(handlers::durable::replay_text_to_speech),
         )
         .route(
             CANONICAL_TTS_CANCEL,

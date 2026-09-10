@@ -837,7 +837,7 @@ export function AppLayout({
               />
             </div>
           ) : null}
-          <RouteErrorBoundary key={location.pathname}>
+          <RouteErrorBoundary resetKey={location.pathname}>
             <Outlet />
           </RouteErrorBoundary>
         </main>

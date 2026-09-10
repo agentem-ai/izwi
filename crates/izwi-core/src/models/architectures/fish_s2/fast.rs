@@ -240,6 +240,133 @@ impl FishS2FastDecoder {
         Ok(logits)
     }
 
+    fn forward_step_batch(
+        &self,
+        x: &Tensor,
+        input_pos: usize,
+        caches: &mut [&mut PhysicalPagedKvCache],
+        project_logits: bool,
+    ) -> Result<Tensor> {
+        let (rows, tokens, hidden) = x.dims3()?;
+        if rows == 0
+            || rows != caches.len()
+            || tokens != 1
+            || hidden != self.cfg.hidden_size
+            || input_pos >= self.cfg.num_codebooks
+        {
+            return Err(Error::InvalidInput(
+                "Fish Fast AR batch shape or clock is invalid".into(),
+            ));
+        }
+        for cache in caches.iter() {
+            cache.validate_model(
+                self.cfg.num_hidden_layers,
+                self.cfg.num_key_value_heads,
+                self.cfg.head_dim,
+            )?;
+            if cache.context_len() != input_pos {
+                return Err(Error::InvalidInput(
+                    "Fish Fast AR batch clocks differ".into(),
+                ));
+            }
+        }
+        let mut batch = super::batch::FishPhysicalBatch::new(
+            caches,
+            &vec![1; rows],
+            self.cfg.num_hidden_layers,
+        )?;
+        let execution = (|| {
+            let mut hidden = x.clone();
+            for (index, layer) in self.layers.iter().enumerate() {
+                let norm = layer.input_layernorm.forward(&hidden)?;
+                let attn = layer
+                    .self_attn
+                    .forward_batch(&norm, input_pos, caches[0], &mut batch, index)?;
+                hidden = hidden.broadcast_add(&attn)?;
+                hidden = hidden.broadcast_add(
+                    &layer
+                        .mlp
+                        .forward(&layer.post_attention_layernorm.forward(&hidden)?)?,
+                )?;
+            }
+            if project_logits {
+                self.output
+                    .forward(&self.norm.forward(&hidden)?)
+                    .map_err(Error::from)
+            } else {
+                Ok(hidden)
+            }
+        })();
+        batch.finish(caches, execution)
+    }
+
+    /// Depth steps remain sequential; every dense projection and attention step
+    /// within a depth operates on the complete batch of independent requests.
+    pub(crate) fn generate_frames_batch(
+        &self,
+        semantic_tokens: &[u32],
+        slow_hidden: &Tensor,
+        samplers: &mut [&mut FishS2Sampler],
+        caches: &mut [&mut PhysicalPagedKvCache],
+    ) -> Result<Vec<FishS2GeneratedFrame>> {
+        let rows = semantic_tokens.len();
+        if rows == 0
+            || rows != caches.len()
+            || rows != samplers.len()
+            || slow_hidden.dims() != [rows, 1, self.cfg.input_hidden_size]
+        {
+            return Err(Error::InvalidInput(
+                "Fish Fast AR frame batch rows do not match".into(),
+            ));
+        }
+        let semantic_codes = semantic_tokens
+            .iter()
+            .map(|&token| semantic_code_from_token_id_from_fast_config(&self.cfg, token))
+            .collect::<Result<Vec<_>>>()?;
+        for cache in caches.iter_mut() {
+            cache.validate_model(
+                self.cfg.num_hidden_layers,
+                self.cfg.num_key_value_heads,
+                self.cfg.head_dim,
+            )?;
+            if cache.capacity_tokens() < self.cfg.num_codebooks {
+                return Err(Error::InvalidInput(
+                    "Fish Fast AR batch cache has insufficient capacity".into(),
+                ));
+            }
+            cache.reset_invocation()?;
+        }
+        let hidden = self.project_slow_hidden(slow_hidden)?;
+        self.forward_step_batch(&hidden, 0, caches, false)?;
+        let mut frames = semantic_tokens
+            .iter()
+            .zip(&semantic_codes)
+            .map(|(&semantic_token_id, &code)| FishS2GeneratedFrame {
+                semantic_token_id,
+                codebooks: vec![code],
+            })
+            .collect::<Vec<_>>();
+        let ids = Tensor::from_slice(&semantic_codes, (rows, 1), slow_hidden.device())?;
+        let mut current = self.embeddings.forward(&ids)?;
+        for depth in 1..self.cfg.num_codebooks {
+            let logits = self.forward_step_batch(&current, depth, caches, true)?;
+            let mut codes = Vec::with_capacity(rows);
+            for (row, (sampler, frame)) in samplers.iter_mut().zip(&mut frames).enumerate() {
+                let code = sample_logits(&logits.i((row, 0))?, sampler)?;
+                frame.codebooks.push(code);
+                codes.push(code);
+            }
+            if depth + 1 < self.cfg.num_codebooks {
+                current = self.embeddings.forward(&Tensor::from_slice(
+                    &codes,
+                    (rows, 1),
+                    slow_hidden.device(),
+                )?)?;
+            }
+        }
+        Ok(frames)
+    }
+
     pub fn generate_frame(
         &self,
         semantic_token_id: u32,
@@ -348,6 +475,57 @@ impl FishS2FastAttention {
             head_dim: cfg.head_dim,
             rotary: rotary.clone(),
         })
+    }
+
+    fn forward_batch(
+        &self,
+        x: &Tensor,
+        position: usize,
+        cache: &PhysicalPagedKvCache,
+        batch: &mut super::batch::FishPhysicalBatch,
+        layer: usize,
+    ) -> Result<Tensor> {
+        let rows = x.dim(0)?;
+        let qsize = self.num_heads * self.head_dim;
+        let kvsize = self.num_kv_heads * self.head_dim;
+        let qkv = self.qkv_proj.forward(x)?;
+        let q = self
+            .rotary
+            .apply(
+                &qkv.narrow(2, 0, qsize)?
+                    .reshape((rows, 1, self.num_heads, self.head_dim))?,
+                position,
+            )?
+            .reshape((rows, self.num_heads, self.head_dim))?
+            .contiguous()?;
+        let k = self
+            .rotary
+            .apply(
+                &qkv.narrow(2, qsize, kvsize)?.reshape((
+                    rows,
+                    1,
+                    self.num_kv_heads,
+                    self.head_dim,
+                ))?,
+                position,
+            )?
+            .reshape((rows, self.num_kv_heads, self.head_dim))?
+            .contiguous()?;
+        let v = qkv
+            .narrow(2, qsize + kvsize, kvsize)?
+            .reshape((rows, self.num_kv_heads, self.head_dim))?
+            .contiguous()?;
+        let output = batch.attend(
+            cache,
+            layer,
+            &q,
+            &k,
+            &v,
+            1.0 / (self.head_dim as f32).sqrt(),
+        )?;
+        self.o_proj
+            .forward(&output.reshape((rows, 1, qsize))?)
+            .map_err(Error::from)
     }
 
     fn forward(
@@ -460,12 +638,20 @@ fn load_rms_norm_alias(dim: usize, eps: f64, vb: &VarBuilder, aliases: &[&str]) 
 }
 
 #[cfg(test)]
+pub(super) fn tiny_for_batch_tests() -> FishS2FastDecoder {
+    let mut cfg = tests::tiny_cfg();
+    cfg.input_hidden_size = 4;
+    cfg.num_codebooks = 2;
+    tests::tiny_decoder_config(&candle_core::Device::Cpu, cfg)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use candle_core::{DType, Device, Shape};
     use std::collections::HashMap;
 
-    fn tiny_cfg() -> FishS2FastConfig {
+    pub(super) fn tiny_cfg() -> FishS2FastConfig {
         FishS2FastConfig {
             input_hidden_size: 3,
             hidden_size: 4,
@@ -488,7 +674,10 @@ mod tests {
     }
 
     fn tiny_decoder(device: &Device) -> FishS2FastDecoder {
-        let cfg = tiny_cfg();
+        tiny_decoder_config(device, tiny_cfg())
+    }
+
+    pub(super) fn tiny_decoder_config(device: &Device, cfg: FishS2FastConfig) -> FishS2FastDecoder {
         let mut tensors = HashMap::new();
         tensors.insert(
             "fast_project_in.weight".to_string(),
@@ -565,6 +754,68 @@ mod tests {
         let err = sample_logits(&row, &mut sampler).expect_err("empty logits should fail");
 
         assert!(format!("{err}").contains("Fish S2 fast sampler received empty logits"));
+    }
+
+    #[test]
+    fn native_fast_batch_matches_independent_sampling_and_reordered_rows() {
+        let decoder = tiny_decoder(&Device::Cpu);
+        let cfg = decoder.config();
+        let cache = || {
+            super::super::physical::test_physical_caches(
+                901,
+                cfg.num_hidden_layers,
+                cfg.num_key_value_heads,
+                cfg.head_dim,
+                cfg.num_codebooks,
+                7,
+            )
+        };
+        let mut batch_caches = cache();
+        let mut scalar_caches = cache();
+        let mut samplers = (0..7)
+            .map(|row| FishS2Sampler::new(0.7, 0.9, row + 17))
+            .collect::<Vec<_>>();
+        let mut scalar_samplers = samplers.clone();
+        for iteration in 0..3 {
+            let ids = (0..7)
+                .map(|row| 20 + (row + iteration) % 8)
+                .collect::<Vec<_>>();
+            let hidden = Tensor::from_vec(
+                (0..21).map(|i| (i as f32 * 0.31).sin()).collect::<Vec<_>>(),
+                (7, 1, 3),
+                &Device::Cpu,
+            )
+            .unwrap();
+            let expected = (0..7)
+                .map(|row| {
+                    decoder
+                        .generate_frame(
+                            ids[row],
+                            &hidden.narrow(0, row, 1).unwrap(),
+                            &mut scalar_samplers[row],
+                            &mut scalar_caches[row],
+                        )
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            let actual = decoder
+                .generate_frames_batch(
+                    &ids,
+                    &hidden,
+                    &mut samplers.iter_mut().collect::<Vec<_>>(),
+                    &mut batch_caches.iter_mut().collect::<Vec<_>>(),
+                )
+                .unwrap();
+            assert_eq!(actual, expected);
+            for cache in &mut batch_caches {
+                assert_eq!(cache.context_len(), cfg.num_codebooks);
+                assert_eq!(cache.take_completed_writes().len(), cfg.num_codebooks);
+            }
+            samplers.reverse();
+            scalar_samplers.reverse();
+            batch_caches.reverse();
+            scalar_caches.reverse();
+        }
     }
 
     #[test]

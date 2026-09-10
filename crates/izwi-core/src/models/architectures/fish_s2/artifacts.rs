@@ -89,6 +89,43 @@ impl FishS2ArtifactManifest {
         })
     }
 
+    /// Stable content identity for durable speech recovery, computed once per
+    /// native load with bounded scratch space (never once per speech segment).
+    pub fn content_fingerprint(&self) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        let files: BTreeSet<&str> = FISH_S2_REQUIRED_FILES
+            .iter()
+            .copied()
+            .chain(self.shard_files.iter().map(String::as_str))
+            .collect();
+        let mut digest = Sha256::new();
+        let mut buffer = vec![0u8; 64 * 1024];
+        for name in files {
+            digest.update((name.len() as u64).to_le_bytes());
+            digest.update(name.as_bytes());
+            let path = self.model_dir.join(name);
+            let mut file =
+                fs::File::open(&path).map_err(|error| Error::ModelLoadError(error.to_string()))?;
+            digest.update(
+                file.metadata()
+                    .map_err(|error| Error::ModelLoadError(error.to_string()))?
+                    .len()
+                    .to_le_bytes(),
+            );
+            loop {
+                let length = file
+                    .read(&mut buffer)
+                    .map_err(|error| Error::ModelLoadError(error.to_string()))?;
+                if length == 0 {
+                    break;
+                }
+                digest.update(&buffer[..length]);
+            }
+        }
+        Ok(format!("{:x}", digest.finalize()))
+    }
+
     pub fn shard_paths(&self) -> Vec<PathBuf> {
         self.shard_files
             .iter()
@@ -169,6 +206,13 @@ mod tests {
         assert_eq!(manifest.audio_decoder_tensor_count, 1);
         assert_eq!(manifest.shard_files.len(), 2);
         assert_eq!(manifest.shard_paths().len(), 2);
+        let fingerprint = manifest.content_fingerprint().unwrap();
+        assert_eq!(fingerprint, manifest.content_fingerprint().unwrap());
+        std::fs::write(dir.join("tokenizer.json"), "changed tokenizer").unwrap();
+        let tokenizer_changed = manifest.content_fingerprint().unwrap();
+        assert_ne!(fingerprint, tokenizer_changed);
+        std::fs::write(dir.join("model-00001-of-00002.safetensors"), [1u8]).unwrap();
+        assert_ne!(tokenizer_changed, manifest.content_fingerprint().unwrap());
 
         std::fs::remove_dir_all(dir).ok();
     }

@@ -12,7 +12,7 @@ use izwi_hooks::{
     MediaWriteRequest, StoredMediaBytes, StoredMediaObject,
 };
 use sea_orm::{DatabaseConnection, DatabaseConnectionType, DbBackend};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -128,6 +128,25 @@ pub async fn read_media_object(
         .await
         .map_err(|err| match err {
             HookError::NotFound(message) => MediaStorageError::NotFound { key, message },
+            err => MediaStorageError::ReadFailed(err),
+        })
+}
+
+pub async fn read_media_stream(
+    provider: &Arc<dyn MediaStorageProvider>,
+    key: &str,
+) -> Result<izwi_hooks::StoredMediaStream, MediaStorageError> {
+    provider
+        .get_stream(MediaReadRequest {
+            key: MediaObjectKey::new(key),
+            metadata: HookMetadata::new(),
+        })
+        .await
+        .map_err(|err| match err {
+            HookError::NotFound(message) => MediaStorageError::NotFound {
+                key: key.to_string(),
+                message,
+            },
             err => MediaStorageError::ReadFailed(err),
         })
 }
@@ -368,9 +387,155 @@ impl MediaStorageProvider for LocalMediaStorageProvider {
         })
     }
 
+    async fn put_file(
+        &self,
+        request: MediaWriteRequest,
+        path: PathBuf,
+        content_length: u64,
+    ) -> HookResult<StoredMediaObject> {
+        use sha2::{Digest, Sha256};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let write = async {
+            anyhow::ensure!(content_length > 0, "Audio payload cannot be empty");
+            let mut source = tokio::fs::File::open(path).await?;
+            anyhow::ensure!(
+                source.metadata().await?.len() == content_length,
+                "Media source length mismatch"
+            );
+            let (group, namespace) = local_namespace(&request.namespace, &request.metadata);
+            // File names are internal UUIDs. Never interpret caller input as a path.
+            let extension = match request.content_type.as_str() {
+                "audio/wav" => "wav",
+                "audio/mpeg" => "mp3",
+                "audio/flac" => "flac",
+                "audio/ogg" => "ogg",
+                "audio/pcm" => "pcm",
+                _ => "bin",
+            };
+            let namespace = sanitize_namespace(&namespace);
+            let key = format!(
+                "{}/{}/{}.{}",
+                group.as_dir(),
+                namespace,
+                uuid::Uuid::new_v4(),
+                extension
+            );
+            let target = storage_layout::resolve_media_path(&self.media_root, &key)?;
+            let parent = target.parent().context("Media parent directory")?;
+            tokio::fs::create_dir_all(parent).await?;
+            let temporary = tempfile::NamedTempFile::new_in(parent)?;
+            let mut output = tokio::fs::File::from_std(temporary.reopen()?);
+            let mut buffer = vec![0; 64 * 1024];
+            let mut hash = Sha256::new();
+            let mut total = 0u64;
+            loop {
+                let count = source.read(&mut buffer).await?;
+                if count == 0 {
+                    break;
+                }
+                total = total
+                    .checked_add(count as u64)
+                    .context("Media size overflow")?;
+                anyhow::ensure!(total <= content_length, "Media source grew during upload");
+                output.write_all(&buffer[..count]).await?;
+                hash.update(&buffer[..count]);
+            }
+            anyhow::ensure!(
+                total == content_length,
+                "Media source shortened during upload"
+            );
+            output.flush().await?;
+            output.sync_all().await?;
+            drop(output);
+            // The temporary owner removes incomplete output on every error/cancellation.
+            persist_local_tempfile_noclobber(temporary, &target)?;
+            Ok::<_, anyhow::Error>((key, format!("{:x}", hash.finalize())))
+        }
+        .await
+        .map_err(|err| HookError::Failed(err.to_string()))?;
+        Ok(StoredMediaObject {
+            key: MediaObjectKey::new(write.0),
+            metadata: MediaObjectMetadata {
+                content_type: request.content_type,
+                filename: request.preferred_filename,
+                content_length: Some(content_length),
+                sha256: Some(write.1),
+                tenant_id: None,
+                attributes: request.metadata,
+            },
+        })
+    }
+
+    async fn get_stream(
+        &self,
+        request: MediaReadRequest,
+    ) -> HookResult<izwi_hooks::StoredMediaStream> {
+        let key = request.key.key;
+        let path = storage_layout::resolve_media_path(&self.media_root, &key)
+            .map_err(|err| HookError::Failed(err.to_string()))?;
+        let file = tokio::fs::File::open(path).await.map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                HookError::NotFound(key.clone())
+            } else {
+                HookError::Failed(err.to_string())
+            }
+        })?;
+        let content_length = file
+            .metadata()
+            .await
+            .map_err(|err| HookError::Failed(err.to_string()))?
+            .len();
+        Ok(izwi_hooks::StoredMediaStream {
+            reader: Box::pin(file),
+            metadata: MediaObjectMetadata {
+                content_type: content_type_from_key(&key).to_string(),
+                filename: filename_from_key(&key),
+                content_length: Some(content_length),
+                sha256: None,
+                tenant_id: None,
+                attributes: request.metadata,
+            },
+        })
+    }
+
     async fn delete(&self, request: MediaDeleteRequest) -> HookResult<()> {
         storage_layout::delete_media_file(&self.media_root, Some(&request.key.key))
             .map_err(|err| HookError::Failed(err.to_string()))
+    }
+}
+
+fn persist_local_tempfile_noclobber(
+    temporary: tempfile::NamedTempFile,
+    target: &Path,
+) -> anyhow::Result<()> {
+    persist_local_tempfile_noclobber_with(temporary, target, |temporary, target| {
+        temporary.persist_noclobber(target)
+    })
+}
+
+fn persist_local_tempfile_noclobber_with(
+    temporary: tempfile::NamedTempFile,
+    target: &Path,
+    persist: impl FnOnce(
+        tempfile::NamedTempFile,
+        &Path,
+    ) -> Result<std::fs::File, tempfile::PersistError>,
+) -> anyhow::Result<()> {
+    match persist(temporary, target) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let rename_error = error.error;
+            let temporary = error.file;
+            std::fs::hard_link(temporary.path(), target).with_context(|| {
+                format!(
+                    "Failed to publish media with a hard link after atomic rename was denied: {rename_error}"
+                )
+            })?;
+            // Dropping the owner unlinks only the temporary name; the target hard link remains.
+            drop(temporary);
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -444,6 +609,111 @@ mod tests {
     use crate::test_support::env_lock;
     use izwi_hooks::{DatabaseProvider, DatabaseProviderDecision, MediaStorageResolver};
     use sea_orm::DbBackend;
+    use std::io::Write;
+
+    #[test]
+    fn local_media_publish_falls_back_when_atomic_rename_is_denied() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let target = directory.path().join("published.wav");
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(directory.path()).expect("temporary file");
+        temporary.write_all(b"generated audio").expect("write");
+        temporary.as_file().sync_all().expect("sync");
+        let temporary_path = temporary.path().to_path_buf();
+
+        persist_local_tempfile_noclobber_with(temporary, &target, |file, _| {
+            Err(tempfile::PersistError {
+                error: std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated seccomp denial",
+                ),
+                file,
+            })
+        })
+        .expect("permission denial should use the no-clobber hard-link fallback");
+
+        assert_eq!(
+            std::fs::read(&target).expect("published bytes"),
+            b"generated audio"
+        );
+        assert!(!temporary_path.exists());
+    }
+
+    #[test]
+    fn local_media_publish_fallback_does_not_replace_an_existing_target() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let target = directory.path().join("published.wav");
+        std::fs::write(&target, b"existing audio").expect("existing target");
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(directory.path()).expect("temporary file");
+        temporary.write_all(b"new audio").expect("write");
+
+        let error = persist_local_tempfile_noclobber_with(temporary, &target, |file, _| {
+            Err(tempfile::PersistError {
+                error: std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated seccomp denial",
+                ),
+                file,
+            })
+        })
+        .expect_err("fallback must preserve no-clobber behavior");
+
+        assert_eq!(
+            std::fs::read(&target).expect("existing bytes"),
+            b"existing audio"
+        );
+        assert!(error.to_string().contains("hard link"), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn file_upload_round_trips_stream_with_checksum_and_rejects_wrong_length() {
+        use sha2::{Digest, Sha256};
+        use tokio::io::AsyncReadExt;
+        let directory = tempfile::tempdir().unwrap();
+        let provider = LocalMediaStorageProvider::new(directory.path().join("media"));
+        let source = directory.path().join("source.wav");
+        let bytes = vec![42; 128 * 1024 + 3];
+        tokio::fs::write(&source, &bytes).await.unwrap();
+        let request = MediaWriteRequest {
+            namespace: MediaNamespace::GeneratedSpeech,
+            record_id: "../unsafe".into(),
+            preferred_filename: Some("voice.wav".into()),
+            content_type: "audio/wav".into(),
+            metadata: HookMetadata::new(),
+        };
+        assert!(provider
+            .put_file(request.clone(), source.clone(), bytes.len() as u64 + 1)
+            .await
+            .is_err());
+        let stored = provider
+            .put_file(request, source, bytes.len() as u64)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.metadata.sha256,
+            Some(format!("{:x}", Sha256::digest(&bytes)))
+        );
+        assert!(!stored.key.key.contains(".."));
+        let mut stream = provider
+            .get_stream(MediaReadRequest {
+                key: stored.key.clone(),
+                metadata: HookMetadata::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(stream.metadata.content_length, Some(bytes.len() as u64));
+        let mut read = Vec::new();
+        stream.reader.read_to_end(&mut read).await.unwrap();
+        assert_eq!(read, bytes);
+        provider
+            .delete(MediaDeleteRequest {
+                key: stored.key,
+                metadata: HookMetadata::new(),
+            })
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn noop_hooks_resolve_local_persistence() {

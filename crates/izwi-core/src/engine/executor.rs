@@ -9,6 +9,9 @@ use tracing::{debug, error, info};
 
 #[path = "executor/audio.rs"]
 mod audio;
+#[path = "executor/fish_pending.rs"]
+mod fish_pending;
+use fish_pending::{FishCodecCommit, FishStateCoordinator};
 #[path = "executor/dispatch.rs"]
 mod dispatch;
 #[path = "executor/handler_asr.rs"]
@@ -117,6 +120,7 @@ pub(super) enum NativeAudioStage {
     SequencePrefill,
     SequenceDecode,
     SequenceFinalize,
+    SequenceAudioDecode,
     RealtimePush,
     RealtimeFinish,
     RealtimePreparation,
@@ -153,6 +157,7 @@ impl NativeBatchRoute {
                 phase: SequencePhase::Decode,
                 ..
             } => NativeAudioStage::SequenceDecode,
+            WorkUnit::SequenceAudioDecode { .. } => NativeAudioStage::SequenceAudioDecode,
             WorkUnit::SequenceFinalize { .. } => NativeAudioStage::SequenceFinalize,
             WorkUnit::RealtimePush { .. } => NativeAudioStage::RealtimePush,
             WorkUnit::RealtimeFinish { .. } => NativeAudioStage::RealtimeFinish,
@@ -2575,13 +2580,16 @@ impl PendingQuantumFinalizer for NemotronRealtimeStateCoordinator {
 }
 
 struct RealtimePendingQuantumFinalizer {
+    fish: Arc<FishStateCoordinator>,
     voxtral: Arc<VoxtralRealtimeStateCoordinator>,
     nemotron: Arc<NemotronRealtimeStateCoordinator>,
 }
 
 impl PendingQuantumFinalizer for RealtimePendingQuantumFinalizer {
     fn contains(&self, plan_id: PlanId, session: &SessionKey) -> bool {
-        self.voxtral.contains(plan_id, session) || self.nemotron.contains(plan_id, session)
+        self.fish.contains(plan_id, session)
+            || self.voxtral.contains(plan_id, session)
+            || self.nemotron.contains(plan_id, session)
     }
     fn prepare(
         &self,
@@ -2589,7 +2597,9 @@ impl PendingQuantumFinalizer for RealtimePendingQuantumFinalizer {
         session: &SessionKey,
         decision: PendingQuantumDecision,
     ) -> Result<PendingQuantumFinalizeStatus> {
-        if self.nemotron.contains(plan_id, session) {
+        if self.fish.contains(plan_id, session) {
+            self.fish.prepare(plan_id, session, decision)
+        } else if self.nemotron.contains(plan_id, session) {
             self.nemotron.prepare(plan_id, session, decision)
         } else {
             self.voxtral.prepare(plan_id, session, decision)
@@ -2600,7 +2610,9 @@ impl PendingQuantumFinalizer for RealtimePendingQuantumFinalizer {
         plan_id: PlanId,
         session: &SessionKey,
     ) -> Result<PendingQuantumFinalizeStatus> {
-        if self
+        if self.fish.has_prepared(plan_id) {
+            self.fish.publish(plan_id, session)
+        } else if self
             .nemotron
             .prepared
             .lock()
@@ -2613,7 +2625,9 @@ impl PendingQuantumFinalizer for RealtimePendingQuantumFinalizer {
         }
     }
     fn discard(&self, plan_id: PlanId, session: &SessionKey) {
-        if self
+        if self.fish.has_prepared(plan_id) {
+            self.fish.discard(plan_id, session);
+        } else if self
             .nemotron
             .prepared
             .lock()
@@ -2697,7 +2711,8 @@ pub struct NativeExecutor {
     lfm25_asr_decode_states: ExecutorStateStore<ActiveLfm25AsrDecode>,
     lfm25_tts_decode_states: ExecutorStateStore<ActiveLfm25TtsDecode>,
     vibevoice_tts_decode_states: ExecutorStateStore<ActiveVibeVoiceTtsDecode>,
-    fish_s2_tts_decode_states: ExecutorStateStore<ActiveFishS2TtsDecode>,
+    fish_s2_tts_decode_states: Arc<ExecutorStateStore<ActiveFishS2TtsDecode>>,
+    fish_s2_pending: Arc<FishStateCoordinator>,
     voxtral_tts_decode_states: ExecutorStateStore<ActiveVoxtralTtsDecode>,
     voxtral_realtime: Arc<VoxtralRealtimeStateCoordinator>,
     nemotron_realtime: Arc<NemotronRealtimeStateCoordinator>,
@@ -2814,6 +2829,7 @@ impl NativeExecutor {
             config,
             Arc::new(VoxtralRealtimeStateCoordinator::new()),
             Arc::new(NemotronRealtimeStateCoordinator::new()),
+            Arc::new(FishStateCoordinator::new()),
         )
     }
 
@@ -2821,6 +2837,7 @@ impl NativeExecutor {
         config: WorkerConfig,
         voxtral_realtime: Arc<VoxtralRealtimeStateCoordinator>,
         nemotron_realtime: Arc<NemotronRealtimeStateCoordinator>,
+        fish_s2_pending: Arc<FishStateCoordinator>,
     ) -> Self {
         Self {
             config,
@@ -2833,7 +2850,8 @@ impl NativeExecutor {
             lfm25_asr_decode_states: Mutex::new(HashMap::new()),
             lfm25_tts_decode_states: Mutex::new(HashMap::new()),
             vibevoice_tts_decode_states: Mutex::new(HashMap::new()),
-            fish_s2_tts_decode_states: Mutex::new(HashMap::new()),
+            fish_s2_tts_decode_states: fish_s2_pending.states.clone(),
+            fish_s2_pending,
             voxtral_tts_decode_states: Mutex::new(HashMap::new()),
             voxtral_realtime,
             nemotron_realtime,
@@ -2987,6 +3005,13 @@ fn loaded_native_batch_support(request: &EngineCoreRequest) -> NativeBatchSuppor
                     .map(|_| (true, true))
             })
             .unwrap_or((false, false)),
+        TaskType::TTS
+            if request
+                .prepared_fish_s2_tts_model_lease_for_executor()
+                .is_ok_and(|model| model.is_some()) =>
+        {
+            (true, true)
+        }
         TaskType::TTS => {
             let lfm25_audio = request
                 .prepared_lfm25_audio_tts_model_lease_for_executor()
@@ -3286,7 +3311,22 @@ impl ModelExecutor for NativeExecutor {
             profile.prefill_batch = native_batch_support.prefill;
             profile.decode_batch = native_batch_support.decode;
             profile.concurrency = ConcurrencyClass::Batchable;
-            profile.max_batch_size = self.config.max_tensor_batch_size.max(1);
+            profile.max_batch_size = if request.model_variant == Some(ModelVariant::FishAudioS2Pro)
+            {
+                request
+                    .execution_adapter_binding()
+                    .and_then(|binding| {
+                        binding
+                            .stages
+                            .iter()
+                            .filter(|stage| stage.batch_mode != NativeBatchMode::None)
+                            .map(|stage| stage.max_batch_size)
+                            .max()
+                    })
+                    .unwrap_or(1)
+            } else {
+                self.config.max_tensor_batch_size.max(1)
+            };
         } else {
             let request_parallel_width = if can_parallelize_requests(self.config.backend) {
                 self.config.request_parallelism.max(1)
@@ -3352,7 +3392,27 @@ impl ModelExecutor for NativeExecutor {
             let route = NativeBatchRoute::resolve(&execution).map_err(|error| {
                 PhysicalDispatchError::not_started(error, width, FailureOrigin::ExecutorValidation)
             })?;
-            if execution.scheduled.len() > self.config.max_tensor_batch_size.max(1) {
+            let tensor_ceiling = if execution
+                .requests
+                .iter()
+                .all(|request| request.model_variant == Some(ModelVariant::FishAudioS2Pro))
+            {
+                execution
+                    .requests
+                    .iter()
+                    .zip(execution.scheduled)
+                    .map(|(request, scheduled)| {
+                        request
+                            .execution_adapter_binding()
+                            .and_then(|binding| binding.stage_for_work(&scheduled.work).ok())
+                            .map_or(1, |stage| stage.max_batch_size)
+                    })
+                    .min()
+                    .unwrap_or(1)
+            } else {
+                self.config.max_tensor_batch_size.max(1)
+            };
+            if execution.scheduled.len() > tensor_ceiling {
                 return Err(PhysicalDispatchError::not_started(
                     Error::Overloaded(
                         "native tensor batch exceeds the backend width cap".to_string(),
@@ -3568,6 +3628,40 @@ impl ModelExecutor for NativeExecutor {
                 }
                 NativeBatchRoute::Audio {
                     task: TaskType::TTS,
+                    stage: NativeAudioStage::SequenceAudioDecode,
+                    mode: NativeBatchMode::Static,
+                    ..
+                } if execution.requests.iter().all(|request| {
+                    request.model_variant.is_some_and(|variant| {
+                        variant.family() == crate::catalog::ModelFamily::FishS2Tts
+                    })
+                }) =>
+                {
+                    self.execute_static_fish_s2_codec_requests_with_rows(
+                        execution.requests,
+                        execution.scheduled,
+                        Some(&execution.batch.rows),
+                    )
+                }
+                NativeBatchRoute::Audio {
+                    task: TaskType::TTS,
+                    stage: NativeAudioStage::SequencePrefill,
+                    mode: NativeBatchMode::Static,
+                    ..
+                } if execution.requests.iter().all(|request| {
+                    request.model_variant.is_some_and(|variant| {
+                        variant.family() == crate::catalog::ModelFamily::FishS2Tts
+                    })
+                }) =>
+                {
+                    self.execute_static_fish_s2_tts_prefill_requests_with_rows(
+                        execution.requests,
+                        execution.scheduled,
+                        Some(&execution.batch.rows),
+                    )
+                }
+                NativeBatchRoute::Audio {
+                    task: TaskType::TTS,
                     stage: NativeAudioStage::SequencePrefill,
                     mode: NativeBatchMode::Static,
                     ..
@@ -3687,6 +3781,7 @@ impl ModelExecutor for NativeExecutor {
 
     fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down native executor");
+        self.fish_s2_pending.abort_matching(|_| true)?;
         let mut chat = self
             .chat_decode_states
             .lock()
@@ -3770,6 +3865,13 @@ impl ModelExecutor for NativeExecutor {
     }
 
     fn cleanup_request(&self, request_id: &str) -> CacheReleaseReport {
+        if self
+            .fish_s2_pending
+            .abort_matching(|session| session.request_id == request_id)
+            .is_err()
+        {
+            return CacheReleaseReport::unconfirmed();
+        }
         let Ok(mut suspended) = self.suspended_chat_states.lock() else {
             return CacheReleaseReport::unconfirmed();
         };
@@ -3848,6 +3950,13 @@ impl ModelExecutor for NativeExecutor {
     }
 
     fn cleanup_session(&self, session: &SessionKey) -> CacheReleaseReport {
+        if self
+            .fish_s2_pending
+            .abort_matching(|pending| pending == session)
+            .is_err()
+        {
+            return CacheReleaseReport::unconfirmed();
+        }
         if self
             .voxtral_realtime
             .abort_matching(|pending| &pending.session == session)
@@ -4006,17 +4115,20 @@ impl UnifiedExecutor {
                 });
         let voxtral_realtime = Arc::new(VoxtralRealtimeStateCoordinator::new());
         let nemotron_realtime = Arc::new(NemotronRealtimeStateCoordinator::new());
+        let fish_s2_pending = Arc::new(FishStateCoordinator::new());
         Self {
             inner: Arc::new(RwLock::new(Box::new(
                 NativeExecutor::with_realtime_coordinators(
                     config,
                     voxtral_realtime.clone(),
                     nemotron_realtime.clone(),
+                    fish_s2_pending.clone(),
                 ),
             ))),
             batch_workspace,
             physical_execution_admission,
             pending_quantum_finalizer: Some(Arc::new(RealtimePendingQuantumFinalizer {
+                fish: fish_s2_pending,
                 voxtral: voxtral_realtime,
                 nemotron: nemotron_realtime,
             })),
